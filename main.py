@@ -20,6 +20,7 @@ import numpy as np
 
 import camera
 import detect
+import imgio
 import paths
 import report
 
@@ -143,7 +144,7 @@ def run_detection(bgr, params, note, cam_info, cap_stats, capture_ms, extra_warn
 # 오프라인 모드
 # --------------------------------------------------------------------------
 def offline(path, params):
-    bgr = cv2.imread(path, cv2.IMREAD_COLOR)
+    bgr = imgio.imread_u(path, cv2.IMREAD_COLOR)
     if bgr is None:
         print("이미지를 열 수 없습니다: %s" % path)
         return 2
@@ -157,8 +158,12 @@ def offline(path, params):
     cap_stats = {"frames_grabbed": 1, "chosen_focus_score": round(score, 1),
                  "focus_min": round(score, 1), "focus_max": round(score, 1),
                  "focus_median": round(score, 1)}
-    det, result, ann, d = run_detection(bgr, params, "offline:" + os.path.basename(path),
-                                        cam_info, cap_stats, 0.0, [])
+    try:
+        det, result, ann, d = run_detection(bgr, params, "offline:" + os.path.basename(path),
+                                            cam_info, cap_stats, 0.0, [])
+    except IOError as e:
+        print("저장 실패    : %s" % e)
+        return 3
     w = result["wafer"]
     print("입력      : %s (%dx%d)" % (path, bgr.shape[1], bgr.shape[0]))
     print("웨이퍼    : found=%s  mm/px=%.5f  tilt=%.1f deg  roi_fit=%.3f"

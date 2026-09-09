@@ -26,6 +26,7 @@ import numpy as np
 
 import camera
 import detect
+import imgio
 import paths
 
 HERE = paths.PROJECT_ROOT
@@ -33,7 +34,7 @@ SETTINGS = paths.SETTINGS_PATH      # 경로는 전부 paths.py 를 거친다
 MATRIX = paths.CALIB_PATH           # data 폴더에 둔다 (git 밖)
 
 # 베이스에 붙은 마커의 기계좌표(mm). 마커 배치가 바뀌면 여기만 고치면 된다.
-MARKER_MM = {3: (15, 15), 2: (15, 156), 1: (201, 15), 0: (201, 156)}   # id: (X, Y)
+MARKER_MM = {3: (15, 20), 2: (15, 160), 1: (201, 19), 0: (201, 160)}   # id: (X, Y)
 
 # 갠트리 가동범위. 이 밖의 좌표는 경고만 하고 값은 그대로 보여준다.
 AXIS_MIN, AXIS_MAX = 0.0, 247.0
@@ -57,7 +58,7 @@ def load_params():
 def get_image(path, params):
     """--image 가 있으면 그 파일, 없으면 카메라로 단발 촬영."""
     if path:
-        bgr = cv2.imread(path, cv2.IMREAD_COLOR)
+        bgr = imgio.imread_u(path, cv2.IMREAD_COLOR)
         if bgr is None:
             print("이미지를 열 수 없습니다: %s" % path)
             return None
@@ -104,28 +105,116 @@ def detect_markers(bgr, params):
     return found
 
 
+def fit_affine(src, dst):
+    """전체 점 최소제곱 어파인. src(px) -> dst(mm), 2x3.
+
+    cv2.estimateAffine2D 는 (method 를 뭘 주든) 로버스트 추정이라 점이 4개면
+    3개만 맞추고 남은 하나를 이상치로 버린다. 실제로 잔차가 0/0/0/4.075 로
+    나왔다 - 네 점을 고루 맞춘 결과가 아니다. 여기서는 정직하게 최소제곱을 푼다.
+    """
+    M = np.hstack([np.asarray(src, np.float64), np.ones((len(src), 1))])
+    sol, _res, _rank, _sv = np.linalg.lstsq(M, np.asarray(dst, np.float64), rcond=None)
+    return sol.T
+
+
+def fit_homography(src, dst):
+    """평면 대 평면 정사영. 카메라가 기울어져 생기는 원근까지 표현한다."""
+    H, _m = cv2.findHomography(np.asarray(src, np.float64),
+                               np.asarray(dst, np.float64), 0)
+    return None if H is None else np.asarray(H, np.float64)
+
+
 def load_matrix():
     if not os.path.exists(MATRIX):
         print("calib_matrix.json 이 없습니다. 먼저 'python calib.py fit' 을 실행하세요.")
         return None
     with open(MATRIX, "r", encoding="utf-8") as f:
         d = json.load(f)
+    if "transform" not in d and d.get("pixels") and d.get("marker_mm"):
+        # 옛 파일(로버스트 어파인만 저장하던 버전)은 저장된 점으로 다시 푼다.
+        # 점이 진짜 데이터이고 행렬은 거기서 유도되는 값이므로 이게 안전하다.
+        ids = [str(i) for i in d.get("used_ids", sorted(d["pixels"]))]
+        src = np.array([d["pixels"][i] for i in ids], np.float64)
+        dst = np.array([d["marker_mm"][i] for i in ids], np.float64)
+        d["affine"] = fit_affine(src, dst)
+        d["homography"] = fit_homography(src, dst) if len(ids) >= 4 else None
+        d["transform"] = "homography" if d.get("homography") is not None else "affine"
+        print("안내      : 예전 형식의 calib_matrix.json 이라 저장된 마커 좌표로 "
+              "변환행렬을 다시 계산했습니다 (모델: %s)." % d["transform"])
+        return d
     d["affine"] = np.asarray(d["affine"], np.float64)
-    if d.get("homography"):
-        d["homography"] = np.asarray(d["homography"], np.float64)
+    d["homography"] = (np.asarray(d["homography"], np.float64)
+                       if d.get("homography") is not None else None)
+    d.setdefault("transform", "affine")
     return d
 
 
-def px_to_mm(A, u, v):
-    p = A @ np.array([float(u), float(v), 1.0])
+def affine_px2mm(A, u, v):
+    p = np.asarray(A) @ np.array([float(u), float(v), 1.0])
     return float(p[0]), float(p[1])
 
 
-def mm_to_px(A, x, y):
+def affine_mm2px(A, x, y):
     """어파인의 역변환. 2x3 을 3x3 으로 채워 역행렬을 쓴다."""
-    M = np.vstack([A, [0.0, 0.0, 1.0]])
+    M = np.vstack([np.asarray(A), [0.0, 0.0, 1.0]])
     q = np.linalg.inv(M) @ np.array([float(x), float(y), 1.0])
     return float(q[0]), float(q[1])
+
+
+def homo_px2mm(H, u, v):
+    p = np.asarray(H) @ np.array([float(u), float(v), 1.0])
+    return float(p[0] / p[2]), float(p[1] / p[2])
+
+
+def homo_mm2px(H, x, y):
+    q = np.linalg.inv(np.asarray(H)) @ np.array([float(x), float(y), 1.0])
+    return float(q[0] / q[2]), float(q[1] / q[2])
+
+
+def model_of(d, model=None):
+    """쓸 변환 이름. 요청한 모델이 없으면 있는 것으로 떨어진다."""
+    m = model or d.get("transform", "affine")
+    if m == "homography" and d.get("homography") is None:
+        m = "affine"
+    return m
+
+
+def px_to_mm(d, u, v, model=None):
+    m = model_of(d, model)
+    if m == "homography":
+        return homo_px2mm(d["homography"], u, v)
+    return affine_px2mm(d["affine"], u, v)
+
+
+def mm_to_px(d, x, y, model=None):
+    m = model_of(d, model)
+    if m == "homography":
+        return homo_mm2px(d["homography"], x, y)
+    return affine_mm2px(d["affine"], x, y)
+
+
+def perspective_gap(A, H, src):
+    """마커 사각형 안 5x5 격자에서 두 모델 예측이 얼마나 벌어지는지(mm).
+
+    카메라가 완전히 수직이 아니면 네 점이 평행사변형에서 벗어난다(실측: 오른쪽
+    열이 왼쪽 열보다 2.1% 짧다). 어파인은 그 원근을 표현할 수 없고 호모그래피는
+    평면에 대해 정확하므로, 이 값이 곧 '어파인을 쓰면 생기는 오차' 다.
+    """
+    if H is None:
+        return 0.0
+    P = np.asarray(src, np.float64)
+    ctr = P.mean(axis=0)
+    Q = P[np.argsort(np.arctan2(P[:, 1] - ctr[1], P[:, 0] - ctr[0]))]  # 사각형 순서로
+    worst = 0.0
+    for u in np.linspace(0.0, 1.0, 5):
+        top = Q[0] * (1 - u) + Q[1] * u
+        bot = Q[3] * (1 - u) + Q[2] * u
+        for v in np.linspace(0.0, 1.0, 5):
+            p = top * (1 - v) + bot * v
+            ax, ay = affine_px2mm(A, p[0], p[1])
+            hx, hy = homo_px2mm(H, p[0], p[1])
+            worst = max(worst, float(np.hypot(ax - hx, ay - hy)))
+    return worst
 
 
 def in_range(x, y):
@@ -163,19 +252,11 @@ def cmd_fit(args):
     src = np.array([found[i]["center_px"] for i in used], np.float64)
     dst = np.array([MARKER_MM[i] for i in used], np.float64)
 
-    # 점이 3~4개뿐이라 RANSAC 은 의미가 없다. 전체 점을 최소제곱으로 맞춘다.
-    A, _inl = cv2.estimateAffine2D(src.reshape(-1, 1, 2), dst.reshape(-1, 1, 2),
-                                   method=cv2.LMEDS)
-    if A is None:
-        print("어파인 계산에 실패했습니다.")
-        return 1
-    A = np.asarray(A, np.float64)
-
-    Hm = None
-    if len(used) >= 4:
-        Hm, _m = cv2.findHomography(src, dst, 0)
-        if Hm is not None:
-            Hm = np.asarray(Hm, np.float64)
+    # 점이 3~4개뿐이라 로버스트 추정은 해가 되기만 한다(하나를 이상치로 버린다).
+    A = fit_affine(src, dst)
+    Hm = fit_homography(src, dst) if len(used) >= 4 else None
+    # 기본 변환: 4점이면 호모그래피(원근까지 맞춘다), 3점이면 어파인.
+    transform = "homography" if Hm is not None else "affine"
 
     # ---- 잔차표 ----------------------------------------------------------
     print("")
@@ -185,14 +266,22 @@ def cmd_fit(args):
     for i in used:
         u, v = found[i]["center_px"]
         rx, ry = MARKER_MM[i]
-        px, py = px_to_mm(A, u, v)
+        px, py = affine_px2mm(A, u, v)
         e = float(np.hypot(px - rx, py - ry))
         errs.append(e)
         resid[str(i)] = round(e, 4)
         print("%-4d (%7.1f,%7.1f)   (%6.1f,%6.1f)   (%7.2f,%7.2f)   %6.3f"
               % (i, u, v, rx, ry, px, py, e))
     rms = float(np.sqrt(np.mean(np.square(errs))))
-    print("RMS       : %.3f mm    최대: %.3f mm" % (rms, max(errs)))
+    print("RMS       : %.3f mm    최대: %.3f mm  (어파인 기준)" % (rms, max(errs)))
+
+    gap = perspective_gap(A, Hm, src)
+    if Hm is not None:
+        herr = [float(np.hypot(*(np.array(homo_px2mm(Hm, *found[i]["center_px"]))
+                                 - np.array(MARKER_MM[i])))) for i in used]
+        print("호모그래피: 마커 잔차 최대 %.3f mm / 어파인과 최대 %.3f mm 차이"
+              " (마커 사각형 안 5x5 격자) -> 원근 성분" % (max(herr), gap))
+    print("기본 변환 : %s" % transform)
 
     # ---- 행렬 해석 -------------------------------------------------------
     # A = [[a,b,tx],[c,d,ty]]. 열 벡터의 길이가 축 스케일, 첫 열의 각도가 회전,
@@ -217,9 +306,11 @@ def cmd_fit(args):
         "used_ids": used,
         "pixels": {str(i): [round(found[i]["center_px"][0], 2),
                             round(found[i]["center_px"][1], 2)] for i in used},
+        "transform": transform,
         "affine": [[float(x) for x in row] for row in A],
         "homography": ([[float(x) for x in row] for row in Hm]
                        if Hm is not None else None),
+        "perspective_gap_mm": round(gap, 4),
         "residual_mm": resid,
         "rms_mm": round(rms, 4),
         "max_mm": round(float(max(errs)), 4),
@@ -253,7 +344,7 @@ def cmd_fit(args):
     outdir = paths.resolve_out(params.get("out_dir", "out"))
     os.makedirs(outdir, exist_ok=True)
     vp = os.path.join(outdir, "calib_fit.jpg")
-    cv2.imwrite(vp, vis, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+    imgio.imwrite_u(vp, vis, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
     print("확인이미지: %s" % vp)
     return 0
 
@@ -265,8 +356,15 @@ def cmd_px2mm(args):
     d = load_matrix()
     if d is None:
         return 2
-    x, y = px_to_mm(d["affine"], args.u, args.v)
-    print("픽셀 (%.1f, %.1f)  ->  기계 X %.2f mm  Y %.2f mm" % (args.u, args.v, x, y))
+    m = model_of(d)
+    x, y = px_to_mm(d, args.u, args.v)
+    print("픽셀 (%.1f, %.1f)  ->  기계 X %.2f mm  Y %.2f mm   [%s]"
+          % (args.u, args.v, x, y, m))
+    other = "affine" if m == "homography" else "homography"
+    if model_of(d, other) == other:
+        ox, oy = px_to_mm(d, args.u, args.v, other)
+        print("            참고: %-11s X %.2f mm  Y %.2f mm  (차이 %.2f mm)"
+              % (other, ox, oy, float(np.hypot(ox - x, oy - y))))
     warn_range(x, y)
     return 0
 
@@ -276,8 +374,9 @@ def cmd_mm2px(args):
     if d is None:
         return 2
     warn_range(args.x, args.y)
-    u, v = mm_to_px(d["affine"], args.x, args.y)
-    print("기계 (%.2f, %.2f) mm  ->  픽셀 u %.2f  v %.2f" % (args.x, args.y, u, v))
+    u, v = mm_to_px(d, args.x, args.y)
+    print("기계 (%.2f, %.2f) mm  ->  픽셀 u %.2f  v %.2f   [%s]"
+          % (args.x, args.y, u, v, model_of(d)))
     w, h = d.get("image_size", [0, 0])
     if w and h and not (0 <= u < w and 0 <= v < h):
         print("경고      : 보정 당시 화면(%dx%d) 밖의 픽셀입니다." % (w, h))
@@ -305,13 +404,13 @@ def cmd_samples(args):
     if not det.samples:
         return 0
 
-    A = d["affine"]
     print("")
-    print("no   pixel u      v        machine X mm   Y mm      range")
+    print("no   pixel u      v        machine X mm   Y mm      range   [%s]"
+          % model_of(d))
     rows = []
     for s in det.samples:
         u, v = float(s["x_px"]), float(s["y_px"])
-        mx, my = px_to_mm(A, u, v)
+        mx, my = px_to_mm(d, u, v)      # 기본 변환만 쓴다
         ok = in_range(mx, my)
         rows.append((s["no"], mx, my))
         print("%-4d %8.1f %8.1f   %10.2f %8.2f      %s"

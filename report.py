@@ -16,6 +16,8 @@ import time
 
 import cv2
 
+import imgio
+
 CSV_COLS = ["no", "shape", "x_mm", "y_mm", "x_px", "y_px", "w_mm", "h_mm",
             "angle_deg", "area_mm2", "solidity", "mean_dev_pct",
             "edge", "rescued", "split", "merged", "color_only"]
@@ -74,14 +76,14 @@ def _jpeg_b64(bgr, width=1100, quality=85):
 
 def save(out_dir, result, raw, annotated, det):
     d = timestamp_dir(out_dir)
-    cv2.imwrite(os.path.join(d, "raw.png"), raw)                 # 보정 전 원본이 제일 중요
-    cv2.imwrite(os.path.join(d, "annotated.png"), annotated)
+    imgio.imwrite_u(os.path.join(d, "raw.png"), raw)                 # 보정 전 원본이 제일 중요
+    imgio.imwrite_u(os.path.join(d, "annotated.png"), annotated)
     if det.mask is not None:
-        cv2.imwrite(os.path.join(d, "mask.png"), det.mask)
+        imgio.imwrite_u(os.path.join(d, "mask.png"), det.mask)
     if det.dev_img is not None:
-        cv2.imwrite(os.path.join(d, "deviation.png"), det.dev_img)
+        imgio.imwrite_u(os.path.join(d, "deviation.png"), det.dev_img)
     if det.wafer_mask is not None:
-        cv2.imwrite(os.path.join(d, "wafer_mask.png"), det.wafer_mask)
+        imgio.imwrite_u(os.path.join(d, "wafer_mask.png"), det.wafer_mask)
 
     with open(os.path.join(d, "result.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
