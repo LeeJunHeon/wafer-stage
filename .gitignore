@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+*.jpg
+*.png
+*.jsonl
+calib_matrix.json
