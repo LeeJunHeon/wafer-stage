@@ -32,6 +32,8 @@ class StageCtl:
             await self.disconnect()
         dev = stage_mod.Stage(port, dry=self.dry)
         banner = await self._call(dev.open)
+        if self.dry:
+            dev.port_name = "--dry"        # 화면 칩에 '?' 대신 무엇인지 보이게
         self.dev = dev
         return banner
 
@@ -76,6 +78,10 @@ class StageCtl:
 
     async def save(self):
         return await self._call(self._need().save)
+
+    @property
+    def aborted(self):
+        return bool(getattr(self.dev, "_aborted", False))
 
     def abort(self):
         """워커 큐를 거치지 않는 즉시 호출 (동기)."""

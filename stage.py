@@ -92,6 +92,10 @@ class Stage:
         self.needs_home = False        # 배너에 "원점없음" 이 있었나
         self.log_path = log_path or os.path.join(paths.OUT_DIR, "serial.log")
         self.warnings = []
+        # 비상정지('!')를 보낸 뒤 상태. 펌웨어는 '명령마다' abortFlag 를 지우므로
+        # (.ino 395행) 다음 명령을 그냥 보내면 그대로 움직인다. 그래서 드라이버가
+        # 잠가야 한다 - 원점을 다시 잡기 전까지 이동을 보내지 않는다.
+        self._aborted = False
 
     # ---- 로그 ----------------------------------------------------------
     def _log(self, arrow, text):
@@ -192,6 +196,11 @@ class Stage:
             seen.append(ln)
             if REJECT_MARK in ln:
                 raise StageError("펌웨어 거부: %s" % ln.strip())
+            if "[!] 중단" in ln:
+                # '!' 로 끊긴 이동이다. 보고 줄 형식은 정상 완료와 같아서 그냥
+                # 두면 '완료' 로 읽히고, goto_mm 이 이어서 Y 를 보내 버린다.
+                self._aborted = True
+                raise StageError("비상정지로 중단됨: %s" % ln.strip())
             if WARN_MARK in ln and not is_done(ln):
                 self.warnings.append(ln.strip())
                 print("  경고(펌웨어): %s" % ln.strip())
@@ -230,6 +239,8 @@ class Stage:
         return out
 
     def _move(self, cmd, what):
+        if self._aborted:
+            raise StageError("비상정지 상태 - 원점잡기(fz) 후 사용")
         self._write(cmd)
         if self.dry:
             return "(dry) %s" % cmd
@@ -256,6 +267,7 @@ class Stage:
         "[!] 중단" 이 붙어 돌아온다).
         """
         self._log("->", "! (abort)")
+        self._aborted = True
         if self.dry or self.ser is None:
             return True
         try:
@@ -264,6 +276,10 @@ class Stage:
             return True
         except Exception as e:             # noqa: BLE001
             raise StageError("비상정지 전송 실패: %s" % e)
+
+    def reset_abort(self):
+        """원점을 다시 잡았으므로 잠금을 푼다."""
+        self._aborted = False
 
     def find_zero(self, axis, search_pulses=None):
         """원점 탐색. "fz x [n]" 을 보내고 "원점 설정 완료" 줄까지 기다린다.
@@ -281,12 +297,20 @@ class Stage:
             self._write(cmd)
             if self.dry:
                 continue
-            self._collect(HOME_TIMEOUT_S,
-                          lambda t: ("원점 설정 완료" in t) or ("중단됨" in t),
-                          "원점 탐색(%s)" % one)
+            done = self._collect(HOME_TIMEOUT_S,
+                                 lambda t: ("원점 설정 완료" in t) or ("중단됨" in t),
+                                 "원점 탐색(%s)" % one)
+            if "원점 설정 완료" in done:
+                self.reset_abort()
+        if self.dry:
+            self.reset_abort()
         return self.status()
 
     def save(self):
+        if self._aborted:
+            # 비상정지 뒤의 위치는 신뢰할 수 없다. EEPROM 에 굳히면 다음 전원에서
+            # 그 틀린 위치를 '복원' 해 버린다.
+            return ["  (비상정지 상태 - save 생략)"]
         self._write("save")
         if self.dry:
             return ["(dry) save"]

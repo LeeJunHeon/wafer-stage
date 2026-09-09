@@ -13,7 +13,6 @@ import os
 import time
 
 import calib
-import imgio
 import logger
 import measure as measure_mod
 import paths
@@ -27,6 +26,7 @@ _task = None                      # 진행 중인 순회 태스크
 _next_evt = None                  # confirm 모드에서 '다음' 을 기다리는 이벤트
 _pause_evt = None                 # 일시정지 해제 이벤트(set = 진행)
 _stop = False                     # 정지 요청
+_estopped = False                 # 비상정지 상태(원점을 다시 잡을 때까지 유지)
 _measurer = None
 
 
@@ -159,7 +159,8 @@ def _save_seq(bgr, res):
     """이번 촬영의 근거를 한 폴더에 남긴다."""
     d = os.path.join(paths.OUT_DIR, "seq_" + time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(d, exist_ok=True)
-    imgio.imwrite_u(os.path.join(d, "raw.png"), bgr)
+    # save_samples_image 가 raw_name 으로 원본도 함께 쓴다(따로 imwrite 하면 2MB
+    # 짜리 PNG 를 두 번 인코딩하게 된다).
     calib.save_samples_image(bgr, res, state.params, outdir=d,
                              ann_name="annotated.jpg", raw_name="raw.png")
     storage.atomic_write_json(
@@ -289,6 +290,14 @@ async def start_run(mode="auto", dwell_s=None, only=None):
     if why:
         await push_log(why, "warn")
         return False
+    if state.sequence.get("phase") == "done":
+        # 같은 검출로 한 바퀴 더 돈다. 가동범위 밖(skip)은 그대로 두고 나머지만
+        # 되돌린다(다시 촬영하지 않았으므로 좌표는 그대로다).
+        for s in state.samples:
+            if s.get("on") and s["status"] != "skip":
+                s["status"] = "wait"
+                s["value"] = None
+                s["unit"] = None
     todo = [s for s in state.samples
             if s.get("on") and s["status"] not in ("done", "skip")
             and (not only or s["no"] in only)]
@@ -382,8 +391,20 @@ async def _run_loop(todo):
 
 
 async def _finish(ok):
-    """정상·정지·오류 어느 쪽이든 파킹 → save 를 시도한다."""
+    """정상·정지·오류면 파킹 → save 를 시도한다.
+
+    비상정지는 예외다. 파킹은 '또 움직이는 것' 이고 save 는 믿을 수 없는 위치를
+    EEPROM 에 굳히는 것이라, 둘 다 하지 않는다.
+    """
     stopped = _stop
+    if _estopped:
+        try:
+            _write_results()
+        except Exception as e:             # noqa: BLE001
+            await push_log("results.csv 저장 실패: %s" % e, "warn")
+        _phase("stopped", "비상정지 - 원점잡기(fz) 후 사용")
+        await push_state()
+        return
     _phase("parking", "파킹 중")
     await push_state()
     try:
@@ -460,19 +481,35 @@ async def stop():
 
 
 async def estop():
-    """확인 없이 즉시. 파킹하지 않는다(움직이면 안 되는 상황이므로)."""
-    global _stop
+    """확인 없이 즉시. 파킹도 save 도 하지 않는다.
+
+    태스크를 cancel 하지 않는다 - 진행 중이던 이동은 펌웨어 보고 줄의 "[!] 중단"
+    으로 StageError 가 되어 순회 루프가 스스로 빠져나온다. cancel 하면 finally
+    가 파킹까지 실행해 '비상정지 직후 다시 움직이는' 일이 벌어진다.
+    """
+    global _stop, _estopped
     _stop = True
+    _estopped = True
     ok = stagectl.ctl.abort()
+    state.stage["needs_home"] = True       # 원점을 다시 잡기 전까지 이동 잠금
     if _pause_evt is not None:
         _pause_evt.set()
     if _next_evt is not None:
         _next_evt.set()
-    if _task is not None and not _task.done():
-        _task.cancel()
     state.stage["moving"] = False
-    _phase("stopped", "비상정지")
+    _phase("stopped", "비상정지 - 원점잡기(fz) 후 사용")
     await push_log("비상정지 - 펌웨어에 '!' 전송%s" % ("" if ok else " (실패)"),
                    "err" if not ok else "warn")
     await push_log("정지 후에는 위치를 신뢰할 수 없습니다 - 원점잡기(fz)를 다시 하세요", "warn")
     await push_state()
+
+
+def estopped():
+    return _estopped
+
+
+def reset_estop():
+    """원점을 다시 잡았다 - 잠금을 푼다(commands.stage_home 이 부른다)."""
+    global _estopped
+    _estopped = False
+    state.stage["needs_home"] = False

@@ -160,6 +160,41 @@ async def stop_flow(c):
     check(ph == "stopped", "stop -> stopped (%s)" % ph)
 
 
+async def estop_flow(c):
+    """순회 중 비상정지 → 파킹·save 없이 멈추고, 원점을 다시 잡기 전까지 잠긴다."""
+    await c.send(cmd="capture")
+    await c.wait_phase(("ready", "error"), 90)
+    await c.send(cmd="run", mode="auto", dwell_s=1.0, confirm=True)
+    await c.wait_phase(("running",), 20)
+    await asyncio.sleep(0.5)
+    c.logs.clear()
+    await c.send(cmd="estop")
+    ph = await c.wait_phase(("stopped",), 30)
+    check(ph == "stopped", "estop -> stopped (%s)" % ph)
+    await c.pump(2.0)
+    txt = " ".join(l["msg"] for l in c.logs)
+    check("파킹" not in txt, "비상정지 뒤 파킹하지 않음")
+    check("저장됨" not in txt and "save" not in txt.lower(), "비상정지 뒤 save 하지 않음")
+    check(bool(c.state["stage"]["needs_home"]), "needs_home=True 로 이동 잠금")
+
+    c.logs.clear()
+    await c.send(cmd="park")
+    await c.send(cmd="goto", no=1)
+    await c.send(cmd="run", mode="auto", dwell_s=0.1, confirm=True)
+    await c.pump(2.5)
+    blocked = [l for l in c.logs if "원점잡기" in l["msg"]]
+    check(len(blocked) >= 3, "park/goto/run 이 모두 잠김 (%d건)" % len(blocked))
+
+    await c.send(cmd="stage_home", axis="xy")
+    await c.pump(3.0)
+    check(not c.state["stage"]["needs_home"], "원점잡기 후 잠금 해제")
+    c.logs.clear()
+    await c.send(cmd="park")
+    await c.pump(2.0)
+    ok = any("이동 완료" in l["msg"] for l in c.logs)
+    check(ok, "원점잡기 후 이동이 다시 된다")
+
+
 async def confirm_flow(c):
     await c.send(cmd="capture")
     ph = await c.wait_phase(("ready", "error"), 90)
@@ -185,6 +220,7 @@ def main():
             raise SystemExit("검증용 사진이 없습니다: %s" % f)
     for name, image, flow in (("정상 흐름", GOOD, main_flow),
                               ("정지 경로", GOOD, stop_flow),
+                              ("비상정지 경로", GOOD, estop_flow),
                               ("확인 필요 경로", GLARE, confirm_flow)):
         port = free_port()
         print("[%s] 서버 :%d  %s" % (name, port, os.path.basename(os.path.dirname(image))),

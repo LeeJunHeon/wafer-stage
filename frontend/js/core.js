@@ -105,7 +105,9 @@
     const s = UI.state;
     const on = UI.online;
     const stage = (s && s.stage) || {};
-    const canMove = on && stage.connected && stage.homed_x && stage.homed_y;
+    // needs_home = 비상정지 뒤. 원점을 다시 잡기 전에는 이동을 잠근다.
+    const canMove = on && stage.connected && stage.homed_x && stage.homed_y
+      && !stage.needs_home;
     const seq = (s && s.sequence) || {};
     const running = ['running', 'paused', 'waiting_confirm', 'parking', 'capturing']
       .indexOf(seq.phase) >= 0;
@@ -143,9 +145,11 @@
 
   UI.applyHeader = function (s) {
     const st = s.stage || {}, cam = s.camera || {};
-    chip($('chipStage'), st.connected ? (st.homed_x && st.homed_y ? 'ok' : 'warn') : 'bad',
+    chip($('chipStage'),
+      st.connected ? ((st.homed_x && st.homed_y && !st.needs_home) ? 'ok' : 'warn') : 'bad',
       st.connected
-        ? (st.port || '?') + ' · ' + (st.homed_x && st.homed_y ? '원점OK' : '원점없음')
+        ? (st.port || '미연결') + ' · '
+          + (st.needs_home ? '원점 필요' : (st.homed_x && st.homed_y ? '원점OK' : '원점없음'))
           + ' · X ' + fmt(st.x_mm) + ' Y ' + fmt(st.y_mm)
         : '미연결');
     chip($('chipCam'), cam.ok === false ? 'bad' : (cam.ok ? 'ok' : 'warn'),

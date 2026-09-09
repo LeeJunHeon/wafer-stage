@@ -99,6 +99,9 @@ class State:
             return "스테이지 미연결 - 연결 후 사용하세요"
         if not (self.stage["homed_x"] and self.stage["homed_y"]):
             return "원점 없음 - 원점잡기(fz) 후 사용하세요"
+        if self.stage.get("needs_home"):
+            # 비상정지 뒤에는 펌웨어가 위치를 안다고 해도 믿을 수 없다.
+            return "비상정지 후 위치를 신뢰할 수 없습니다 - 원점잡기(fz) 후 사용하세요"
         return None
 
     def set_warnings(self, ws):

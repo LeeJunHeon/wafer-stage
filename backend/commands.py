@@ -19,6 +19,10 @@ from state import state
 _shutdown_handler = None
 
 MOVE_CMDS = ("park", "goto", "run", "resume", "next", "measure_here")
+# 순회 중에 받으면 안 되는 명령. 스테이지·카메라·설정을 순회 도중에 건드리면
+# 진행 중인 이동과 충돌한다(정지 뒤에 하면 된다).
+BUSY_BLOCKED = ("park", "goto", "stage_home", "stage_disconnect", "capture",
+                "settings_save")
 
 
 def set_shutdown_handler(fn):
@@ -29,6 +33,9 @@ def set_shutdown_handler(fn):
 async def handle_command(data):
     cmd = str(data.get("cmd") or "")
     try:
+        if cmd in BUSY_BLOCKED and engine.busy():
+            await push_log("순회 중 - 정지 후 사용하세요 (%s)" % cmd, "warn")
+            return
         if cmd in MOVE_CMDS:
             why = state.can_move()
             if why:
@@ -92,7 +99,10 @@ async def _stage_home(data):
     try:
         st = await stagectl.ctl.find_zero(axis, data.get("search_pulses"))
         engine._apply_status(st)
-        state.stage["needs_home"] = not (st["homed_x"] and st["homed_y"])
+        if st["homed_x"] and st["homed_y"]:
+            engine.reset_estop()           # 비상정지 잠금 해제
+        else:
+            state.stage["needs_home"] = True
         await push_log("원점 설정 완료 - X%.2f Y%.2f" % (st["x_mm"], st["y_mm"]), "ok")
     finally:
         state.stage["moving"] = False
@@ -182,6 +192,15 @@ async def _settings_save(data):
 
 async def _exit(_data):
     await push_log("종료합니다 - 파킹 후 저장", "warn")
+    if engine.busy():
+        # 순회 중이면 먼저 멈춘다. 이동 한가운데서 포트를 닫으면 스테이지가
+        # 그 이동을 끝까지 하고 우리는 그 위치를 모른 채 끝난다.
+        await push_log("순회를 정지하고 기다립니다", "warn")
+        await engine.stop()
+        for _ in range(600):               # 최대 60초
+            if not engine.busy():
+                break
+            await asyncio.sleep(0.1)
     try:
         if state.stage["connected"] and state.can_move() is None:
             await engine.park()
