@@ -23,6 +23,7 @@ samples 는 매번 다시 보정하고, 마커를 못 찾을 때만 저장값으
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -466,6 +467,34 @@ def cmd_mm2px(args):
 # --------------------------------------------------------------------------
 # samples
 # --------------------------------------------------------------------------
+def sensing_rect(marker_pixels, image_shape):
+    """기준 마커 중심들의 바운딩 직사각형 (u0, v0, u1, v1). 3개 미만이면 None.
+
+    detect.detect() 는 '웨이퍼가 화면 대부분' 인 근접 촬영을 전제로 만들어졌다.
+    고정 카메라는 작업영역 전체(약 52x29cm)를 보므로 웨이퍼가 화면의 5% 뿐이고,
+    레일·모터·캐리지·인쇄 글자가 원판 후보를 만들어 우하단 커플링 근처를 가짜
+    원판으로 잡았다 (실측: 전체 프레임 -> 샘플 1개 / 14초, 마커 사각형으로
+    자르면 -> 장축 243px 의 진짜 웨이퍼 / 샘플 15개 / 0.2초).
+
+    마커는 베이스에 고정돼 작업영역을 둘러싸므로 그 바운딩이 곧 감지 영역이다.
+    자르기는 여기(스테이지 연동 경로)에서만 한다 - 옛 사진들은 마커가 웨이퍼
+    옆에 있어 같은 규칙으로 자르면 웨이퍼가 잘린다.
+    """
+    pts = [(float(u), float(v)) for u, v in marker_pixels]
+    if len(pts) < 3:
+        return None
+    h, w = image_shape[:2]
+    us = [p[0] for p in pts]
+    vs = [p[1] for p in pts]
+    u0 = max(0, int(math.floor(min(us))))
+    v0 = max(0, int(math.floor(min(vs))))
+    u1 = min(w, int(math.ceil(max(us))))
+    v1 = min(h, int(math.ceil(max(vs))))
+    if u1 - u0 < 8 or v1 - v0 < 8:
+        return None
+    return (u0, v0, u1, v1)
+
+
 def cmd_samples(args):
     params = load_params()
     bgr = get_image(args.image, params)
@@ -490,13 +519,34 @@ def cmd_samples(args):
         if d is None:
             return 2
 
-    det = detect.detect(bgr, params)          # 검출 로직은 그대로 호출만 한다
+    # 감지 영역 = 마커 사각형. 전체 프레임을 그대로 넣으면 웨이퍼를 못 찾는다.
+    rect = sensing_rect([d["pixels"][k] for k in d["pixels"]], bgr.shape) if refit else None
+    if rect is None:
+        print("경고      : 마커 부족 -> 전체 프레임 검출, 웨이퍼 오검출 가능")
+        rect = (0, 0, bgr.shape[1], bgr.shape[0])
+    u0, v0, u1, v1 = rect
+    crop = bgr[v0:v1, u0:u1]
+    print("감지영역  : (%d,%d)-(%d,%d)  %dx%d px" % (u0, v0, u1, v1, u1 - u0, v1 - v0))
+
+    det = detect.detect(crop, params)         # 검출 로직은 그대로 호출만 한다
     w = det.wafer
     print("웨이퍼    : surface=%s found=%s mm/px=%.5f" % (w.surface, w.found, w.mm_per_px))
     print("샘플      : %d 개 (검출 %.0f ms)" % (len(det.samples), det.detect_ms))
     for x in det.warnings:
         print("경고      : %s" % x)
+
+    # 그림은 crop 좌표계 그대로 그린 뒤 원래 자리에 되붙인다.
+    vis_crop = detect.annotate(crop, det, samples_info(det, d, refit, rect))
+
+    # 좌표는 전체 프레임 기준으로 되돌린다 (mm 변환은 전체 프레임 호모그래피).
+    for x in det.samples:
+        x["x_px"] = round(float(x["x_px"]) + u0, 1)
+        x["y_px"] = round(float(x["y_px"]) + v0, 1)
+        if x.get("vertices_px"):
+            x["vertices_px"] = [[int(a) + u0, int(b) + v0] for a, b in x["vertices_px"]]
+
     if not det.samples:
+        save_samples_image(bgr, det, d, [], params, refit, rect, vis_crop)
         return 0
 
     print("")
@@ -518,17 +568,13 @@ def cmd_samples(args):
         print("mx %.1f" % mx)
         print("my %.1f" % my)
 
-    save_samples_image(bgr, det, d, rows, params, refit)
+    save_samples_image(bgr, det, d, rows, params, refit, rect, vis_crop)
     return 0
 
 
-def save_samples_image(bgr, det, cal, rows, params, refit):
-    """표만 봐서는 어느 칩이 몇 번인지 알 수 없다. 사진과 대조할 그림을 남긴다.
-
-    번호·외곽선은 detect.annotate 가 그린 것을 그대로 쓰고(검출과 번호 매기기
-    로직은 건드리지 않는다), 그 위에 샘플마다 기계좌표 한 줄을 덧그린다.
-    이미지 위 글자는 전부 영문 (cv2.putText 는 한글을 네모로 그린다).
-    """
+def samples_info(det, cal, refit, rect):
+    """확인용 이미지 좌상단 패널. 이미지 위 글자는 전부 영문
+    (cv2.putText 는 한글을 네모로 그린다)."""
     tri = sum(1 for x in det.samples if x.get("shape") == "triangle")
     w = det.wafer
     info = ["samples: %d  (triangles: %d)" % (len(det.samples), tri),
@@ -541,7 +587,28 @@ def save_samples_image(bgr, det, cal, rows, params, refit):
         # 이 프레임에서 마커를 못 찾아 저장값을 쓴 경우. 그림에도 남겨야 나중에
         # 사진만 보고 "좌표를 믿어도 되는지" 판단할 수 있다.
         info.append("calib: SAVED matrix - no markers here, coords may be off")
-    img = detect.annotate(bgr, det, info)
+    info.append("sensing: marker rect %dx%d px" % (rect[2] - rect[0], rect[3] - rect[1]))
+    return info
+
+
+def save_samples_image(bgr, det, cal, rows, params, refit, rect, vis_crop):
+    """표만 봐서는 어느 칩이 몇 번인지 알 수 없다. 사진과 대조할 그림을 남긴다.
+
+    번호·외곽선은 detect.annotate 가 crop 에 그린 것을 그대로 원래 자리에
+    되붙이고(검출과 번호 매기기 로직은 건드리지 않는다), 그 위에 감지 영역
+    사각형·마커 id·샘플별 기계좌표를 덧그린다.
+    """
+    u0, v0, u1, v1 = rect
+    img = bgr.copy()
+    img[v0:v1, u0:u1] = vis_crop
+    cv2.rectangle(img, (u0, v0), (u1 - 1, v1 - 1), (0, 255, 255), 2)   # 감지 영역
+    for i, p in (cal.get("pixels") or {}).items():
+        cv2.drawMarker(img, (int(round(p[0])), int(round(p[1]))), (255, 128, 0),
+                       cv2.MARKER_CROSS, 18, 2)
+        cv2.putText(img, "id%s" % i, (int(p[0]) + 8, int(p[1]) - 8),
+                    FONT, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(img, "id%s" % i, (int(p[0]) + 8, int(p[1]) - 8),
+                    FONT, 0.5, (255, 128, 0), 1, cv2.LINE_AA)
 
     fs = max(0.4, min(img.shape[1], img.shape[0]) / 1600.0)
     th = max(1, int(round(fs * 2)))
