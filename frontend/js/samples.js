@@ -13,6 +13,7 @@
     UI.selected = (UI.selected === no) ? null : no;
     UI.applySamples(UI.state);
     UI.applyCamera(UI.state);
+    UI.applyMap(UI.state);
     UI.lock();
   };
 

@@ -99,7 +99,7 @@ app = FastAPI(lifespan=lifespan)
 
 _ASSET_FILES = [os.path.join(paths.FRONTEND_DIR, "css", "style.css")] + [
     os.path.join(paths.FRONTEND_DIR, "js", f)
-    for f in ("core.js", "camera.js", "samples.js", "sequence.js", "app.js")]
+    for f in ("core.js", "camera.js", "map.js", "samples.js", "sequence.js", "app.js")]
 
 
 def _asset_version():

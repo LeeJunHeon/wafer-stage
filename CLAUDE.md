@@ -8,7 +8,10 @@
 ## 구조 (2026-09-10 재구성)
 서버가 상태의 주인이고 화면은 HTML 이다. 가스 센서 프로그램(Gas_Sensor_Measurment_System\Program)과 같은 골격.
 - backend/: server.py(진입점·라우트·/ws·lifespan·CLI) window.py connection.py state.py commands.py engine.py stagectl.py vision.py measure.py loops.py logger.py storage.py version.py
-- frontend/: index.html · css/style.css · js/{app,core,camera,samples,sequence}.js
+- frontend/: index.html · css/style.css · js/{app,core,camera,map,samples,sequence}.js
+  화면은 1920×1040 고정 캔버스(fit() 로 축소, 페이지 스크롤 없음). ISA-101 계열 배색
+  (무채색 바탕, 색은 상태에만), 상단 상태줄·경보 배너·하단 명령, 스테이지 맵으로
+  기계 위치를 보여준다. 단계(1·2·3) 표시는 쓰지 않는다 — 반복 운전 프로그램이다.
 - 루트(검증 끝난 핵심 모듈, 위치·API 유지): camera.py detect.py calib.py stage.py imgio.py paths.py regress.py
 - test/e2e_smoke.py, firmware/stage_v6/, assets/
 - 실행: `python backend/server.py [--dry] [--image PATH] [--no-window] [--port N]`

@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import os
 
 import calib
 import engine
@@ -181,6 +182,23 @@ async def _measure_here(_data):
     await push_state()
 
 
+async def _open_out_dir(_data):
+    """결과 폴더를 탐색기로 연다. 창 없이 도는 환경에서는 경로만 로그로 알린다."""
+    d = state.sequence.get("out_dir")
+    if not d:
+        await push_log("아직 결과 폴더가 없습니다 (촬영 후 생깁니다)", "warn")
+        return
+    opener = getattr(os, "startfile", None)
+    if opener is None:
+        await push_log("결과 폴더: %s" % d)
+        return
+    try:
+        opener(d)
+        await push_log("결과 폴더를 열었습니다: %s" % d, "ok")
+    except OSError as e:
+        await push_log("폴더를 열지 못했습니다: %s (%s)" % (d, e), "warn")
+
+
 async def _settings_save(data):
     patch = {k: data[k] for k in ("serial_port", "camera_index", "park_xy", "dwell_s",
                                   "marker_mm_xy", "measure") if k in data}
@@ -233,6 +251,7 @@ _TABLE = {
     "set_on": _set_on,
     "set_all": _set_all,
     "measure_here": _measure_here,
+    "open_out_dir": _open_out_dir,
     "settings_save": _settings_save,
     "exit": _exit,
 }

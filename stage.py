@@ -96,6 +96,9 @@ class Stage:
         # (.ino 395행) 다음 명령을 그냥 보내면 그대로 움직인다. 그래서 드라이버가
         # 잠가야 한다 - 원점을 다시 잡기 전까지 이동을 보내지 않는다.
         self._aborted = False
+        # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면 검증이
+        # 무의미해진다(포인터·맵이 안 움직인다). 보낸 명령대로 위치를 옮겨 둔다.
+        self._dry_xy = [0.0, 0.0]
 
     # ---- 로그 ----------------------------------------------------------
     def _log(self, arrow, text):
@@ -215,9 +218,10 @@ class Stage:
     def status(self):
         """'st' -> ST 줄을 dict 로. 펄스와 mm 를 함께 담는다."""
         if self.dry:
-            return {"x_pulse": 0, "y_pulse": 0, "x2_pulse": 0, "homed_x": True,
-                    "homed_y": True, "dirty": False, "x_mm": 0.0, "y_mm": 0.0,
-                    "raw": "(dry)"}
+            x, y = self._dry_xy
+            return {"x_pulse": int(x * PPMM), "y_pulse": int(y * PPMM),
+                    "x2_pulse": int(x * PPMM), "homed_x": True, "homed_y": True,
+                    "dirty": False, "x_mm": x, "y_mm": y, "raw": "(dry)"}
         self._write("st")
         ln = self._collect(LINE_TIMEOUT_S, lambda s: s.startswith("ST "), "st")
         d = {}
@@ -243,6 +247,11 @@ class Stage:
             raise StageError("비상정지 상태 - 원점잡기(fz) 후 사용")
         self._write(cmd)
         if self.dry:
+            try:
+                axis, val = cmd.split()
+                self._dry_xy[0 if axis == "mx" else 1] = float(val)
+            except ValueError:
+                pass
             return "(dry) %s" % cmd
         # 완료는 이동 보고 줄, 또는 '이미 그 위치'(움직일 필요가 없던 경우).
         return self._collect(MOVE_TIMEOUT_S,
@@ -280,6 +289,9 @@ class Stage:
     def reset_abort(self):
         """원점을 다시 잡았으므로 잠금을 푼다."""
         self._aborted = False
+        # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면 검증이
+        # 무의미해진다(포인터·맵이 안 움직인다). 보낸 명령대로 위치를 옮겨 둔다.
+        self._dry_xy = [0.0, 0.0]
 
     def find_zero(self, axis, search_pulses=None):
         """원점 탐색. "fz x [n]" 을 보내고 "원점 설정 완료" 줄까지 기다린다.
@@ -304,6 +316,7 @@ class Stage:
                 self.reset_abort()
         if self.dry:
             self.reset_abort()
+            self._dry_xy = [0.0, 0.0]      # 원점을 잡았으니 0
         return self.status()
 
     def save(self):

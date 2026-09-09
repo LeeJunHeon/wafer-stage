@@ -23,7 +23,6 @@
 
   UI.applySequence = function (s) {
     const q = (s && s.sequence) || {};
-    $('runState').textContent = PHASE[q.phase] || q.phase || UI.EMPTY;
     $('curStatus').textContent = q.message || PHASE[q.phase] || UI.EMPTY;
     const total = q.total || 0, done = q.done || 0;
     $('progText').textContent = total ? (done + ' / ' + total) : UI.EMPTY;
@@ -45,17 +44,6 @@
       if (q.phase !== 'running') $('dwell').value = q.dwell_s;
     }
 
-    const sum = $('summary'), stp = $('stopped');
-    sum.classList.toggle('show', q.phase === 'done');
-    if (q.phase === 'done') {
-      sum.textContent = '완료: ' + done + '개 · ' + fmtSec(q.elapsed_s || 0)
-        + ' · 결과 ' + (q.out_dir || '');
-    }
-    stp.classList.toggle('show', q.phase === 'stopped' || q.phase === 'error');
-    if (q.phase === 'stopped' || q.phase === 'error') {
-      stp.textContent = (q.phase === 'error' ? '오류: ' : '정지: ') + (q.message || '');
-    }
-    if (q.out_dir) $('outDir').textContent = '결과 폴더: ' + q.out_dir;
   };
 
   function fmtSec(n) {
@@ -80,6 +68,8 @@
   $('btnNext').onclick = () => UI.send({ cmd: 'next' });
   $('btnStop').onclick = () => UI.send({ cmd: 'stop' });
   $('btnEstop').onclick = () => UI.send({ cmd: 'estop' });   // 확인 없이 즉시
+  $('btnOpenDir').onclick = () => UI.send({ cmd: 'open_out_dir' });
+  $('btnExport').onclick = () => UI.send({ cmd: 'open_out_dir' });  // 결과 CSV 는 그 폴더에 있다
 
   // 서버가 needs_confirm 을 돌려주면 확인 모달을 띄우고 confirm:true 로 다시 보낸다.
   UI.confirmRun = function (reasons) {

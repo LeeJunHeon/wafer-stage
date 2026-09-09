@@ -8,6 +8,7 @@ import time
 
 import calib
 import detect
+import stage as stage_mod
 import logger
 import paths
 import version
@@ -120,12 +121,24 @@ class State:
             "sensing": dict(self.sensing) if self.sensing else None,
             "wafer": dict(self.wafer) if self.wafer else None,
             "markers": {str(k): v for k, v in (self.markers or {}).items()},
+            # 가동범위. 화면의 스테이지 맵이 축척을 잡는 데 쓴다(펌웨어 상수에서 계산).
+            "limits": {"x_max_mm": round(stage_mod.X_MAX_PULSE / stage_mod.PPMM, 1),
+                       "y_max_mm": round(stage_mod.Y_MAX_PULSE / stage_mod.PPMM, 1)},
             "samples": [dict(s) for s in self.samples],
-            "sequence": dict(self.sequence),
+            "sequence": dict(self.sequence, estopped=_estopped()),
             "warnings": list(self.warnings),
             "settings": dict(self.settings),
             "ts": time.time(),
         }
+
+
+def _estopped():
+    """engine 은 state 를 import 하므로(계층) 여기서만 지연 import 한다."""
+    try:
+        import engine
+        return bool(engine.estopped())
+    except Exception:                      # noqa: BLE001
+        return False
 
 
 state = State()

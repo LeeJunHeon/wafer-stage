@@ -54,11 +54,12 @@
   function applyState(s) {
     UI.state = s;
     UI.applyHeader(s);
+    UI.applyNotice(s);
+    UI.applyFrameNote(s);
     UI.applyCamera(s);
+    UI.applyMap(s);
     UI.applySamples(s);
     UI.applySequence(s);
-    UI.warn(s.warnings);
-    UI.steps(s);
     UI.lock();
     fillSettings(s.settings || {});
   }

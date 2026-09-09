@@ -20,7 +20,8 @@
 │   │   ├── measure.py      #   계측기 인터페이스 (지금은 Dummy)
 │   │   ├── loops.py        #   주기 태스크(st 폴링)
 │   │   └── logger.py storage.py version.py
-│   ├── frontend/           # index.html · css/style.css · js/{app,core,camera,samples,sequence}.js
+│   ├── frontend/           # index.html · css/style.css
+│   │                       # js/{app,core,camera,map,samples,sequence}.js
 │   ├── test/e2e_smoke.py   # 하드웨어 없이 전 흐름 검증
 │   ├── camera.py           # 카메라 열기·초점·단발 촬영
 │   ├── detect.py           # 원판/샘플 검출 엔진 (GUI 의존성 없음)
@@ -83,9 +84,11 @@ python test/e2e_smoke.py          # 서버를 띄워 capture→run→done 전 �
 | `sequence` | `{phase, mode, dwell_s, cur_no, done, total, elapsed_s, out_dir, message}` |
 | `warnings` | 검출 경고 문자열 목록 |
 | `settings` | `{serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure}` |
+| `limits` | `{x_max_mm, y_max_mm}` — 스테이지 맵의 축척 |
 
 `status`: `wait | moving | measuring | done | skip | error`
 `phase`: `idle | capturing | ready | running | paused | waiting_confirm | parking | done | stopped | error`
+`sequence.estopped`: 비상정지 상태(원점을 다시 잡을 때까지 유지)
 
 그 밖에 `{"type":"log", msg, level:"info|ok|warn|err"}`,
 `{"type":"ack", of, ok, reason, needs_confirm:[사유...]}`.
@@ -107,12 +110,27 @@ python test/e2e_smoke.py          # 서버를 띄워 capture→run→done 전 �
 | `set_on` | `no, on` |
 | `set_all` | `on` |
 | `measure_here` | |
+| `open_out_dir` | 결과 폴더를 탐색기로 연다 |
 | `settings_save` | `serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure` |
 | `exit` | |
 
 `run` 은 검출 경고에 "wafer is cut off" 또는 글레어 50% 이상이 있거나 마커가 3개뿐이면
 `ack{of:"run", ok:false, reason:"needs_confirm", needs_confirm:[사유]}` 를 돌려준다.
 화면이 확인 모달을 띄우고 `confirm:true` 로 다시 보내야 시작한다.
+
+## 화면
+
+한 화면에 다 들어간다(페이지 스크롤 없음). 1920×1040 고정 캔버스를 창 크기에 맞춰
+축소하고, 내부에서 스크롤하는 곳은 샘플 표와 로그뿐이다. 무채색 바탕에 색은 상태에만
+쓰고(ISA-101), 상태는 색과 글자를 함께 바꾼다(IDLE·READY·RUNNING·E-STOP …).
+
+  헤더(상태 필 · X/Y 큰 숫자 · 연결 칩 4개 · 설정/종료/비상정지)
+  경보 배너(있을 때만: 잘림·글레어·마커 가려짐·원점 필요·비상정지)
+  카메라(사진 + 오버레이) │ 스테이지 맵 + 샘플 목록 │ 조작
+  로그 + 상태줄
+
+스테이지 맵은 작업영역(limits)을 축척대로 그린다 — 위 X+, 왼쪽 Y+, 50mm 격자,
+X 레일과 현재 위치의 빔·캐리지, 마커 4개, 감지영역, 웨이퍼, 샘플 점(상태별 색), 파킹 P.
 
 ## 운용
 

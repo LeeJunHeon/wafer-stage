@@ -81,7 +81,7 @@
       t.textContent = sm.no + (sm.edge_completed ? 'E' : '');
       gs.appendChild(t);
       // 클릭 판정용(다각형이 얇아도 집히도록 원을 덮는다)
-      const hit = el('circle', { class: 'ov-sample-hit', cx: sm.u, cy: sm.v, r: 16 });
+      const hit = el('circle', { class: 'ov-hit', cx: sm.u, cy: sm.v, r: 16 });
       hit.addEventListener('click', () => UI.select(sm.no));
       gs.appendChild(hit);
     });
@@ -109,10 +109,15 @@
       ? ('(' + r[0] + ',' + r[1] + ')-(' + r[2] + ',' + r[3] + ') · '
          + (r[2] - r[0]) + '×' + (r[3] - r[1]) + ' px')
       : UI.EMPTY;
-    $('infoSamples').textContent = (w && w.found)
+    $('infoWafer').textContent = (w && w.found && w.center_mm)
       ? ('중심 X' + w.center_mm[0].toFixed(1) + ' Y' + w.center_mm[1].toFixed(1)
-         + ' · ' + (s.samples || []).length + '개')
-      : ((s.samples || []).length ? (s.samples.length + '개') : UI.EMPTY);
+         + ' · r ' + w.r_px.toFixed(0) + 'px')
+      : UI.EMPTY;
+    const list = s.samples || [];
+    const tri = list.filter(x => x.shape === 'triangle').length;
+    const on = list.filter(x => x.on).length;
+    $('infoSamples').textContent = list.length
+      ? (list.length + '개 (삼각 ' + tri + ') · 대상 ' + on) : UI.EMPTY;
   };
 
   // 카메라 도구 버튼
