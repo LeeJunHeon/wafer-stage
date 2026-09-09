@@ -8,6 +8,12 @@ CLI 전용이다. cv2.imshow 도 Tkinter 도 쓰지 않는다 (헤드리스/원�
   python calib.py px2mm   700 500               # 픽셀 -> 기계좌표
   python calib.py mm2px   100 50                # 기계좌표 -> 픽셀
   python calib.py samples [--image photo.png]   # 검출된 샘플을 기계좌표로
+  python calib.py check   [--image photo.png] [--save]   # 카메라가 움직였는지 확인
+
+카메라 고정이 흔들려 촬영 사이에 1~2도씩 돌아가는 것이 확인됐다 (화면 중앙에서
+130mm 떨어진 점이 1도에 2.3mm 움직인다). 마커 4개는 베이스에 고정돼 있으므로,
+변환은 저장된 값이 아니라 '지금 찍은 그 사진' 의 마커로 구하는 것이 원칙이다.
+samples 는 매번 다시 보정하고, 마커를 못 찾을 때만 저장값으로 떨어진다.
 
 촬영은 camera.py 의 방식(인덱스 1, 단발, 연속 프레임 중 가장 선명한 장)을 그대로
 쓰고, 마커 검출은 detect.py 의 find_markers 와 같은 딕셔너리(DICT_4X4_50)와
@@ -229,98 +235,172 @@ def warn_range(x, y):
 # --------------------------------------------------------------------------
 # fit
 # --------------------------------------------------------------------------
-def cmd_fit(args):
-    params = load_params()
-    bgr = get_image(args.image, params)
-    if bgr is None:
-        return 2
+def fit_points(src, dst, used, markers=None):
+    """점 대응만으로 변환 한 벌을 만든다 (이미지 없이도 검증할 수 있게 분리).
 
-    found = detect_markers(bgr, params)
-    used = sorted(i for i in found if i in MARKER_MM)
-    missing = sorted(i for i in MARKER_MM if i not in found)
-    extra = sorted(i for i in found if i not in MARKER_MM)
-    print("마커      : 검출 %d개 중 기준 마커 %d개 사용 %s"
-          % (len(found), len(used), used))
-    if missing:
-        print("            못 찾은 기준 마커 id: %s" % missing)
-    if extra:
-        print("            기준표에 없는 마커 id(무시): %s" % extra)
-    if len(used) < 3:
-        print("기준 마커가 3개 이상 잡혀야 합니다. 조명/초점/가림을 확인하세요.")
-        return 1
-
-    src = np.array([found[i]["center_px"] for i in used], np.float64)
-    dst = np.array([MARKER_MM[i] for i in used], np.float64)
-
+    src: 픽셀 Nx2, dst: 기계좌표 Nx2, used: id 목록.
+    """
+    src = np.asarray(src, np.float64)
+    dst = np.asarray(dst, np.float64)
     # 점이 3~4개뿐이라 로버스트 추정은 해가 되기만 한다(하나를 이상치로 버린다).
     A = fit_affine(src, dst)
     Hm = fit_homography(src, dst) if len(used) >= 4 else None
     # 기본 변환: 4점이면 호모그래피(원근까지 맞춘다), 3점이면 어파인.
     transform = "homography" if Hm is not None else "affine"
 
-    # ---- 잔차표 ----------------------------------------------------------
-    print("")
-    print("id   pixel(u,v)          real(X,Y)mm      pred(X,Y)mm      err mm")
-    errs = []
-    resid = {}
-    for i in used:
-        u, v = found[i]["center_px"]
-        rx, ry = MARKER_MM[i]
-        px, py = affine_px2mm(A, u, v)
-        e = float(np.hypot(px - rx, py - ry))
+    errs, resid = [], {}
+    for k, i in enumerate(used):
+        px, py = affine_px2mm(A, src[k][0], src[k][1])
+        e = float(np.hypot(px - dst[k][0], py - dst[k][1]))
         errs.append(e)
         resid[str(i)] = round(e, 4)
-        print("%-4d (%7.1f,%7.1f)   (%6.1f,%6.1f)   (%7.2f,%7.2f)   %6.3f"
-              % (i, u, v, rx, ry, px, py, e))
-    rms = float(np.sqrt(np.mean(np.square(errs))))
-    print("RMS       : %.3f mm    최대: %.3f mm  (어파인 기준)" % (rms, max(errs)))
 
-    gap = perspective_gap(A, Hm, src)
-    if Hm is not None:
-        herr = [float(np.hypot(*(np.array(homo_px2mm(Hm, *found[i]["center_px"]))
-                                 - np.array(MARKER_MM[i])))) for i in used]
-        print("호모그래피: 마커 잔차 최대 %.3f mm / 어파인과 최대 %.3f mm 차이"
-              " (마커 사각형 안 5x5 격자) -> 원근 성분" % (max(herr), gap))
-    print("기본 변환 : %s" % transform)
-
-    # ---- 행렬 해석 -------------------------------------------------------
-    # A = [[a,b,tx],[c,d,ty]]. 열 벡터의 길이가 축 스케일, 첫 열의 각도가 회전,
-    # 두 열 사이 각이 90도에서 벗어난 만큼이 스큐다.
-    a, b, tx = A[0]
-    c, d, ty = A[1]
+    a, b, _tx = A[0]
+    c, d, _ty = A[1]
     sx = float(np.hypot(a, c))
     sy = float(np.hypot(b, d))
     rot = float(np.degrees(np.arctan2(c, a)))
     cosang = float((a * b + c * d) / max(sx * sy, 1e-12))
     skew = 90.0 - float(np.degrees(np.arccos(max(-1.0, min(1.0, cosang)))))
-    print("스케일    : X %.5f mm/px   Y %.5f mm/px" % (sx, sy))
-    print("회전      : %.2f deg      스큐: %.2f deg" % (rot, skew))
-    print("원점      : 픽셀(0,0) -> (%.2f, %.2f) mm" % (tx, ty))
 
-    # ---- 저장 ------------------------------------------------------------
+    return {
+        "transform": transform,
+        "affine": A,
+        "homography": Hm,
+        "used_ids": list(used),
+        "pixels": {str(i): [round(float(src[k][0]), 2), round(float(src[k][1]), 2)]
+                   for k, i in enumerate(used)},
+        "residual_mm": resid,
+        "rms_mm": float(np.sqrt(np.mean(np.square(errs)))),
+        "max_mm": float(max(errs)),
+        "persp_mm": perspective_gap(A, Hm, src),
+        "rotation_deg": rot,
+        "scale": [sx, sy],
+        "skew": skew,
+        "markers": markers or {},
+    }
+
+
+def fit_from_image(bgr, params, verbose=False):
+    """사진 한 장에서 변환 한 벌을 구한다. 기준 마커가 3개 미만이면 None.
+
+    카메라가 촬영 사이에 돌아가므로, 좌표를 낼 때는 저장된 행렬이 아니라 이
+    함수로 '그 사진' 에서 다시 구한 값을 쓰는 것이 원칙이다.
+    """
+    found = detect_markers(bgr, params)
+    used = sorted(i for i in found if i in MARKER_MM)
+    if verbose:
+        missing = sorted(i for i in MARKER_MM if i not in found)
+        extra = sorted(i for i in found if i not in MARKER_MM)
+        print("마커      : 검출 %d개 중 기준 마커 %d개 사용 %s"
+              % (len(found), len(used), used))
+        if missing:
+            print("            못 찾은 기준 마커 id: %s" % missing)
+        if extra:
+            print("            기준표에 없는 마커 id(무시): %s" % extra)
+    if len(used) < 3:
+        return None
+    src = [found[i]["center_px"] for i in used]
+    dst = [MARKER_MM[i] for i in used]
+    return fit_points(src, dst, used, found)
+
+
+def save_matrix(res, bgr, image_label):
+    """fit 결과를 calib_matrix.json 형식으로 저장한다."""
+    A, Hm = res["affine"], res["homography"]
     out = {
         "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "image": args.image or "camera",
+        "image": image_label,
         "image_size": [int(bgr.shape[1]), int(bgr.shape[0])],
         "marker_mm": {str(k): list(v) for k, v in MARKER_MM.items()},
-        "used_ids": used,
-        "pixels": {str(i): [round(found[i]["center_px"][0], 2),
-                            round(found[i]["center_px"][1], 2)] for i in used},
-        "transform": transform,
+        "used_ids": res["used_ids"],
+        "pixels": res["pixels"],
+        "transform": res["transform"],
         "affine": [[float(x) for x in row] for row in A],
         "homography": ([[float(x) for x in row] for row in Hm]
                        if Hm is not None else None),
-        "perspective_gap_mm": round(gap, 4),
-        "residual_mm": resid,
-        "rms_mm": round(rms, 4),
-        "max_mm": round(float(max(errs)), 4),
-        "scale_mm_per_px": [round(sx, 6), round(sy, 6)],
-        "rotation_deg": round(rot, 3),
-        "skew_deg": round(skew, 3),
+        "perspective_gap_mm": round(res["persp_mm"], 4),
+        "residual_mm": res["residual_mm"],
+        "rms_mm": round(res["rms_mm"], 4),
+        "max_mm": round(res["max_mm"], 4),
+        "scale_mm_per_px": [round(res["scale"][0], 6), round(res["scale"][1], 6)],
+        "rotation_deg": round(res["rotation_deg"], 3),
+        "skew_deg": round(res["skew"], 3),
     }
     with open(MATRIX, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
-    print("저장      : %s" % MATRIX)
+    return MATRIX
+
+
+def grid_diff_mm(new, old, n=5):
+    """가동범위를 덮는 n x n 격자에서 두 변환이 얼마나 어긋나는지(mm).
+
+    각 기계좌표를 '옛 변환' 으로 픽셀에 놓고, 그 픽셀을 '새 변환' 으로 다시
+    읽는다. 곧 '옛 보정을 그대로 쓰면 생기는 좌표 오차' 다.
+    """
+    ds = []
+    g = np.linspace(AXIS_MIN, AXIS_MAX, n)
+    for x in g:
+        for y in g:
+            u, v = mm_to_px(old, x, y)
+            nx, ny = px_to_mm(new, u, v)
+            ds.append(float(np.hypot(nx - x, ny - y)))
+    return float(max(ds)), float(np.mean(ds))
+
+
+def cmd_fit(args):
+    params = load_params()
+    bgr = get_image(args.image, params)
+    if bgr is None:
+        return 2
+
+    res = fit_from_image(bgr, params, verbose=True)
+    if res is None:
+        print("기준 마커가 3개 이상 잡혀야 합니다. 조명/초점/가림을 확인하세요.")
+        return 1
+    found = res["markers"]
+    used = res["used_ids"]
+    A, Hm = res["affine"], res["homography"]
+    errs = [res["residual_mm"][str(i)] for i in used]
+    rms = res["rms_mm"]
+
+    # ---- 잔차표 ----------------------------------------------------------
+    print("")
+    print("id   pixel(u,v)          real(X,Y)mm      pred(X,Y)mm      err mm")
+    for i in used:
+        u, v = found[i]["center_px"]
+        rx, ry = MARKER_MM[i]
+        px, py = affine_px2mm(A, u, v)
+        print("%-4d (%7.1f,%7.1f)   (%6.1f,%6.1f)   (%7.2f,%7.2f)   %6.3f"
+              % (i, u, v, rx, ry, px, py, res["residual_mm"][str(i)]))
+    print("RMS       : %.3f mm    최대: %.3f mm  (어파인 기준)" % (rms, max(errs)))
+
+    gap = res["persp_mm"]
+    if Hm is not None:
+        herr = [float(np.hypot(*(np.array(homo_px2mm(Hm, *found[i]["center_px"]))
+                                 - np.array(MARKER_MM[i])))) for i in used]
+        print("호모그래피: 마커 잔차 최대 %.3f mm / 어파인과 최대 %.3f mm 차이"
+              " (마커 사각형 안 5x5 격자) -> 원근 성분" % (max(herr), gap))
+    print("기본 변환 : %s" % res["transform"])
+
+    # ---- 행렬 해석 -------------------------------------------------------
+    # A = [[a,b,tx],[c,d,ty]]. 열 벡터의 길이가 축 스케일, 첫 열의 각도가 회전,
+    # 두 열 사이 각이 90도에서 벗어난 만큼이 스큐다.
+    sx, sy = res["scale"]
+    print("스케일    : X %.5f mm/px   Y %.5f mm/px" % (sx, sy))
+    print("회전      : %.2f deg      스큐: %.2f deg" % (res["rotation_deg"], res["skew"]))
+    print("원점      : 픽셀(0,0) -> (%.2f, %.2f) mm" % (A[0][2], A[1][2]))
+
+    # ---- 저장 ------------------------------------------------------------
+    print("저장      : %s" % save_matrix(res, bgr, args.image or "camera"))
+
+    outdir = paths.resolve_out(params.get("out_dir", "out"))
+    os.makedirs(outdir, exist_ok=True)
+    if not args.image:
+        # 촬영 원본도 남긴다 (--image 로 같은 프레임을 다시 돌려볼 수 있게).
+        rp = os.path.join(outdir, "calib_raw.png")
+        imgio.imwrite_u(rp, bgr)
+        print("원본저장  : %s" % rp)
 
     # ---- 확인용 이미지 (이미지 위 글자는 전부 영문) ----------------------
     vis = bgr.copy()
@@ -341,8 +421,6 @@ def cmd_fit(args):
                 (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4, cv2.LINE_AA)
     cv2.putText(vis, "calib rms %.3f mm  max %.3f mm" % (rms, max(errs)),
                 (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
-    outdir = paths.resolve_out(params.get("out_dir", "out"))
-    os.makedirs(outdir, exist_ok=True)
     vp = os.path.join(outdir, "calib_fit.jpg")
     imgio.imwrite_u(vp, vis, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
     print("확인이미지: %s" % vp)
@@ -387,13 +465,27 @@ def cmd_mm2px(args):
 # samples
 # --------------------------------------------------------------------------
 def cmd_samples(args):
-    d = load_matrix()
-    if d is None:
-        return 2
     params = load_params()
     bgr = get_image(args.image, params)
     if bgr is None:
         return 2
+
+    # 원칙: 좌표는 '이 사진' 의 마커로 구한 변환으로 낸다. 카메라가 촬영 사이에
+    # 1~2도 돌아가면 저장된 보정은 조용히 틀린 좌표를 준다 (화면 중앙에서
+    # 130mm 떨어진 점이 1도에 2.3mm 움직인다).
+    d = fit_from_image(bgr, params)
+    if d is not None:
+        print("보정      : 이 사진의 마커 %d개로 재계산 / 어파인 잔차 최대 %.2f mm"
+              " / 회전 %.1f deg [%s]"
+              % (len(d["used_ids"]), d["max_mm"], d["rotation_deg"], d["transform"]))
+        save_matrix(d, bgr, args.image or "camera")
+    else:
+        print("!" * 70)
+        print("!! 마커 미검출 -> 저장된 보정 사용. 카메라가 움직였으면 좌표가 틀릴 수 있음")
+        print("!" * 70)
+        d = load_matrix()
+        if d is None:
+            return 2
 
     det = detect.detect(bgr, params)          # 검출 로직은 그대로 호출만 한다
     w = det.wafer
@@ -426,6 +518,44 @@ def cmd_samples(args):
 
 
 # --------------------------------------------------------------------------
+# check - 카메라가 움직였는지
+# --------------------------------------------------------------------------
+def cmd_check(args):
+    old = load_matrix()
+    if old is None:
+        return 2
+    params = load_params()
+    bgr = get_image(args.image, params)
+    if bgr is None:
+        return 2
+    new = fit_from_image(bgr, params, verbose=True)
+    if new is None:
+        print("기준 마커가 3개 이상 잡혀야 비교할 수 있습니다.")
+        return 1
+
+    print("")
+    print("저장된 보정: %s (%s, 마커 %s)"
+          % (old.get("created", "?"), old.get("transform", "?"), old.get("used_ids")))
+    print("이번 사진  : 마커 %s [%s]" % (new["used_ids"], new["transform"]))
+    print("마커 잔차  : 저장 최대 %.3f mm  ->  이번 최대 %.3f mm"
+          % (float(old.get("max_mm", 0.0)), new["max_mm"]))
+    print("회전       : 저장 %.2f deg  ->  이번 %.2f deg   (차이 %.2f deg)"
+          % (float(old.get("rotation_deg", 0.0)), new["rotation_deg"],
+             new["rotation_deg"] - float(old.get("rotation_deg", 0.0))))
+    mx, avg = grid_diff_mm(new, old)
+    print("좌표 차이  : 가동범위 %g~%g mm 5x5 격자에서 최대 %.2f mm / 평균 %.2f mm"
+          % (AXIS_MIN, AXIS_MAX, mx, avg))
+    if mx > 1.0:
+        print("             -> 카메라가 움직였습니다. samples 는 매번 재보정하므로")
+        print("                영향이 없지만, 저장값을 쓰는 px2mm/mm2px 는 --save 후 쓰세요.")
+    if args.save:
+        print("저장       : %s" % save_matrix(new, bgr, args.image or "camera"))
+    else:
+        print("(저장하지 않음. 갱신하려면 --save)")
+    return 0
+
+
+# --------------------------------------------------------------------------
 def main(argv=None):
     ap = argparse.ArgumentParser(description="카메라 픽셀 <-> 갠트리 기계좌표 변환")
     sub = ap.add_subparsers(dest="cmd")
@@ -444,6 +574,10 @@ def main(argv=None):
     s = sub.add_parser("samples", help="검출된 샘플을 기계좌표로 변환")
     s.add_argument("--image", help="저장된 사진으로 실행 (없으면 카메라 촬영)")
 
+    k = sub.add_parser("check", help="저장된 보정과 지금 사진을 비교 (카메라 이동량)")
+    k.add_argument("--image", help="저장된 사진으로 실행 (없으면 카메라 촬영)")
+    k.add_argument("--save", action="store_true", help="비교 후 calib_matrix.json 갱신")
+
     a = ap.parse_args(argv)
     if a.cmd == "fit":
         return cmd_fit(a)
@@ -453,6 +587,8 @@ def main(argv=None):
         return cmd_mm2px(a)
     if a.cmd == "samples":
         return cmd_samples(a)
+    if a.cmd == "check":
+        return cmd_check(a)
     ap.print_help()
     return 2
 
