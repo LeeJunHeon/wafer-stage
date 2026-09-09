@@ -45,6 +45,8 @@ MARKER_MM = {3: (15, 20), 2: (15, 160), 1: (201, 19), 0: (201, 160)}   # id: (X,
 # 갠트리 가동범위. 이 밖의 좌표는 경고만 하고 값은 그대로 보여준다.
 AXIS_MIN, AXIS_MAX = 0.0, 247.0
 
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+
 
 # --------------------------------------------------------------------------
 # 공통
@@ -474,7 +476,8 @@ def cmd_samples(args):
     # 1~2도 돌아가면 저장된 보정은 조용히 틀린 좌표를 준다 (화면 중앙에서
     # 130mm 떨어진 점이 1도에 2.3mm 움직인다).
     d = fit_from_image(bgr, params)
-    if d is not None:
+    refit = d is not None
+    if refit:
         print("보정      : 이 사진의 마커 %d개로 재계산 / 어파인 잔차 최대 %.2f mm"
               " / 회전 %.1f deg [%s]"
               % (len(d["used_ids"]), d["max_mm"], d["rotation_deg"], d["transform"]))
@@ -514,7 +517,51 @@ def cmd_samples(args):
         print("; sample #%d" % no)
         print("mx %.1f" % mx)
         print("my %.1f" % my)
+
+    save_samples_image(bgr, det, d, rows, params, refit)
     return 0
+
+
+def save_samples_image(bgr, det, cal, rows, params, refit):
+    """표만 봐서는 어느 칩이 몇 번인지 알 수 없다. 사진과 대조할 그림을 남긴다.
+
+    번호·외곽선은 detect.annotate 가 그린 것을 그대로 쓰고(검출과 번호 매기기
+    로직은 건드리지 않는다), 그 위에 샘플마다 기계좌표 한 줄을 덧그린다.
+    이미지 위 글자는 전부 영문 (cv2.putText 는 한글을 네모로 그린다).
+    """
+    tri = sum(1 for x in det.samples if x.get("shape") == "triangle")
+    w = det.wafer
+    info = ["samples: %d  (triangles: %d)" % (len(det.samples), tri),
+            "surface: %s   mm/px: %.5f" % (w.surface, w.mm_per_px)]
+    if refit:
+        info.append("calib: %d markers in THIS frame  max %.2f mm  rot %.1f deg  [%s]"
+                    % (len(cal["used_ids"]), float(cal.get("max_mm", 0.0)),
+                       float(cal.get("rotation_deg", 0.0)), model_of(cal)))
+    else:
+        # 이 프레임에서 마커를 못 찾아 저장값을 쓴 경우. 그림에도 남겨야 나중에
+        # 사진만 보고 "좌표를 믿어도 되는지" 판단할 수 있다.
+        info.append("calib: SAVED matrix - no markers here, coords may be off")
+    img = detect.annotate(bgr, det, info)
+
+    fs = max(0.4, min(img.shape[1], img.shape[0]) / 1600.0)
+    th = max(1, int(round(fs * 2)))
+    mmxy = {no: (mx, my) for no, mx, my in rows}
+    for x in det.samples:
+        mx, my = mmxy.get(x["no"], (0.0, 0.0))
+        t = "X%.1f Y%.1f" % (mx, my)
+        org = (int(round(x["x_px"])) + 8, int(round(x["y_px"])) + 16)
+        cv2.putText(img, t, org, FONT, fs, (0, 0, 0), th + 2, cv2.LINE_AA)
+        cv2.putText(img, t, org, FONT, fs, (255, 255, 255), th, cv2.LINE_AA)
+
+    outdir = paths.resolve_out(params.get("out_dir", "out"))
+    os.makedirs(outdir, exist_ok=True)
+    ap = os.path.join(outdir, "samples_annotated.jpg")
+    rp = os.path.join(outdir, "samples_raw.png")
+    imgio.imwrite_u(ap, img, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+    imgio.imwrite_u(rp, bgr)
+    print("")
+    print("확인이미지: %s" % ap)
+    print("원본저장  : %s" % rp)
 
 
 # --------------------------------------------------------------------------
