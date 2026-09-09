@@ -212,10 +212,11 @@ def main(argv=None):
                 if pct >= 50.0:
                     doubts.append("글레어 %.0f%%" % pct)
         used = res["cal"].get("used_ids") or []
-        if res["refit"] and len(used) == 3:
+        if res["refit"] and len(used) < 4:
             missing = [i for i in sorted(calib.MARKER_MM) if i not in used]
-            doubts.append("id %s 가려짐 -> 어파인"
-                          % ", ".join(str(i) for i in missing))
+            doubts.append("마커 id %s 가려짐 -> %d점 호모그래피, 오차 약 1mm"
+                          % (", ".join(str(i) for i in missing),
+                             len(res["cal"].get("corners_px", []))))
         if doubts:
             msg = ("웨이퍼가 감지영역에 잘렸거나 글레어가 큼 (%s) - "
                    "계속하려면 Enter, 중단은 q" % " / ".join(doubts))

@@ -102,8 +102,11 @@ def detect_markers(bgr, params):
         return {}
     name = "DICT_" + str(params.get("marker_dict", "4X4_50"))
     dic = aruco.getPredefinedDictionary(getattr(aruco, name, aruco.DICT_4X4_50))
-    corners, ids, _rej = aruco.ArucoDetector(
-        dic, aruco.DetectorParameters()).detectMarkers(bgr)
+    dp = aruco.DetectorParameters()
+    # 보정은 모서리 좌표를 그대로 쓰므로 서브픽셀 정밀화를 켠다. 픽셀 단위로만
+    # 잡으면 30mm 마커의 모서리 하나가 0.4mm 씩 튄다.
+    dp.cornerRefinementMethod = aruco.CORNER_REFINE_SUBPIX
+    corners, ids, _rej = aruco.ArucoDetector(dic, dp).detectMarkers(bgr)
     found = {}
     if ids is None:
         return found
@@ -209,9 +212,9 @@ def perspective_gap(A, H, src):
     열이 왼쪽 열보다 2.1% 짧다). 어파인은 그 원근을 표현할 수 없고 호모그래피는
     평면에 대해 정확하므로, 이 값이 곧 '어파인을 쓰면 생기는 오차' 다.
     """
-    if H is None:
-        return 0.0
     P = np.asarray(src, np.float64)
+    if H is None or len(P) < 4:
+        return 0.0                      # 사각형 격자를 만들 수 없다 (마커 3개)
     ctr = P.mean(axis=0)
     Q = P[np.argsort(np.arctan2(P[:, 1] - ctr[1], P[:, 0] - ctr[0]))]  # 사각형 순서로
     worst = 0.0
@@ -238,18 +241,44 @@ def warn_range(x, y):
 # --------------------------------------------------------------------------
 # fit
 # --------------------------------------------------------------------------
-def fit_points(src, dst, used, markers=None):
+def corner_targets(A, corners_px, center_mm, half_mm):
+    """마커 모서리 4개의 기계좌표를 정한다.
+
+    1차 어파인으로 모서리를 mm 로 보낸 뒤, 중심 대비 부호로 네 사분면 중
+    하나에 스냅한다 (중심 (cx,cy) 의 마커라면 모서리는 (cx±half, cy±half)).
+    ArUco 가 주는 모서리 순서는 마커 회전에 따라 달라지므로 순서를 믿지 않고
+    위치로 배정한다. 네 사분면이 겹치면 그 마커는 못 쓴다.
+    """
+    cx, cy = float(center_mm[0]), float(center_mm[1])
+    out, seen = [], set()
+    for u, v in corners_px:
+        mx, my = affine_px2mm(A, u, v)
+        sx = 1.0 if mx >= cx else -1.0
+        sy = 1.0 if my >= cy else -1.0
+        key = (sx, sy)
+        if key in seen:
+            return None                     # 두 모서리가 같은 사분면 = 배정 실패
+        seen.add(key)
+        out.append((cx + sx * half_mm, cy + sy * half_mm))
+    return out
+
+
+def fit_points(src, dst, used, markers=None, half_mm=15.0):
     """점 대응만으로 변환 한 벌을 만든다 (이미지 없이도 검증할 수 있게 분리).
 
-    src: 픽셀 Nx2, dst: 기계좌표 Nx2, used: id 목록.
+    src: 마커 중심 픽셀 Nx2, dst: 중심 기계좌표 Nx2, used: id 목록.
+
+    호모그래피는 '중심 4점' 이 아니라 '모서리 전부' 로 푼다. 중심만 쓰면 마커가
+    3개일 때(웨이퍼가 하나를 덮으면 실제로 일어난다) 점이 모자라 어파인으로
+    떨어지고, 그 어파인은 원근을 표현 못 해 칩 위치에서 평균 2.5mm / 최대 3.4mm
+    까지 틀어졌다 (실측 150621). 모서리를 쓰면 마커 3개라도 12점이라 호모그래피가
+    되고(같은 사진에서 0.8mm), 4개면 16점이라 과결정이 되어 잔차가 곧 검증값이다.
     """
     src = np.asarray(src, np.float64)
     dst = np.asarray(dst, np.float64)
-    # 점이 3~4개뿐이라 로버스트 추정은 해가 되기만 한다(하나를 이상치로 버린다).
+    # 1차: 중심으로 최소제곱 어파인. 모서리를 mm 에 배정하는 기준자로 쓴다.
+    # (점이 3~4개뿐이라 로버스트 추정은 해가 되기만 한다 - 하나를 버린다.)
     A = fit_affine(src, dst)
-    Hm = fit_homography(src, dst) if len(used) >= 4 else None
-    # 기본 변환: 4점이면 호모그래피(원근까지 맞춘다), 3점이면 어파인.
-    transform = "homography" if Hm is not None else "affine"
 
     errs, resid = [], {}
     for k, i in enumerate(used):
@@ -257,6 +286,35 @@ def fit_points(src, dst, used, markers=None):
         e = float(np.hypot(px - dst[k][0], py - dst[k][1]))
         errs.append(e)
         resid[str(i)] = round(e, 4)
+
+    # 모서리 대응 모으기
+    cpx, cmm, cids, warns = [], [], [], []
+    if markers:
+        for k, i in enumerate(used):
+            q = markers.get(i, {}).get("corners")
+            if q is None:
+                continue
+            q = np.asarray(q, np.float64).reshape(4, 2)
+            tgt = corner_targets(A, q, dst[k], half_mm)
+            if tgt is None:
+                warns.append("marker id%d: 모서리 사분면 배정 실패 - 제외" % i)
+                continue
+            for (u, v), (mx, my) in zip(q, tgt):
+                cpx.append([float(u), float(v)])
+                cmm.append([float(mx), float(my)])
+                cids.append(i)
+
+    Hm = fit_homography(cpx, cmm) if len(cpx) >= 8 else None
+    # 기본 변환: 모서리 호모그래피(원근까지). 모서리를 못 쓰면 어파인.
+    transform = "homography" if Hm is not None else "affine"
+
+    cerr, cres = [], {}
+    if Hm is not None:
+        for (u, v), (mx, my), i in zip(cpx, cmm, cids):
+            hx, hy = homo_px2mm(Hm, u, v)
+            e = float(np.hypot(hx - mx, hy - my))
+            cerr.append(e)
+            cres.setdefault(str(i), []).append(round(e, 4))
 
     a, b, _tx = A[0]
     c, d, _ty = A[1]
@@ -273,6 +331,12 @@ def fit_points(src, dst, used, markers=None):
         "used_ids": list(used),
         "pixels": {str(i): [round(float(src[k][0]), 2), round(float(src[k][1]), 2)]
                    for k, i in enumerate(used)},
+        "corners_px": [[round(u, 2), round(v, 2)] for u, v in cpx],
+        "corners_mm": [[round(x, 2), round(y, 2)] for x, y in cmm],
+        "corner_ids": cids,
+        "corner_rms_mm": float(np.sqrt(np.mean(np.square(cerr)))) if cerr else 0.0,
+        "corner_max_mm": float(max(cerr)) if cerr else 0.0,
+        "corner_resid_mm": cres,
         "residual_mm": resid,
         "rms_mm": float(np.sqrt(np.mean(np.square(errs)))),
         "max_mm": float(max(errs)),
@@ -281,6 +345,7 @@ def fit_points(src, dst, used, markers=None):
         "scale": [sx, sy],
         "skew": skew,
         "markers": markers or {},
+        "warnings": warns,
     }
 
 
@@ -305,7 +370,12 @@ def fit_from_image(bgr, params, verbose=False):
         return None
     src = [found[i]["center_px"] for i in used]
     dst = [MARKER_MM[i] for i in used]
-    return fit_points(src, dst, used, found)
+    res = fit_points(src, dst, used, found,
+                     half_mm=float(params.get("marker_mm", 30.0)) / 2.0)
+    if verbose:
+        for w in res.get("warnings", []):
+            print("            " + w)
+    return res
 
 
 def save_matrix(res, bgr, image_label):
@@ -318,6 +388,12 @@ def save_matrix(res, bgr, image_label):
         "marker_mm": {str(k): list(v) for k, v in MARKER_MM.items()},
         "used_ids": res["used_ids"],
         "pixels": res["pixels"],
+        "corners_px": res.get("corners_px", []),
+        "corners_mm": res.get("corners_mm", []),
+        "corner_ids": res.get("corner_ids", []),
+        "corner_rms_mm": round(res.get("corner_rms_mm", 0.0), 4),
+        "corner_max_mm": round(res.get("corner_max_mm", 0.0), 4),
+        "corner_resid_mm": res.get("corner_resid_mm", {}),
         "transform": res["transform"],
         "affine": [[float(x) for x in row] for row in A],
         "homography": ([[float(x) for x in row] for row in Hm]
@@ -376,14 +452,24 @@ def cmd_fit(args):
         px, py = affine_px2mm(A, u, v)
         print("%-4d (%7.1f,%7.1f)   (%6.1f,%6.1f)   (%7.2f,%7.2f)   %6.3f"
               % (i, u, v, rx, ry, px, py, res["residual_mm"][str(i)]))
-    print("RMS       : %.3f mm    최대: %.3f mm  (어파인 기준)" % (rms, max(errs)))
+    print("(참고)어파인 RMS %.3f mm  최대 %.3f mm" % (rms, max(errs)))
 
     gap = res["persp_mm"]
     if Hm is not None:
-        herr = [float(np.hypot(*(np.array(homo_px2mm(Hm, *found[i]["center_px"]))
-                                 - np.array(MARKER_MM[i])))) for i in used]
-        print("호모그래피: 마커 잔차 최대 %.3f mm / 어파인과 최대 %.3f mm 차이"
-              " (마커 사각형 안 5x5 격자) -> 원근 성분" % (max(herr), gap))
+        # 대표 잔차는 '모서리 호모그래피' 다. 과결정(16점)이라 이 값이 실제 검증값.
+        print("모서리    : %d점 (마커 %d개) 호모그래피"
+              % (len(res["corners_px"]), len(used)))
+        for i in used:
+            es = res["corner_resid_mm"].get(str(i))
+            if es:
+                print("            id%-2d 잔차 %s mm"
+                      % (i, " ".join("%.2f" % e for e in es)))
+        print("잔차      : RMS %.3f mm    최대 %.3f mm  (모서리 호모그래피)"
+              % (res["corner_rms_mm"], res["corner_max_mm"]))
+        print("(참고)원근: 어파인과 최대 %.3f mm 차이 (마커 사각형 안 5x5 격자)" % gap)
+    if len(used) < 4:
+        print("주의      : 마커 %d개(모서리 %d점)뿐입니다. 가려진 마커를 치우면 "
+              "정확도가 올라갑니다." % (len(used), len(res["corners_px"])))
     print("기본 변환 : %s" % res["transform"])
 
     # ---- 행렬 해석 -------------------------------------------------------
@@ -483,6 +569,17 @@ def sensing_rect(marker_pixels, image_shape):
     pts = [(float(u), float(v)) for u, v in marker_pixels]
     if len(pts) < 3:
         return None
+    if len(pts) == 3:
+        # 웨이퍼가 마커 하나를 덮으면 사각형이 그쪽으로 쪼그라들어 칩이 감지영역
+        # 밖으로 밀린다. 직사각형이라는 것을 알고 있으므로 네 번째 꼭짓점을
+        # 만들어 준다: 가장 먼 두 점이 대각선(A,C), 남은 것이 B, D = A + C - B.
+        import itertools
+        (ia, ic), _dmax = max(
+            (((i, j), (pts[i][0] - pts[j][0]) ** 2 + (pts[i][1] - pts[j][1]) ** 2)
+             for i, j in itertools.combinations(range(3), 2)), key=lambda t: t[1])
+        ib = ({0, 1, 2} - {ia, ic}).pop()
+        pts.append((pts[ia][0] + pts[ic][0] - pts[ib][0],
+                    pts[ia][1] + pts[ic][1] - pts[ib][1]))
     h, w = image_shape[:2]
     us = [p[0] for p in pts]
     vs = [p[1] for p in pts]
@@ -508,9 +605,18 @@ def sense(bgr, params, allow_fallback=True, save=True):
     d = fit_from_image(bgr, params)
     refit = d is not None
     if refit:
-        print("보정      : 이 사진의 마커 %d개로 재계산 / 어파인 잔차 최대 %.2f mm"
-              " / 회전 %.1f deg [%s]"
-              % (len(d["used_ids"]), d["max_mm"], d["rotation_deg"], d["transform"]))
+        note = ""
+        if len(d["used_ids"]) < 4:
+            missing = [i for i in sorted(MARKER_MM) if i not in d["used_ids"]]
+            note = ("  <- 마커 id %s 가려짐 -> %d점 호모그래피, 오차가 커질 수 "
+                    "있음(약 1mm)" % (", ".join(str(i) for i in missing),
+                                     len(d.get("corners_px", []))))
+        print("보정      : 이 사진의 마커 %d개(모서리 %d점)로 재계산 / 잔차 RMS "
+              "%.2f mm 최대 %.2f mm / 회전 %.1f deg [%s]%s"
+              % (len(d["used_ids"]), len(d.get("corners_px", [])),
+                 d.get("corner_rms_mm", d["rms_mm"]),
+                 d.get("corner_max_mm", d["max_mm"]),
+                 d["rotation_deg"], d["transform"], note))
         if save:
             save_matrix(d, bgr, "camera")
     elif not allow_fallback:
@@ -601,8 +707,11 @@ def samples_info(det, cal, refit, rect):
     info = ["samples: %d  (triangles: %d)" % (len(det.samples), tri),
             "surface: %s   mm/px: %.5f" % (w.surface, w.mm_per_px)]
     if refit:
-        info.append("calib: %d markers in THIS frame  max %.2f mm  rot %.1f deg  [%s]"
-                    % (len(cal["used_ids"]), float(cal.get("max_mm", 0.0)),
+        info.append("calib: %d markers / %d corners  rms %.2f max %.2f mm  "
+                    "rot %.1f deg  [%s]"
+                    % (len(cal["used_ids"]), len(cal.get("corners_px", [])),
+                       float(cal.get("corner_rms_mm", cal.get("rms_mm", 0.0))),
+                       float(cal.get("corner_max_mm", cal.get("max_mm", 0.0))),
                        float(cal.get("rotation_deg", 0.0)), model_of(cal)))
     else:
         # 이 프레임에서 마커를 못 찾아 저장값을 쓴 경우. 그림에도 남겨야 나중에
@@ -676,8 +785,9 @@ def cmd_check(args):
     print("저장된 보정: %s (%s, 마커 %s)"
           % (old.get("created", "?"), old.get("transform", "?"), old.get("used_ids")))
     print("이번 사진  : 마커 %s [%s]" % (new["used_ids"], new["transform"]))
-    print("마커 잔차  : 저장 최대 %.3f mm  ->  이번 최대 %.3f mm"
-          % (float(old.get("max_mm", 0.0)), new["max_mm"]))
+    print("마커 잔차  : 저장 최대 %.3f mm  ->  이번 최대 %.3f mm  (모서리 기준)"
+          % (float(old.get("corner_max_mm", old.get("max_mm", 0.0))),
+             new["corner_max_mm"] or new["max_mm"]))
     print("회전       : 저장 %.2f deg  ->  이번 %.2f deg   (차이 %.2f deg)"
           % (float(old.get("rotation_deg", 0.0)), new["rotation_deg"],
              new["rotation_deg"] - float(old.get("rotation_deg", 0.0))))
