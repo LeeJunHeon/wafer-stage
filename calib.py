@@ -41,7 +41,41 @@ SETTINGS = paths.SETTINGS_PATH      # 경로는 전부 paths.py 를 거친다
 MATRIX = paths.CALIB_PATH           # data 폴더에 둔다 (git 밖)
 
 # 베이스에 붙은 마커의 기계좌표(mm). 마커 배치가 바뀌면 여기만 고치면 된다.
-MARKER_MM = {3: (15, 20), 2: (15, 160), 1: (201, 19), 0: (201, 160)}   # id: (X, Y)
+# 실제 값은 settings.json 의 "marker_mm_xy" 이고, 아래는 그 키가 없을 때 쓰는
+# 기본값이다(드라이버 포인터 실측).
+MARKER_MM_DEFAULT = {3: (15, 20), 2: (15, 160), 1: (201, 19), 0: (201, 160)}
+MARKER_MM = dict(MARKER_MM_DEFAULT)                                    # id: (X, Y)
+
+
+def set_marker_mm(table):
+    """settings 의 marker_mm_xy({"3":[15,20],...}) 를 MARKER_MM 에 반영한다.
+
+    다른 모듈이 calib.MARKER_MM 을 직접 참조하므로 새 dict 로 갈아끼우지 않고
+    내용을 바꾼다 (설정을 저장하면 곧바로 다음 촬영에 반영된다).
+    """
+    if not isinstance(table, dict) or not table:
+        return MARKER_MM
+    got = {}
+    for k, v in table.items():
+        try:
+            got[int(k)] = (float(v[0]), float(v[1]))
+        except (TypeError, ValueError, IndexError):
+            continue
+    if got:
+        MARKER_MM.clear()
+        MARKER_MM.update(got)
+    return MARKER_MM
+
+
+def _load_marker_mm_from_settings():
+    try:
+        with open(SETTINGS, "r", encoding="utf-8") as f:
+            set_marker_mm(json.load(f).get("marker_mm_xy"))
+    except Exception:                      # noqa: BLE001
+        pass                               # 설정이 없거나 깨져도 기본값으로 돈다
+
+
+_load_marker_mm_from_settings()
 
 # 갠트리 가동범위. 이 밖의 좌표는 경고만 하고 값은 그대로 보여준다.
 AXIS_MIN, AXIS_MAX = 0.0, 247.0

@@ -37,6 +37,11 @@ DATA_DIR = _read_data_dir()
 OUT_DIR = os.path.join(DATA_DIR, "out")
 LOG_PATH = os.path.join(OUT_DIR, "log.jsonl")
 CALIB_PATH = os.path.join(DATA_DIR, "calib_matrix.json")
+LOGS_DIR = os.path.join(DATA_DIR, "logs")            # 날짜별 파일 로그
+SEQ_LOG_PATH = os.path.join(OUT_DIR, "sequence_log.jsonl")
+SERIAL_LOG_PATH = os.path.join(OUT_DIR, "serial.log")
+FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
+INDEX_PATH = os.path.join(FRONTEND_DIR, "index.html")
 
 
 def resolve_out(out_dir):
@@ -51,5 +56,35 @@ def resolve_out(out_dir):
 
 
 def ensure_data_dirs():
-    os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(OUT_DIR, exist_ok=True)
+    """쓰기 폴더를 만든다. 권한이 없어도 여기서 죽지 않는다 (import 단계에서
+    예외가 나면 프로그램이 아예 안 뜬다). 실패 사유는 DATA_DIR_ERROR 에 남긴다."""
+    global DATA_DIR_ERROR
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        os.makedirs(OUT_DIR, exist_ok=True)
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        DATA_DIR_ERROR = ""
+        return True
+    except Exception as e:                 # noqa: BLE001
+        DATA_DIR_ERROR = "데이터 폴더 생성 실패: %s (%s)" % (DATA_DIR, e)
+        return False
+
+
+DATA_DIR_ERROR = ""
+
+
+def check_writable():
+    """DATA_DIR 에 실제로 쓸 수 있는지. makedirs 성공만으로는 부족하다
+    (폴더가 이미 있으면 읽기 전용이어도 통과한다). 예외를 던지지 않는다."""
+    probe = os.path.join(DATA_DIR, ".write_test.tmp")
+    try:
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("ok")
+        return True, ""
+    except Exception as e:                 # noqa: BLE001
+        return False, "%s: %s" % (type(e).__name__, e)
+    finally:
+        try:
+            os.remove(probe)
+        except Exception:                  # noqa: BLE001
+            pass

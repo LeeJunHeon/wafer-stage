@@ -37,6 +37,7 @@ BAUD = 115200
 BOOT_MAX_S = 5.0              # 포트를 열면 DTR 로 보드가 리셋된다. 배너를 이만큼 기다린다
 BOOT_QUIET_S = 1.0            # 이만큼 조용하면 배너가 끝난 것으로 본다
 MOVE_TIMEOUT_S = 30.0         # 가장 긴 이동 248mm 가 v6000 에서 약 7초
+HOME_TIMEOUT_S = 90.0         # 원점 탐색은 스트로크 전체를 훑을 수 있다
 LINE_TIMEOUT_S = 5.0
 POLL_S = 0.2                  # 한 번 읽기에 기다리는 시간 (포트 설정은 여기서 고정)
 
@@ -245,6 +246,45 @@ class Stage:
     def goto_mm(self, x, y):
         """펌웨어에 동시 이동이 없으므로 X 먼저, 그다음 Y."""
         return [self.move_x_mm(x), self.move_y_mm(y)]
+
+    def abort(self):
+        """비상정지. 어느 스레드에서든 즉시 "!" 를 쓴다.
+
+        이동은 블로킹이라 워커 스레드가 보고 줄을 기다리고 있다. 큐에 넣어 순서를
+        기다리면 '비상' 이 아니므로 여기서만 예외적으로 포트에 직접 쓴다
+        (pyserial 의 write 는 스레드 안전하고, 진행 중이던 이동은 보고 줄에
+        "[!] 중단" 이 붙어 돌아온다).
+        """
+        self._log("->", "! (abort)")
+        if self.dry or self.ser is None:
+            return True
+        try:
+            self.ser.write(("!" + chr(10)).encode("ascii"))
+            self.ser.flush()
+            return True
+        except Exception as e:             # noqa: BLE001
+            raise StageError("비상정지 전송 실패: %s" % e)
+
+    def find_zero(self, axis, search_pulses=None):
+        """원점 탐색. "fz x [n]" 을 보내고 "원점 설정 완료" 줄까지 기다린다.
+
+        끝까지 밀어붙이는 동작이라 스트로크 전체를 훑을 수 있어 넉넉히 90초를 준다.
+        완료 뒤 status() 로 위치·원점 상태를 갱신해 돌려준다.
+        """
+        ax = str(axis).lower()
+        if ax not in ("x", "y", "xy"):
+            raise StageError("축은 x, y, xy 중 하나여야 합니다: %s" % axis)
+        for one in (["x", "y"] if ax == "xy" else [ax]):
+            cmd = "fz %s" % one
+            if search_pulses:
+                cmd += " %d" % int(search_pulses)
+            self._write(cmd)
+            if self.dry:
+                continue
+            self._collect(HOME_TIMEOUT_S,
+                          lambda t: ("원점 설정 완료" in t) or ("중단됨" in t),
+                          "원점 탐색(%s)" % one)
+        return self.status()
 
     def save(self):
         self._write("save")

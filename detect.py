@@ -1390,8 +1390,13 @@ def detect(bgr, params=None):
     cands = []
     shape_fill = float(p["shape_fill"])
 
-    def _emit(g):
-        """덩어리 하나를 결과 dict 로 만든다 (본 경로와 색거리 보조 경로 공용)."""
+    def _emit(g, approx_eps=0.02):
+        """덩어리 하나를 결과 dict 로 만든다 (본 경로와 색거리 보조 경로 공용).
+
+        approx_eps: 볼록껍질 근사 허용오차(둘레 대비). 엣지 보완으로 갈아끼운
+        다각형은 픽셀 잡음이 적어 0.02 로 근사하면 꼭짓점이 8개까지 나온다
+        (삼각 칩이 polygon8 로 표시됐다). 그쪽은 0.04 를 쓴다.
+        """
         # 함정 9: 면적 임계는 픽셀이 아니라 mm^2. 카메라 거리가 바뀌어도 그대로 쓴다.
         if not (min_a <= g["area"] <= max_a):
             return None
@@ -1410,7 +1415,7 @@ def detect(bgr, params=None):
         tri_fill = (ha / tri_a) if tri_a > 0 else 0.0
         rect_fill = ha / rect_a
         peri = cv2.arcLength(hull, True)
-        approx = cv2.approxPolyDP(hull, 0.02 * peri, True).reshape(-1, 2)
+        approx = cv2.approxPolyDP(hull, approx_eps * peri, True).reshape(-1, 2)
         nv = len(approx)
         if tri_fill >= shape_fill and tri_fill > rect_fill:
             shape = "triangle"
@@ -1553,17 +1558,23 @@ def detect(bgr, params=None):
                     continue
                 for k in ("edge", "rescued", "split", "merged", "color_only"):
                     g2[k] = citems[i][1].get(k, False)
-                c2 = _emit(g2)                   # 중심/모양/치수 계산은 그대로 재사용
+                c2 = _emit(g2, approx_eps=0.04)  # 중심/모양/치수 계산은 그대로 재사용
                 if c2 is None:
                     still.append(i)
                     continue
-                c2["edge_completed"] = True
+                # '바뀐 것만' 표시한다. 대부분의 샘플은 색 마스크와 엣지 다각형이
+                # 거의 같아서, 전부에 E 를 붙이면 정작 봐야 할 샘플이 묻힌다.
+                c0 = citems[i][0]
+                moved = math.hypot(c2["x_px"] - c0["x_px"], c2["y_px"] - c0["y_px"]) * mm
+                ratio = c2["area_mm2"] / max(c0["area_mm2"], 1e-6)
+                if moved > 0.3 or not (0.9 <= ratio <= 1.15):
+                    c2["edge_completed"] = True
+                    edge_done.append(c2)
                 cands[cands.index(citems[i][0])] = c2
                 citems[i] = [c2, g2]
                 masks[i] = g2["mask"] > 0
                 pixs[i] = g2["pix"]
                 final[g2["mask"] > 0] = 255
-                edge_done.append(c2)
             pending = still
 
     # 번호: 왼쪽 위 -> 오른쪽 아래 읽는 순서 (행으로 묶고 그 안에서 x 순)
