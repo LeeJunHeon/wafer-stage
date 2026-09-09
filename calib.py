@@ -495,7 +495,7 @@ def sensing_rect(marker_pixels, image_shape):
     return (u0, v0, u1, v1)
 
 
-def sense(bgr, params, allow_fallback=True):
+def sense(bgr, params, allow_fallback=True, save=True):
     """한 프레임에서 '보정 -> 감지영역 -> 검출 -> 전체프레임 좌표 -> mm' 까지.
 
     돌려주는 dict: cal(변환), det(DetectResult), rows[(no,u,v,X,Y)], rect, refit,
@@ -511,7 +511,8 @@ def sense(bgr, params, allow_fallback=True):
         print("보정      : 이 사진의 마커 %d개로 재계산 / 어파인 잔차 최대 %.2f mm"
               " / 회전 %.1f deg [%s]"
               % (len(d["used_ids"]), d["max_mm"], d["rotation_deg"], d["transform"]))
-        save_matrix(d, bgr, "camera")
+        if save:
+            save_matrix(d, bgr, "camera")
     elif not allow_fallback:
         return None
     else:
@@ -537,9 +538,14 @@ def sense(bgr, params, allow_fallback=True):
     print("샘플      : %d 개 (검출 %.0f ms)" % (len(det.samples), det.detect_ms))
     for x in det.warnings:
         print("경고      : %s" % x)
+    for x in det.info:
+        print("안내      : %s" % x)
 
-    # 그림은 crop 좌표계 그대로 그린 뒤 원래 자리에 되붙인다.
-    vis_crop = detect.annotate(crop, det, samples_info(det, d, refit, rect))
+    # 그림은 crop 좌표계 그대로 그린 뒤 원래 자리에 되붙인다. 정보 패널은
+    # crop 이 아니라 전체 프레임 좌상단(감지영역 밖)에 그린다 - crop 안에 그리면
+    # 패널이 웨이퍼를 덮어 정작 볼 것을 가린다.
+    vis_crop = detect.annotate(crop, det, ())
+    info = samples_info(det, d, refit, rect)
 
     # 좌표는 전체 프레임 기준으로 되돌린다 (mm 변환은 전체 프레임 호모그래피).
     for x in det.samples:
@@ -554,7 +560,7 @@ def sense(bgr, params, allow_fallback=True):
         mx, my = px_to_mm(d, u, v)            # 기본 변환만 쓴다
         rows.append((x["no"], u, v, mx, my))
     return {"cal": d, "det": det, "rows": rows, "rect": rect,
-            "refit": refit, "vis_crop": vis_crop}
+            "refit": refit, "vis_crop": vis_crop, "info": info}
 
 
 def print_rows(res):
@@ -626,6 +632,8 @@ def save_samples_image(bgr, res, params, outdir=None,
                     FONT, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(img, "id%s" % i, (int(p[0]) + 8, int(p[1]) - 8),
                     FONT, 0.5, (255, 128, 0), 1, cv2.LINE_AA)
+
+    detect.draw_info_panel(img, res.get("info") or [])   # 전체 프레임 좌상단
 
     fs = max(0.4, min(img.shape[1], img.shape[0]) / 1600.0)
     th = max(1, int(round(fs * 2)))

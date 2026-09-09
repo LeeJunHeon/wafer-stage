@@ -196,8 +196,33 @@ def main(argv=None):
                 print("순회할 샘플이 없습니다.")
                 return 1
 
-        res_all = dict(res)
-        calib.print_rows(res_all)
+        calib.print_rows(res)
+
+        # 사진이 미덥지 않으면 움직이기 전에 사람에게 묻는다.
+        # (프로브가 달린 뒤에는 잘못된 좌표 = 충돌이다)
+        doubts = []
+        for wmsg in res["det"].warnings:
+            if "cut off" in wmsg:
+                doubts.append("웨이퍼가 감지영역에 잘림")
+            if "glare covers" in wmsg:
+                try:
+                    pct = float(wmsg.split("glare covers")[1].split("%")[0])
+                except (IndexError, ValueError):
+                    pct = 0.0
+                if pct >= 50.0:
+                    doubts.append("글레어 %.0f%%" % pct)
+        used = res["cal"].get("used_ids") or []
+        if res["refit"] and len(used) == 3:
+            missing = [i for i in sorted(calib.MARKER_MM) if i not in used]
+            doubts.append("id %s 가려짐 -> 어파인"
+                          % ", ".join(str(i) for i in missing))
+        if doubts:
+            msg = ("웨이퍼가 감지영역에 잘렸거나 글레어가 큼 (%s) - "
+                   "계속하려면 Enter, 중단은 q" % " / ".join(doubts))
+            print(msg)
+            if not a.dry and ask(": ") == "q":
+                print("사용자 중단")
+                return 1
         d = save_seq(bgr, res, params)
         print("")
         print("저장      : %s" % d)

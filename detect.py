@@ -68,6 +68,17 @@ DEFAULTS = {
     # Lab 색거리는 10~35, 웨이퍼 배경은 2~3).
     "de_floor": 8.0,         # 색거리 임계의 절대 하한
     "de_k": 4.0,             # 배경 색잡음(ROI 안 dE 중앙값) 대비 배수. 0 = 끔
+    # 엣지 보완. 밝은 회색 칩은 색 마스크로 조각의 일부(실측 60%, 39%)만 잡혀
+    # 중심이 0.9~2.1mm 밀렸다. 같은 칩이 Canny 엣지에서는 닫힌 다각형으로
+    # 온전히 나오므로, 이미 확정된 샘플에 한해 그 다각형으로 윤곽을 갈아끼운다.
+    # 새 샘플은 절대 만들지 않는다 (마스크 파이프라인의 판정은 그대로 존중).
+    "edge_complete": True,
+    "edge_canny": [[20, 60], [12, 40]],   # 위에서 실패하면 아래로 (사다리)
+    "edge_cover_min": 0.6,       # 후보가 조각 픽셀의 이만큼을 덮어야 한다
+    "edge_grow_max": 3.0,        # 조각 면적의 이 배를 넘으면 다른 것까지 삼킨 것
+    "edge_solidity_min": 0.85,   # 후보 다각형의 볼록도
+    "edge_vertices_max": 6,      # 꼭짓점 3~6개 (칩은 삼각/사각/오각)
+    "edge_other_overlap_max": 0.3,  # 다른 샘플을 이만큼 넘게 물면 버린다
     "sat_max": 35,        # 원판 판정 채도 상한. 배경이 원판에 붙으면 낮춘다
     "val_min": 60,
     "val_max": 256,       # 원판 판정 밝기 상한. 256 = 끔 (11절 설명 참고)
@@ -1427,11 +1438,13 @@ def detect(bgr, params=None):
                 c[k] = True
         return c
 
+    citems = []                      # (결과 dict, 덩어리) 짝. 엣지 보완이 쓴다
     for g in final_items:
         c = _emit(g)
         if c is None:
             continue
         cands.append(c)
+        citems.append([c, g])
         final[g["mask"] > 0] = 255
 
     # ---- 3.5단계: 색거리(dE) 보조 경로 -----------------------------------
@@ -1469,7 +1482,89 @@ def detect(bgr, params=None):
             if c is None:
                 continue
             cands.append(c)
+            citems.append([c, g])
             final[g["mask"] > 0] = 255
+
+    # ---- 3.7단계: 엣지 보완 -----------------------------------------------
+    # 색 마스크가 조각의 일부만 잡은 샘플을, Canny 엣지의 닫힌 다각형으로
+    # 갈아끼운다. 확정된 샘플의 윤곽만 고치고 새 샘플은 만들지 않는다.
+    edge_done = []
+    if bool(p.get("edge_complete", True)) and citems:
+        gb = cv2.GaussianBlur(gray, (3, 3), 0)
+        cover_min = float(p["edge_cover_min"])
+        grow_max = float(p["edge_grow_max"])
+        sol_min = float(p["edge_solidity_min"])
+        vmax = int(p["edge_vertices_max"])
+        other_max = float(p["edge_other_overlap_max"])
+        k3 = np.ones((3, 3), np.uint8)
+        masks = [(it[1]["mask"] > 0) for it in citems]
+        pixs = [int(m.sum()) for m in masks]
+        pending = [i for i in range(len(citems))]
+        for lo, hi in p.get("edge_canny", [[20, 60], [12, 40]]):
+            if not pending:
+                break
+            e = cv2.Canny(gb, int(lo), int(hi))
+            e = cv2.bitwise_and(e, roi)          # ROI 안만 본다
+            e = cv2.morphologyEx(e, cv2.MORPH_CLOSE, k3)   # 한두 픽셀 끊김을 잇는다
+            cs, _hh = cv2.findContours(e, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+            polys = []
+            for cnt in cs:
+                if len(cnt) < 3:
+                    continue
+                hull = cv2.convexHull(cnt)
+                ha = cv2.contourArea(hull)
+                if ha <= 0 or not (min_a <= ha * mm * mm <= max_a):
+                    continue
+                if cv2.contourArea(cnt) / ha < sol_min:
+                    continue
+                peri = cv2.arcLength(cnt, True)
+                nv = len(cv2.approxPolyDP(cnt, 0.05 * peri, True))
+                if not (3 <= nv <= vmax):
+                    continue
+                # 마스크는 그 다각형의 바운딩 박스 크기로만 만든다. 전체 화면
+                # 크기로 만들면 컨투어 수백 개 x 1280x720 이라 메모리가 터진다.
+                x, y, bw, bh = cv2.boundingRect(hull)
+                pm = np.zeros((bh, bw), np.uint8)
+                cv2.fillConvexPoly(pm, np.int32(hull) - [x, y], 255)
+                polys.append((ha, hull, (x, y, bw, bh), pm > 0))
+            polys.sort(key=lambda t: -t[0])
+            still = []
+            for i in pending:
+                best = None
+                for ha, hull, (x, y, bw, bh), pb in polys:
+                    sl = (slice(y, y + bh), slice(x, x + bw))
+                    if int((pb & masks[i][sl]).sum()) < cover_min * pixs[i]:
+                        continue                 # 이 조각을 충분히 덮지 못한다
+                    if ha > grow_max * pixs[i]:
+                        continue                 # 너무 커졌다 = 배경까지 삼켰다
+                    if any(j != i and int((pb & masks[j][sl]).sum()) > other_max * pixs[j]
+                           for j in range(len(citems))):
+                        continue                 # 옆 샘플을 물었다
+                    if best is None or ha > best[0]:
+                        best = (ha, hull)
+                if best is None:
+                    still.append(i)
+                    continue
+                nm = np.zeros((H, W), np.uint8)
+                cv2.fillConvexPoly(nm, np.int32(best[1]), 255)
+                g2 = _mk(nm)
+                if g2 is None:
+                    still.append(i)
+                    continue
+                for k in ("edge", "rescued", "split", "merged", "color_only"):
+                    g2[k] = citems[i][1].get(k, False)
+                c2 = _emit(g2)                   # 중심/모양/치수 계산은 그대로 재사용
+                if c2 is None:
+                    still.append(i)
+                    continue
+                c2["edge_completed"] = True
+                cands[cands.index(citems[i][0])] = c2
+                citems[i] = [c2, g2]
+                masks[i] = g2["mask"] > 0
+                pixs[i] = g2["pix"]
+                final[g2["mask"] > 0] = 255
+                edge_done.append(c2)
+            pending = still
 
     # 번호: 왼쪽 위 -> 오른쪽 아래 읽는 순서 (행으로 묶고 그 안에서 x 순)
     row_h = max(1.0, 0.16 * r_px)
@@ -1479,6 +1574,10 @@ def detect(bgr, params=None):
 
     res.samples = cands
     res.mask = final
+    if edge_done:
+        res.info.append("edge-completed: "
+                        + " ".join("#%d" % c["no"] for c in sorted(
+                            edge_done, key=lambda c: c["no"])))
 
     # 플래그 경고는 번호를 매긴 뒤에 (사람이 annotated 에서 찾아볼 수 있게)
     for c in cands:
@@ -1601,6 +1700,33 @@ def _sample_color(s):
     return (0, 255, 0)
 
 
+def draw_info_panel(img, info_lines, fs=None, th=None):
+    """좌측 상단 정보 패널 - 크기를 getTextSize 로 실제 재서 맞춘다.
+
+    상수로 박으면 해상도가 바뀔 때 반드시 삐져나온다. 잘라낸 영역이 아니라
+    전체 프레임에 그리고 싶을 때가 있어(calib) 함수로 뺐다.
+    """
+    H, W = img.shape[:2]
+    if fs is None:
+        fs = max(0.4, min(W, H) / 1400.0)
+    if th is None:
+        th = max(1, int(round(fs * 2)))
+    lines = [t for t in info_lines if t]
+    if not lines:
+        return img
+    sizes = [cv2.getTextSize(t, FONT, fs, th)[0] for t in lines]
+    pw = min(max(s[0] for s in sizes) + 16, W - 12)
+    lh = max(s[1] for s in sizes) + 8
+    ph = lh * len(lines) + 10
+    ov = img.copy()
+    cv2.rectangle(ov, (6, 6), (6 + pw, 6 + ph), (0, 0, 0), -1)
+    cv2.addWeighted(ov, 0.55, img, 0.45, 0, img)
+    for i, t in enumerate(lines):
+        cv2.putText(img, t, (14, 6 + 8 + lh * (i + 1) - 6), FONT, fs,
+                    (255, 255, 255), th, cv2.LINE_AA)
+    return img
+
+
 def annotate(bgr, res, info_lines=()):
     img = bgr.copy()
     H, W = img.shape[:2]
@@ -1654,27 +1780,15 @@ def annotate(bgr, res, info_lines=()):
         p = (int(round(s["x_px"])), int(round(s["y_px"])))
         sh = s.get("shape", "quad")
         tag = "T" if sh == "triangle" else ("P" if sh.startswith("polygon") else "")
+        if s.get("edge_completed"):
+            tag += "E"                 # 윤곽을 Canny 다각형으로 갈아끼운 샘플
         col = _sample_color(s)
         cv2.drawMarker(img, p, (0, 0, 255), cv2.MARKER_CROSS, 12, 1)
         _label_box(img, "%d%s %+.1f/%+.1f" % (s["no"], tag, s["x_mm"], s["y_mm"]),
                    (p[0] + 8, p[1] - 8), fs, th, (0, 0, 0), col,
                    taken=taken, anchor=p)
 
-    # 좌측 상단 정보 패널 - 크기를 getTextSize 로 실제 재서 맞춘다.
-    # 상수로 박으면 해상도가 바뀔 때 반드시 삐져나온다.
-    info_lines = [t for t in info_lines if t]
-    if info_lines:
-        sizes = [cv2.getTextSize(t, FONT, fs, th)[0] for t in info_lines]
-        pw = max(s[0] for s in sizes) + 16
-        lh = max(s[1] for s in sizes) + 8
-        ph = lh * len(info_lines) + 10
-        pw = min(pw, W - 12)
-        ov = img.copy()
-        cv2.rectangle(ov, (6, 6), (6 + pw, 6 + ph), (0, 0, 0), -1)
-        cv2.addWeighted(ov, 0.55, img, 0.45, 0, img)
-        for i, t in enumerate(info_lines):
-            cv2.putText(img, t, (14, 6 + 8 + lh * (i + 1) - 6), FONT, fs,
-                        (255, 255, 255), th, cv2.LINE_AA)
+    draw_info_panel(img, info_lines, fs, th)
 
     # 우측 하단 10mm 눈금자
     if w.mm_per_px > 0:          # 미보정 철판 모드(0)는 눈금자를 그리지 않는다
