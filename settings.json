@@ -41,6 +41,9 @@
   "surface": "auto",
   "plate_mm_per_px": 0.25117,
   "plate_margin_pct": 10,
+  "serial_port": null,
+  "park_xy": [0, 90],
+  "dwell_s": 5,
   "data_dir": "../data",
   "out_dir": "out"
 }

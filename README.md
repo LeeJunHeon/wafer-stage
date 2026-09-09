@@ -13,6 +13,8 @@
 │   ├── detect.py           # 원판/샘플 검출 엔진 (GUI 의존성 없음)
 │   ├── report.py           # result.json / samples.csv / annotated.png 저장
 │   ├── calib.py            # 픽셀 <-> 기계좌표 보정 도구 (CLI)
+│   ├── stage.py            # 스테이지 펌웨어 V6 시리얼 드라이버
+│   ├── run_sequence.py     # 촬영 -> 검출 -> 스테이지 자동 순회
 │   ├── paths.py            # 경로 정의 (코드와 데이터 분리)
 │   ├── settings.json       # 촬영/검출 파라미터
 │   ├── firmware/stage_v6/  # 아두이노 스케치 (.ino)
@@ -31,6 +33,8 @@ python main.py                                   # GUI 촬영
 python main.py --image ..\data\out\<폴더>\raw.png  # 저장된 사진으로 검출만
 python calib.py fit                              # 마커로 보정 -> data\calib_matrix.json
 python calib.py samples                          # 검출 결과를 기계좌표로 출력
+python stage.py st                               # 스테이지 상태 (mx/my/save 도 가능)
+python run_sequence.py                           # 촬영 -> 검출 -> 샘플 자동 순회
 ```
 
 `python calib.py px2mm 700 500` / `mm2px 100 50` 로 단건 변환도 된다.

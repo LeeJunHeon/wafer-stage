@@ -495,12 +495,13 @@ def sensing_rect(marker_pixels, image_shape):
     return (u0, v0, u1, v1)
 
 
-def cmd_samples(args):
-    params = load_params()
-    bgr = get_image(args.image, params)
-    if bgr is None:
-        return 2
+def sense(bgr, params, allow_fallback=True):
+    """한 프레임에서 '보정 -> 감지영역 -> 검출 -> 전체프레임 좌표 -> mm' 까지.
 
+    돌려주는 dict: cal(변환), det(DetectResult), rows[(no,u,v,X,Y)], rect, refit,
+    vis_crop(감지영역에 그린 주석 이미지). 쓸 변환이 없으면 None.
+    스테이지 순회(run_sequence)와 samples 명령이 같은 경로를 쓰도록 분리했다.
+    """
     # 원칙: 좌표는 '이 사진' 의 마커로 구한 변환으로 낸다. 카메라가 촬영 사이에
     # 1~2도 돌아가면 저장된 보정은 조용히 틀린 좌표를 준다 (화면 중앙에서
     # 130mm 떨어진 점이 1도에 2.3mm 움직인다).
@@ -510,14 +511,16 @@ def cmd_samples(args):
         print("보정      : 이 사진의 마커 %d개로 재계산 / 어파인 잔차 최대 %.2f mm"
               " / 회전 %.1f deg [%s]"
               % (len(d["used_ids"]), d["max_mm"], d["rotation_deg"], d["transform"]))
-        save_matrix(d, bgr, args.image or "camera")
+        save_matrix(d, bgr, "camera")
+    elif not allow_fallback:
+        return None
     else:
         print("!" * 70)
         print("!! 마커 미검출 -> 저장된 보정 사용. 카메라가 움직였으면 좌표가 틀릴 수 있음")
         print("!" * 70)
         d = load_matrix()
         if d is None:
-            return 2
+            return None
 
     # 감지 영역 = 마커 사각형. 전체 프레임을 그대로 넣으면 웨이퍼를 못 찾는다.
     rect = sensing_rect([d["pixels"][k] for k in d["pixels"]], bgr.shape) if refit else None
@@ -543,32 +546,44 @@ def cmd_samples(args):
         x["x_px"] = round(float(x["x_px"]) + u0, 1)
         x["y_px"] = round(float(x["y_px"]) + v0, 1)
         if x.get("vertices_px"):
-            x["vertices_px"] = [[int(a) + u0, int(b) + v0] for a, b in x["vertices_px"]]
+            x["vertices_px"] = [[int(p) + u0, int(q) + v0] for p, q in x["vertices_px"]]
 
-    if not det.samples:
-        save_samples_image(bgr, det, d, [], params, refit, rect, vis_crop)
-        return 0
+    rows = []
+    for x in det.samples:
+        u, v = float(x["x_px"]), float(x["y_px"])
+        mx, my = px_to_mm(d, u, v)            # 기본 변환만 쓴다
+        rows.append((x["no"], u, v, mx, my))
+    return {"cal": d, "det": det, "rows": rows, "rect": rect,
+            "refit": refit, "vis_crop": vis_crop}
 
+
+def print_rows(res):
+    """samples 표 + 아두이노에 붙여넣을 블록 (출력 형식은 바꾸지 않는다)."""
     print("")
     print("no   pixel u      v        machine X mm   Y mm      range   [%s]"
-          % model_of(d))
-    rows = []
-    for s in det.samples:
-        u, v = float(s["x_px"]), float(s["y_px"])
-        mx, my = px_to_mm(d, u, v)      # 기본 변환만 쓴다
-        ok = in_range(mx, my)
-        rows.append((s["no"], mx, my))
+          % model_of(res["cal"]))
+    for no, u, v, mx, my in res["rows"]:
         print("%-4d %8.1f %8.1f   %10.2f %8.2f      %s"
-              % (s["no"], u, v, mx, my, "in" if ok else "OUT"))
-
+              % (no, u, v, mx, my, "in" if in_range(mx, my) else "OUT"))
     print("")
     print("--- gcode / serial ---")
-    for no, mx, my in rows:
+    for no, _u, _v, mx, my in res["rows"]:
         print("; sample #%d" % no)
         print("mx %.1f" % mx)
         print("my %.1f" % my)
 
-    save_samples_image(bgr, det, d, rows, params, refit, rect, vis_crop)
+
+def cmd_samples(args):
+    params = load_params()
+    bgr = get_image(args.image, params)
+    if bgr is None:
+        return 2
+    res = sense(bgr, params)
+    if res is None:
+        return 2
+    if res["rows"]:
+        print_rows(res)
+    save_samples_image(bgr, res, params)
     return 0
 
 
@@ -591,16 +606,18 @@ def samples_info(det, cal, refit, rect):
     return info
 
 
-def save_samples_image(bgr, det, cal, rows, params, refit, rect, vis_crop):
+def save_samples_image(bgr, res, params, outdir=None,
+                       ann_name="samples_annotated.jpg", raw_name="samples_raw.png"):
     """표만 봐서는 어느 칩이 몇 번인지 알 수 없다. 사진과 대조할 그림을 남긴다.
 
     번호·외곽선은 detect.annotate 가 crop 에 그린 것을 그대로 원래 자리에
     되붙이고(검출과 번호 매기기 로직은 건드리지 않는다), 그 위에 감지 영역
     사각형·마커 id·샘플별 기계좌표를 덧그린다.
     """
+    det, cal, rect = res["det"], res["cal"], res["rect"]
     u0, v0, u1, v1 = rect
     img = bgr.copy()
-    img[v0:v1, u0:u1] = vis_crop
+    img[v0:v1, u0:u1] = res["vis_crop"]
     cv2.rectangle(img, (u0, v0), (u1 - 1, v1 - 1), (0, 255, 255), 2)   # 감지 영역
     for i, p in (cal.get("pixels") or {}).items():
         cv2.drawMarker(img, (int(round(p[0])), int(round(p[1]))), (255, 128, 0),
@@ -612,7 +629,7 @@ def save_samples_image(bgr, det, cal, rows, params, refit, rect, vis_crop):
 
     fs = max(0.4, min(img.shape[1], img.shape[0]) / 1600.0)
     th = max(1, int(round(fs * 2)))
-    mmxy = {no: (mx, my) for no, mx, my in rows}
+    mmxy = {no: (mx, my) for no, _u, _v, mx, my in res["rows"]}
     for x in det.samples:
         mx, my = mmxy.get(x["no"], (0.0, 0.0))
         t = "X%.1f Y%.1f" % (mx, my)
@@ -620,10 +637,10 @@ def save_samples_image(bgr, det, cal, rows, params, refit, rect, vis_crop):
         cv2.putText(img, t, org, FONT, fs, (0, 0, 0), th + 2, cv2.LINE_AA)
         cv2.putText(img, t, org, FONT, fs, (255, 255, 255), th, cv2.LINE_AA)
 
-    outdir = paths.resolve_out(params.get("out_dir", "out"))
+    outdir = outdir or paths.resolve_out(params.get("out_dir", "out"))
     os.makedirs(outdir, exist_ok=True)
-    ap = os.path.join(outdir, "samples_annotated.jpg")
-    rp = os.path.join(outdir, "samples_raw.png")
+    ap = os.path.join(outdir, ann_name)
+    rp = os.path.join(outdir, raw_name)
     imgio.imwrite_u(ap, img, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
     imgio.imwrite_u(rp, bgr)
     print("")

@@ -1,0 +1,336 @@
+"""stage.py - 펌웨어 V6(firmware/stage_v6/stage_v6.ino) 시리얼 드라이버.
+
+프로토콜은 .ino 에서 그대로 따왔다.
+  보내는 것   : "st" / "mx 100.0" / "my 50.5" / "save"  (줄바꿈으로 끝)
+  상태 한 줄  : "ST X=16000 Y=8000 X2=16000 HX=1 HY=1 DIRTY=0"
+  이동 보고   : "  X  + cmd=16000 out=16000 t=2783.53ms | X=16000 Y=8000"
+                -> ' | X=' 가 들어 있는 줄이 '이동 끝' 신호다.
+  이미 도착   : "  이미 그 위치"          (움직이지 않으므로 보고 줄이 안 온다)
+  거부        : "  [거부] 원점 미확정 ..." / "  [거부] 범위 밖  목표=..."
+  경고        : 줄 안에 "[!]" (X 틀어짐 / CPU / 중단)
+  저장        : "save" -> "  저장됨 (신뢰 확정)"
+
+펌웨어가 한글을 찍으므로 디코딩은 UTF-8 + errors="replace" 로 한다 (깨져도
+파싱은 ASCII 부분만 보므로 문제 없다).
+
+수동 확인:
+  python stage.py --list-ports
+  python stage.py st
+  python stage.py mx 100
+  python stage.py my 50
+  python stage.py save
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+
+import paths
+
+PPMM = 160.0                  # 160 펄스 = 1mm (.ino 의 PPMM)
+X_MAX_PULSE = 39620           # 247.6mm
+Y_MAX_PULSE = 39640           # 247.8mm
+
+BAUD = 115200
+BOOT_MAX_S = 5.0              # 포트를 열면 DTR 로 보드가 리셋된다. 배너를 이만큼 기다린다
+BOOT_QUIET_S = 1.0            # 이만큼 조용하면 배너가 끝난 것으로 본다
+MOVE_TIMEOUT_S = 30.0         # 가장 긴 이동 248mm 가 v6000 에서 약 7초
+LINE_TIMEOUT_S = 5.0
+POLL_S = 0.2                  # 한 번 읽기에 기다리는 시간 (포트 설정은 여기서 고정)
+
+DONE_MARK = " | X="           # 이동 보고 줄
+ALREADY_MARK = "이미 그 위치"
+REJECT_MARK = "[거부]"
+WARN_MARK = "[!]"
+
+
+class StageError(Exception):
+    pass
+
+
+# --------------------------------------------------------------------------
+# 포트 찾기
+# --------------------------------------------------------------------------
+def list_ports():
+    from serial.tools import list_ports as lp
+    return list(lp.comports())
+
+
+def pick_port(want=None):
+    """want 가 있으면 그대로. 없으면 자동으로 하나만 고른다.
+
+    'Arduino' 가 설명에 들어간 포트가 정확히 1개거나, COM 포트가 하나뿐일 때만
+    자동으로 고른다. 애매하면 목록을 보여주고 --port 를 요구한다.
+    """
+    if want:
+        return want
+    ports = list_ports()
+    if not ports:
+        raise StageError("시리얼 포트가 하나도 없습니다. USB 연결을 확인하세요.")
+    ard = [p for p in ports if "arduino" in ((p.description or "") + " " +
+                                             (p.manufacturer or "")).lower()]
+    if len(ard) == 1:
+        return ard[0].device
+    if len(ports) == 1:
+        return ports[0].device
+    msg = ["포트를 고를 수 없습니다. --port 로 지정하세요.", "사용 가능한 포트:"]
+    for p in ports:
+        msg.append("  %-8s %s" % (p.device, p.description))
+    raise StageError("\n".join(msg))
+
+
+# --------------------------------------------------------------------------
+class Stage:
+    def __init__(self, port=None, dry=False, log_path=None):
+        self.port_name = port
+        self.dry = bool(dry)
+        self.ser = None
+        self.banner = ""
+        self.needs_home = False        # 배너에 "원점없음" 이 있었나
+        self.log_path = log_path or os.path.join(paths.OUT_DIR, "serial.log")
+        self.warnings = []
+
+    # ---- 로그 ----------------------------------------------------------
+    def _log(self, arrow, text):
+        try:
+            os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write("%s %s %s\n" % (time.strftime("%H:%M:%S"), arrow,
+                                        text.rstrip("\r\n")))
+        except OSError:
+            pass                       # 로그 실패로 동작을 막지는 않는다
+
+    # ---- 열기/닫기 ------------------------------------------------------
+    def open(self):
+        if self.dry:
+            self.banner = "(dry) 시리얼 없이 실행"
+            self._log("--", self.banner)
+            return self.banner
+        try:
+            import serial
+        except ImportError:
+            raise StageError("pyserial 이 필요합니다:  pip install pyserial")
+        self.port_name = pick_port(self.port_name)
+        try:
+            self.ser = serial.Serial(self.port_name, BAUD, timeout=POLL_S)
+        except Exception as e:
+            raise StageError("포트를 열 수 없습니다 (%s): %s\n"
+                             "아두이노 IDE 의 시리얼 모니터가 열려 있으면 닫아 주세요."
+                             % (self.port_name, e))
+        self._log("--", "open %s @%d" % (self.port_name, BAUD))
+        # 포트를 열면 보드가 리셋되어 부팅 배너가 나온다. 조용해질 때까지 읽는다.
+        lines = []
+        t0 = time.time()
+        last = time.time()
+        while time.time() - t0 < BOOT_MAX_S:
+            ln = self._readline()
+            if ln is None:
+                if lines and time.time() - last >= BOOT_QUIET_S:
+                    break
+                continue
+            lines.append(ln)
+            last = time.time()
+        self.banner = "\n".join(lines)
+        self.needs_home = "원점없음" in self.banner
+        return self.banner
+
+    def close(self):
+        if self.ser is not None:
+            self._log("--", "close")
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+            self.ser = None
+
+    def __enter__(self):
+        self.open()
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+
+    # ---- 저수준 송수신 --------------------------------------------------
+    def _write(self, cmd):
+        self._log("->", cmd)
+        if self.dry:
+            print("  (dry) %s" % cmd)
+            return
+        self.ser.write((cmd + "\n").encode("ascii"))
+        self.ser.flush()
+
+    def _readline(self, timeout=POLL_S):
+        """한 줄 읽기. 타임아웃은 포트를 열 때 한 번만 정한다.
+
+        pyserial 은 timeout 에 값을 대입할 때마다 포트를 재설정(Windows 에서는
+        SetCommTimeouts + 버퍼 정리)한다. 매 읽기마다 대입했더니 마침 들어오던
+        부팅 배너와 ST 응답이 통째로 사라져 '응답 없음' 이 됐다. 그래서 값이
+        실제로 바뀔 때만 대입한다.
+        """
+        if self.dry or self.ser is None:
+            return None
+        if timeout is not None and self.ser.timeout != timeout:
+            self.ser.timeout = timeout
+        raw = self.ser.readline()
+        if not raw:
+            return None
+        ln = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        self._log("<-", ln)
+        return ln
+
+    def _collect(self, deadline_s, is_done, what):
+        """완료 줄이 올 때까지 읽는다. [거부] 면 예외, [!] 는 모아 둔다."""
+        t0 = time.time()
+        seen = []
+        while time.time() - t0 < deadline_s:
+            ln = self._readline()
+            if ln is None:
+                continue
+            seen.append(ln)
+            if REJECT_MARK in ln:
+                raise StageError("펌웨어 거부: %s" % ln.strip())
+            if WARN_MARK in ln and not is_done(ln):
+                self.warnings.append(ln.strip())
+                print("  경고(펌웨어): %s" % ln.strip())
+            if is_done(ln):
+                if WARN_MARK in ln:
+                    self.warnings.append(ln.strip())
+                return ln
+        raise StageError("%s 응답이 %.0f초 안에 오지 않았습니다. 마지막 줄: %s"
+                         % (what, deadline_s, seen[-1] if seen else "(없음)"))
+
+    # ---- 명령 ----------------------------------------------------------
+    def status(self):
+        """'st' -> ST 줄을 dict 로. 펄스와 mm 를 함께 담는다."""
+        if self.dry:
+            return {"x_pulse": 0, "y_pulse": 0, "x2_pulse": 0, "homed_x": True,
+                    "homed_y": True, "dirty": False, "x_mm": 0.0, "y_mm": 0.0,
+                    "raw": "(dry)"}
+        self._write("st")
+        ln = self._collect(LINE_TIMEOUT_S, lambda s: s.startswith("ST "), "st")
+        d = {}
+        for tok in ln.split():
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                d[k] = v
+        try:
+            out = {
+                "x_pulse": int(d["X"]), "y_pulse": int(d["Y"]),
+                "x2_pulse": int(d.get("X2", d["X"])),
+                "homed_x": d.get("HX") == "1", "homed_y": d.get("HY") == "1",
+                "dirty": d.get("DIRTY") == "1", "raw": ln.strip(),
+            }
+        except (KeyError, ValueError):
+            raise StageError("ST 줄을 해석할 수 없습니다: %s" % ln)
+        out["x_mm"] = out["x_pulse"] / PPMM
+        out["y_mm"] = out["y_pulse"] / PPMM
+        return out
+
+    def _move(self, cmd, what):
+        self._write(cmd)
+        if self.dry:
+            return "(dry) %s" % cmd
+        # 완료는 이동 보고 줄, 또는 '이미 그 위치'(움직일 필요가 없던 경우).
+        return self._collect(MOVE_TIMEOUT_S,
+                             lambda s: (DONE_MARK in s) or (ALREADY_MARK in s), what)
+
+    def move_x_mm(self, mm):
+        return self._move("mx %.1f" % float(mm), "X 이동")
+
+    def move_y_mm(self, mm):
+        return self._move("my %.1f" % float(mm), "Y 이동")
+
+    def goto_mm(self, x, y):
+        """펌웨어에 동시 이동이 없으므로 X 먼저, 그다음 Y."""
+        return [self.move_x_mm(x), self.move_y_mm(y)]
+
+    def save(self):
+        self._write("save")
+        if self.dry:
+            return ["(dry) save"]
+        lines = []
+        t0 = time.time()
+        while time.time() - t0 < LINE_TIMEOUT_S:
+            ln = self._readline()
+            if ln is None:
+                if lines:
+                    break
+                continue
+            lines.append(ln)
+            if "저장됨" in ln:
+                break
+        return lines
+
+
+# --------------------------------------------------------------------------
+def load_port_setting():
+    try:
+        with open(paths.SETTINGS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("serial_port")
+    except Exception:
+        return None
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="스테이지 펌웨어 V6 시리얼 드라이버")
+    ap.add_argument("cmd", nargs="?", choices=["st", "mx", "my", "save"],
+                    help="보낼 명령")
+    ap.add_argument("value", nargs="?", type=float, help="mx / my 의 mm 값")
+    ap.add_argument("--port", help="시리얼 포트 (예: COM5)")
+    ap.add_argument("--list-ports", action="store_true", help="포트 목록만 출력")
+    a = ap.parse_args(argv)
+
+    if a.list_ports:
+        ps = list_ports()
+        if not ps:
+            print("시리얼 포트가 없습니다.")
+            return 1
+        for p in ps:
+            print("%-8s %s" % (p.device, p.description))
+        return 0
+
+    if not a.cmd:
+        ap.print_help()
+        return 2
+
+    st = Stage(a.port or load_port_setting())
+    try:
+        banner = st.open()
+    except StageError as e:
+        print(str(e))
+        return 1
+    try:
+        print("포트      : %s" % st.port_name)
+        if banner:
+            print("배너      :")
+            for ln in banner.splitlines():
+                print("  " + ln)
+        if st.needs_home:
+            print("경고      : 원점 없음. fz x / fz y (또는 sp x y) 후 save 하세요.")
+        if a.cmd == "st":
+            s = st.status()
+            print("상태      : X=%d (%.2f mm)  Y=%d (%.2f mm)  X2=%d"
+                  % (s["x_pulse"], s["x_mm"], s["y_pulse"], s["y_mm"], s["x2_pulse"]))
+            print("            원점 X=%s Y=%s   저장안됨=%s"
+                  % (s["homed_x"], s["homed_y"], s["dirty"]))
+        elif a.cmd in ("mx", "my"):
+            if a.value is None:
+                print("mm 값이 필요합니다: python stage.py %s 100" % a.cmd)
+                return 2
+            ln = st.move_x_mm(a.value) if a.cmd == "mx" else st.move_y_mm(a.value)
+            print("보고      : %s" % ln.strip())
+        elif a.cmd == "save":
+            for ln in st.save():
+                print("응답      : %s" % ln.strip())
+    except StageError as e:
+        print("실패      : %s" % e)
+        return 1
+    finally:
+        st.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
