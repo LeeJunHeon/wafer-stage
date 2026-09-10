@@ -33,6 +33,11 @@
     $('live').src = '/preview.jpg?t=' + Date.now();
   }
 
+  // 미리보기가 아직 없으면 서버가 204 를 준다. 그대로 두면 깨진 이미지 아이콘이
+  // 뜨므로 받은 장이 있을 때만 보이게 한다.
+  $('live').addEventListener('load', () => { $('live').style.visibility = 'visible'; });
+  $('live').addEventListener('error', () => { $('live').style.visibility = 'hidden'; });
+
   UI.isLive = () => live;
 
   function el(tag, attrs) {
@@ -63,9 +68,10 @@
     // 열렸으면 그 사유를, 촬영본인데 아직 안 찍었으면 '촬영 없음' 을 띄운다.
     const q0 = s.sequence || {};
     let note = '';
-    if (live && cam.ok === false) note = '카메라 열기 실패 · ' + (cam.last_error || '사유 불명');
+    if (live && cam.ok === false) note = cam.last_error || '카메라 열기 실패';
     else if (!live && !s.frame) note = '촬영 없음';
-    $('noFrame').textContent = note;
+    $('noFrameText').textContent = note;
+    $('noFrameText').title = note;
     $('noFrame').hidden = !note;
     $('overlays').style.display = (!s.frame && !live) ? 'none' : '';
     // 촬영이 끝나면 촬영본으로 되돌린다(검출 결과가 보이게). 새로고침으로 들어왔을
@@ -74,7 +80,11 @@
       firstState = false;
       if (s.frame && live) { setLive(false); return; }
     }
-    if (live && lastPhase === 'capturing' && q0.phase !== 'capturing') setLive(false);
+    // 촬영이 끝났고 결과가 실제로 있을 때만 촬영본으로 넘어간다. 실패했으면
+    // 미리보기를 유지한다(빈 화면으로 바꿔 봐야 볼 것이 없다).
+    if (live && lastPhase === 'capturing' && q0.phase !== 'capturing' && s.frame) {
+      setLive(false);
+    }
     lastPhase = q0.phase;
 
     // ---- 마커 ----
@@ -150,7 +160,7 @@
     // ---- 정보 4칸 ----
     const c = s.calib;
     $('infoCal').textContent = c
-      ? (c.used_ids.length + '마커 ' + c.corners + '점 · RMS '
+      ? (c.used_ids.length + '마커 ' + c.corners + '점 · 오차 RMS '
          + c.corner_rms_mm.toFixed(2) + ' · 최대 ' + c.corner_max_mm.toFixed(2) + ' mm'
          + (c.missing_ids.length ? ' · id' + c.missing_ids.join(',') + ' 미검출' : ''))
       : UI.EMPTY;
@@ -174,7 +184,7 @@
   $('btnPark').onclick = () => UI.send({ cmd: 'park' });
   $('btnHome').onclick = async () => {
     const ok = await UI.confirm(
-      '원점 설정: 각 축을 하드스톱까지 이동합니다(접촉음 정상).\n'
+      '원점 설정: 각 축을 끝단까지 이동합니다(끝에 닿는 소리는 정상).\n'
       + '이동 경로에 프로브·웨이퍼가 없는지 확인 후 진행하십시오.', '원점 설정');
     if (ok) UI.send({ cmd: 'stage_home', axis: 'xy' });
   };

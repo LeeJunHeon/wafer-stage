@@ -76,19 +76,24 @@
   .appver { font-family: var(--mono); font-size: 10px; color: var(--faint); }
 
   /* ---------- notice strip (경보 배너: 있을 때만) ---------- */
-  .notice { margin-bottom: 8px; display: flex; align-items: center; gap: 10px; padding: 6px 14px; border-radius: 5px; border: 1px solid #e0b25f; background: #fff3dc; color: #6e4300; font-size: 12.5px; }
+  .notice { margin-bottom: 8px; display: flex; align-items: flex-start; gap: 10px; padding: 6px 14px; border-radius: 5px; border: 1px solid #e0b25f; background: #fff3dc; color: #6e4300; font-size: 12.5px; max-height: 40px; overflow: hidden; }
   .notice.alarm { border-color: #e29a9d; background: #fbe3e4; color: #8c1f24; }
   /* 경보가 없을 때도 그리드 '행' 은 남겨 둔다. display:none 이 되면 그리드 항목이
      3개가 되어 main 이 auto 행, foot 이 1fr 행을 가져가면서 로그 패널이 26px 로
      찌그러졌다(실측). 높이만 0 으로 접는다. */
   .notice[hidden] { display: flex !important; height: 0; margin: 0; padding: 0; border: 0; overflow: hidden; }
-  .notice .tag { font-weight: 700; letter-spacing: .5px; font-size: 11px; padding: 2px 7px; border-radius: 3px; background: rgba(0,0,0,.08); }
-  .notice .items { display: flex; gap: 18px; flex-wrap: wrap; }
+  /* nowrap·flex:none 이 없으면 좁아질 때 "경/보" 로 두 줄이 된다. */
+  .notice .tag { flex: none; white-space: nowrap; align-self: center; font-weight: 700; letter-spacing: .5px; font-size: 11px; padding: 2px 7px; border-radius: 3px; background: rgba(0,0,0,.08); }
+  .notice .items { flex: 1; min-width: 0; display: flex; gap: 18px; flex-wrap: wrap; max-height: 34px; overflow: hidden; }
+  .notice .item { min-width: 0; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .notice .item b { font-weight: 700; margin-right: 5px; }
 
   /* ---------- main grid ---------- */
   .main { margin-bottom: 8px; display: grid; grid-template-columns: 1086px 1fr 330px; gap: 8px; min-height: 0; }
   .col { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  /* overflow:hidden 이 없으면 내용이 많은 패널(제어 열)이 아래 패널 위로 삐져나와
+     로그 헤더를 덮는다. 패널은 자기 상자 안에서만 그린다. */
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
   .panel > .ph { display: flex; align-items: center; gap: 10px; padding: 6px 12px; height: 32px; background: var(--panelhead); border-bottom: 1px solid var(--line); border-radius: 6px 6px 0 0; font-size: 12px; font-weight: 700; color: #3a4757; letter-spacing: .3px; }
   .panel > .ph .sp { flex: 1; } .panel > .ph .sub { font-weight: 400; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .panel > .ph { white-space: nowrap; }
@@ -103,7 +108,8 @@
   .camview .live { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: var(--img-bg); }
   /* 미리보기 영상 위에도 뜨므로(카메라 열기 실패) 밝은 그림에서 글자가 묻히지
      않게 바탕을 깐다. 촬영본이 없을 때는 어차피 검은 화면이라 티가 안 난다. */
-  .camview .noframe { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; padding: 0 24px; text-align: center; background: rgba(14,20,24,.72); color: #c8d4dd; font-size: 13px; letter-spacing: .3px; }
+  .camview .noframe { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; padding: 0 24px; background: rgba(14,20,24,.72); color: #c8d4dd; font-size: 13px; letter-spacing: .3px; }
+  .camview .noframe span { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .camview svg { position: relative; z-index: 1; display: block; width: 100%; height: 100%; }
   .caminfo { display: grid; grid-template-columns: 1.5fr 1.15fr 1fr .85fr; border-top: 1px solid var(--line); }
   .caminfo > div { padding: 6px 10px; border-right: 1px solid var(--line); min-width: 0; }
@@ -200,7 +206,10 @@
   .seg input { position: absolute; opacity: 0; pointer-events: none; }
   .seg label:has(input:checked) { background: #2a3340; color: #fff; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font-size: 12.5px; }
-  .kv .k { color: var(--dim); } .kv .big { font-family: var(--mono); font-size: 20px; font-weight: 700; }
+  .kv .k { color: var(--dim); }
+  /* 값 칸은 한 줄로 자른다. 긴 오류 문구가 줄바꿈되면 패널이 늘어난다(전체는 title 에). */
+  .kv > span:not(.k) { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kv .big { font-family: var(--mono); font-size: 20px; font-weight: 700; }
   input[type=number] { width: 62px; padding: 5px 7px; border: 1px solid var(--line2); border-radius: 4px; background: #fff; text-align: right; font-family: var(--mono); }
   .progress { height: 10px; background: #e1e6ec; border: 1px solid var(--line2); border-radius: 999px; overflow: hidden; }
   .progress > i { display: block; height: 100%; width: 0; background: var(--run); transition: width .3s; }

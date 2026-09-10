@@ -93,11 +93,13 @@ async def capture():
         await push_log("검출 %d개 · 저장 %s" % (len(state.samples), os.path.basename(d)), "ok")
         return True
     except Exception as e:                 # noqa: BLE001
+        # 화면에는 한 줄만, 원문(여러 줄)은 파일 로그에만.
+        one = logger.short(e)
         state.camera["ok"] = False
-        state.camera["last_error"] = str(e)
-        _phase("error", "촬영 실패 · %s" % e)
-        logger.exc("촬영 실패", e)
-        await push_log("촬영 실패: %s" % e, "err")
+        state.camera["last_error"] = one
+        _phase("error", "촬영 실패 · " + one)
+        logger.write("err", "촬영 실패 상세: %s: %s" % (type(e).__name__, e))
+        await push_log("촬영 실패 · " + one, "err")
         return False
     finally:
         state.camera["capturing"] = False
@@ -249,8 +251,10 @@ async def goto_xy(x_mm, y_mm, no=None):
                        % (x_mm, y_mm, "" if no is None else " (#%s)" % no), "ok")
         return True
     except stagectl.StageError as e:
-        state.stage["last_error"] = str(e)
-        await push_log("이동 실패: %s" % e, "err")
+        one = logger.short(e)
+        state.stage["last_error"] = one
+        logger.write("err", "이동 실패 상세: %s" % e)
+        await push_log("이동 실패 · " + one, "err")
         return False
     finally:
         await push_state()
@@ -269,14 +273,14 @@ def needs_confirm():
     out = []
     for w in state.warnings:
         if "cut off" in w:
-            out.append("웨이퍼 감지영역 이탈")
+            out.append("웨이퍼가 감지영역 밖")
         if "glare covers" in w:
             try:
                 pct = float(w.split("glare covers")[1].split("%")[0])
             except (IndexError, ValueError):
                 pct = 0.0
             if pct >= 50.0:
-                out.append("글레어 %.0f%% · 조명 확산 필요" % pct)
+                out.append("반사광 %.0f%% · 조명 확산 필요" % pct)
     c = state.calib or {}
     if c.get("missing_ids"):
         out.append("마커 id%s 미검출 · %d점 보정(오차 ≈1 mm)"
@@ -349,14 +353,15 @@ async def _run_loop(todo):
                 await _goto(s["X"], s["Y"], no=s["no"])
             except stagectl.StageError as e:
                 s["status"] = "error"
-                state.stage["last_error"] = str(e)
+                state.stage["last_error"] = logger.short(e)
+                logger.write("err", "이동 실패 상세(#%s): %s" % (s["no"], e))
                 if _estopped:
                     # 비상정지가 만든 오류다. phase 는 estop() 이 세운 stopped 를
                     # 유지한다 - 사용자가 누른 정지를 '오류' 로 바꾸지 않는다.
                     await push_log("비상정지로 이동 중단 (#%s)" % s["no"], "warn")
                 else:
-                    _phase("error", "이동 실패 · %s" % e)
-                    await push_log("이동 실패로 순회 중단 · %s" % e, "err")
+                    _phase("error", "이동 실패 · " + logger.short(e))
+                    await push_log("이동 실패로 순회 중단 · " + logger.short(e), "err")
                 ok = False
                 break
             await push_log("#%s 도착 X%.1f Y%.1f" % (s["no"], s["X"], s["Y"]))

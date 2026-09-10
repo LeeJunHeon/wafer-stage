@@ -100,6 +100,9 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 `phase`: `idle | capturing | ready | running | paused | waiting_confirm | parking | done | stopped | error`
 `sequence.estopped`: 비상정지 상태(원점을 다시 잡을 때까지 유지)
 
+화면에 나가는 오류 문구(`stage.last_error`·`camera.last_error`·`sequence.message`)는
+항상 한 줄 60자 이내다. 예외 원문(여러 줄·트레이스백)은 파일 로그에만 남는다.
+
 그 밖에 `{"type":"log", msg, level, serial?, poll?}`,
 `{"type":"ack", of, ok, reason, needs_confirm:[사유...], ...}`.
 
@@ -126,7 +129,7 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 1. [연결] — 시리얼 포트가 잡히는지, 칩이 `COM7 · 원점 필요` 로 바뀌는지 확인
 2. [원점 설정] — 경로에 프로브·웨이퍼가 없는지 보고 실행. 칩이 `원점 설정` 으로 바뀐다
 3. [미리보기] — 웨이퍼 위치·조명·초점을 눈으로 확인(마커 4개가 가리지 않게)
-4. [촬영 · 검출] — 검출 개수와 배너(글레어·마커)를 확인
+4. [촬영 · 검출] — 검출 개수와 배너(반사광·마커)를 확인
 5. 번호 선택 모드로 샘플 1개만 [선택 위치 이동] — 프로브가 실제로 그 위 ±1~2mm 인지 확인
 6. 확인 후 진행 모드로 2~3개를 돌려 보고, 문제 없으면 자동 모드로 전체 순회
 
@@ -154,7 +157,7 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 | `settings_save` | `serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure` |
 | `exit` | |
 
-`run` 은 검출 경고에 "wafer is cut off" 또는 글레어 50% 이상이 있거나 마커가 3개뿐이면
+`run` 은 검출 경고에 "wafer is cut off" 또는 반사광 50% 이상이 있거나 마커가 3개뿐이면
 `ack{of:"run", ok:false, reason:"needs_confirm", needs_confirm:[사유]}` 를 돌려준다.
 화면이 확인 모달을 띄우고 `confirm:true` 로 다시 보내야 시작한다.
 
@@ -165,7 +168,7 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 쓰고(ISA-101), 상태는 색과 글자를 함께 바꾼다(IDLE·READY·RUNNING·E-STOP …).
 
   헤더(상태 필 · X/Y 큰 숫자 · 연결 칩 4개 · 설정/종료/비상정지)
-  경보 배너(있을 때만: 잘림·글레어·마커 가려짐·원점 필요·비상정지)
+  배너(있을 때만: 오류/경고 · 출처별 한 줄 — 스테이지·카메라·검출·보정·순회)
   카메라(사진 + 오버레이) │ 스테이지 맵 + 샘플 목록 │ 조작
   로그 + 상태줄
 

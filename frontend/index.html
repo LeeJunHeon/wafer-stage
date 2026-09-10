@@ -31,7 +31,7 @@
     </div>
   </header>
 
-  <div class="notice" id="notice" hidden><span class="tag">주의</span><div class="items" id="noticeItems"></div></div>
+  <div class="notice" id="notice" hidden><span class="tag">경고</span><div class="items" id="noticeItems"></div></div>
 
   <div class="main">
     <!-- 카메라 -->
@@ -40,7 +40,7 @@
       <div class="pb camwrap">
         <div class="camview">
           <img class="live" id="live" alt="" hidden>
-          <div class="noframe" id="noFrame">촬영 없음</div>
+          <div class="noframe" id="noFrame"><span id="noFrameText">촬영 없음</span></div>
           <svg id="cam" viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet" role="img" aria-label="촬영 프레임과 검출 결과">
             <image id="frame" href="" width="1280" height="720"></image>
             <g id="overlays">
@@ -78,7 +78,7 @@
       <section class="panel">
         <div class="ph">샘플 목록 <span class="sp"></span><button class="btn sm" id="btnAll">전체 선택</button><button class="btn sm" id="btnNone">전체 해제</button></div>
         <div class="tablewrap"><table><thead><tr><th>☑</th><th>No</th><th>형상</th><th class="r">X mm</th><th class="r">Y mm</th><th>상태</th><th class="r">측정값</th></tr></thead><tbody id="tbody"></tbody></table></div>
-        <div class="tfoot"><button class="btn sm" id="btnGoto" disabled>선택 위치 이동</button><button class="btn sm" id="btnMeasureHere" disabled>현 위치 측정</button><span class="cnt" id="countInfo">—</span></div>
+        <div class="tfoot"><button class="btn sm" id="btnGoto" disabled>선택 샘플 이동</button><button class="btn sm" id="btnMeasureHere" disabled>현재 위치 측정</button><span class="cnt" id="countInfo">—</span></div>
       </section>
     </div>
 
@@ -123,7 +123,7 @@
 
   <div class="foot">
     <section class="panel">
-      <div class="ph">로그 <span class="sp"></span><label class="logopt"><input type="checkbox" id="optSerial" checked>시리얼 원문</label><label class="logopt"><input type="checkbox" id="optPoll">폴링 표시</label><button class="btn sm" id="btnClearLog">지우기</button></div>
+      <div class="ph">로그 <span class="sp"></span><label class="logopt"><input type="checkbox" id="optSerial" checked>시리얼 로그</label><label class="logopt"><input type="checkbox" id="optPoll">상태 조회 표시</label><button class="btn sm" id="btnClearLog">지우기</button></div>
       <div class="log" id="log"></div>
     </section>
     <div class="statusbar"><span class="mono" id="barVer">Sample Auto Measurement</span><span>결과 폴더: <span class="mono" id="outDir">—</span></span><span class="sp"></span><span class="mono" id="clock">—</span></div>

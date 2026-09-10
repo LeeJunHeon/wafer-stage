@@ -35,7 +35,9 @@ PREVIEW_FPS = 4.0
 PREVIEW_W = 640
 PREVIEW_H = 360
 PREVIEW_Q = 70
-RETRY_S = 5.0                  # 카메라를 못 열었을 때 다시 시도하는 간격
+# 카메라를 못 열면 5초 → 10 → 20 → 30초로 늘려 가며 다시 시도한다. 장비 없이
+# 띄워 두는 일이 흔한데(개발·점검) 5초마다 열기를 반복하면 그 자체가 부하다.
+RETRY_STEPS_S = (5.0, 10.0, 20.0, 30.0)
 FAIL_LIMIT = 3                 # 이만큼 연속 실패해야 카메라를 닫는다
 
 
@@ -154,6 +156,7 @@ class CameraHolder:
         period = 1.0 / PREVIEW_FPS
         next_shot = 0.0
         fails = 0
+        retry_i = 0                        # RETRY_STEPS_S 의 어디까지 늘렸나
         while not self._stop.is_set():
             # --image 모드는 카메라를 열지 않는다. 그 사진을 미리보기로 낸다.
             if IMAGE_OVERRIDE:
@@ -171,6 +174,7 @@ class CameraHolder:
                 with self.lock:
                     self._close_locked()
                 fails = 0
+                retry_i = 0                # 설정이 바뀌었으니 처음 간격부터
             try:
                 want_shot = time.monotonic() >= next_shot
                 with self.lock:
@@ -186,6 +190,7 @@ class CameraHolder:
                     self._encode(bgr)
                     next_shot = time.monotonic() + period
                 fails = 0
+                retry_i = 0
                 self._status(True)
             except Exception as e:         # noqa: BLE001
                 # 한 장 빠지는 것은 흔하다. 연달아 실패할 때만 장치를 다시 연다.
@@ -193,13 +198,15 @@ class CameraHolder:
                 if fails < FAIL_LIMIT and self.cam is not None:
                     self._stop.wait(period)
                     continue
-                # 실패가 이어지면 장치를 닫고 RETRY_S 뒤에 다시 연다.
+                # 실패가 이어지면 장치를 닫고 한동안 쉬었다가 다시 연다.
                 with self.lock:
                     self._close_locked()
                 self._jpg = b""
                 fails = 0
                 self._status(False, str(e).splitlines()[0] if str(e) else type(e).__name__)
-                self._stop.wait(RETRY_S)
+                wait_s = RETRY_STEPS_S[min(retry_i, len(RETRY_STEPS_S) - 1)]
+                retry_i += 1
+                self._stop.wait(wait_s)
 
     # ---- 촬영 ----
     def capture_best(self, params):

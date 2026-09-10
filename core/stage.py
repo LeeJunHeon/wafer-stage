@@ -69,14 +69,15 @@ def pick_port(want=None):
         return want
     ports = list_ports()
     if not ports:
-        raise StageError("시리얼 포트가 하나도 없습니다. USB 연결을 확인하세요.")
+        raise StageError("시리얼 포트 없음 (USB 연결 확인)")
     ard = [p for p in ports if "arduino" in ((p.description or "") + " " +
                                              (p.manufacturer or "")).lower()]
     if len(ard) == 1:
         return ard[0].device
     if len(ports) == 1:
         return ports[0].device
-    msg = ["포트를 고를 수 없습니다. --port 로 지정하세요.", "사용 가능한 포트:"]
+    # 첫 줄만 화면에 나간다. 목록은 파일 로그에서 본다.
+    msg = ["포트 자동 선택 불가 (설정에서 포트 지정)"]
     for p in ports:
         msg.append("  %-8s %s" % (p.device, p.description))
     raise StageError("\n".join(msg))
@@ -132,8 +133,9 @@ class Stage:
         try:
             self.ser = serial.Serial(self.port_name, BAUD, timeout=POLL_S)
         except Exception as e:
-            raise StageError("포트를 열 수 없습니다 (%s): %s\n"
-                             "아두이노 IDE 의 시리얼 모니터가 열려 있으면 닫아 주세요."
+            raise StageError("%s 열기 실패 (다른 프로그램이 사용 중인지 확인)\n"
+                             "  %s\n"
+                             "  아두이노 IDE 의 시리얼 모니터가 열려 있으면 닫습니다."
                              % (self.port_name, e))
         self._log("--", "open %s @%d" % (self.port_name, BAUD))
         # 포트를 열면 보드가 리셋되어 부팅 배너가 나온다. 조용해질 때까지 읽는다.
@@ -252,7 +254,7 @@ class Stage:
 
     def _move(self, cmd, what):
         if self._aborted:
-            raise StageError("비상정지 상태 - 원점잡기(fz) 후 사용")
+            raise StageError("비상정지 상태 · 원점 설정 후 사용")
         self._write(cmd)
         if self.dry:
             try:

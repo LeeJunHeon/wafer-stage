@@ -53,23 +53,26 @@ async def handle_command(data):
             return
         await fn(data)
     except stagectl.StageError as e:
-        state.stage["last_error"] = str(e)
-        await push_log("스테이지 오류: %s" % e, "err")
+        one = logger.short(e)
+        state.stage["last_error"] = one
+        logger.write("err", "스테이지 오류 상세(%s): %s" % (cmd, e))
+        await push_log("스테이지 오류 · " + one, "err")
         await push_state()
     except Exception as e:                 # noqa: BLE001
         logger.exc("명령 처리 실패(%s)" % cmd, e)
-        await push_log("명령 처리 실패(%s): %s" % (cmd, e), "err")
+        await push_log("명령 처리 실패(%s) · %s" % (cmd, logger.short(e)), "err")
         await push_state()
 
 
 # --------------------------------------------------------------------------
 async def _camera_changed(ok, err):
     state.camera["ok"] = bool(ok)
-    state.camera["last_error"] = "" if ok else str(err or "")
+    state.camera["last_error"] = "" if ok else logger.short(err or "카메라 오류")
     if ok:
         await push_log("카메라 준비 · index %s" % state.camera["index"], "ok")
     else:
-        await push_log("카메라 열기 실패 · %s" % state.camera["last_error"], "err")
+        # 문구 자체가 이미 "카메라 N 열기 실패 …" 다. 앞에 또 붙이지 않는다.
+        await push_log(state.camera["last_error"], "err")
     await push_state()
 
 
@@ -130,7 +133,7 @@ async def _stage_connect(data):
     try:
         engine._apply_status(await stagectl.ctl.status())
     except stagectl.StageError as e:
-        await push_log("상태 조회 실패: %s" % e, "warn")
+        await push_log("상태 조회 실패 · " + logger.short(e), "warn")
     if not (state.stage["homed_x"] and state.stage["homed_y"]):
         state.stage["needs_home"] = True
         await push_log("원점 미설정 · 원점 설정을 먼저 실행하세요", "warn")
@@ -153,7 +156,7 @@ async def _stage_home(data):
         await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
         return
     axis = str(data.get("axis") or "xy").lower()
-    await push_log("원점 탐색 시작 (%s) · 하드스톱 접촉음은 정상입니다" % axis)
+    await push_log("원점 탐색 시작 (%s) · 끝에 닿는 소리는 정상입니다" % axis)
     state.stage["moving"] = True
     await push_state()
     try:

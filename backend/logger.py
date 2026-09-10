@@ -66,3 +66,24 @@ def write(level, msg):
 
 def exc(prefix, e):
     write("err", "%s: %s: %s" % (prefix, type(e).__name__, e))
+
+
+SHORT_MAX = 60
+
+
+def short(e):
+    """화면에 내보낼 한 줄 요약.
+
+    예외 메시지의 첫 줄만 쓰고(뒷줄은 파일 로그용 상세다), "CameraError:" 같은
+    클래스명 접두어를 떼고, 길면 자른다. 화면 문구가 여러 줄이 되면 배너와 상태
+    칸이 밀려 다른 패널을 덮는다.
+    """
+    t = str(e).strip().splitlines()
+    t = t[0].strip() if t else type(e).__name__
+    # "SomeError: 내용" 처럼 클래스명이 앞에 붙어 오면 뗀다.
+    head, sep, rest = t.partition(": ")
+    if sep and head and " " not in head and head.endswith(("Error", "Exception")):
+        t = rest.strip() or t
+    if len(t) > SHORT_MAX:
+        t = t[:SHORT_MAX - 1].rstrip() + "…"
+    return t

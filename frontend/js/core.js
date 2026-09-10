@@ -1,4 +1,4 @@
-/* core.js — 고정 캔버스 fit, 헤더(상태 필·위치·칩), 경보 배너, 로그, 모달, 잠금.
+/* core.js — 고정 캔버스 fit, 헤더(상태 필·위치·칩), 배너, 로그, 모달, 잠금.
    다른 js 보다 먼저 로드된다. 전역은 window.UI 하나로 모은다.
 
    화면은 한 화면에 다 들어간다(페이지 스크롤 없음). 1920×1040 캔버스를 창 크기에
@@ -90,7 +90,7 @@
   const PILL = {
     idle: ['대기', ''], ready: ['준비', 'ready'], capturing: ['촬영', 'running'],
     running: ['순회', 'running'], paused: ['일시정지', 'paused'],
-    waiting_confirm: ['확인대기', 'waiting'], parking: ['파킹', 'running'],
+    waiting_confirm: ['확인 대기', 'waiting'], parking: ['파킹', 'running'],
     done: ['완료', 'ready'], stopped: ['정지', 'stopped'], error: ['오류', 'error'],
   };
 
@@ -139,42 +139,63 @@
     $('outDir').textContent = q.out_dir || EMPTY;
   };
 
-  // ---------------- 경보 배너 ----------------
+  // ---------------- 배너 ----------------
+  // 항목은 [출처, 문구, 오류인가] 로 모은다. 출처를 굵게 앞에 두면 여러 개가
+  // 나란히 있어도 어디서 난 것인지 한눈에 보인다. 같은 출처·같은 문구는 한 번만.
   UI.applyNotice = function (s) {
     const items = [];
-    const cam = s.camera || {};
-    let alarm = false;
+    const seen = new Set();
+    const add = (src, text, isErr) => {
+      if (!text) return;
+      const key = src + '\u0000' + text;
+      if (seen.has(key)) return;
+      seen.add(key);
+      items.push({ src: src, text: text, err: !!isErr });
+    };
+
+    const cam = s.camera || {}, st = s.stage || {}, q = s.sequence || {};
     (s.warnings || []).forEach(w => {
-      if (w.indexOf('cut off') >= 0) items.push('웨이퍼 감지영역 이탈');
+      if (w.indexOf('cut off') >= 0) add('검출', '웨이퍼가 감지영역 밖');
       else if (w.indexOf('glare covers') >= 0) {
         const m = w.match(/glare covers\s*([\d.]+)%/);
-        items.push('글레어 ' + (m ? m[1] : '?') + '% · 조명 확산 필요');
+        add('검출', '반사광 ' + (m ? m[1] : '?') + '% · 조명 확산 필요');
       }
     });
     const c = s.calib;
     if (c && c.missing_ids && c.missing_ids.length) {
-      items.push('마커 id' + c.missing_ids.join(',') + ' 미검출 · ' + c.corners
-                 + '점 보정(오차 ≈1 mm)');
+      add('보정', '마커 id' + c.missing_ids.join(',') + ' 미검출 · ' + c.corners
+                  + '점 보정(오차 ≈1 mm)');
     }
-    const st = s.stage || {}, q = s.sequence || {};
-    if (st.needs_home) items.push('원점 미설정 · 이동 잠금');
-    if (st.last_error) items.push('스테이지 오류: ' + st.last_error);
-    if (cam.last_error) items.push('카메라 오류: ' + cam.last_error);
-    if (q.estopped) { items.push('비상정지'); alarm = true; }
-    if (q.phase === 'error') { items.push(q.message || '오류'); alarm = true; }
+    if (st.needs_home) add('스테이지', '원점 미설정 · 이동 잠금');
+    if (st.last_error) add('스테이지', st.last_error, true);
+    if (cam.last_error) add('카메라', cam.last_error, true);
+    if (q.estopped) add('스테이지', '비상정지', true);
+    // phase=error 의 문구는 대개 위 오류를 되풀이한다. 이미 오류 항목이 있으면 빼서
+    // 배너가 같은 말을 두 번 하지 않게 한다.
+    if (q.phase === 'error' && !items.some(x => x.err)) add('순회', q.message || '오류', true);
 
     const n = $('notice');
+    const alarm = items.some(x => x.err);
     n.hidden = items.length === 0;
     n.className = 'notice' + (alarm ? ' alarm' : '');
-    n.querySelector('.tag').textContent = alarm ? '경보' : '주의';
+    n.querySelector('.tag').textContent = alarm ? '오류' : '경고';
+    fillNotice(items);
+  };
+
+  function fillNotice(items) {
     const box = $('noticeItems');
     box.textContent = '';
-    items.forEach(t => {
+    items.forEach(it => {
       const sp = document.createElement('span');
-      sp.textContent = t;
+      sp.className = 'item';
+      sp.title = it.src + ' ' + it.text;
+      const b = document.createElement('b');
+      b.textContent = it.src;
+      sp.appendChild(b);
+      sp.appendChild(document.createTextNode(it.text));
       box.appendChild(sp);
     });
-  };
+  }
 
   // ---------------- 오프라인 / 잠금 ----------------
   UI.setOnline = function (on) {
@@ -186,7 +207,7 @@
       chip($('chipStage'), null, EMPTY);
       chip($('chipMeter'), null, EMPTY);
       $('statePill').className = 'statepill error';
-      $('stateText').textContent = '통신두절';
+      $('stateText').textContent = '연결 끊김';
       ['posX', 'posY', 'infoCal', 'infoRect', 'infoWafer', 'infoSamples',
        'mapPos', 'progText', 'curSample', 'curTarget', 'curStatus', 'countInfo',
        'outDir'].forEach(id => { if ($(id)) $(id).textContent = EMPTY; });
@@ -195,8 +216,8 @@
       const n = $('notice');
       n.hidden = false;
       n.className = 'notice alarm';
-      n.querySelector('.tag').textContent = '경보';
-      $('noticeItems').textContent = '서버 통신 두절 · 재연결 중';
+      n.querySelector('.tag').textContent = '오류';
+      fillNotice([{ src: '서버', text: '연결 끊김 · 재연결 중', err: true }]);
     }
     UI.lock();
   };
@@ -232,7 +253,7 @@
 
     const lm = $('lockMsg');
     let why = '';
-    if (!on) why = '서버 통신 두절';
+    if (!on) why = '서버 연결 끊김';
     else if (!st.connected) why = '스테이지 미연결';
     else if (!(st.homed_x && st.homed_y)) why = '원점 미설정';
     else if (st.needs_home) why = '비상정지 · 원점 설정 필요';

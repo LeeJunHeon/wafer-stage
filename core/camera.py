@@ -11,6 +11,13 @@ import time
 import cv2
 import numpy as np
 
+# 환경변수(core/__init__.py)로 이미 막았지만, cv2 가 다른 경로로 먼저 import 된
+# 뒤라면 그때는 늦다. 런타임에서도 한 번 더 끈다.
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
+except Exception:                          # noqa: BLE001
+    pass
+
 BACKENDS = [("DSHOW", cv2.CAP_DSHOW), ("MSMF", cv2.CAP_MSMF), ("ANY", cv2.CAP_ANY)]
 
 
@@ -85,10 +92,12 @@ class Camera:
             self.cap = None
             errors.append("%s: opened but no frames" % name)
 
+        # 첫 줄은 화면에 그대로 나갈 한 줄 요약, 다음 줄부터는 파일 로그용 상세다.
         raise CameraError(
-            "카메라 인덱스 %d 를 열지 못했습니다.\n  %s\n"
-            "settings.json 의 camera_index 를 확인하세요 (0번은 노트북 내장 카메라)."
-            % (idx, "\n  ".join(errors)))
+            "카메라 %d 열기 실패 (설정에서 카메라 번호 확인)\n"
+            "  시도한 백엔드: %s\n"
+            "  0번은 노트북 내장 카메라입니다."
+            % (idx, ", ".join(errors)))
 
     # ------------------------------------------------------------------
     def _configure(self, backend_name):

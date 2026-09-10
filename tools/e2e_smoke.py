@@ -6,7 +6,7 @@
   capture -> 샘플 검출 수 확인
   run(auto, dwell 0.2) -> running -> done, done==총 개수, results.csv 생성
   pause/resume/stop 경로
-  needs_confirm 경로(마커 3개 + 글레어 사진)
+  needs_confirm 경로(마커 3개 + 반사광 사진)
 를 차례로 본다. 하드웨어가 없어도 도는 검증이라 커밋 전에 이걸 돌린다.
 
 실제 data 폴더에는 아무것도 쓰지 않는다. 임시 폴더를 만들어 검증용 사진 두 장만
@@ -268,7 +268,7 @@ async def estop_flow(c):
 async def confirm_flow(c):
     await c.send(cmd="capture")
     ph = await c.wait_phase(("ready", "error"), 90)
-    check(ph == "ready", "글레어 사진도 검출은 된다 (%s)" % ph)
+    check(ph == "ready", "반사광 사진도 검출은 된다 (%s)" % ph)
     c.acks.clear()
     await c.send(cmd="run", mode="auto", dwell_s=0.1)
     await c.pump(3.0)

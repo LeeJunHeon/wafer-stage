@@ -23,8 +23,11 @@
 
   UI.applySequence = function (s) {
     const q = (s && s.sequence) || {};
-    $('curStatus').textContent = (q.phase === 'idle')
+    // 값 칸은 한 줄로 잘린다(CSS). 전체 문구는 title 로 남긴다.
+    const statusTxt = (q.phase === 'idle')
       ? PHASE.idle : (q.message || PHASE[q.phase] || UI.EMPTY);
+    $('curStatus').textContent = statusTxt;
+    $('curStatus').title = statusTxt;
     const total = q.total || 0, done = q.done || 0;
     $('progText').textContent = total ? (done + ' / ' + total) : UI.EMPTY;
     $('bar').style.width = total ? (100 * done / total) + '%' : '0%';
@@ -35,9 +38,11 @@
     $('curTarget').textContent = cur
       ? ('X ' + cur.X.toFixed(1) + '  Y ' + cur.Y.toFixed(1) + ' mm') : UI.EMPTY;
     const vals = (s.samples || []).filter(x => x.value != null);
-    $('measureVal').textContent = vals.length
+    const mv = vals.length
       ? vals.map(x => '#' + x.no + ' ' + x.value + (x.unit || '')).slice(-3).join('  ')
       : '미연결';
+    $('measureVal').textContent = mv;
+    $('measureVal').title = mv;
 
     // 모드/대기는 서버 값이 주인이지만, 사용자가 조작 중일 때는 덮지 않는다.
     if (document.activeElement !== $('dwell') && q.dwell_s != null

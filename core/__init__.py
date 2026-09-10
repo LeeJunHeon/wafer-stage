@@ -10,3 +10,10 @@
   calib   마커 보정 · 픽셀↔mm      (python -m core.calib fit|samples|check)
   stage   아두이노 스테이지 제어    (python -m core.stage st|mx|my|save)
 """
+
+# cv2 는 카메라를 못 열 때마다 백엔드 진단을 콘솔에 쏟아낸다(장비 없이 띄우면
+# 우리 로그가 파묻힌다). 환경변수는 cv2 를 import 하는 순간 읽히므로, core 안
+# 어디서 cv2 를 먼저 import 하든 걸리도록 여기 맨 위에서 정한다.
+import os as _os
+
+_os.environ.setdefault("OPENCV_LOG_LEVEL", "SILENT")
