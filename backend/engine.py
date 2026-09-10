@@ -242,7 +242,7 @@ async def goto_xy(x_mm, y_mm, no=None):
         await push_log(why, "warn")
         return False
     if not calib.in_range(x_mm, y_mm):
-        await push_log("(%.1f, %.1f) 는 가동범위 %g~%g mm 밖입니다"
+        await push_log("(%.1f, %.1f) · 가동범위 %g~%g mm 밖"
                        % (x_mm, y_mm, calib.AXIS_MIN, calib.AXIS_MAX), "warn")
         return False
     try:

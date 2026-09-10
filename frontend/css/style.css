@@ -264,7 +264,7 @@
   .jogpos .v { font-size: 20px; font-weight: 700; color: #21303f; min-width: 62px; text-align: right; }
   .jogpos .u { font-size: 10.5px; color: var(--faint); }
   .jogpos .sp { flex: 1; }
-  .jogstate { font-size: 11.5px; color: #8a5300; }
+  .jogstate { font-size: 11.5px; color: #8a5300; white-space: nowrap; }
   /* 십자 배치: 맵과 같은 방향(위 X+ · 왼쪽 Y+) */
   .jogpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; justify-items: stretch; }
   .jogpad .up { grid-area: 1 / 2; } .jogpad .left { grid-area: 2 / 1; }

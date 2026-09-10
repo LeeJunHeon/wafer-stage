@@ -40,9 +40,16 @@
     return true;
   }
 
-  // 서버가 조그를 끝냈다(성공·거절 모두). 아직 누르고 있으면 다음 스텝.
-  UI.onJogAck = function () {
+  // 서버가 조그를 끝냈다. 거절이면(끝단·이동 중·잠금·순회 중·오류) 이어 보내지
+  // 않는다 - 가동범위 끝에서 누르고 있으면 서버가 거절하는 족족 다시 보내 초당
+  // 1300회까지 오갔다(실측). 다시 움직이려면 손을 뗐다 눌러야 한다.
+  UI.onJogAck = function (msg) {
     inFlight = false;
+    if (msg && msg.ok === false) {
+      if (msg.reason === 'at_limit') note('가동범위 끝');
+      stop();
+      return;
+    }
     if (!held) return;
     // 키보드 조그는 keydown 이 계속 와야 이어진다. 새 keydown 없이 다음 스텝을
     // 보내면 키에서 손을 뗀 뒤에도(keyup 을 놓친 경우) 계속 가 버린다.
@@ -63,6 +70,14 @@
 
   function stop() {
     held = null;          // in-flight 인 한 스텝은 끝까지 간다(중간에 못 끊는다)
+  }
+
+  // 알림 한 줄(1초 뒤 사라진다). 상태 갱신이 덮지 않게 칸을 따로 쓴다.
+  let noteTimer = null;
+  function note(text) {
+    $('jogNote').textContent = text;
+    if (noteTimer) clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => { $('jogNote').textContent = ''; }, 1000);
   }
 
   // 서버가 끊기면 ack 가 영영 오지 않는다. 잠금을 풀어 두어야 재접속 뒤 패드가
