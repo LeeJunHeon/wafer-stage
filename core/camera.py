@@ -232,76 +232,6 @@ class Camera:
                     break
         return best
 
-    # ------------------------------------------------------------------
-    def focus_sweep(self, progress=None):
-        """CAP_PROP_FOCUS 를 훑어 가장 선명한 위치를 찾아 고정한다 (원샷 AF).
-
-        자동초점을 끄면 렌즈는 '마지막에 있던 자리'에 그대로 멈춘다. 그 자리가
-        웨이퍼 거리와 안 맞으면 모든 프레임이 똑같이 흐리고, 선명도 점수는
-        흔들리지 않으므로 'autofocus may still be active' 경고에도 안 걸린다.
-        실제로 그렇게 찍힌 사진이 나왔다. 그래서 한 번 훑어서 직접 맞춘다.
-        """
-        cap = self.cap
-        if cap is None:
-            raise CameraError("카메라가 열려 있지 않습니다.")
-        cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-
-        settle = float(self.p.get("focus_settle_s", 0.35))
-
-        def measure(v):
-            cap.set(cv2.CAP_PROP_FOCUS, float(v))
-            t_end = time.time() + settle
-            while time.time() < t_end:       # 렌즈가 움직이는 동안의 프레임은 버린다
-                cap.read()
-            best = 0.0
-            for _ in range(3):
-                f = self.read()
-                if f is not None:
-                    best = max(best, focus_score(f))
-            return best
-
-        lo = int(self.p.get("focus_min", 0))
-        hi = int(self.p.get("focus_max", 255))
-        coarse = max(1, int(self.p.get("focus_step", 15)))
-        curve = []
-        for v in range(lo, hi + 1, coarse):
-            s = measure(v)
-            curve.append((v, round(s, 1)))
-            if progress:
-                progress(v, s)
-
-        vals = [s for _, s in curve]
-        if not vals or max(vals) <= 0:
-            return {"supported": False, "reason": "프레임을 받지 못했습니다.",
-                    "curve": curve, "best_value": None, "best_score": 0.0}
-        # 어느 위치에서나 점수가 같으면 이 카메라는 초점 제어를 안 받아준다
-        # (고정초점 렌즈이거나 드라이버가 무시). 그때는 렌즈/거리를 손으로 맞춰야 한다.
-        if max(vals) / max(min(vals), 1e-6) < 1.15:
-            return {"supported": False,
-                    "reason": "focus 값을 바꿔도 선명도가 변하지 않습니다 "
-                              "(고정초점이거나 드라이버가 무시).",
-                    "curve": curve, "best_value": None, "best_score": max(vals)}
-
-        best_v = curve[int(np.argmax(vals))][0]
-        # 굵게 훑은 뒤 그 주변만 촘촘히 다시 훑는다
-        fine = max(1, coarse // 4)
-        for v in range(max(lo, best_v - coarse), min(hi, best_v + coarse) + 1, fine):
-            if any(c[0] == v for c in curve):
-                continue
-            s = measure(v)
-            curve.append((v, round(s, 1)))
-            if progress:
-                progress(v, s)
-        curve.sort()
-        best_v, best_s = max(curve, key=lambda c: c[1])
-
-        measure(best_v)                      # 최적값으로 고정
-        self.p["focus"] = best_v
-        self.info["focus"] = best_v
-        self.info["focus_sweep_score"] = round(best_s, 1)
-        return {"supported": True, "reason": "", "curve": curve,
-                "best_value": best_v, "best_score": best_s}
-
     def release(self):
         if self.cap is not None:
             self.cap.release()
@@ -312,32 +242,3 @@ class Camera:
 
     def __exit__(self, *a):
         self.release()
-
-
-def capture_warnings(info, stats, session_max_score, min_score=0):
-    """촬영 관련 경고 문구.
-
-    min_score 는 '세션 최대 대비' 로는 못 잡는 경우를 위한 절대 하한이다.
-    렌즈가 엉뚱한 자리에 고정되면 모든 프레임이 고르게 흐려서 상대 기준은
-    아무 경고도 못 낸다. 실제로 그렇게 놓친 촬영이 있었다.
-    """
-    w = []
-    fmin = max(stats.get("focus_min", 0.0), 1e-6)
-    spread = stats.get("focus_max", 0.0) / fmin
-    if spread >= 3.0:
-        # AF 를 켠 상태에서는 예상된 일이지만, 폭이 크면 고른 한 장도
-        # 운에 좌우되므로 그대로 알려 준다.
-        w.append("autofocus was hunting (focus varied %.0fx across frames)" % spread
-                 if info.get("autofocus") else "autofocus may still be active")
-    chosen = stats.get("chosen_focus_score", 0.0)
-    if session_max_score and chosen < 0.35 * session_max_score:
-        w.append("image may be out of focus")
-    elif min_score and chosen < float(min_score):
-        w.append("image may be out of focus (score %.0f < %.0f)"
-                 % (chosen, float(min_score)))
-    if (info.get("actual_fourcc") or "").upper() != (info.get("requested_fourcc") or "").upper():
-        if (info.get("actual_fourcc") or "").upper().startswith("YUY"):
-            w.append("camera stream is uncompressed (YUY2)")
-        else:
-            w.append("camera stream is uncompressed (%s)" % info.get("actual_fourcc"))
-    return w

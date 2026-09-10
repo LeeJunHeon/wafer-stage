@@ -5,10 +5,13 @@
 서로의 폴더를 몰라도 되도록, wafer_stage 는 자기 폴더와 data 폴더만 안다.
 
   <상위 폴더>\\
-    wafer_stage\\   <- PROJECT_ROOT (여기서 python main.py 를 실행한다)
+    wafer_stage\\   <- PROJECT_ROOT (여기서 python run.py 를 실행한다)
     data\\          <- DATA_DIR (settings.json 의 "data_dir", 기본 "../data")
       out\\         <- OUT_DIR   (촬영 결과 폴더 + log.jsonl)
       calib_matrix.json          <- CALIB_PATH
+
+환경변수 WAFER_STAGE_DATA 가 있으면 settings.json 의 data_dir 보다 우선한다
+(검증 스크립트가 임시 폴더로 돌리기 위한 통로).
 
 data_dir 이 상대경로면 PROJECT_ROOT 기준으로 푼다. 현재 작업 디렉터리에 의존하지
 않으므로 어디서 실행해도 같은 곳을 가리킨다.
@@ -17,13 +20,22 @@ data_dir 이 상대경로면 PROJECT_ROOT 기준으로 푼다. 현재 작업 디
 import json
 import os
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+ENV_DATA_DIR = "WAFER_STAGE_DATA"
+
+# core 의 부모가 프로젝트 루트다(여기에 run.py·settings.json 이 있다).
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SETTINGS_PATH = os.path.join(PROJECT_ROOT, "settings.json")
 
 DEFAULT_DATA_DIR = "../data"
 
 
 def _read_data_dir():
+    # 환경변수가 settings.json 보다 우선한다 - 검증 스크립트가 임시 폴더를 넘겨
+    # 실제 데이터 폴더를 건드리지 않고 돌기 위한 통로다.
+    env = os.environ.get(ENV_DATA_DIR)
+    if env:
+        return env if os.path.isabs(env) else os.path.normpath(
+            os.path.join(PROJECT_ROOT, env))
     d = DEFAULT_DATA_DIR
     try:
         with open(SETTINGS_PATH, "r", encoding="utf-8") as f:

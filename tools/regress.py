@@ -3,11 +3,11 @@
 data/out 아래에서 raw.png 가 있는 폴더를 모두 찾아 다시 검출하고, 그 폴더에
 저장돼 있는 값(samples.json 또는 result.json)과 비교한다.
 
-  python regress.py            # 표 출력. 개수가 줄어든 사진이 있으면 종료코드 1
-  python regress.py --update   # 지금 결과를 그 폴더의 저장값으로 갱신
+  python tools/regress.py            # 표 출력. 개수가 줄어든 사진이 있으면 종료코드 1
+  python tools/regress.py --update   # 지금 결과를 그 폴더의 저장값으로 갱신
 
 마커가 4개 보이는 사진은 calib.sense 와 같은 경로(마커 사각형으로 잘라 검출,
-기계좌표 mm)로, 아니면 main.py 처럼 전체 프레임으로 돌린다(웨이퍼 중심 mm).
+기계좌표 mm)로, 아니면 전체 프레임으로 돌린다(웨이퍼 중심 mm).
 검출 로직을 고칠 때마다 이걸 돌려서 '있던 샘플이 사라지지 않았는지' 를 본다.
 """
 
@@ -18,10 +18,12 @@ import os
 import sys
 from contextlib import redirect_stdout
 
-import calib
-import detect
-import imgio
-import paths
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core import calib                                             # noqa: E402
+from core import detect                                            # noqa: E402
+from core import imgio                                             # noqa: E402
+from core import paths                                             # noqa: E402
 
 MATCH_MM = 8.0          # 이 안에 있으면 같은 샘플로 본다
 MATCH_PX = 30.0

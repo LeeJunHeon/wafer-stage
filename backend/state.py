@@ -6,11 +6,10 @@
 
 import time
 
-import calib
-import detect
-import stage as stage_mod
+from core import calib, detect, paths
+from core import stage as stage_mod
+
 import logger
-import paths
 import version
 from storage import atomic_write_json, safe_read_json
 

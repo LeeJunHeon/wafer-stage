@@ -10,7 +10,8 @@
 import asyncio
 import os
 
-import calib
+from core import calib
+
 import engine
 import logger
 import stagectl

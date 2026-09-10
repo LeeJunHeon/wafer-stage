@@ -65,10 +65,10 @@
 
     <!-- 스테이지 맵 + 샘플 목록 -->
     <div class="col">
-      <section class="panel" style="height: 392px;">
+      <section class="panel mapbox">
         <div class="ph">스테이지 맵 <span class="sub"><span id="mapSize">—</span> · 위 X+ · 왼쪽 Y+</span><span class="sp"></span><span class="sub mono" id="mapPos">—</span></div>
         <div class="pb"><svg id="map" class="map" viewBox="0 0 300 264" preserveAspectRatio="xMidYMid meet"></svg></div>
-        <div class="legend"><span><i></i>대기</span><span><i class="target"></i>현재</span><span><i class="done"></i>완료</span><span><i class="skip"></i>제외</span><span style="margin-left:auto">■ 마커 · ┅ 감지영역 · ✚ 포인터 · P 파킹</span></div>
+        <div class="legend"><span><i></i>대기</span><span><i class="target"></i>현재</span><span><i class="done"></i>완료</span><span><i class="skip"></i>제외</span><span class="right">■ 마커 · ┅ 감지영역 · ✚ 포인터 · P 파킹</span></div>
       </section>
       <section class="panel">
         <div class="ph">샘플 목록 <span class="sp"></span><button class="btn small" id="btnAll">전체 선택</button><button class="btn small" id="btnNone">전체 해제</button></div>
@@ -80,7 +80,7 @@
     <!-- 조작 -->
     <section class="panel">
       <div class="ph">조작</div>
-      <div class="pb" style="display:flex;flex-direction:column;">
+      <div class="pb stack">
         <div class="sec">
           <div class="t">스테이지</div>
           <div class="row"><button class="btn" id="btnConnect">연결</button><button class="btn" id="btnHome">원점 잡기 <span class="key">fz</span></button><button class="btn" id="btnPark">파킹</button></div>
@@ -91,7 +91,7 @@
           <button class="btn primary big wide" id="btnCapture">촬영 · 검출</button>
           <div class="note">파킹 후 촬영하고 그 사진의 마커로 보정을 다시 계산합니다.</div>
         </div>
-        <div class="sec" style="flex:1;">
+        <div class="sec grow">
           <div class="t">순회 · 측정</div>
           <div class="seg" role="radiogroup">
             <label><input type="radio" name="mode" value="auto" checked>자동</label>

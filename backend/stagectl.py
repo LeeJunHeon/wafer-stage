@@ -12,8 +12,9 @@ import asyncio
 import functools
 from concurrent.futures import ThreadPoolExecutor
 
+from core import stage as stage_mod
+
 import logger
-import stage as stage_mod
 
 
 class StageCtl:
@@ -78,10 +79,6 @@ class StageCtl:
 
     async def save(self):
         return await self._call(self._need().save)
-
-    @property
-    def aborted(self):
-        return bool(getattr(self.dev, "_aborted", False))
 
     def abort(self):
         """워커 큐를 거치지 않는 즉시 호출 (동기)."""

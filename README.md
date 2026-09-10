@@ -8,29 +8,32 @@
 ```
 자동 측정 프로그램/
 ├── wafer_stage/            # 이 저장소 (코드만)
+│   ├── run.py              # 진입점 (루트의 유일한 .py)
+│   ├── settings.json       # 설정의 단일 출처
+│   ├── core/               # 장비·검출 핵심. 서버·화면을 모른다
+│   │   ├── paths.py        #   경로 정의 (코드와 데이터 분리)
+│   │   ├── imgio.py        #   한글 경로에서도 되는 이미지 입출력
+│   │   ├── camera.py       #   카메라 열기·초점·단발 촬영
+│   │   ├── detect.py       #   원판/샘플 검출 엔진
+│   │   ├── calib.py        #   픽셀 <-> 기계좌표 보정 + 감지영역 + 검출 호출
+│   │   └── stage.py        #   펌웨어 V6 시리얼 드라이버
 │   ├── backend/            # 서버
-│   │   ├── server.py       #   진입점: FastAPI · 라우트 · /ws · lifespan · CLI
+│   │   ├── server.py       #   FastAPI · 라우트 · /ws · lifespan · CLI
 │   │   ├── window.py       #   pywebview 창, 포트 탐색, 단일 인스턴스, 종료
 │   │   ├── connection.py   #   WebSocket 관리 + state/log/ack push
 │   │   ├── state.py        #   상태의 주인 + settings.json 로드/저장
 │   │   ├── commands.py     #   화면 명령 처리
 │   │   ├── engine.py       #   촬영·검출 + 샘플 순회
-│   │   ├── stagectl.py     #   stage.Stage 를 단일 워커 스레드에서 asyncio 로
+│   │   ├── stagectl.py     #   core.stage 를 단일 워커 스레드에서 asyncio 로
 │   │   ├── vision.py       #   촬영·검출(executor) + 프레임 JPEG 보관
 │   │   ├── measure.py      #   계측기 인터페이스 (지금은 Dummy)
 │   │   ├── loops.py        #   주기 태스크(st 폴링)
 │   │   └── logger.py storage.py version.py
 │   ├── frontend/           # index.html · css/style.css
 │   │                       # js/{app,core,camera,map,samples,sequence}.js
-│   ├── test/e2e_smoke.py   # 하드웨어 없이 전 흐름 검증
-│   ├── camera.py           # 카메라 열기·초점·단발 촬영
-│   ├── detect.py           # 원판/샘플 검출 엔진 (GUI 의존성 없음)
-│   ├── calib.py            # 픽셀 <-> 기계좌표 보정 + 감지영역 + 검출 호출
-│   ├── stage.py            # 펌웨어 V6 시리얼 드라이버 (CLI 도 있음)
-│   ├── imgio.py            # 한글 경로에서도 되는 이미지 입출력
-│   ├── paths.py            # 경로 정의 (코드와 데이터 분리)
-│   ├── regress.py          # 지금까지 찍은 사진 전부로 검출 회귀
-│   ├── settings.json       # 설정의 단일 출처
+│   ├── tools/              # 개발·검증용. 프로그램 실행에는 필요 없다
+│   │   ├── regress.py      #   지금까지 찍은 사진 전부로 검출 회귀
+│   │   └── e2e_smoke.py    #   하드웨어 없이 전 흐름 검증
 │   ├── firmware/stage_v6/  # 아두이노 스케치
 │   └── assets/             # aruco_markers_30mm.pdf (실제 크기 100% 로 인쇄)
 └── data/                   # 저장소 밖. 코드와 무관한 산출물
@@ -41,27 +44,29 @@
 ```
 
 `data` 위치는 `settings.json` 의 `data_dir` (기본 `../data`, wafer_stage 기준 상대경로).
+환경변수 `WAFER_STAGE_DATA` 가 있으면 그쪽이 우선한다 — `tools/e2e_smoke.py` 가
+임시 폴더로 돌려 실제 `data/` 를 건드리지 않는 데 쓴다.
 
 ## 실행
 
 ```
-python backend/server.py                 # 창(pywebview)으로 실행
-python backend/server.py --no-window     # 브라우저로 접속 (http://127.0.0.1:8000/)
-python backend/server.py --dry           # 시리얼 없이(이동은 즉시 완료로 흉내)
-python backend/server.py --image PATH    # 촬영 대신 저장된 사진
-python backend/server.py --port 8010     # 포트 지정 (기본 8000, 쓰이면 8001~ 자동 탐색)
+python run.py                 # 창(pywebview)으로 실행
+python run.py --no-window     # 브라우저로 접속 (http://127.0.0.1:8000/)
+python run.py --dry           # 시리얼 없이(이동은 즉시 완료로 흉내)
+python run.py --image PATH    # 촬영 대신 저장된 사진
+python run.py --port 8010     # 포트 지정 (기본 8000, 쓰이면 8001~ 자동 탐색)
 ```
 
 보조 도구(하드웨어 점검·회귀):
 
 ```
-python stage.py --list-ports      # 시리얼 포트 목록
-python stage.py st                # 스테이지 상태 (mx / my / save 도 가능)
-python calib.py fit               # 마커로 보정해 data/calib_matrix.json 저장
-python calib.py samples           # 촬영 → 검출 → 기계좌표 표
-python calib.py check --save      # 저장된 보정과 지금 사진 비교
-python regress.py                 # data/out 의 사진 전부로 검출 회귀 (개수 줄면 exit 1)
-python test/e2e_smoke.py          # 서버를 띄워 capture→run→done 전 흐름 검증
+python -m core.stage --list-ports   # 시리얼 포트 목록
+python -m core.stage st             # 스테이지 상태 (mx / my / save 도 가능)
+python -m core.calib fit            # 마커로 보정해 data/calib_matrix.json 저장
+python -m core.calib samples        # 촬영 → 검출 → 기계좌표 표
+python -m core.calib check --save   # 저장된 보정과 지금 사진 비교
+python tools/regress.py             # data/out 의 사진 전부로 검출 회귀 (개수 줄면 exit 1)
+python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 흐름 검증
 ```
 
 ## 통신 계약 (WebSocket `/ws`, JSON)

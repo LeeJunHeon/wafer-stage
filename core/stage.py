@@ -14,11 +14,11 @@
 파싱은 ASCII 부분만 보므로 문제 없다).
 
 수동 확인:
-  python stage.py --list-ports
-  python stage.py st
-  python stage.py mx 100
-  python stage.py my 50
-  python stage.py save
+  python -m core.stage --list-ports
+  python -m core.stage st
+  python -m core.stage mx 100
+  python -m core.stage my 50
+  python -m core.stage save
 """
 
 import argparse
@@ -27,7 +27,7 @@ import os
 import sys
 import time
 
-import paths
+from . import paths
 
 PPMM = 160.0                  # 160 펄스 = 1mm (.ino 의 PPMM)
 X_MAX_PULSE = 39620           # 247.6mm
@@ -393,7 +393,7 @@ def main(argv=None):
                   % (s["homed_x"], s["homed_y"], s["dirty"]))
         elif a.cmd in ("mx", "my"):
             if a.value is None:
-                print("mm 값이 필요합니다: python stage.py %s 100" % a.cmd)
+                print("mm 값이 필요합니다: python -m core.stage %s 100" % a.cmd)
                 return 2
             ln = st.move_x_mm(a.value) if a.cmd == "mx" else st.move_y_mm(a.value)
             print("보고      : %s" % ln.strip())

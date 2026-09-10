@@ -11,7 +11,7 @@ import os
 import sys
 import time
 
-import paths
+from core import paths
 
 _early = []          # [(level, msg)] - configure 전에 쌓인 진단
 _enabled = True

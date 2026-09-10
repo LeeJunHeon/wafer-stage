@@ -4,11 +4,11 @@ CLI 전용이다. cv2.imshow 도 Tkinter 도 쓰지 않는다 (헤드리스/원�
 하고, 결과는 전부 콘솔 텍스트와 파일로 남긴다).
 
 사용법
-  python calib.py fit     [--image photo.png]   # 마커로 변환행렬을 구해 저장
-  python calib.py px2mm   700 500               # 픽셀 -> 기계좌표
-  python calib.py mm2px   100 50                # 기계좌표 -> 픽셀
-  python calib.py samples [--image photo.png]   # 검출된 샘플을 기계좌표로
-  python calib.py check   [--image photo.png] [--save]   # 카메라가 움직였는지 확인
+  python -m core.calib fit     [--image photo.png]   # 마커로 변환행렬을 구해 저장
+  python -m core.calib px2mm   700 500               # 픽셀 -> 기계좌표
+  python -m core.calib mm2px   100 50                # 기계좌표 -> 픽셀
+  python -m core.calib samples [--image photo.png]   # 검출된 샘플을 기계좌표로
+  python -m core.calib check   [--image photo.png] [--save]   # 카메라가 움직였는지 확인
 
 카메라 고정이 흔들려 촬영 사이에 1~2도씩 돌아가는 것이 확인됐다 (화면 중앙에서
 130mm 떨어진 점이 1도에 2.3mm 움직인다). 마커 4개는 베이스에 고정돼 있으므로,
@@ -31,10 +31,10 @@ import time
 import cv2
 import numpy as np
 
-import camera
-import detect
-import imgio
-import paths
+from . import camera
+from . import detect
+from . import imgio
+from . import paths
 
 HERE = paths.PROJECT_ROOT
 SETTINGS = paths.SETTINGS_PATH      # 경로는 전부 paths.py 를 거친다
@@ -172,7 +172,7 @@ def fit_homography(src, dst):
 
 def load_matrix():
     if not os.path.exists(MATRIX):
-        print("calib_matrix.json 이 없습니다. 먼저 'python calib.py fit' 을 실행하세요.")
+        print("calib_matrix.json 이 없습니다. 먼저 'python -m core.calib fit' 을 실행하세요.")
         return None
     with open(MATRIX, "r", encoding="utf-8") as f:
         d = json.load(f)

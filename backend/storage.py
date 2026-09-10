@@ -8,7 +8,7 @@ import json
 import os
 
 import logger
-import paths
+from core import paths
 
 paths.ensure_data_dirs()
 

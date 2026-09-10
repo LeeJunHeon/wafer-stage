@@ -1,13 +1,9 @@
-"""server.py - 진입점.
+"""server.py - FastAPI 서버.
 
 FastAPI 앱 + 정적 서빙(/ , /css, /js) + 프레임(/frame/<id>.jpg) + WebSocket(/ws)
 + lifespan. 주기 태스크는 loops.py, 창은 window.py 가 담당한다.
 
-실행:
-  python backend/server.py                 # 창(pywebview)
-  python backend/server.py --no-window     # 브라우저로 접속
-  python backend/server.py --dry           # 시리얼 없이(이동은 흉내)
-  python backend/server.py --image PATH    # 촬영 대신 그 사진
+진입점은 루트의 run.py 다 (python run.py [--dry] [--image P] [--no-window] [--port N]).
 """
 
 import argparse
@@ -23,7 +19,8 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
-# backend 모듈은 루트 모듈(camera/detect/calib/stage/imgio/paths)을 import 한다.
+# backend 모듈끼리는 이름으로(import engine), core 는 패키지로(from core import calib)
+# import 한다. 둘 다 찾을 수 있게 루트와 backend 를 경로에 넣는다.
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_BACKEND_DIR)
 for p in (_ROOT, _BACKEND_DIR):
@@ -37,7 +34,7 @@ from fastapi.staticfiles import StaticFiles                        # noqa: E402
 import commands                                                    # noqa: E402
 import logger                                                      # noqa: E402
 import loops                                                       # noqa: E402
-import paths                                                       # noqa: E402
+from core import paths                                                  # noqa: E402
 import stagectl                                                    # noqa: E402
 import version                                                     # noqa: E402
 import vision                                                      # noqa: E402

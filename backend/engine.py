@@ -12,10 +12,10 @@ import csv
 import os
 import time
 
-import calib
+from core import calib, paths
+
 import logger
 import measure as measure_mod
-import paths
 import stagectl
 import storage
 import vision

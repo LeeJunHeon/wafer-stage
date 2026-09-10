@@ -1,6 +1,6 @@
 """e2e_smoke.py - 서버를 실제로 띄워 WebSocket 으로 전 흐름을 확인한다.
 
-  python test/e2e_smoke.py
+  python tools/e2e_smoke.py
 
 --dry(시리얼 없이) + --image(촬영 대신 사진) 로 서버를 띄우고
   capture -> 샘플 검출 수 확인
@@ -8,24 +8,47 @@
   pause/resume/stop 경로
   needs_confirm 경로(마커 3개 + 글레어 사진)
 를 차례로 본다. 하드웨어가 없어도 도는 검증이라 커밋 전에 이걸 돌린다.
+
+실제 data 폴더에는 아무것도 쓰지 않는다. 임시 폴더를 만들어 검증용 사진 두 장만
+복사해 넣고, WAFER_STAGE_DATA 로 서버에 넘긴다(끝나면 지운다).
 """
 
 import asyncio
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
-import paths                                                        # noqa: E402
+from core import paths                                                        # noqa: E402
 
-GOOD = os.path.join(paths.OUT_DIR, "seq_20260909_150413", "raw.png")
-GLARE = os.path.join(paths.OUT_DIR, "seq_20260909_150621", "raw.png")
+# 원본(검증용 사진)은 실제 데이터 폴더에서 읽기만 한다.
+SRC = {"seq_20260909_150413": os.path.join(paths.OUT_DIR, "seq_20260909_150413", "raw.png"),
+       "seq_20260909_150621": os.path.join(paths.OUT_DIR, "seq_20260909_150621", "raw.png")}
+DATA_DIR = None                     # 임시 데이터 폴더 (setup_data 가 채운다)
+
+
+def setup_data():
+    """임시 데이터 폴더를 만들고 검증용 사진 두 장을 복사한다.
+
+    서버는 여기에만 쓴다(seq_* 폴더·calib_matrix.json·로그). 실제 data 폴더를
+    검증 찌꺼기로 채우지 않기 위한 것이다.
+    """
+    global DATA_DIR
+    DATA_DIR = tempfile.mkdtemp(prefix="wafer_smoke_")
+    out = os.path.join(DATA_DIR, "out")
+    for name, src in SRC.items():
+        d = os.path.join(out, name)
+        os.makedirs(d, exist_ok=True)
+        shutil.copy2(src, os.path.join(d, "raw.png"))
+    return {name: os.path.join(out, name, "raw.png") for name in SRC}
 
 
 def free_port():
@@ -96,8 +119,9 @@ async def run_case(port, image, fn):
 def start_server(port, image):
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
+    env[paths.ENV_DATA_DIR] = DATA_DIR     # 실제 data 폴더 대신 임시 폴더에 쓴다
     p = subprocess.Popen(
-        [sys.executable, os.path.join(ROOT, "backend", "server.py"),
+        [sys.executable, os.path.join(ROOT, "run.py"),
          "--dry", "--no-window", "--port", str(port), "--image", image],
         cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if not wait_port(port):
@@ -229,23 +253,28 @@ async def confirm_flow(c):
 
 
 def main():
-    for f in (GOOD, GLARE):
+    for f in SRC.values():
         if not os.path.exists(f):
             raise SystemExit("검증용 사진이 없습니다: %s" % f)
-    for name, image, flow in (("정상 흐름", GOOD, main_flow),
-                              ("정지 경로", GOOD, stop_flow),
-                              ("비상정지 경로", GOOD, estop_flow),
-                              ("확인 필요 경로", GLARE, confirm_flow)):
-        port = free_port()
-        print("[%s] 서버 :%d  %s" % (name, port, os.path.basename(os.path.dirname(image))),
-              flush=True)
-        p = start_server(port, image)
-        try:
-            asyncio.run(run_case(port, image, flow))
-        finally:
-            p.kill()
-            p.wait(timeout=10)
-        time.sleep(0.5)
+    img = setup_data()
+    good, glare = img["seq_20260909_150413"], img["seq_20260909_150621"]
+    try:
+        for name, image, flow in (("정상 흐름", good, main_flow),
+                                  ("정지 경로", good, stop_flow),
+                                  ("비상정지 경로", good, estop_flow),
+                                  ("확인 필요 경로", glare, confirm_flow)):
+            port = free_port()
+            print("[%s] 서버 :%d  %s"
+                  % (name, port, os.path.basename(os.path.dirname(image))), flush=True)
+            p = start_server(port, image)
+            try:
+                asyncio.run(run_case(port, image, flow))
+            finally:
+                p.kill()
+                p.wait(timeout=10)
+            time.sleep(0.5)
+    finally:
+        shutil.rmtree(DATA_DIR, ignore_errors=True)
     print("")
     if FAIL:
         print("실패 %d건:" % len(FAIL))
