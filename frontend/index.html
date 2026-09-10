@@ -36,7 +36,7 @@
   <div class="main">
     <!-- 카메라 -->
     <section class="panel">
-      <div class="ph">카메라 <span class="sp"></span><span class="sub" id="frameTime">촬영 없음</span><button class="btn sm" id="btnLive">미리보기</button></div>
+      <div class="ph">카메라 <span class="sp"></span><span class="sub" id="frameTime">촬영 없음</span><span class="seg segsm" id="viewSeg" role="radiogroup"><label><input type="radio" name="camview" value="live" id="viewLive">미리보기</label><label><input type="radio" name="camview" value="snap" id="viewSnap" checked>촬영본</label></span></div>
       <div class="pb camwrap">
         <div class="camview">
           <img class="live" id="live" alt="" hidden>

@@ -97,9 +97,14 @@
   /* camera */
   .panel > .pb.camwrap { display: flex; flex-direction: column; }
   .camview { position: relative; background: var(--img-bg); flex: 1; min-height: 0; }
+  /* 미리보기 영상은 absolute, SVG 는 정적 배치라 그냥 두면 오버레이가 영상 밑에
+     깔린다(감지영역·포인터가 안 보였다). SVG 를 한 층 위로 올린다. 둘 다 같은
+     16:9 를 contain 으로 채우므로 좌표는 그대로 맞는다. */
   .camview .live { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: var(--img-bg); }
-  .camview .noframe { position: absolute; inset: 0; display: grid; place-items: center; color: #7d8a99; font-size: 13px; letter-spacing: .3px; }
-  .camview svg { display: block; width: 100%; height: 100%; }
+  /* 미리보기 영상 위에도 뜨므로(카메라 열기 실패) 밝은 그림에서 글자가 묻히지
+     않게 바탕을 깐다. 촬영본이 없을 때는 어차피 검은 화면이라 티가 안 난다. */
+  .camview .noframe { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; padding: 0 24px; text-align: center; background: rgba(14,20,24,.72); color: #c8d4dd; font-size: 13px; letter-spacing: .3px; }
+  .camview svg { position: relative; z-index: 1; display: block; width: 100%; height: 100%; }
   .caminfo { display: grid; grid-template-columns: 1.5fr 1.15fr 1fr .85fr; border-top: 1px solid var(--line); }
   .caminfo > div { padding: 6px 10px; border-right: 1px solid var(--line); min-width: 0; }
   .caminfo > div:last-child { border-right: 0; }
@@ -108,11 +113,13 @@
   /* 4칸이 1086px 를 나눠 쓴다. 보정 문구(잔차 RMS/최대까지)가 가장 길어
      12px 로 맞춘다 - 잘려서 '...' 이 되면 숫자를 못 읽는다. */
   .caminfo .v { font-family: var(--mono); font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .seg.segsm label { padding: 3px 10px; font-size: 11.5px; }
   .camlegend { display: flex; gap: 14px; padding: 4px 12px 6px; font-size: 11px; color: var(--dim); border-top: 1px solid var(--line); }
   .camlegend .sp { flex: 1; }
   .capturing { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(14,20,24,.6); color: #fff; font-weight: 600; letter-spacing: .3px; }
   .ov-rect { fill: none; stroke: #ffd400; stroke-width: 2; stroke-dasharray: 8 6; }
-  /* 미리보기에서는 검출 결과가 없다. 감지영역·포인터만 흐리게 남긴다. */
+  /* 미리보기에서는 검출 결과가 없다. 촬영본은 감추고 감지영역·포인터만 흐리게. */
+  #cam.livemode #frame { display: none; }
   #cam.livemode #ovMarkers, #cam.livemode #ovWafer, #cam.livemode #ovSamples { display: none; }
   #cam.livemode #ovRect, #cam.livemode #ovPointer { opacity: .45; }
   .ov-wafer { fill: none; stroke: #ffd400; stroke-width: 1.5; opacity: .9; }
@@ -206,7 +213,10 @@
   .foot { display: grid; grid-template-rows: 1fr 24px; gap: 6px; min-height: 0; }
   .log { background: #101820; color: #cfe3ee; font-family: var(--mono); font-size: 12px; line-height: 1.45; padding: 8px 12px; overflow: auto; border-radius: 0 0 6px 6px; flex: 1; min-height: 0; }
   .log div { white-space: pre; }
-  .log .t { color: #6f8796; } .log .tx { color: #ffcf6e; } .log .rx { color: #9be7b0; } .log .cam { color: #8fd0ff; } .log .warn { color: #ffb0b0; } .log .sys { color: #cfe3ee; }
+  /* tx 노랑(보냄) / rx 하늘(받음) / ok 초록. rx 와 ok 가 같은 초록이라
+     시리얼 응답인지 서버가 낸 성공 로그인지 구분되지 않았다. */
+  .log .t { color: #6f8796; } .log .tx { color: #ffcf6e; } .log .rx { color: #8fd0ff; }
+  .log .ok { color: #9be7b0; } .log .warn { color: #ffb0b0; } .log .sys { color: #cfe3ee; }
   .logopt { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 400; color: var(--dim); cursor: pointer; }
   .logopt input { margin: 0; }
   .statusbar { display: flex; align-items: center; gap: 18px; padding: 0 12px; font-size: 11.5px; color: var(--dim); background: var(--panelhead); border: 1px solid var(--line); border-radius: 4px; }

@@ -36,6 +36,7 @@ PREVIEW_W = 640
 PREVIEW_H = 360
 PREVIEW_Q = 70
 RETRY_S = 5.0                  # 카메라를 못 열었을 때 다시 시도하는 간격
+FAIL_LIMIT = 3                 # 이만큼 연속 실패해야 카메라를 닫는다
 
 
 def set_image_override(path):
@@ -144,10 +145,16 @@ class CameraHolder:
             self._jpg_ts = time.time()
 
     def _loop(self):
+        """grab() 은 쉬지 않고, 인코딩은 PREVIEW_FPS 로.
+
+        grab() 은 카메라가 다음 프레임을 낼 때까지 블록하므로 이 루프의 속도는
+        장치 fps 가 정한다(바쁜 대기가 아니다). 드라이버 큐를 계속 비워 두기
+        때문에 250ms 마다 꺼내는 그림이 '지금 장면' 이다.
+        """
         period = 1.0 / PREVIEW_FPS
-        next_retry = 0.0
+        next_shot = 0.0
+        fails = 0
         while not self._stop.is_set():
-            t0 = time.monotonic()
             # --image 모드는 카메라를 열지 않는다. 그 사진을 미리보기로 낸다.
             if IMAGE_OVERRIDE:
                 if not self._jpg:
@@ -163,27 +170,36 @@ class CameraHolder:
                 self._reopen.clear()
                 with self.lock:
                     self._close_locked()
-                next_retry = 0.0
+                fails = 0
             try:
+                want_shot = time.monotonic() >= next_shot
                 with self.lock:
                     if self.cam is None:
-                        if time.monotonic() < next_retry:
-                            raise camera.CameraError(self.error or "카메라 열기 대기")
                         self._open_locked()
-                    bgr = self.cam.read()   # 실패면 None (Camera.read 규약)
-                if bgr is None:
-                    raise camera.CameraError("프레임을 읽지 못함")
-                self._encode(bgr)
+                        want_shot = True
+                    if not self.cam.grab():
+                        raise camera.CameraError("프레임을 받지 못함")
+                    bgr = self.cam.retrieve() if want_shot else None
+                if want_shot:
+                    if bgr is None:
+                        raise camera.CameraError("프레임을 읽지 못함")
+                    self._encode(bgr)
+                    next_shot = time.monotonic() + period
+                fails = 0
                 self._status(True)
             except Exception as e:         # noqa: BLE001
+                # 한 장 빠지는 것은 흔하다. 연달아 실패할 때만 장치를 다시 연다.
+                fails += 1
+                if fails < FAIL_LIMIT and self.cam is not None:
+                    self._stop.wait(period)
+                    continue
+                # 실패가 이어지면 장치를 닫고 RETRY_S 뒤에 다시 연다.
                 with self.lock:
                     self._close_locked()
                 self._jpg = b""
-                next_retry = time.monotonic() + RETRY_S
+                fails = 0
                 self._status(False, str(e).splitlines()[0] if str(e) else type(e).__name__)
                 self._stop.wait(RETRY_S)
-                continue
-            self._stop.wait(max(0.0, period - (time.monotonic() - t0)))
 
     # ---- 촬영 ----
     def capture_best(self, params):

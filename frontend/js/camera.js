@@ -15,7 +15,7 @@
 
   function setLive(on) {
     live = !!on;
-    $('btnLive').textContent = live ? '촬영본' : '미리보기';
+    $(live ? 'viewLive' : 'viewSnap').checked = true;
     $('cam').classList.toggle('livemode', live);
     $('live').hidden = !live;
     if (live) {
@@ -57,12 +57,17 @@
       img.removeAttribute('href');
       lastFrameId = null;
     }
-    $('capturing').hidden = !(s.camera && s.camera.capturing);
-    // 촬영본이 없으면 검은 화면 위에 오버레이만 뜬다. 그림 대신 안내 한 줄을 둔다.
+    const cam = s.camera || {};
+    $('capturing').hidden = !cam.capturing;
+    // 보여 줄 그림이 없을 때 검은 화면만 두지 않는다. 미리보기인데 카메라가 안
+    // 열렸으면 그 사유를, 촬영본인데 아직 안 찍었으면 '촬영 없음' 을 띄운다.
     const q0 = s.sequence || {};
-    const bare = !s.frame && !live;
-    $('noFrame').hidden = !bare;
-    $('overlays').style.display = (bare || (live && !s.frame)) ? 'none' : '';
+    let note = '';
+    if (live && cam.ok === false) note = '카메라 열기 실패 · ' + (cam.last_error || '사유 불명');
+    else if (!live && !s.frame) note = '촬영 없음';
+    $('noFrame').textContent = note;
+    $('noFrame').hidden = !note;
+    $('overlays').style.display = (!s.frame && !live) ? 'none' : '';
     // 촬영이 끝나면 촬영본으로 되돌린다(검출 결과가 보이게). 새로고침으로 들어왔을
     // 때도 이미 찍어 둔 결과가 있으면 그쪽을 먼저 보여 준다.
     if (firstState) {
@@ -71,7 +76,6 @@
     }
     if (live && lastPhase === 'capturing' && q0.phase !== 'capturing') setLive(false);
     lastPhase = q0.phase;
-    $('btnLive').disabled = !UI.online;
 
     // ---- 마커 ----
     const gm = $('ovMarkers');
@@ -134,7 +138,7 @@
     // 아무 일도 하지 않는다(포인터가 영영 안 보였다) - 속성으로 직접 켜고 끈다.
     const st = s.stage || {};
     const gp = $('ovPointer');
-    if (st.connected && st.u != null && st.v != null && (s.frame || live)) {
+    if (st.connected && st.u != null && st.v != null) {
       gp.removeAttribute('hidden');
       gp.setAttribute('transform', 'translate(' + st.u + ',' + st.v + ')');
       $('pointerLabel').textContent = 'X ' + UI.fmt(st.x_mm) + ' Y ' + UI.fmt(st.y_mm)
@@ -174,7 +178,8 @@
       + '이동 경로에 프로브·웨이퍼가 없는지 확인 후 진행하십시오.', '원점 설정');
     if (ok) UI.send({ cmd: 'stage_home', axis: 'xy' });
   };
-  $('btnLive').onclick = () => setLive(!live);
+  $('viewLive').onchange = () => setLive(true);
+  $('viewSnap').onchange = () => setLive(false);
   // 처음에는 미리보기로 시작한다 - 촬영본이 없는 상태에서 검은 화면을 보여 줄
   // 이유가 없다. 촬영이 끝나면 자동으로 촬영본으로 넘어간다.
   setLive(true);

@@ -95,7 +95,9 @@ async def lifespan(_app):
         with contextlib.suppress(Exception):
             await stagectl.ctl.disconnect()
         stagectl.ctl.shutdown()
-        vision.shutdown()
+        # vision.shutdown 은 미리보기 스레드 join 을 기다린다 - 루프를 막지 않는다.
+        with contextlib.suppress(Exception):
+            await asyncio.get_running_loop().run_in_executor(None, vision.shutdown)
 
 
 app = FastAPI(lifespan=lifespan)

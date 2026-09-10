@@ -16,8 +16,7 @@ import engine
 import logger
 import stagectl
 import vision
-from connection import (push_ack, push_log, push_state,
-                        push_log_threadsafe, push_state_threadsafe)
+from connection import push_ack, push_log, push_state, run_on_loop
 from state import state
 
 _shutdown_handler = None
@@ -64,15 +63,22 @@ async def handle_command(data):
 
 
 # --------------------------------------------------------------------------
-def _on_camera_status(ok, err):
-    """미리보기 스레드가 알려 오는 카메라 상태. 상태가 바뀔 때만 불린다."""
+async def _camera_changed(ok, err):
     state.camera["ok"] = bool(ok)
     state.camera["last_error"] = "" if ok else str(err or "")
     if ok:
-        push_log_threadsafe("카메라 준비 · index %s" % state.camera["index"], "ok")
+        await push_log("카메라 준비 · index %s" % state.camera["index"], "ok")
     else:
-        push_log_threadsafe("카메라 열기 실패 · %s" % state.camera["last_error"], "err")
-    push_state_threadsafe()
+        await push_log("카메라 열기 실패 · %s" % state.camera["last_error"], "err")
+    await push_state()
+
+
+def _on_camera_status(ok, err):
+    """미리보기 스레드가 알려 오는 카메라 상태(상태가 바뀔 때만 불린다).
+
+    스레드에서 state 를 직접 고치지 않는다 - 루프로 넘겨 거기서 바꾸고 알린다.
+    """
+    run_on_loop(lambda: _camera_changed(ok, err))
 
 
 def start_preview():
@@ -91,7 +97,9 @@ async def _preview_start(_data):
 
 
 async def _preview_stop(_data):
-    vision.holder.stop()
+    # holder.stop() 은 스레드 join(최대 2초)이라 루프에서 직접 부르면 화면이 멎는다.
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, vision.holder.stop)
     state.camera["preview"] = False
     await push_log("미리보기 정지")
     await push_state()

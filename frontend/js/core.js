@@ -40,7 +40,7 @@
     meta = meta || {};
     if (meta.serial && !$('optSerial').checked) return;
     if (meta.poll && !$('optPoll').checked) return;
-    const cls = ({ ok: 'rx', warn: 'warn', err: 'warn', info: 'sys',
+    const cls = ({ ok: 'ok', warn: 'warn', err: 'warn', info: 'sys',
                    tx: 'tx', rx: 'rx' })[level] || 'sys';
     const div = document.createElement('div');
     const t = document.createElement('span'); t.className = 't'; t.textContent = hhmmss();
@@ -223,7 +223,8 @@
     dis('btnNone', !on);
     dis('btnGoto', !canMove || running || UI.selected == null);
     dis('btnMeasureHere', !canMove || running);
-    dis('btnLive', !on);
+    dis('viewLive', !on);
+    dis('viewSnap', !on);
     dis('btnOpenDir', !on || !q.out_dir);
     dis('btnExport', !on || !q.out_dir);
     $('btnConnect').textContent = st.connected ? '연결 해제' : '연결';

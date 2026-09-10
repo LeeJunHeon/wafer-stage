@@ -160,6 +160,24 @@ class Camera:
         ok, f = self.cap.read()
         return f if ok and f is not None and f.size else None
 
+    def grab(self):
+        """프레임 하나를 받아 버리기만 한다(디코딩 없음).
+
+        미리보기처럼 드문드문 볼 때 read() 만 하면 드라이버 큐에 프레임이 쌓여
+        영상이 몇 초씩 늦는다. 계속 grab() 으로 큐를 비우고 보여 줄 때만
+        retrieve() 로 꺼내면 항상 최신 장면이 나온다.
+        """
+        if self.cap is None:
+            return False
+        return bool(self.cap.grab())
+
+    def retrieve(self):
+        """마지막으로 grab() 한 프레임을 디코딩해서 돌려준다. 실패면 None."""
+        if self.cap is None:
+            return None
+        ok, f = self.cap.retrieve()
+        return f if ok and f is not None and f.size else None
+
     def capture_best(self, n=None, retry=True):
         """연속 n 프레임을 받아 가장 선명한 한 장을 고른다.
 

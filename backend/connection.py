@@ -6,6 +6,7 @@ call_soon_threadsafe 로 넘긴다.
 """
 
 import asyncio
+import inspect
 import json
 
 import logger
@@ -76,13 +77,23 @@ async def push_ack(of, ok, reason="", needs_confirm=None, **extra):
     await manager.broadcast(msg)
 
 
-def _from_thread(payload):
-    """워커 스레드에서 브로드캐스트를 예약한다. 루프가 없거나 닫혔으면 버린다."""
+def run_on_loop(fn):
+    """워커 스레드가 넘긴 일을 이벤트 루프에서 실행한다.
+
+    fn 은 루프 안에서 불리고, 코루틴을 돌려주면 이어서 await 한다. 스레드가
+    state 를 직접 만지면 snapshot() 을 만드는 중과 겹칠 수 있으므로 상태를
+    바꾸는 일도 여기로 넘긴다. 루프가 없거나 닫혔으면 버린다.
+    """
     if _loop is None or _loop.is_closed():
         return
 
     def _go():
-        asyncio.ensure_future(manager.broadcast(payload))
+        try:
+            r = fn()
+        except Exception:                  # noqa: BLE001
+            return                         # 워커가 넘긴 일로 루프를 죽이지 않는다
+        if inspect.isawaitable(r):
+            asyncio.ensure_future(r)
 
     try:
         _loop.call_soon_threadsafe(_go)
@@ -91,7 +102,8 @@ def _from_thread(payload):
 
 
 def push_state_threadsafe():
-    _from_thread(state.snapshot())
+    # snapshot() 도 루프 안에서 만든다(스레드에서 만들면 그 사이 값이 바뀐다).
+    run_on_loop(lambda: manager.broadcast(state.snapshot()))
 
 
 def push_log_threadsafe(msg, level="info", **extra):
@@ -99,4 +111,4 @@ def push_log_threadsafe(msg, level="info", **extra):
     화면으로만 보낸다(시리얼 원문은 serial.log 가 원본이다)."""
     payload = {"type": "log", "msg": str(msg), "level": level}
     payload.update(extra)
-    _from_thread(payload)
+    run_on_loop(lambda: manager.broadcast(payload))
