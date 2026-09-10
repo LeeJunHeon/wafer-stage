@@ -5,15 +5,24 @@
 
    누르고 있는 동안 이어서 움직이는 것은 ack{of:"jog"} 를 받은 뒤 다음 스텝을
    보내는 방식이다(한 번에 하나만 보낸다). 타이머로 밀어 넣으면 손을 뗀 뒤에도
-   큐에 남은 명령이 계속 실행돼 스테이지가 멋대로 더 간다. */
+   큐에 남은 명령이 계속 실행돼 스테이지가 멋대로 더 간다.
+
+   데드맨: 키보드 조그는 keydown 자동 반복이 계속 와야 유지된다. 창이 포커스를
+   잃거나 탭이 가려지면 keyup 이 오지 않을 수 있고, 그러면 손을 뗀 줄 알면서도
+   스테이지가 계속 간다. 마지막 keydown 이 400ms 넘게 끊기면 스스로 멈춘다. */
 (function () {
   'use strict';
   const UI = window.UI, $ = UI.$;
 
   const dlg = $('dlgJog');
-  let held = null;        // 누르고 있는 방향 {axis, dir}
+  const KEY_ALIVE_MS = 400;   // 키보드 반복이 이보다 끊기면 손을 뗀 것으로 본다
+
+  let held = null;        // 누르고 있는 방향 {axis, dir, src:'key'|'pointer'}
   let inFlight = false;   // 보낸 조그의 ack 를 기다리는 중인가
   let canMove = false;
+  let lastKeyAt = 0;      // 마지막 keydown 시각(데드맨)
+  let keySeq = 0;         // keydown 이 올 때마다 증가(자동 반복 포함)
+  let sentSeq = -1;       // 마지막으로 보낸 스텝이 어느 keydown 에서 나왔나
 
   function step() {
     const el = document.querySelector('input[name=jogstep]:checked');
@@ -23,6 +32,7 @@
   function send(axis, dir) {
     if (!canMove || inFlight) return false;
     inFlight = true;
+    sentSeq = keySeq;
     if (!UI.send({ cmd: 'jog', axis: axis, delta_mm: dir * step() })) {
       inFlight = false;   // 못 보냈으면 잠금을 풀어 둔다
       return false;
@@ -33,18 +43,34 @@
   // 서버가 조그를 끝냈다(성공·거절 모두). 아직 누르고 있으면 다음 스텝.
   UI.onJogAck = function () {
     inFlight = false;
-    if (held) send(held.axis, held.dir);
+    if (!held) return;
+    // 키보드 조그는 keydown 이 계속 와야 이어진다. 새 keydown 없이 다음 스텝을
+    // 보내면 키에서 손을 뗀 뒤에도(keyup 을 놓친 경우) 계속 가 버린다.
+    // 자동 반복이 올 때마다 keySeq 가 늘고, 그때 다시 start() 가 걸린다.
+    if (held.src === 'key'
+        && (keySeq === sentSeq || Date.now() - lastKeyAt > KEY_ALIVE_MS)) {
+      stop();
+      return;
+    }
+    send(held.axis, held.dir);
   };
 
-  function start(axis, dir) {
+  function start(axis, dir, src) {
     if (!canMove) return;
-    held = { axis: axis, dir: dir };
+    held = { axis: axis, dir: dir, src: src };
     send(axis, dir);
   }
 
   function stop() {
     held = null;          // in-flight 인 한 스텝은 끝까지 간다(중간에 못 끊는다)
   }
+
+  // 서버가 끊기면 ack 가 영영 오지 않는다. 잠금을 풀어 두어야 재접속 뒤 패드가
+  // 바로 산다(안 그러면 inFlight 가 true 로 굳어 아무 것도 안 보내진다).
+  UI.jogReset = function () {
+    inFlight = false;
+    held = null;
+  };
 
   // ---------------- 패드 ----------------
   document.querySelectorAll('#dlgJog .jogb').forEach(b => {
@@ -53,7 +79,7 @@
       e.preventDefault();
       if (b.disabled) return;
       try { b.setPointerCapture(e.pointerId); } catch (err) { /* 합성 이벤트 */ }
-      start(axis, dir);
+      start(axis, dir, 'pointer');
     });
     ['pointerup', 'pointercancel', 'pointerleave', 'blur'].forEach(ev => {
       b.addEventListener(ev, stop);
@@ -66,16 +92,32 @@
     ArrowLeft: ['y', 1], ArrowRight: ['y', -1],
   };
   dlg.addEventListener('keydown', (e) => {
+    // 비모달 dialog 는 Esc 로 닫히지 않는다(모달만 기본 동작이 있다).
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      stop();
+      dlg.close();
+      return;
+    }
     const k = KEYS[e.key];
     if (!k) return;
     if (/^(INPUT|SELECT)$/.test((e.target.tagName || '').toUpperCase())) return;
     e.preventDefault();
+    lastKeyAt = Date.now();                // 반복 이벤트마다 갱신(데드맨)
+    keySeq += 1;
     if (held && held.axis === k[0] && held.dir === k[1]) return;  // 자동 반복
-    start(k[0], k[1]);
+    start(k[0], k[1], 'key');
   });
   dlg.addEventListener('keyup', (e) => { if (KEYS[e.key]) stop(); });
   dlg.addEventListener('close', stop);
-  // Esc 는 dialog 기본 동작으로 닫힌다. 닫히면 누르고 있던 것도 푼다.
+
+  // 창 밖으로 포커스가 나가면 keyup·pointerup 이 오지 않을 수 있다. 그때도 멈춘다.
+  window.addEventListener('keyup', (e) => { if (KEYS[e.key]) stop(); });
+  window.addEventListener('blur', stop);
+  window.addEventListener('pointercancel', stop);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stop();
+  });
 
   // ---------------- 열기/닫기 ----------------
   // show() 다 - showModal() 로 열면 뒤 화면이 inert 가 되어 헤더의 비상정지를
@@ -120,9 +162,10 @@
 
   // ---------------- 상태 ----------------
   UI.applyJog = function (s) {
+    const on = UI.online;
+    if (!on) UI.jogReset();                // 끊긴 동안 오지 않을 ack 를 기다리지 않는다
     if (!dlg.open) return;
     const st = (s && s.stage) || {}, q = (s && s.sequence) || {};
-    const on = UI.online;
     canMove = !!(on && st.connected && st.homed_x && st.homed_y && !st.needs_home);
     const running = ['running', 'paused', 'waiting_confirm', 'parking', 'capturing']
       .indexOf(q.phase) >= 0;

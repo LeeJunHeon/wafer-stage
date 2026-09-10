@@ -200,6 +200,7 @@
   // ---------------- 오프라인 / 잠금 ----------------
   UI.setOnline = function (on) {
     UI.online = on;
+    if (!on && UI.jogReset) UI.jogReset();   // 오지 않을 ack 를 기다리지 않는다
     chip($('chipServer'), on ? 'ok' : 'bad', on ? '정상' : '끊김');
     document.body.classList.toggle('offline', !on);
     if (!on) {
