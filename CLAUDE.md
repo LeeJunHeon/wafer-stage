@@ -14,7 +14,7 @@
 - backend/: server.py(FastAPI·라우트·/ws·lifespan·CLI) window.py connection.py state.py
   commands.py engine.py stagectl.py vision.py measure.py loops.py logger.py storage.py version.py
   backend 안끼리는 `import engine` 처럼 이름으로, core 는 `from core import calib` 로 부른다.
-- frontend/: index.html · css/style.css · js/{app,core,camera,map,samples,sequence}.js
+- frontend/: index.html · css/style.css · js/{app,core,camera,map,samples,sequence,jog}.js
   화면은 1920×1040 고정 캔버스(fit() 로 축소, 페이지 스크롤 없음). ISA-101 계열 배색
   (무채색 바탕, 색은 상태에만), 상단 상태줄·경보 배너·하단 명령, 스테이지 맵으로
   기계 위치를 보여준다. 단계(1·2·3) 표시는 쓰지 않는다 — 반복 운전 프로그램이다.
@@ -33,6 +33,9 @@
   미리보기 스레드가 4fps 로 읽고 촬영도 같은 객체를 쓴다 - 촬영 때 닫았다 다시 열지 않는다.
 - 시리얼 원문은 core/stage.py 의 on_line 콜백 → connection.push_log_threadsafe 로 화면에
   간다(level tx/rx). 폴링(st/ST)은 표시만 달아 보내고 숨길지는 화면이 정한다.
+- 수동 이동(조그) 팝업은 show() 로 연다 - showModal 이면 뒤 화면이 inert 가 되어
+  비상정지를 못 누른다. 조그는 ack{of:"jog"} 를 받고서야 다음 스텝을 보낸다(한 번에
+  하나). 목표 좌표와 가동범위 자르기는 서버가 한다.
 - 메시지 계약(state/명령)은 README.md 에 표로 있다. 화면은 요청만 보내고 서버 state 가 와야 바뀐다.
 
 ## 하드웨어 (실측 확정값)

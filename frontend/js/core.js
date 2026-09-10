@@ -233,6 +233,7 @@
     dis('btnCapture', !on || running);
     dis('btnPark', !canMove || running);
     dis('btnHome', !on || !st.connected || running);
+    dis('btnJog', !on);                      // 팝업은 열리고, 안에서 다시 잠근다
     dis('btnConnect', !on || running);
     dis('btnSettings', !on || running);
     dis('btnEstop', !on);                    // 비상정지는 항상 활성

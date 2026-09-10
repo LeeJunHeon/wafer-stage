@@ -30,7 +30,7 @@
 │   │   ├── loops.py        #   주기 태스크(st 폴링)
 │   │   └── logger.py storage.py version.py
 │   ├── frontend/           # index.html · css/style.css
-│   │                       # js/{app,core,camera,map,samples,sequence}.js
+│   │                       # js/{app,core,camera,map,samples,sequence,jog}.js
 │   ├── tools/              # 개발·검증용. 프로그램 실행에는 필요 없다
 │   │   ├── regress.py      #   지금까지 찍은 사진 전부로 검출 회귀
 │   │   └── e2e_smoke.py    #   하드웨어 없이 전 흐름 검증
@@ -106,6 +106,10 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 그 밖에 `{"type":"log", msg, level, serial?, poll?}`,
 `{"type":"ack", of, ok, reason, needs_confirm:[사유...], ...}`.
 
+`ack{of:"jog", ok, reason, x_mm, y_mm}` — 수동 이동은 한 번에 하나만 보낸다.
+화면은 이 ack 를 받고서야 다음 스텝을 보낸다(타이머로 밀어 넣으면 손을 뗀 뒤에도
+큐에 남은 명령이 실행된다). `reason`: `locked`·`busy`·`moving`·`at_limit`·`error`.
+
 `log.level`: `info | ok | warn | err` 에 시리얼 원문용 `tx`(-> 보냄) · `rx`(<- 받음)
 가 더 있다. `serial:true` 는 시리얼 원문, `poll:true` 는 2초 상태 폴링(`st` / `ST …`)
 이라는 표시다. 화면은 이 두 값으로 걸러 보여 주고(기본: 원문 켬 · 폴링 끔), 파일
@@ -144,6 +148,8 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 | `stage_home` | `axis:"x"\|"y"\|"xy"`, `search_pulses?` |
 | `park` | |
 | `goto` | `no` 또는 `x, y` |
+| `jog` | `axis:"x"\|"y"`, `delta_mm` — 현재 위치 + delta 를 서버가 가동범위로 자른다 |
+| `park_here` | 현재 위치를 `settings.park_xy` 로 저장 |
 | `capture` | |
 | `run` | `mode:"auto"\|"confirm"\|"pick"`, `dwell_s`, `only?:[no]`, `confirm?` |
 | `pause` `resume` `next` `stop` `estop` | |

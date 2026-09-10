@@ -50,6 +50,7 @@
       else if ((msg.needs_confirm || []).length) UI.alert(msg.needs_confirm.join('\n'), '시작 불가');
     }
     if (msg.of === 'list_ports') fillPorts(msg.ports || []);
+    if (msg.of === 'jog' && UI.onJogAck) UI.onJogAck(msg);
   }
 
   // 설정창의 시리얼 포트 목록. 직접 입력도 되므로 <datalist> 로만 붙인다.
@@ -73,6 +74,7 @@
     UI.applyMap(s);
     UI.applySamples(s);
     UI.applySequence(s);
+    UI.applyJog(s);
     UI.lock();
     fillSettings(s.settings || {}, s.data_dir);
   }

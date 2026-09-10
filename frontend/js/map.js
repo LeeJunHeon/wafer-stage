@@ -28,6 +28,21 @@
     return e;
   };
 
+  // 맵 클릭 → 수동 이동 팝업의 절대 이동 칸을 채운다(이동은 그쪽에서 누른다).
+  $('map').addEventListener('click', (ev) => {
+    if (!UI.jogPickXY) return;
+    const r = ev.currentTarget.getBoundingClientRect();
+    // viewBox 300×264 를 preserveAspectRatio="meet" 로 그린다 - 실제 배치된
+    // 사각형을 되짚어야 화면 좌표가 맞는다.
+    const k = Math.min(r.width / 300, r.height / 264);
+    const vx = (ev.clientX - r.left - (r.width - 300 * k) / 2) / k;
+    const vy = (ev.clientY - r.top - (r.height - 264 * k) / 2) / k;
+    const Y = YMAX - (vx - M.ox) / M.w * YMAX;
+    const X = XMAX - (vy - M.oy) / M.h * XMAX;
+    if (X < 0 || Y < 0 || X > XMAX || Y > YMAX) return;   // 작업영역 밖
+    UI.jogPickXY(X, Y);
+  });
+
   UI.applyMap = function (s) {
     const g = $('map');
     g.textContent = '';

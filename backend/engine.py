@@ -19,7 +19,7 @@ import measure as measure_mod
 import stagectl
 import storage
 import vision
-from connection import push_log, push_state
+from connection import push_ack, push_log, push_state
 from state import state
 
 _task = None                      # 진행 중인 순회 태스크
@@ -258,6 +258,50 @@ async def goto_xy(x_mm, y_mm, no=None):
         return False
     finally:
         await push_state()
+
+
+async def jog(axis, target_mm):
+    """한 축만 절대 좌표로 옮긴다(수동 이동 팝업).
+
+    목표는 서버가 정해서 넘겨받는다(화면이 계산한 좌표를 믿지 않는다). 이미
+    이동 중이면 거절한다 - 조그를 큐에 쌓으면 손을 뗀 뒤에도 계속 움직인다.
+    """
+    why = state.can_move()
+    if why:
+        await push_log(why, "warn")
+        await push_ack("jog", False, "locked")
+        return False
+    if state.stage["moving"]:
+        await push_ack("jog", False, "moving")
+        return False
+    ax = str(axis).lower()
+    if ax not in ("x", "y"):
+        await push_ack("jog", False, "bad_axis")
+        return False
+    target = float(target_mm)
+    state.stage["last_error"] = ""
+    state.stage["moving"] = True
+    await push_state()
+    try:
+        mover = stagectl.ctl.move_x if ax == "x" else stagectl.ctl.move_y
+        report = await mover(target)
+        storage.append_jsonl(paths.SEQ_LOG_PATH, {
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"), "sample_no": "jog",
+            "target_mm": [round(target, 2)] if ax == "x" else [None, round(target, 2)],
+            "report": [str(report).strip()]})
+        _apply_status(await stagectl.ctl.status())
+        ok = True
+    except stagectl.StageError as e:
+        ok = False
+        state.stage["last_error"] = logger.short(e)
+        logger.write("err", "수동 이동 실패 상세(%s %.2f): %s" % (ax, target, e))
+        await push_log("수동 이동 실패 · " + logger.short(e), "err")
+    finally:
+        state.stage["moving"] = False
+        await push_state()
+    await push_ack("jog", ok, "" if ok else "error",
+                   x_mm=state.stage["x_mm"], y_mm=state.stage["y_mm"])
+    return ok
 
 
 async def park():

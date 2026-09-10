@@ -21,11 +21,11 @@ from state import state
 
 _shutdown_handler = None
 
-MOVE_CMDS = ("park", "goto", "run", "resume", "next", "measure_here")
+MOVE_CMDS = ("park", "goto", "jog", "run", "resume", "next", "measure_here")
 # 순회 중에 받으면 안 되는 명령. 스테이지·카메라·설정을 순회 도중에 건드리면
 # 진행 중인 이동과 충돌한다(정지 뒤에 하면 된다).
-BUSY_BLOCKED = ("park", "goto", "stage_home", "stage_disconnect", "capture",
-                "settings_save")
+BUSY_BLOCKED = ("park", "goto", "jog", "park_here", "stage_home", "stage_disconnect",
+                "capture", "settings_save")
 
 
 def set_shutdown_handler(fn):
@@ -38,12 +38,18 @@ async def handle_command(data):
     try:
         if cmd in BUSY_BLOCKED and engine.busy():
             await push_log("순회 중 · 명령 무시 (%s)" % cmd, "warn")
+            # 조그는 ack 를 기다렸다 다음 스텝을 보낸다. 거절도 알려 줘야
+            # 화면이 '보낸 채로' 멈추지 않는다.
+            if cmd == "jog":
+                await push_ack("jog", False, "busy")
             return
         if cmd in MOVE_CMDS:
             why = state.can_move()
             if why:
                 if cmd == "run":
                     await push_ack("run", False, "locked", [why])
+                elif cmd == "jog":
+                    await push_ack("jog", False, "locked")
                 await push_log(why, "warn")
                 return
 
@@ -182,6 +188,45 @@ async def _goto(data):
         await engine.goto_sample(int(data["no"]))
     else:
         await engine.goto_xy(float(data.get("x", 0)), float(data.get("y", 0)))
+
+
+async def _jog(data):
+    """수동 이동. 목표는 서버가 만든다 - 화면이 준 좌표를 그대로 쓰지 않는다.
+
+    현재 위치에 delta 를 더하고 가동범위로 자른다(끝이면 그 끝까지만 간다).
+    """
+    axis = str(data.get("axis") or "").lower()
+    if axis not in ("x", "y"):
+        await push_log("수동 이동 축이 잘못되었습니다: %s" % axis, "warn")
+        return
+    cur = state.stage["x_mm"] if axis == "x" else state.stage["y_mm"]
+    if cur is None:
+        await push_log("현재 위치를 모릅니다 · 원점 설정 후 사용하세요", "warn")
+        await push_ack("jog", False, "no_position")
+        return
+    try:
+        delta = float(data.get("delta_mm", 0))
+    except (TypeError, ValueError):
+        await push_ack("jog", False, "bad_delta")
+        return
+    target = min(calib.AXIS_MAX, max(calib.AXIS_MIN, cur + delta))
+    if abs(target - cur) < 0.005:          # 이미 끝이다 - 시리얼을 괴롭히지 않는다
+        await push_ack("jog", False, "at_limit",
+                       x_mm=state.stage["x_mm"], y_mm=state.stage["y_mm"])
+        return
+    await engine.jog(axis, target)
+
+
+async def _park_here(_data):
+    """지금 서 있는 자리를 파킹 위치로 저장한다."""
+    x, y = state.stage["x_mm"], state.stage["y_mm"]
+    if x is None or y is None:
+        await push_log("현재 위치를 모릅니다 · 원점 설정 후 사용하세요", "warn")
+        return
+    xy = [round(float(x), 1), round(float(y), 1)]
+    state.save_settings({"park_xy": xy})
+    await push_log("파킹 위치 저장 · X%.1f Y%.1f" % (xy[0], xy[1]), "ok")
+    await push_state()
 
 
 async def _capture(_data):
@@ -326,6 +371,8 @@ _TABLE = {
     "stage_home": _stage_home,
     "park": _park,
     "goto": _goto,
+    "jog": _jog,
+    "park_here": _park_here,
     "capture": _capture,
     "run": _run,
     "pause": _pause,

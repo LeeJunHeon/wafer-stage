@@ -89,6 +89,7 @@
         <div class="sec">
           <div class="t">스테이지</div>
           <div class="row"><button class="btn" id="btnConnect">연결</button><button class="btn" id="btnHome">원점 설정</button><button class="btn" id="btnPark">파킹</button></div>
+          <div class="row"><button class="btn block" id="btnJog">수동 이동</button></div>
           <div class="lockmsg" id="lockMsg" hidden></div>
         </div>
         <div class="sec">
@@ -146,6 +147,41 @@
   </div>
   <footer><button class="btn" id="btnCloseSettings">취소</button><button class="btn primary" id="btnSaveSettings">저장</button></footer>
 </dialog>
+<dialog id="dlgJog" class="jog">
+  <header><h2>수동 이동</h2><span class="sp"></span><button class="btn sm" id="jogClose" aria-label="닫기">&times;</button></header>
+  <div class="jogbody">
+    <div class="jogpos">
+      <div class="ax"><span class="k">X</span><span class="v mono" id="jogX">—</span><span class="u">mm</span></div>
+      <div class="ax"><span class="k">Y</span><span class="v mono" id="jogY">—</span><span class="u">mm</span></div>
+      <span class="sp"></span><span class="jogstate" id="jogMoving"></span>
+    </div>
+    <div class="lockmsg" id="jogLock" hidden></div>
+
+    <div class="t">스텝</div>
+    <div class="seg" id="jogStep" role="radiogroup">
+      <label><input type="radio" name="jogstep" value="0.1">0.1</label>
+      <label><input type="radio" name="jogstep" value="1" checked>1</label>
+      <label><input type="radio" name="jogstep" value="10">10</label>
+      <label><input type="radio" name="jogstep" value="50">50</label>
+    </div>
+
+    <div class="jogpad">
+      <button class="btn jogb up" data-axis="x" data-dir="1">X+</button>
+      <button class="btn jogb left" data-axis="y" data-dir="1">Y+</button>
+      <span class="jogmid"></span>
+      <button class="btn jogb right" data-axis="y" data-dir="-1">Y−</button>
+      <button class="btn jogb down" data-axis="x" data-dir="-1">X−</button>
+    </div>
+
+    <div class="t">절대 이동</div>
+    <div class="row"><span class="note">X</span><input type="number" id="jogGx" step="0.1" min="0" max="247"><span class="note">Y</span><input type="number" id="jogGy" step="0.1" min="0" max="247"><span class="note">mm</span><button class="btn" id="jogGo">이동</button></div>
+    <div class="note">스테이지 맵을 클릭하면 그 지점 좌표가 채워집니다.</div>
+
+    <div class="row"><button class="btn" id="jogHome">원점 이동</button><button class="btn" id="jogPark">파킹</button></div>
+    <div class="row"><button class="btn" id="jogSetHome">원점 설정</button><button class="btn" id="jogSavePark">현재 위치를 파킹으로</button></div>
+    <button class="btn lg estop block" id="jogEstop">비상정지</button>
+  </div>
+</dialog>
 <dialog id="dlgAsk">
   <header><h2 id="askTitle">확인</h2></header>
   <div class="ask" id="askBody"></div>
@@ -157,6 +193,7 @@
 <script src="js/map.js?v=__ASSET_V__"></script>
 <script src="js/samples.js?v=__ASSET_V__"></script>
 <script src="js/sequence.js?v=__ASSET_V__"></script>
+<script src="js/jog.js?v=__ASSET_V__"></script>
 <script src="js/app.js?v=__ASSET_V__"></script>
 </body>
 </html>

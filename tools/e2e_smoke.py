@@ -36,6 +36,23 @@ SRC = {"seq_20260909_150413": os.path.join(paths.OUT_DIR, "seq_20260909_150413",
 DATA_DIR = None                     # 임시 데이터 폴더 (setup_data 가 채운다)
 
 
+_SETTINGS_BAK = None
+
+
+def _backup_settings():
+    global _SETTINGS_BAK
+    with open(paths.SETTINGS_PATH, "rb") as f:
+        _SETTINGS_BAK = f.read()
+
+
+def _restore_settings():
+    """검증이 바꾼 settings.json 을 원래대로 되돌린다(저장소를 더럽히지 않는다)."""
+    if _SETTINGS_BAK is None:
+        return
+    with open(paths.SETTINGS_PATH, "wb") as f:
+        f.write(_SETTINGS_BAK)
+
+
 def setup_data():
     """임시 데이터 폴더를 만들고 검증용 사진 두 장을 복사한다.
 
@@ -44,6 +61,9 @@ def setup_data():
     """
     global DATA_DIR
     DATA_DIR = tempfile.mkdtemp(prefix="wafer_smoke_")
+    # settings.json 은 저장소 안에 있어 WAFER_STAGE_DATA 로 격리되지 않는다.
+    # settings_save·park_here 를 거치는 검증이 원본을 고치므로 백업해 둔다.
+    _backup_settings()
     out = os.path.join(DATA_DIR, "out")
     for name, src in SRC.items():
         d = os.path.join(out, name)
@@ -205,6 +225,53 @@ async def main_flow(c):
     check(all(s["status"] == "done" for s in c.state["samples"]), "모든 샘플 done")
 
 
+async def jog_flow(c):
+    """수동 이동: 목표는 서버가 만들고 가동범위로 자른다."""
+    await c.send(cmd="stage_home", axis="xy")
+    await c.pump(3.0)
+    check(c.state["stage"]["x_mm"] == 0.0, "원점 직후 x=0 (%s)" % c.state["stage"]["x_mm"])
+
+    c.acks.clear()
+    await c.send(cmd="jog", axis="x", delta_mm=10)
+    await c.pump(3.0)
+    check(c.state["stage"]["x_mm"] == 10.0, "jog x +10 -> 10.0 (%s)" % c.state["stage"]["x_mm"])
+    acks = [a for a in c.acks if a.get("of") == "jog"]
+    check(bool(acks) and acks[-1]["ok"], "jog ack ok (%s)" % (acks[-1] if acks else "없음"))
+
+    await c.send(cmd="jog", axis="y", delta_mm=-5)
+    await c.pump(3.0)
+    check(c.state["stage"]["y_mm"] == 0.0,
+          "jog y -5 -> 하한 0.0 (%s)" % c.state["stage"]["y_mm"])
+
+    await c.send(cmd="jog", axis="x", delta_mm=300)
+    await c.pump(4.0)
+    check(c.state["stage"]["x_mm"] == 247.0,
+          "jog x +300 -> 상한 247.0 (%s)" % c.state["stage"]["x_mm"])
+
+    # 현재 위치를 파킹으로
+    await c.send(cmd="park_here")
+    await c.pump(2.0)
+    got = c.state["settings"]["park_xy"]
+    check(got == [247.0, 0.0], "park_here -> park_xy %s" % got)
+
+    # 순회 중에는 거절한다
+    await c.send(cmd="capture")
+    await c.wait_phase(("ready", "error"), 90)
+    await c.send(cmd="run", mode="auto", dwell_s=1.0, confirm=True)
+    await c.wait_phase(("running",), 20)
+    c.logs.clear()
+    c.acks.clear()
+    await c.send(cmd="jog", axis="x", delta_mm=1)
+    await c.pump(2.0)
+    rej = [a for a in c.acks if a.get("of") == "jog" and a["ok"] is False]
+    blocked = [l for l in c.logs if "순회 중" in l["msg"]]
+    check(bool(rej) and bool(blocked),
+          "순회 중 jog 거절 (ack %s · 로그 %d건)" % (rej[0]["reason"] if rej else "없음",
+                                              len(blocked)))
+    await c.send(cmd="stop")
+    await c.wait_phase(("stopped", "done", "error"), 60)
+
+
 async def stop_flow(c):
     await c.send(cmd="capture")
     await c.wait_phase(("ready", "error"), 90)
@@ -292,6 +359,7 @@ def main():
     good, glare = img["seq_20260909_150413"], img["seq_20260909_150621"]
     try:
         for name, image, flow in (("정상 흐름", good, main_flow),
+                                  ("수동 이동", good, jog_flow),
                                   ("정지 경로", good, stop_flow),
                                   ("비상정지 경로", good, estop_flow),
                                   ("확인 필요 경로", glare, confirm_flow)):
@@ -306,6 +374,7 @@ def main():
                 p.wait(timeout=10)
             time.sleep(0.5)
     finally:
+        _restore_settings()
         shutil.rmtree(DATA_DIR, ignore_errors=True)
     print("")
     if FAIL:
