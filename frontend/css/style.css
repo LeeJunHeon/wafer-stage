@@ -152,12 +152,12 @@
   .map { display: block; width: 100%; height: 100%; }
   .m-frame { fill: #eef1f4; stroke: #8a97a6; stroke-width: 1.2; }
   .m-grid { stroke: #cfd6de; stroke-width: .6; }
-  .m-axis { font: 600 9px var(--mono); fill: var(--faint); }
+  .m-axis { font: 600 9.5px var(--mono); fill: var(--faint); }
   .m-rail { stroke: #7d8a99; stroke-width: 6; stroke-linecap: round; }
   .m-beam { stroke: #97a3b1; stroke-width: 5; stroke-linecap: round; }
   .m-carriage { fill: #6f7d8c; stroke: #43505d; stroke-width: 1; }
   .m-marker { fill: #dbe8ff; stroke: #2f72c4; stroke-width: 1; }
-  .m-marker-t { font: 600 8px var(--mono); fill: #2f72c4; }
+  .m-marker-t { font: 600 9px var(--mono); fill: #2f72c4; }
   .m-rect { fill: none; stroke: #c9a100; stroke-width: 1; stroke-dasharray: 4 3; }
   .m-wafer { fill: #e3ede8; stroke: #7fa891; stroke-width: 1.2; }
   .m-s { stroke: #5f6f7f; stroke-width: 1; fill: #fff; }
@@ -165,7 +165,7 @@
   .m-s.target { fill: #f7b24b; stroke: #a86400; stroke-width: 1.6; }
   .m-s.skip { fill: #e2e6ea; stroke: #aab4bf; stroke-dasharray: 2 2; }
   .m-s.selected { stroke: #2a5bd0; stroke-width: 2; }
-  .m-s-num { font: 600 7.5px var(--mono); fill: #2a3340; pointer-events: none; }
+  .m-s-num { font: 600 9px var(--mono); fill: #2a3340; pointer-events: none; }
   .m-park { font: 600 8px var(--mono); fill: #8a5a00; }
   .m-pointer { stroke: #e0262c; stroke-width: 1.4; } .m-pointer-ring { fill: none; stroke: #e0262c; stroke-width: 1.2; }
   .legend { display: flex; gap: 12px; padding: 4px 12px 6px; font-size: 11px; color: var(--dim); border-top: 1px solid var(--line); }
@@ -181,6 +181,8 @@
   tbody tr { cursor: pointer; } tbody tr:hover { background: #e9eef4; }
   tbody tr.selected { background: #dfe8fa; } tbody tr.target { background: #fbefd8; }
   tbody tr.unchecked td:not(:first-child) { color: var(--faint); }
+  /* 번호 옆 윤곽 보완 표시. 번호와 붙여 쓰면 '1E' 가 한 번호로 읽힌다. */
+  .edgebadge { display: inline-block; margin-left: 5px; padding: 0 4px; border-radius: 3px; background: #e2e8f0; color: var(--dim); font-size: 10px; font-weight: 700; line-height: 15px; cursor: help; }
   .st { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: 999px; font-size: 11.5px; font-weight: 600; background: #e6eaef; color: var(--dim); }
   .st::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .st.moving { background: #fbefd8; color: #8a5300; } .st.measuring { background: #dfe8fa; color: #24479a; }

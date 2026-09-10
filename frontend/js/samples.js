@@ -38,14 +38,25 @@
       tdc.appendChild(cb);
       tr.appendChild(tdc);
 
+      // No 칸: 번호 + 윤곽 보완 배지. 'E' 를 번호에 붙여 쓰면 번호의 일부로 읽힌다.
+      const tdn = document.createElement('td');
+      tdn.appendChild(document.createTextNode(String(sm.no)));
+      if (sm.edge_completed) {
+        const badge = document.createElement('span');
+        badge.className = 'edgebadge';
+        badge.textContent = 'E';
+        badge.title = '윤곽 보완(엣지)';
+        tdn.appendChild(badge);
+      }
+      tr.appendChild(tdn);
+
       const cells = [
-        String(sm.no) + (sm.edge_completed ? ' E' : ''),
         SHAPE[sm.shape] || sm.shape || '',
         sm.X.toFixed(1), sm.Y.toFixed(1),
       ];
       cells.forEach((t, i) => {
         const td = document.createElement('td');
-        if (i >= 2) td.className = 'r mono';
+        if (i >= 1) td.className = 'r mono';
         td.textContent = t;
         tr.appendChild(td);
       });
