@@ -56,10 +56,11 @@ async def lifespan(_app):
     logger.configure(state.settings)
     # 워커 스레드(시리얼·미리보기)가 화면으로 로그를 보낼 통로.
     set_loop(asyncio.get_running_loop())
-    # 이중 실행 방지는 창 경로뿐 아니라 서버 기동 공통 경로에도 둔다
-    # (uvicorn 으로 직접 띄우면 window.run 을 거치지 않는다).
+    # 이중 실행 방지는 창 모드에서만이다. uvicorn 으로 직접 띄우거나 --no-window 로
+    # 여러 개를 띄우는 것은 개발·검증 경로라 막지 않는다(_acquire_single_instance
+    # 가 창 모드가 아니면 항상 True 를 준다).
     if not window._acquire_single_instance():
-        msg = "프로그램이 이미 실행 중입니다 - 백엔드 기동을 중단합니다"
+        msg = "프로그램이 이미 실행 중입니다 · 백엔드 기동 중단"
         print("[error] %s" % msg, flush=True)
         logger.write("err", msg)
         os._exit(1)

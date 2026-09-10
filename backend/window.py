@@ -5,6 +5,9 @@ FastAPI 앱과 호스트/포트는 인자로 받는다.
 
 납품 대응:
   - 이중 실행 방지(뮤텍스). 인스턴스가 둘이면 둘 다 한 시리얼에 붙으려다 실패한다.
+    창(pywebview) 모드에서만 잡는다 - --no-window 는 개발·검증용이고, 스모크는
+    임의 포트로 서버를 여러 개 띄운다. 거기서 뮤텍스를 잡으면 두 번째부터
+    메시지박스 앞에서 멎어 검증이 통째로 막힌다(실제로 그렇게 막혔다).
   - 8000 포트가 이미 쓰이면 8001~ 로 대체(빈 창 방지).
   - 창 X → 앱 종료 확인 모달로 되묻는다(파킹·save 없이 끊기면 위치를 잃는다).
 """
@@ -19,23 +22,40 @@ import time
 import logger
 
 WINDOW = None
+WINDOW_MODE = False        # 창을 띄우는 실행인가. 뮤텍스·메시지박스는 이때만 쓴다.
 _allow_close = False
 _MUTEX_HANDLE = None
 _SERVER_ERROR = ""
 
 
-def _msgbox(title, msg):
-    try:
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(0, msg, title, 0x10)
-    except Exception:                      # noqa: BLE001
-        print("[%s] %s" % (title, msg))
+def set_window_mode(on):
+    global WINDOW_MODE
+    WINDOW_MODE = bool(on)
+
+
+def _fail(msg):
+    """기동 실패를 알리고 1로 끝낸다.
+
+    콘솔·파일 로그에는 항상 한 줄 남긴다(창 모드에서 메시지박스만 띄우면 로그에
+    아무 기록이 없다). 메시지박스는 볼 사람이 있을 때 - 창 모드에서만 띄운다.
+    """
+    one_line = " ".join(str(msg).split())
+    print("[error] %s" % one_line, flush=True)
+    with contextlib.suppress(Exception):
+        logger.write("err", one_line)
+    if WINDOW_MODE:
+        with contextlib.suppress(Exception):
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, str(msg), "Sample Auto Measurement", 0x10)
+    raise SystemExit(1)
 
 
 def _acquire_single_instance():
-    """이미 떠 있으면 False. 비Windows(개발)는 항상 True.
-    방지 장치 자체가 이유가 되어 실행을 막으면 안 되므로 예외 시 True."""
-    if sys.platform != "win32":
+    """이미 떠 있으면 False. 비Windows(개발)와 창 없는 실행은 항상 True.
+
+    방지 장치 자체가 이유가 되어 실행을 막으면 안 되므로 예외 시에도 True.
+    """
+    if not WINDOW_MODE or sys.platform != "win32":
         return True
     global _MUTEX_HANDLE
     if _MUTEX_HANDLE is not None:
@@ -141,21 +161,19 @@ def run(app, host, port, no_window=False):
     global WINDOW, _SERVER_ERROR
     import uvicorn
 
+    set_window_mode(not no_window)
+
     got = _acquire_single_instance()
     deadline = time.monotonic() + 3.0
     while not got and time.monotonic() < deadline:
         time.sleep(0.25)                   # 직전 인스턴스 정리(~1초)를 기다린다
         got = _acquire_single_instance()
     if not got:
-        _msgbox("Sample Auto Measurement",
-                "프로그램이 이미 실행 중입니다.\n작업 표시줄에서 기존 창을 확인하세요.")
-        return
+        _fail("프로그램이 이미 실행 중입니다.\n작업 표시줄에서 기존 창을 확인하세요.")
 
     free = find_free_port(host, port)
     if free is None:
-        _msgbox("Sample Auto Measurement",
-                "사용 가능한 포트를 찾지 못했습니다 (%d~%d)." % (port, port + 9))
-        return
+        _fail("사용 가능한 포트를 찾지 못했습니다 (%d~%d)." % (port, port + 9))
     if free != port:
         logger.early("info", "포트 %d 사용 중 → %d 사용" % (port, free))
     port = free
@@ -171,9 +189,7 @@ def run(app, host, port, no_window=False):
     th = threading.Thread(target=run_server, daemon=True)
     th.start()
     if not _wait_server_ready(host, port):
-        _msgbox("Sample Auto Measurement",
-                "서버를 시작하지 못했습니다.\n%s" % (_SERVER_ERROR or "원인 불명"))
-        return
+        _fail("서버를 시작하지 못했습니다.\n%s" % (_SERVER_ERROR or "원인 불명"))
 
     url = "http://%s:%d/" % (host, port)
     if no_window:
@@ -188,9 +204,7 @@ def run(app, host, port, no_window=False):
     try:
         import webview
     except ImportError:
-        _msgbox("Sample Auto Measurement",
-                "pywebview 가 없습니다.\n%s 를 브라우저에서 여세요." % url)
-        return
+        _fail("pywebview 가 없습니다.\n%s 를 브라우저에서 여세요." % url)
     WINDOW = webview.create_window("Sample Auto Measurement", url,
                                    width=1440, height=900, maximized=True,
                                    js_api=_JsBridge())
