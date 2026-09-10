@@ -38,7 +38,7 @@ class State:
                       "moving": False, "dirty": False, "needs_home": False,
                       "last_error": ""}
         self.camera = {"index": self.settings.get("camera_index", 1), "ok": None,
-                       "last_error": "", "capturing": False}
+                       "last_error": "", "capturing": False, "preview": False}
         self.frame = None                  # {"id","ts","w","h","url"}
         self.calib = None                  # {"refit","used_ids",...}
         self.sensing = None                # {"rect":[u0,v0,u1,v1]}
@@ -96,12 +96,12 @@ class State:
     def can_move(self):
         """이동 명령을 받아도 되는 상태인가. 사유 문자열 또는 None."""
         if not self.stage["connected"]:
-            return "스테이지 미연결 - 연결 후 사용하세요"
+            return "스테이지 미연결 · 연결 후 사용하세요"
         if not (self.stage["homed_x"] and self.stage["homed_y"]):
-            return "원점 없음 - 원점잡기(fz) 후 사용하세요"
+            return "원점 미설정 · 원점 설정 후 사용하세요"
         if self.stage.get("needs_home"):
             # 비상정지 뒤에는 펌웨어가 위치를 안다고 해도 믿을 수 없다.
-            return "비상정지 후 위치를 신뢰할 수 없습니다 - 원점잡기(fz) 후 사용하세요"
+            return "비상정지 · 원점 설정 후 사용하세요"
         return None
 
     def set_warnings(self, ws):

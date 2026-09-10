@@ -4,15 +4,15 @@
   const UI = window.UI, $ = UI.$;
 
   const PHASE = {
-    idle: '대기 — 촬영·검출부터 하세요',
-    capturing: '촬영·검출 중',
-    ready: '검토 후 시작',
-    running: '순회 중',
+    idle: '촬영·검출 필요',
+    capturing: '촬영',
+    ready: '대기',
+    running: '순회',
     paused: '일시정지',
-    waiting_confirm: '확인 대기 — 다음을 누르세요',
-    parking: '파킹 중',
+    waiting_confirm: '확인 대기',
+    parking: '파킹',
     done: '완료',
-    stopped: '정지됨',
+    stopped: '정지',
     error: '오류',
   };
 
@@ -23,7 +23,8 @@
 
   UI.applySequence = function (s) {
     const q = (s && s.sequence) || {};
-    $('curStatus').textContent = q.message || PHASE[q.phase] || UI.EMPTY;
+    $('curStatus').textContent = (q.phase === 'idle')
+      ? PHASE.idle : (q.message || PHASE[q.phase] || UI.EMPTY);
     const total = q.total || 0, done = q.done || 0;
     $('progText').textContent = total ? (done + ' / ' + total) : UI.EMPTY;
     $('bar').style.width = total ? (100 * done / total) + '%' : '0%';
@@ -36,7 +37,7 @@
     const vals = (s.samples || []).filter(x => x.value != null);
     $('measureVal').textContent = vals.length
       ? vals.map(x => '#' + x.no + ' ' + x.value + (x.unit || '')).slice(-3).join('  ')
-      : '계측기 미연결 — 측정값 없음';
+      : '미연결';
 
     // 모드/대기는 서버 값이 주인이지만, 사용자가 조작 중일 때는 덮지 않는다.
     if (document.activeElement !== $('dwell') && q.dwell_s != null
@@ -55,7 +56,7 @@
   $('btnStart').onclick = () => {
     const m = mode();
     if (m === 'pick') {
-      UI.alert('번호 선택 모드입니다. 표에서 샘플을 고르고 "선택 샘플로 이동" 을 쓰세요.',
+      UI.alert('번호 선택 모드: 목록에서 샘플을 선택한 뒤 [선택 위치 이동]을 사용하십시오.',
                '번호 선택');
       return;
     }
@@ -73,8 +74,8 @@
 
   // 서버가 needs_confirm 을 돌려주면 확인 모달을 띄우고 confirm:true 로 다시 보낸다.
   UI.confirmRun = function (reasons) {
-    UI.confirm('사진에 문제가 있습니다:\n\n· ' + reasons.join('\n· ')
-      + '\n\n그래도 순회를 시작할까요?', '확인 필요').then(ok => {
+    UI.confirm('촬영 상태 확인:\n· ' + reasons.join('\n· ')
+      + '\n순회를 시작하시겠습니까?', '확인').then(ok => {
         if (ok) UI.send({ cmd: 'run', mode: mode(), dwell_s: +$('dwell').value || 0,
                           confirm: true });
       });

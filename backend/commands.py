@@ -15,7 +15,9 @@ from core import calib
 import engine
 import logger
 import stagectl
-from connection import push_ack, push_log, push_state
+import vision
+from connection import (push_ack, push_log, push_state,
+                        push_log_threadsafe, push_state_threadsafe)
 from state import state
 
 _shutdown_handler = None
@@ -36,7 +38,7 @@ async def handle_command(data):
     cmd = str(data.get("cmd") or "")
     try:
         if cmd in BUSY_BLOCKED and engine.busy():
-            await push_log("순회 중 - 정지 후 사용하세요 (%s)" % cmd, "warn")
+            await push_log("순회 중 · 명령 무시 (%s)" % cmd, "warn")
             return
         if cmd in MOVE_CMDS:
             why = state.can_move()
@@ -62,6 +64,50 @@ async def handle_command(data):
 
 
 # --------------------------------------------------------------------------
+def _on_camera_status(ok, err):
+    """미리보기 스레드가 알려 오는 카메라 상태. 상태가 바뀔 때만 불린다."""
+    state.camera["ok"] = bool(ok)
+    state.camera["last_error"] = "" if ok else str(err or "")
+    if ok:
+        push_log_threadsafe("카메라 준비 · index %s" % state.camera["index"], "ok")
+    else:
+        push_log_threadsafe("카메라 열기 실패 · %s" % state.camera["last_error"], "err")
+    push_state_threadsafe()
+
+
+def start_preview():
+    """서버 기동과 함께 미리보기를 켠다(server.lifespan 이 부른다)."""
+    vision.holder.on_status = _on_camera_status
+    vision.holder.start(state.params)
+    state.camera["preview"] = True
+
+
+async def _preview_start(_data):
+    vision.holder.on_status = _on_camera_status
+    vision.holder.start(state.params)
+    state.camera["preview"] = True
+    await push_log("미리보기 시작")
+    await push_state()
+
+
+async def _preview_stop(_data):
+    vision.holder.stop()
+    state.camera["preview"] = False
+    await push_log("미리보기 정지")
+    await push_state()
+
+
+async def _list_ports(_data):
+    """설정창의 시리얼 포트 목록. 못 읽어도 빈 목록으로 답한다(창이 멈추지 않게)."""
+    ports = []
+    try:
+        for p in stagectl.stage_mod.list_ports():
+            ports.append({"device": p.device, "description": p.description or ""})
+    except Exception as e:                 # noqa: BLE001
+        await push_log("포트 목록을 읽지 못했습니다: %s" % e, "warn")
+    await push_ack("list_ports", True, ports=ports)
+
+
 async def _stage_connect(data):
     port = data.get("port") or state.settings.get("serial_port")
     banner = await stagectl.ctl.connect(port)
@@ -79,7 +125,7 @@ async def _stage_connect(data):
         await push_log("상태 조회 실패: %s" % e, "warn")
     if not (state.stage["homed_x"] and state.stage["homed_y"]):
         state.stage["needs_home"] = True
-        await push_log("원점이 없습니다 - '원점 잡기(fz)' 를 먼저 실행하세요", "warn")
+        await push_log("원점 미설정 · 원점 설정을 먼저 실행하세요", "warn")
     await push_state()
 
 
@@ -96,10 +142,10 @@ async def _stage_disconnect(_data):
 
 async def _stage_home(data):
     if not state.stage["connected"]:
-        await push_log("스테이지 미연결 - 연결 후 사용하세요", "warn")
+        await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
         return
     axis = str(data.get("axis") or "xy").lower()
-    await push_log("원점 탐색 시작 (%s) - 끝에 닿으면 드르륵 소리가 정상입니다" % axis)
+    await push_log("원점 탐색 시작 (%s) · 하드스톱 접촉음은 정상입니다" % axis)
     state.stage["moving"] = True
     await push_state()
     try:
@@ -110,7 +156,7 @@ async def _stage_home(data):
             state.stage["last_error"] = "" # 원점을 다시 잡았으니 옛 오류는 지운다
         else:
             state.stage["needs_home"] = True
-        await push_log("원점 설정 완료 - X%.2f Y%.2f" % (st["x_mm"], st["y_mm"]), "ok")
+        await push_log("원점 설정 완료 · X%.2f Y%.2f" % (st["x_mm"], st["y_mm"]), "ok")
     finally:
         state.stage["moving"] = False
         await push_state()
@@ -227,14 +273,17 @@ async def _open_results(_data):
 async def _settings_save(data):
     patch = {k: data[k] for k in ("serial_port", "camera_index", "park_xy", "dwell_s",
                                   "marker_mm_xy", "measure") if k in data}
+    old_index = state.camera["index"]
     state.save_settings(patch)
     calib.set_marker_mm(state.settings.get("marker_mm_xy"))
+    if state.camera["index"] != old_index and state.camera.get("preview"):
+        vision.holder.reopen(state.params)   # 카메라 번호가 바뀌었다
     await push_log("설정을 저장했습니다 (다음 촬영부터 적용)", "ok")
     await push_state()
 
 
 async def _exit(_data):
-    await push_log("종료합니다 - 파킹 후 저장", "warn")
+    await push_log("종료 · 파킹 후 위치 저장", "warn")
     if engine.busy():
         # 순회 중이면 먼저 멈춘다. 이동 한가운데서 포트를 닫으면 스테이지가
         # 그 이동을 끝까지 하고 우리는 그 위치를 모른 채 끝난다.
@@ -278,6 +327,9 @@ _TABLE = {
     "measure_here": _measure_here,
     "open_out_dir": _open_out_dir,
     "open_results": _open_results,
+    "preview_start": _preview_start,
+    "preview_stop": _preview_stop,
+    "list_ports": _list_ports,
     "settings_save": _settings_save,
     "exit": _exit,
 }

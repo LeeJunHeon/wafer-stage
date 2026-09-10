@@ -39,7 +39,7 @@
   function handle(msg) {
     switch (msg && msg.type) {
       case 'state': applyState(msg); break;
-      case 'log': UI.log(msg.msg, msg.level); break;
+      case 'log': UI.log(msg.msg, msg.level, msg); break;
       case 'ack': handleAck(msg); break;
     }
   }
@@ -49,6 +49,19 @@
       if (msg.reason === 'needs_confirm') UI.confirmRun(msg.needs_confirm || []);
       else if ((msg.needs_confirm || []).length) UI.alert(msg.needs_confirm.join('\n'), '시작 불가');
     }
+    if (msg.of === 'list_ports') fillPorts(msg.ports || []);
+  }
+
+  // 설정창의 시리얼 포트 목록. 직접 입력도 되므로 <datalist> 로만 붙인다.
+  function fillPorts(ports) {
+    const dl = $('portList');
+    dl.textContent = '';
+    ports.forEach(p => {
+      const o = document.createElement('option');
+      o.value = p.device;
+      o.label = p.description || '';
+      dl.appendChild(o);
+    });
   }
 
   function applyState(s) {
@@ -98,7 +111,11 @@
       tb.appendChild(tr);
     });
   }
-  $('btnSettings').onclick = () => { settingsOpen = true; dlg.showModal(); };
+  $('btnSettings').onclick = () => {
+    settingsOpen = true;
+    UI.send({ cmd: 'list_ports' });      // 열 때마다 최신 목록으로
+    dlg.showModal();
+  };
   $('btnCloseSettings').onclick = () => { settingsOpen = false; dlg.close(); fillSettings((UI.state || {}).settings || {}, (UI.state || {}).data_dir); };
   $('btnSaveSettings').onclick = () => {
     const mk = {};

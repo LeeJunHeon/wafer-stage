@@ -43,7 +43,7 @@ async def status_loop():
                                     "x_mm": None, "y_mm": None, "u": None, "v": None,
                                     "homed_x": False, "homed_y": False})
                 state.stage["last_error"] = str(e)
-                await push_log("스테이지 응답 없음 - 연결이 끊어졌습니다 (%s)" % e, "err")
+                await push_log("스테이지 응답 없음 · 연결 해제 (%s)" % e, "err")
                 with contextlib.suppress(Exception):
                     await stagectl.ctl.disconnect()
                 await push_state()

@@ -5,7 +5,7 @@
 
   const SHAPE = { quad: '사각', triangle: '삼각' };
   const STATUS = {
-    wait: '대기', moving: '이동중', measuring: '측정중',
+    wait: '대기', moving: '이동', measuring: '측정',
     done: '완료', skip: '제외', error: '오류',
   };
 
@@ -65,9 +65,18 @@
       tr.onclick = () => UI.select(sm.no);
       tb.appendChild(tr);
     });
+    if (!list.length) {
+      const tr = document.createElement('tr');
+      tr.className = 'emptyrow';
+      const td = document.createElement('td');
+      td.colSpan = 7;
+      td.textContent = '검출된 샘플 없음';
+      tr.appendChild(td);
+      tb.appendChild(tr);
+    }
     const on = list.filter(x => x.on).length;
     $('countInfo').textContent = list.length
-      ? (list.length + '개 검출 · ' + on + '개 측정 대상')
+      ? ('검출 ' + list.length + ' · 대상 ' + on)
       : UI.EMPTY;
   };
 

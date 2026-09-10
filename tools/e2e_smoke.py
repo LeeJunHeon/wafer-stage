@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -71,6 +72,7 @@ def wait_port(port, timeout=30.0):
 class Client:
     def __init__(self, ws):
         self.ws = ws
+        self.port = None
         self.state = None
         self.acks = []
         self.logs = []
@@ -112,8 +114,20 @@ async def run_case(port, image, fn):
     import websockets
     async with websockets.connect("ws://127.0.0.1:%d/ws" % port) as ws:
         c = Client(ws)
+        c.port = port
         await c.pump(1.0)
         await fn(c)
+
+
+def http_get(port, path):
+    """(status, bytes). 연결 자체가 안 되면 (0, b"")."""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:%d%s" % (port, path), timeout=5) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, b""
+    except Exception:                      # noqa: BLE001
+        return 0, b""
 
 
 def start_server(port, image):
@@ -141,6 +155,24 @@ def check(cond, msg):
 
 
 async def main_flow(c):
+    # 미리보기: --image 모드에서는 그 사진이 미리보기로 나온다.
+    await c.send(cmd="list_ports")
+    await c.pump(2.0)
+    acks = [a for a in c.acks if a.get("of") == "list_ports"]
+    check(bool(acks) and isinstance(acks[0].get("ports"), list),
+          "list_ports ack (%s)" % (acks[0].get("ports") if acks else "없음"))
+    check(bool(c.state["camera"].get("preview")), "기동과 함께 미리보기 on")
+    st, body = http_get(c.port, "/preview.jpg")
+    check(st == 200 and body[:2] == b"\xff\xd8",
+          "GET /preview.jpg 200 + JPEG (status %s, %d bytes)" % (st, len(body)))
+    await c.send(cmd="preview_stop")
+    await c.pump(1.5)
+    st2, _ = http_get(c.port, "/preview.jpg")
+    check(st2 == 204, "preview_stop 뒤 204 (status %s)" % st2)
+    check(not c.state["camera"].get("preview"), "preview_stop 뒤 state.camera.preview=false")
+    await c.send(cmd="preview_start")
+    await c.pump(1.5)
+
     await c.send(cmd="capture")
     ph = await c.wait_phase(("ready", "error"), 90)
     n = len(c.state["samples"])
@@ -215,7 +247,7 @@ async def estop_flow(c):
     await c.send(cmd="goto", no=1)
     await c.send(cmd="run", mode="auto", dwell_s=0.1, confirm=True)
     await c.pump(2.5)
-    blocked = [l for l in c.logs if "원점잡기" in l["msg"]]
+    blocked = [l for l in c.logs if "원점 설정 후 사용" in l["msg"]]
     check(len(blocked) >= 3, "park/goto/run 이 모두 잠김 (%d건)" % len(blocked))
 
     await c.send(cmd="stage_home", axis="xy")

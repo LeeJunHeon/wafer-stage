@@ -91,6 +91,9 @@ class Stage:
         self.banner = ""
         self.needs_home = False        # 배너에 "원점없음" 이 있었나
         self.log_path = log_path or os.path.join(paths.OUT_DIR, "serial.log")
+        # 주고받은 줄을 그대로 넘겨받을 곳(서버가 화면 로그로 보낸다). 파일 로그는
+        # 이것과 무관하게 항상 남는다 - 화면에서 껐다고 기록이 사라지면 안 된다.
+        self.on_line = None
         self.warnings = []
         # 비상정지('!')를 보낸 뒤 상태. 펌웨어는 '명령마다' abortFlag 를 지우므로
         # (.ino 395행) 다음 명령을 그냥 보내면 그대로 움직인다. 그래서 드라이버가
@@ -102,6 +105,11 @@ class Stage:
 
     # ---- 로그 ----------------------------------------------------------
     def _log(self, arrow, text):
+        if self.on_line is not None:
+            try:
+                self.on_line(arrow, text.rstrip("\r\n"))
+            except Exception:          # noqa: BLE001
+                pass                   # 화면 전달 실패로 시리얼을 막지 않는다
         try:
             os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
             with open(self.log_path, "a", encoding="utf-8") as f:

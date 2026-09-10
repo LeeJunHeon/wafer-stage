@@ -20,9 +20,12 @@
   }
   window.addEventListener('resize', fit);
   fit();
-  setInterval(() => {
-    $('clock').textContent = new Date().toLocaleString('ko-KR', { hour12: false });
-  }, 1000);
+  function stamp(d) {
+    const p2 = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate())
+      + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+  }
+  setInterval(() => { $('clock').textContent = stamp(new Date()); }, 1000);
 
   // ---------------- 로그 ----------------
   const logEl = $('log');
@@ -31,9 +34,14 @@
     return [d.getHours(), d.getMinutes(), d.getSeconds()]
       .map(x => String(x).padStart(2, '0')).join(':');
   }
-  UI.log = function (msg, level) {
+  // 시리얼 원문은 양이 많다. 화면에서 숨겨도 파일(serial.log)에는 전부 남는다.
+  UI.log = function (msg, level, meta) {
     if (!logEl) return;
-    const cls = ({ ok: 'rx', warn: 'warn', err: 'warn', info: 'sys' })[level] || 'sys';
+    meta = meta || {};
+    if (meta.serial && !$('optSerial').checked) return;
+    if (meta.poll && !$('optPoll').checked) return;
+    const cls = ({ ok: 'rx', warn: 'warn', err: 'warn', info: 'sys',
+                   tx: 'tx', rx: 'rx' })[level] || 'sys';
     const div = document.createElement('div');
     const t = document.createElement('span'); t.className = 't'; t.textContent = hhmmss();
     const m = document.createElement('span'); m.className = cls; m.textContent = ' ' + msg;
@@ -67,7 +75,7 @@
 
   // 창 X → window.py 가 부른다. 확인해야 실제로 닫힌다.
   window.requestExitConfirm = function () {
-    UI.confirm('프로그램을 종료합니다.\n파킹 → 위치 저장(save) 후 닫힙니다.', '종료')
+    UI.confirm('파킹 및 위치 저장 후 프로그램을 종료합니다.', '종료')
       .then(ok => {
         if (!ok) return;
         if (!UI.send({ cmd: 'exit' }) && window.pywebview && window.pywebview.api) {
@@ -80,10 +88,10 @@
   // ---------------- 헤더 ----------------
   // 색만으로 상태를 알리지 않는다(색각 이상·모니터 편차). 글자를 함께 바꾼다.
   const PILL = {
-    idle: ['IDLE', ''], ready: ['READY', 'ready'], capturing: ['CAPTURE', 'running'],
-    running: ['RUNNING', 'running'], paused: ['PAUSED', 'paused'],
-    waiting_confirm: ['CONFIRM', 'waiting'], parking: ['PARKING', 'running'],
-    done: ['DONE', 'ready'], stopped: ['STOPPED', 'stopped'], error: ['ERROR', 'error'],
+    idle: ['대기', ''], ready: ['준비', 'ready'], capturing: ['촬영', 'running'],
+    running: ['순회', 'running'], paused: ['일시정지', 'paused'],
+    waiting_confirm: ['확인대기', 'waiting'], parking: ['파킹', 'running'],
+    done: ['완료', 'ready'], stopped: ['정지', 'stopped'], error: ['오류', 'error'],
   };
 
   function chip(el, kind, text) {
@@ -101,7 +109,7 @@
     const st = s.stage || {}, cam = s.camera || {}, q = s.sequence || {};
     let txt = '—', cls = '';
     if (PILL[q.phase]) { txt = PILL[q.phase][0]; cls = PILL[q.phase][1]; }
-    if (q.phase === 'stopped' && q.estopped) { txt = 'E-STOP'; cls = 'estop'; }
+    if (q.phase === 'stopped' && q.estopped) { txt = '비상정지'; cls = 'estop'; }
     $('statePill').className = 'statepill ' + cls;
     $('stateText').textContent = txt;
 
@@ -109,17 +117,22 @@
     $('posX').textContent = st.connected ? fmt(st.x_mm) : EMPTY;
     $('posY').textContent = st.connected ? fmt(st.y_mm) : EMPTY;
 
+    let camTxt;
+    if (cam.capturing) camTxt = '촬영 중';
+    else if (cam.ok === false) camTxt = '열기 실패';
+    else if (cam.preview) camTxt = '미리보기';
+    else camTxt = '대기';
     chip($('chipCam'), cam.ok === false ? 'bad' : (cam.ok ? 'ok' : 'warn'),
-      'index ' + cam.index + (cam.capturing ? ' · 촬영 중' : (cam.last_error ? ' · 오류' : '')));
+      'index ' + cam.index + ' · ' + camTxt);
     chip($('chipStage'),
       st.connected ? ((st.homed_x && st.homed_y && !st.needs_home) ? 'ok' : 'warn') : 'bad',
       st.connected
         ? (st.port || '미연결') + ' · '
-          + (st.needs_home ? '원점 필요' : (st.homed_x && st.homed_y ? '원점OK' : '원점없음'))
+          + ((st.homed_x && st.homed_y && !st.needs_home) ? '원점 설정' : '원점 필요')
         : '미연결');
     const drv = ((s.settings || {}).measure || {}).driver || 'dummy';
     chip($('chipMeter'), drv === 'dummy' ? null : 'ok',
-      drv === 'dummy' ? '미연결 (dummy)' : drv);
+      drv === 'dummy' ? '미연결' : drv);
     const v = s.version || {};
     $('appVer').textContent = 'v' + (v.version || '?');
     $('barVer').textContent = (v.name || 'Sample Auto Measurement') + ' v' + (v.version || '?');
@@ -129,29 +142,31 @@
   // ---------------- 경보 배너 ----------------
   UI.applyNotice = function (s) {
     const items = [];
+    const cam = s.camera || {};
     let alarm = false;
     (s.warnings || []).forEach(w => {
-      if (w.indexOf('cut off') >= 0) items.push('웨이퍼가 감지영역에 잘렸습니다');
+      if (w.indexOf('cut off') >= 0) items.push('웨이퍼 감지영역 이탈');
       else if (w.indexOf('glare covers') >= 0) {
         const m = w.match(/glare covers\s*([\d.]+)%/);
-        items.push('글레어 ' + (m ? m[1] : '?') + '% — 조명을 확산광으로');
+        items.push('글레어 ' + (m ? m[1] : '?') + '% · 조명 확산 필요');
       }
     });
     const c = s.calib;
     if (c && c.missing_ids && c.missing_ids.length) {
-      items.push('마커 id ' + c.missing_ids.join(',') + ' 가려짐 — ' + c.corners
-                 + '점 보정(오차 약 1mm)');
+      items.push('마커 id' + c.missing_ids.join(',') + ' 미검출 · ' + c.corners
+                 + '점 보정(오차 ≈1 mm)');
     }
     const st = s.stage || {}, q = s.sequence || {};
-    if (st.needs_home) items.push('원점 필요 — 원점 잡기(fz) 후 이동할 수 있습니다');
-    if (st.last_error) items.push('스테이지: ' + st.last_error);
-    if (q.estopped) { items.push('비상정지 상태'); alarm = true; }
+    if (st.needs_home) items.push('원점 미설정 · 이동 잠금');
+    if (st.last_error) items.push('스테이지 오류: ' + st.last_error);
+    if (cam.last_error) items.push('카메라 오류: ' + cam.last_error);
+    if (q.estopped) { items.push('비상정지'); alarm = true; }
     if (q.phase === 'error') { items.push(q.message || '오류'); alarm = true; }
 
     const n = $('notice');
     n.hidden = items.length === 0;
     n.className = 'notice' + (alarm ? ' alarm' : '');
-    n.querySelector('.tag').textContent = alarm ? '경보' : '확인 필요';
+    n.querySelector('.tag').textContent = alarm ? '경보' : '주의';
     const box = $('noticeItems');
     box.textContent = '';
     items.forEach(t => {
@@ -164,22 +179,24 @@
   // ---------------- 오프라인 / 잠금 ----------------
   UI.setOnline = function (on) {
     UI.online = on;
-    chip($('chipServer'), on ? 'ok' : 'bad', on ? '연결됨' : '연결 끊김');
+    chip($('chipServer'), on ? 'ok' : 'bad', on ? '정상' : '끊김');
     document.body.classList.toggle('offline', !on);
     if (!on) {
       chip($('chipCam'), null, EMPTY);
       chip($('chipStage'), null, EMPTY);
       chip($('chipMeter'), null, EMPTY);
-      $('statePill').className = 'statepill';
-      $('stateText').textContent = '연결 끊김';
-      ['posX', 'posY', 'infoCal', 'infoRect', 'infoWafer', 'infoSamples', 'frameTime',
+      $('statePill').className = 'statepill error';
+      $('stateText').textContent = '통신두절';
+      ['posX', 'posY', 'infoCal', 'infoRect', 'infoWafer', 'infoSamples',
        'mapPos', 'progText', 'curSample', 'curTarget', 'curStatus', 'countInfo',
-       'measureVal', 'outDir'].forEach(id => { if ($(id)) $(id).textContent = EMPTY; });
+       'outDir'].forEach(id => { if ($(id)) $(id).textContent = EMPTY; });
+      $('frameTime').textContent = '촬영 없음';
+      $('measureVal').textContent = '미연결';
       const n = $('notice');
       n.hidden = false;
       n.className = 'notice alarm';
       n.querySelector('.tag').textContent = '경보';
-      $('noticeItems').textContent = '서버 연결 끊김 — 2초마다 다시 연결합니다';
+      $('noticeItems').textContent = '서버 통신 두절 · 재연결 중';
     }
     UI.lock();
   };
@@ -206,6 +223,7 @@
     dis('btnNone', !on);
     dis('btnGoto', !canMove || running || UI.selected == null);
     dis('btnMeasureHere', !canMove || running);
+    dis('btnLive', !on);
     dis('btnOpenDir', !on || !q.out_dir);
     dis('btnExport', !on || !q.out_dir);
     $('btnConnect').textContent = st.connected ? '연결 해제' : '연결';
@@ -213,18 +231,18 @@
 
     const lm = $('lockMsg');
     let why = '';
-    if (!on) why = '서버 연결 끊김 — 조작할 수 없습니다';
-    else if (!st.connected) why = '스테이지 미연결 — [연결] 을 누르세요';
-    else if (!(st.homed_x && st.homed_y)) why = '원점 없음 — [원점 잡기] 를 누르세요';
-    else if (st.needs_home) why = '비상정지 후 — [원점 잡기] 를 다시 하세요';
-    else if (running) why = '순회 중 — 정지 후 조작하세요';
+    if (!on) why = '서버 통신 두절';
+    else if (!st.connected) why = '스테이지 미연결';
+    else if (!(st.homed_x && st.homed_y)) why = '원점 미설정';
+    else if (st.needs_home) why = '비상정지 · 원점 설정 필요';
+    else if (running) why = '순회 중 · 조작 잠금';
     lm.hidden = !why;
     lm.textContent = why;
   };
 
   UI.applyFrameNote = function (s) {
     const el = $('frameTime');
-    if (!s.frame) { el.textContent = EMPTY; return; }
+    if (!s.frame) { el.textContent = '촬영 없음'; return; }
     const t = new Date((s.frame.ts || 0) * 1000);
     const hh = [t.getHours(), t.getMinutes(), t.getSeconds()]
       .map(x => String(x).padStart(2, '0')).join(':');

@@ -27,6 +27,8 @@ for p in (_ROOT, _BACKEND_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+import asyncio                                                   # noqa: E402
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect       # noqa: E402
 from fastapi.responses import HTMLResponse, JSONResponse, Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles                        # noqa: E402
@@ -40,7 +42,7 @@ import version                                                     # noqa: E402
 import vision                                                      # noqa: E402
 import window                                                      # noqa: E402
 from commands import handle_command                                # noqa: E402
-from connection import manager                                     # noqa: E402
+from connection import manager, set_loop                           # noqa: E402
 from state import state                                            # noqa: E402
 
 HOST = "127.0.0.1"
@@ -52,6 +54,8 @@ commands.set_shutdown_handler(window.request_shutdown)
 @contextlib.asynccontextmanager
 async def lifespan(_app):
     logger.configure(state.settings)
+    # 워커 스레드(시리얼·미리보기)가 화면으로 로그를 보낼 통로.
+    set_loop(asyncio.get_running_loop())
     # 이중 실행 방지는 창 경로뿐 아니라 서버 기동 공통 경로에도 둔다
     # (uvicorn 으로 직접 띄우면 window.run 을 거치지 않는다).
     if not window._acquire_single_instance():
@@ -81,6 +85,7 @@ async def lifespan(_app):
         # (검증 하네스가 하드웨어 없이 전 흐름을 돌 수 있게).
         with contextlib.suppress(Exception):
             await commands.handle_command({"cmd": "stage_connect"})
+    commands.start_preview()               # 미리보기는 기동과 함께 돈다
     tasks = loops.start_all()
     try:
         yield
@@ -123,6 +128,16 @@ async def root():
 @app.get("/health")
 async def health():
     return JSONResponse({"ok": True, "version": version.APP_VERSION})
+
+
+@app.get("/preview.jpg")
+async def preview():
+    """미리보기 최신 한 장. 화면이 250ms 마다 다시 받아 가므로 캐시하면 안 된다."""
+    jpg = vision.holder.preview_jpeg()
+    if not jpg:
+        return Response(status_code=204)
+    return Response(jpg, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.get("/frame/{name}")

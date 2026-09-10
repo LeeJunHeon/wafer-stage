@@ -11,14 +11,14 @@
 
 <div id="stage"><div id="app">
   <header>
-    <div class="brand"><h1>샘플 자동 측정</h1><div class="sub">SAMPLE AUTO MEASUREMENT · wafer_stage 콘솔</div></div>
+    <div class="brand"><h1>샘플 자동 측정</h1><div class="sub">SAMPLE AUTO MEASUREMENT</div></div>
     <div class="statepill ready" id="statePill"><i class="dot"></i><span id="stateText">—</span></div>
     <div class="pos">
       <div class="ax"><span class="k">X</span><span class="v" id="posX">—</span><span class="u">mm</span></div>
       <div class="ax"><span class="k">Y</span><span class="v" id="posY">—</span><span class="u">mm</span></div>
     </div>
     <div class="chips">
-      <span class="chip" id="chipServer"><i class="dot"></i><b>서버</b><span class="mono">연결 중…</span></span>
+      <span class="chip" id="chipServer"><i class="dot"></i><b>서버</b><span class="mono">연결 중</span></span>
       <span class="chip" id="chipCam"><i class="dot"></i><b>카메라</b><span class="mono">—</span></span>
       <span class="chip" id="chipStage"><i class="dot"></i><b>스테이지</b><span class="mono" id="chipStageTxt">—</span></span>
       <span class="chip" id="chipMeter"><i class="dot"></i><b>계측기</b><span class="mono">—</span></span>
@@ -27,20 +27,23 @@
       <span class="appver" id="appVer">—</span>
       <button class="btn" id="btnSettings">설정</button>
       <button class="btn" id="btnExit">종료</button>
-      <button class="btn estop" id="btnEstop">비상정지 !</button>
+      <button class="btn lg estop" id="btnEstop">비상정지</button>
     </div>
   </header>
 
-  <div class="notice" id="notice" hidden><span class="tag">확인 필요</span><div class="items" id="noticeItems"></div></div>
+  <div class="notice" id="notice" hidden><span class="tag">주의</span><div class="items" id="noticeItems"></div></div>
 
   <div class="main">
     <!-- 카메라 -->
     <section class="panel">
-      <div class="ph">카메라 <span class="sub" id="frameTime">—</span><span class="sp"></span><span class="sub">노란 점선 감지영역 · 파랑 마커 · 초록 샘플 · 빨강 포인터 · 샘플 클릭 = 선택</span></div>
-      <div class="pb">
+      <div class="ph">카메라 <span class="sp"></span><span class="sub" id="frameTime">촬영 없음</span><button class="btn sm" id="btnLive">미리보기</button></div>
+      <div class="pb camwrap">
         <div class="camview">
+          <img class="live" id="live" alt="" hidden>
+          <div class="noframe" id="noFrame">촬영 없음</div>
           <svg id="cam" viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet" role="img" aria-label="촬영 프레임과 검출 결과">
             <image id="frame" href="" width="1280" height="720"></image>
+            <g id="overlays">
             <g id="ovMarkers"></g>
             <rect id="ovRect" class="ov-rect"></rect>
             <circle id="ovWafer" class="ov-wafer"></circle>
@@ -51,8 +54,9 @@
               <line class="ov-pointer" x1="0" y1="-22" x2="0" y2="-8"></line><line class="ov-pointer" x1="0" y1="8" x2="0" y2="22"></line>
               <text class="ov-pointer-label" x="18" y="-16" id="pointerLabel"></text>
             </g>
+            </g>
           </svg>
-          <div class="capturing" id="capturing" hidden>촬영 중 — 파킹 확인 · 15프레임 캡처 · 마커 재보정 · 검출</div>
+          <div class="capturing" id="capturing" hidden>촬영 중</div>
         </div>
         <div class="caminfo">
           <div><span class="k">보정</span><span class="v" id="infoCal">—</span></div>
@@ -60,36 +64,37 @@
           <div><span class="k">웨이퍼</span><span class="v" id="infoWafer">—</span></div>
           <div><span class="k">샘플</span><span class="v" id="infoSamples">—</span></div>
         </div>
+        <div class="camlegend"><span>┅ 감지영역</span><span>■ 마커</span><span>▭ 샘플</span><span>✚ 포인터</span><span class="sp"></span><span>샘플 클릭: 선택</span></div>
       </div>
     </section>
 
     <!-- 스테이지 맵 + 샘플 목록 -->
     <div class="col">
       <section class="panel mapbox">
-        <div class="ph">스테이지 맵 <span class="sub"><span id="mapSize">—</span> · 위 X+ · 왼쪽 Y+</span><span class="sp"></span><span class="sub mono" id="mapPos">—</span></div>
+        <div class="ph">스테이지 맵 <span class="sub"><span id="mapSize">—</span> · ↑X+ ←Y+</span><span class="sp"></span><span class="sub mono" id="mapPos">—</span></div>
         <div class="pb"><svg id="map" class="map" viewBox="0 0 300 264" preserveAspectRatio="xMidYMid meet"></svg></div>
         <div class="legend"><span><i></i>대기</span><span><i class="target"></i>현재</span><span><i class="done"></i>완료</span><span><i class="skip"></i>제외</span><span class="right">■ 마커 · ┅ 감지영역 · ✚ 포인터 · P 파킹</span></div>
       </section>
       <section class="panel">
-        <div class="ph">샘플 목록 <span class="sp"></span><button class="btn small" id="btnAll">전체 선택</button><button class="btn small" id="btnNone">전체 해제</button></div>
+        <div class="ph">샘플 목록 <span class="sp"></span><button class="btn sm" id="btnAll">전체 선택</button><button class="btn sm" id="btnNone">전체 해제</button></div>
         <div class="tablewrap"><table><thead><tr><th>☑</th><th>No</th><th>형상</th><th class="r">X mm</th><th class="r">Y mm</th><th>상태</th><th class="r">측정값</th></tr></thead><tbody id="tbody"></tbody></table></div>
-        <div class="tfoot"><button class="btn small" id="btnGoto" disabled>선택 샘플로 이동</button><button class="btn small" id="btnMeasureHere" disabled>현재 위치에서 측정</button><span class="cnt" id="countInfo">—</span></div>
+        <div class="tfoot"><button class="btn sm" id="btnGoto" disabled>선택 위치 이동</button><button class="btn sm" id="btnMeasureHere" disabled>현 위치 측정</button><span class="cnt" id="countInfo">—</span></div>
       </section>
     </div>
 
     <!-- 조작 -->
     <section class="panel">
-      <div class="ph">조작</div>
+      <div class="ph">제어</div>
       <div class="pb stack">
         <div class="sec">
           <div class="t">스테이지</div>
-          <div class="row"><button class="btn" id="btnConnect">연결</button><button class="btn" id="btnHome">원점 잡기 <span class="key">fz</span></button><button class="btn" id="btnPark">파킹</button></div>
+          <div class="row"><button class="btn" id="btnConnect">연결</button><button class="btn" id="btnHome">원점 설정</button><button class="btn" id="btnPark">파킹</button></div>
           <div class="lockmsg" id="lockMsg" hidden></div>
         </div>
         <div class="sec">
           <div class="t">촬영 · 검출</div>
-          <button class="btn primary big wide" id="btnCapture">촬영 · 검출</button>
-          <div class="note">파킹 후 촬영하고 그 사진의 마커로 보정을 다시 계산합니다.</div>
+          <button class="btn lg primary block" id="btnCapture">촬영 · 검출</button>
+          <div class="note">파킹 → 촬영 → 마커 재보정 → 검출</div>
         </div>
         <div class="sec grow">
           <div class="t">순회 · 측정</div>
@@ -98,19 +103,19 @@
             <label><input type="radio" name="mode" value="confirm">확인 후 진행</label>
             <label><input type="radio" name="mode" value="pick">번호 선택</label>
           </div>
-          <div class="row"><span class="note">샘플당 대기</span><input type="number" id="dwell" value="5" min="0" step="1"><span class="note">초 (자동 모드)</span></div>
-          <div class="row"><button class="btn primary big" id="btnStart">시작</button><button class="btn big" id="btnPause" disabled>일시정지</button></div>
-          <div class="row"><button class="btn" id="btnNext" disabled>다음 →</button><button class="btn" id="btnStop" disabled>정지 · 파킹</button></div>
+          <div class="row"><span class="note">샘플당 대기</span><input type="number" id="dwell" value="5" min="0" step="1"><span class="note">s</span></div>
+          <div class="row"><button class="btn primary" id="btnStart">시작</button><button class="btn" id="btnPause" disabled>일시정지</button></div>
+          <div class="row"><button class="btn" id="btnNext" disabled>다음</button><button class="btn" id="btnStop" disabled>정지</button></div>
           <div class="progress"><i id="bar"></i></div>
           <div class="kv">
             <span class="k">진행</span><span class="mono" id="progText">—</span>
-            <span class="k">현재 샘플</span><span class="big" id="curSample">—</span>
+            <span class="k">현재</span><span class="big" id="curSample">—</span>
             <span class="k">목표</span><span class="mono" id="curTarget">—</span>
             <span class="k">상태</span><span id="curStatus">—</span>
             <span class="k">경과</span><span class="mono" id="elapsed">00:00</span>
           </div>
-          <div class="measure"><div class="note">측정 (계측기 연동 지점)</div><div class="val" id="measureVal">—</div><div class="note">샘플마다 backend/measure.py 를 호출합니다.</div></div>
-          <div class="row"><button class="btn small" id="btnExport" disabled>결과 CSV</button><button class="btn small" id="btnOpenDir" disabled>결과 폴더 열기</button></div>
+          <div class="measure"><div class="note">계측기</div><div class="val" id="measureVal">미연결</div></div>
+          <div class="row"><button class="btn" id="btnExport" disabled>결과 CSV</button><button class="btn" id="btnOpenDir" disabled>결과 폴더</button></div>
         </div>
       </div>
     </section>
@@ -118,26 +123,26 @@
 
   <div class="foot">
     <section class="panel">
-      <div class="ph">로그 <span class="sub">서버 · 시리얼 원문 (-&gt; 보냄 / &lt;- 받음) · 순회 이벤트</span><span class="sp"></span><button class="btn small" id="btnClearLog">지우기</button></div>
+      <div class="ph">로그 <span class="sp"></span><label class="logopt"><input type="checkbox" id="optSerial" checked>시리얼 원문</label><label class="logopt"><input type="checkbox" id="optPoll">폴링 표시</label><button class="btn sm" id="btnClearLog">지우기</button></div>
       <div class="log" id="log"></div>
     </section>
-    <div class="statusbar"><span class="mono" id="barVer">Sample Auto Measurement</span><span>결과 폴더 <span class="mono" id="outDir">—</span></span><span class="sp"></span><span class="mono" id="clock">—</span></div>
+    <div class="statusbar"><span class="mono" id="barVer">Sample Auto Measurement</span><span>결과 폴더: <span class="mono" id="outDir">—</span></span><span class="sp"></span><span class="mono" id="clock">—</span></div>
   </div>
 </div></div>
 
 <dialog id="dlgSettings">
   <header><h2>설정</h2><span class="sp"></span></header>
   <div class="settings">
-    <div class="f"><span class="k">시리얼 포트 (비우면 자동)</span><input class="v" id="setPort" placeholder="COM7"></div>
-    <div class="f"><span class="k">카메라 index</span><input class="v" id="setCam" type="number" min="0" step="1"></div>
+    <div class="f"><span class="k">시리얼 포트</span><input class="v" id="setPort" list="portList" placeholder="COM7"><datalist id="portList"></datalist><span class="hint">비우면 자동 선택</span></div>
+    <div class="f"><span class="k">카메라 번호</span><input class="v" id="setCam" type="number" min="0" step="1"></div>
     <div class="f"><span class="k">파킹 X (mm)</span><input class="v" id="setParkX" type="number" step="0.1"></div>
     <div class="f"><span class="k">파킹 Y (mm)</span><input class="v" id="setParkY" type="number" step="0.1"></div>
-    <div class="f"><span class="k">샘플당 대기 (초)</span><input class="v" id="setDwell" type="number" min="0" step="1"></div>
-    <div class="f"><span class="k">계측기 driver</span><input class="v" id="setDriver" placeholder="dummy"></div>
-    <div class="f full"><span class="k">기준 마커 중심 (30 mm, DICT_4X4_50) — 기계좌표 mm</span>
+    <div class="f"><span class="k">샘플당 대기 (s)</span><input class="v" id="setDwell" type="number" min="0" step="1"></div>
+    <div class="f"><span class="k">계측기 드라이버</span><input class="v" id="setDriver" placeholder="dummy"></div>
+    <div class="f full"><span class="k">기준 마커 중심 (30 mm) · 기계좌표 mm</span>
       <table><thead><tr><th>id</th><th class="r">X</th><th class="r">Y</th></tr></thead><tbody id="setMarkers"></tbody></table></div>
     <div class="f full"><span class="k">데이터 폴더</span><span class="v mono" id="setData">—</span></div>
-    <div class="f full note">settings.json 에 저장되고 다음 촬영부터 적용됩니다. 검출 파라미터는 settings.json 에서 직접 편집하세요.</div>
+    <div class="f full note">settings.json 에 저장 · 다음 촬영부터 적용 (검출 파라미터는 파일에서 직접 편집)</div>
   </div>
   <footer><button class="btn" id="btnCloseSettings">취소</button><button class="btn primary" id="btnSaveSettings">저장</button></footer>
 </dialog>

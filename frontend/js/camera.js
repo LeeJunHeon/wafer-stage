@@ -6,6 +6,34 @@
   const NS = 'http://www.w3.org/2000/svg';
 
   let lastFrameId = null;
+  // 미리보기 모드: 카메라가 지금 보는 그림. 촬영본 모드: 마지막 촬영 + 검출 결과.
+  // 촬영이 끝나면 자동으로 촬영본으로 넘어간다(검출 결과를 봐야 하므로).
+  let live = false;
+  let liveTimer = null;
+  let lastPhase = null;
+  let firstState = true;
+
+  function setLive(on) {
+    live = !!on;
+    $('btnLive').textContent = live ? '촬영본' : '미리보기';
+    $('cam').classList.toggle('livemode', live);
+    $('live').hidden = !live;
+    if (live) {
+      if (!liveTimer) liveTimer = setInterval(tick, 250);
+      tick();
+    } else if (liveTimer) {
+      clearInterval(liveTimer);
+      liveTimer = null;
+    }
+    UI.applyCamera(UI.state);
+  }
+
+  function tick() {
+    if (!live) return;
+    $('live').src = '/preview.jpg?t=' + Date.now();
+  }
+
+  UI.isLive = () => live;
 
   function el(tag, attrs) {
     const e = document.createElementNS(NS, tag);
@@ -14,6 +42,7 @@
   }
 
   UI.applyCamera = function (s) {
+    if (!s) return;
     // ---- 사진 ----
     const img = $('frame');
     if (s.frame && s.frame.url) {
@@ -29,6 +58,20 @@
       lastFrameId = null;
     }
     $('capturing').hidden = !(s.camera && s.camera.capturing);
+    // 촬영본이 없으면 검은 화면 위에 오버레이만 뜬다. 그림 대신 안내 한 줄을 둔다.
+    const q0 = s.sequence || {};
+    const bare = !s.frame && !live;
+    $('noFrame').hidden = !bare;
+    $('overlays').style.display = (bare || (live && !s.frame)) ? 'none' : '';
+    // 촬영이 끝나면 촬영본으로 되돌린다(검출 결과가 보이게). 새로고침으로 들어왔을
+    // 때도 이미 찍어 둔 결과가 있으면 그쪽을 먼저 보여 준다.
+    if (firstState) {
+      firstState = false;
+      if (s.frame && live) { setLive(false); return; }
+    }
+    if (live && lastPhase === 'capturing' && q0.phase !== 'capturing') setLive(false);
+    lastPhase = q0.phase;
+    $('btnLive').disabled = !UI.online;
 
     // ---- 마커 ----
     const gm = $('ovMarkers');
@@ -91,7 +134,7 @@
     // 아무 일도 하지 않는다(포인터가 영영 안 보였다) - 속성으로 직접 켜고 끈다.
     const st = s.stage || {};
     const gp = $('ovPointer');
-    if (st.connected && st.u != null && st.v != null) {
+    if (st.connected && st.u != null && st.v != null && (s.frame || live)) {
       gp.removeAttribute('hidden');
       gp.setAttribute('transform', 'translate(' + st.u + ',' + st.v + ')');
       $('pointerLabel').textContent = 'X ' + UI.fmt(st.x_mm) + ' Y ' + UI.fmt(st.y_mm)
@@ -103,24 +146,23 @@
     // ---- 정보 4칸 ----
     const c = s.calib;
     $('infoCal').textContent = c
-      ? (c.used_ids.length + '마커·' + c.corners + '점 ' + c.transform
-         + ' · 잔차 RMS ' + c.corner_rms_mm.toFixed(2)
-         + ' / 최대 ' + c.corner_max_mm.toFixed(2) + ' mm'
-         + (c.missing_ids.length ? ' · id ' + c.missing_ids.join(',') + ' 가려짐' : ''))
+      ? (c.used_ids.length + '마커 ' + c.corners + '점 · RMS '
+         + c.corner_rms_mm.toFixed(2) + ' · 최대 ' + c.corner_max_mm.toFixed(2) + ' mm'
+         + (c.missing_ids.length ? ' · id' + c.missing_ids.join(',') + ' 미검출' : ''))
       : UI.EMPTY;
     $('infoRect').textContent = r
-      ? ('(' + r[0] + ',' + r[1] + ')-(' + r[2] + ',' + r[3] + ') · '
+      ? ('(' + r[0] + ',' + r[1] + ')-(' + r[2] + ',' + r[3] + ') '
          + (r[2] - r[0]) + '×' + (r[3] - r[1]) + ' px')
       : UI.EMPTY;
     $('infoWafer').textContent = (w && w.found && w.center_mm)
       ? ('중심 X' + w.center_mm[0].toFixed(1) + ' Y' + w.center_mm[1].toFixed(1)
-         + ' · r ' + w.r_px.toFixed(0) + 'px')
+         + ' · r ' + w.r_px.toFixed(0) + ' px')
       : UI.EMPTY;
     const list = s.samples || [];
     const tri = list.filter(x => x.shape === 'triangle').length;
     const on = list.filter(x => x.on).length;
     $('infoSamples').textContent = list.length
-      ? (list.length + '개 (삼각 ' + tri + ') · 대상 ' + on) : UI.EMPTY;
+      ? (list.length + ' (삼각 ' + tri + ') · 대상 ' + on) : UI.EMPTY;
   };
 
   // 카메라 도구 버튼
@@ -128,8 +170,12 @@
   $('btnPark').onclick = () => UI.send({ cmd: 'park' });
   $('btnHome').onclick = async () => {
     const ok = await UI.confirm(
-      '원점을 잡습니다. 축을 끝까지 밀어 하드스톱에 닿습니다(드르륵 소리는 정상).\n'
-      + '프로브·웨이퍼가 경로에 없는지 확인하세요.', '원점 잡기');
+      '원점 설정: 각 축을 하드스톱까지 이동합니다(접촉음 정상).\n'
+      + '이동 경로에 프로브·웨이퍼가 없는지 확인 후 진행하십시오.', '원점 설정');
     if (ok) UI.send({ cmd: 'stage_home', axis: 'xy' });
   };
+  $('btnLive').onclick = () => setLive(!live);
+  // 처음에는 미리보기로 시작한다 - 촬영본이 없는 상태에서 검은 화면을 보여 줄
+  // 이유가 없다. 촬영이 끝나면 자동으로 촬영본으로 넘어간다.
+  setLive(true);
 })();

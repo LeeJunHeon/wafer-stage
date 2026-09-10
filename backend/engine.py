@@ -58,7 +58,7 @@ async def capture():
         await push_log("순회 중에는 촬영할 수 없습니다", "warn")
         return False
     state.camera["capturing"] = True
-    _phase("capturing", "촬영·검출 중")
+    _phase("capturing", "촬영")
     await push_state()
     try:
         # 캐리지가 시야에 있으면 웨이퍼를 가린다. 연결돼 있으면 파킹부터.
@@ -75,27 +75,27 @@ async def capture():
         state.camera["last_error"] = ""
         state.frame = meta
         if isinstance(stats, dict) and "chosen_focus_score" in stats:
-            await push_log("촬영 완료 - %d프레임 중 선명도 %.0f"
+            await push_log("촬영 완료 · %d프레임 중 선명도 %.0f"
                            % (stats.get("frames_grabbed", 0),
                               stats.get("chosen_focus_score", 0)))
         if res is None:
             state.samples = []
             state.calib = state.sensing = state.wafer = None
             state.markers = {}
-            _phase("error", "마커 부족 - 좌표를 만들 수 없습니다")
-            await push_log("마커를 3개 이상 찾지 못했습니다 - 이동하지 않습니다", "err")
+            _phase("error", "마커 부족(3개 미만) · 좌표 생성 불가")
+            await push_log("마커 3개 미만 · 좌표를 만들지 않습니다", "err")
             return False
         _apply_sense(res)
         d = await vision.run_blocking(_save_seq, bgr, res)
         state.sequence["out_dir"] = d
-        _phase("ready", "검출 %d개 - 검토 후 시작" % len(state.samples),
+        _phase("ready", "검출 %d · 대기" % len(state.samples),
                done=0, total=len(state.samples), cur_no=None, elapsed_s=0)
         await push_log("검출 %d개 · 저장 %s" % (len(state.samples), os.path.basename(d)), "ok")
         return True
     except Exception as e:                 # noqa: BLE001
         state.camera["ok"] = False
         state.camera["last_error"] = str(e)
-        _phase("error", "촬영 실패: %s" % e)
+        _phase("error", "촬영 실패 · %s" % e)
         logger.exc("촬영 실패", e)
         await push_log("촬영 실패: %s" % e, "err")
         return False
@@ -269,18 +269,18 @@ def needs_confirm():
     out = []
     for w in state.warnings:
         if "cut off" in w:
-            out.append("웨이퍼가 감지영역에 잘렸습니다")
+            out.append("웨이퍼 감지영역 이탈")
         if "glare covers" in w:
             try:
                 pct = float(w.split("glare covers")[1].split("%")[0])
             except (IndexError, ValueError):
                 pct = 0.0
             if pct >= 50.0:
-                out.append("글레어가 감지영역의 %.0f%% 입니다" % pct)
+                out.append("글레어 %.0f%% · 조명 확산 필요" % pct)
     c = state.calib or {}
     if c.get("missing_ids"):
-        out.append("마커 id %s 가려짐 - %d점 호모그래피(오차 약 1mm)"
-                   % (", ".join(str(i) for i in c["missing_ids"]), c.get("corners", 0)))
+        out.append("마커 id%s 미검출 · %d점 보정(오차 ≈1 mm)"
+                   % (",".join(str(i) for i in c["missing_ids"]), c.get("corners", 0)))
     return out
 
 
@@ -324,7 +324,7 @@ async def _run_loop(todo):
     t0 = time.monotonic()
     mode = state.sequence["mode"]
     dwell = float(state.sequence["dwell_s"])
-    _phase("running", "순회 시작 - %d개" % len(todo))
+    _phase("running", "순회 시작 · %d" % len(todo))
     await push_log("순회 시작: %d개 · 모드 %s · 대기 %.1f초" % (len(todo), mode, dwell), "ok")
     await push_state()
     ok = True
@@ -338,12 +338,12 @@ async def _run_loop(todo):
             state.sequence["elapsed_s"] = int(time.monotonic() - t0)
             if not calib.in_range(s["X"], s["Y"]):
                 s["status"] = "skip"
-                await push_log("#%s 건너뜀 - 가동범위 밖" % s["no"], "warn")
+                await push_log("#%s 건너뜀 · 가동범위 밖" % s["no"], "warn")
                 await push_state()
                 continue
             state.sequence["cur_no"] = s["no"]
             s["status"] = "moving"
-            _progress("#%s 로 이동 중" % s["no"])
+            _progress("#%s 이동" % s["no"])
             await push_state()
             try:
                 await _goto(s["X"], s["Y"], no=s["no"])
@@ -355,8 +355,8 @@ async def _run_loop(todo):
                     # 유지한다 - 사용자가 누른 정지를 '오류' 로 바꾸지 않는다.
                     await push_log("비상정지로 이동 중단 (#%s)" % s["no"], "warn")
                 else:
-                    _phase("error", "이동 실패: %s" % e)
-                    await push_log("이동 실패로 순회를 중단합니다: %s" % e, "err")
+                    _phase("error", "이동 실패 · %s" % e)
+                    await push_log("이동 실패로 순회 중단 · %s" % e, "err")
                 ok = False
                 break
             await push_log("#%s 도착 X%.1f Y%.1f" % (s["no"], s["X"], s["Y"]))
@@ -375,7 +375,7 @@ async def _run_loop(todo):
                 s["unit"] = r.get("unit")
 
             if mode == "confirm":
-                _phase("waiting_confirm", "#%s 확인 대기 - '다음' 을 누르세요" % s["no"])
+                _phase("waiting_confirm", "#%s 확인 대기" % s["no"])
                 await push_state()
                 _next_evt.clear()
                 await _next_evt.wait()
@@ -415,10 +415,10 @@ async def _finish(ok):
             _write_results()
         except Exception as e:             # noqa: BLE001
             await push_log("results.csv 저장 실패: %s" % e, "warn")
-        _phase("stopped", "비상정지 - 원점잡기(fz) 후 사용")
+        _phase("stopped", "비상정지 · 원점 설정 필요")
         await push_state()
         return
-    _phase("parking", "파킹 중")
+    _phase("parking", "파킹")
     await push_state()
     try:
         px, py = state.park_xy()
@@ -436,13 +436,13 @@ async def _finish(ok):
     except Exception as e:                 # noqa: BLE001
         await push_log("results.csv 저장 실패: %s" % e, "warn")
     if not ok:
-        _phase("error", "오류로 중단됨")
+        _phase("error", "오류 중단")
     elif stopped:
-        _phase("stopped", "사용자 정지")
+        _phase("stopped", "정지")
         await push_log("순회 정지 (완료 %d개)" % state.sequence["done"], "warn")
     else:
-        _phase("done", "순회 완료 %d개" % state.sequence["done"])
-        await push_log("순회 완료 - %d개, %d초" % (state.sequence["done"],
+        _phase("done", "완료 %d/%d" % (state.sequence["done"], state.sequence["total"]))
+        await push_log("순회 완료 · %d개 · %d초" % (state.sequence["done"],
                                               state.sequence["elapsed_s"]), "ok")
     await push_state()
 
@@ -465,7 +465,7 @@ def _write_results():
 async def pause():
     if _pause_evt is not None:
         _pause_evt.clear()
-        _phase("paused", "일시정지 - 현재 이동을 마치고 멈춥니다")
+        _phase("paused", "일시정지")
         await push_log("일시정지", "warn")
         await push_state()
 
@@ -492,7 +492,7 @@ async def stop():
         _pause_evt.set()
     if _next_evt is not None:
         _next_evt.set()
-    await push_log("정지 요청 - 현재 이동을 마치고 파킹합니다", "warn")
+    await push_log("정지 요청 · 현재 이동 후 파킹", "warn")
 
 
 async def estop():
@@ -514,10 +514,10 @@ async def estop():
     if _next_evt is not None:
         _next_evt.set()
     state.stage["moving"] = False
-    _phase("stopped", "비상정지 - 원점잡기(fz) 후 사용")
-    await push_log("비상정지 - 펌웨어에 '!' 전송%s" % ("" if ok else " (실패)"),
+    _phase("stopped", "비상정지 · 원점 설정 필요")
+    await push_log("비상정지 · 펌웨어 중단 명령 전송%s" % ("" if ok else " (실패)"),
                    "err" if not ok else "warn")
-    await push_log("정지 후에는 위치를 신뢰할 수 없습니다 - 원점잡기(fz)를 다시 하세요", "warn")
+    await push_log("정지 후 위치 신뢰 불가 · 원점 설정을 다시 하세요", "warn")
     await push_state()
 
 
@@ -536,5 +536,5 @@ def reset_estop():
     _estopped = False
     state.stage["needs_home"] = False
     if was and state.sequence.get("phase") in ("stopped", "error"):
-        _phase("ready" if state.samples else "idle", "원점 재설정 완료 - 이동 가능",
+        _phase("ready" if state.samples else "idle", "원점 설정 완료",
                cur_no=None)

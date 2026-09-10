@@ -15,6 +15,19 @@ from concurrent.futures import ThreadPoolExecutor
 from core import stage as stage_mod
 
 import logger
+from connection import push_log_threadsafe
+
+
+def _serial_line(arrow, text):
+    """시리얼 원문 한 줄. 워커 스레드에서 불린다.
+
+    2초 폴링(st / ST …)은 양이 많아 화면에서 기본으로 숨긴다. 어떤 줄이 폴링인지는
+    서버가 판단해 표시만 넘기고, 숨길지 말지는 화면이 정한다(파일에는 전부 남는다).
+    """
+    t = (text or "").strip()
+    poll = t == "st" or t.startswith("ST ")
+    level = "tx" if arrow == "->" else ("rx" if arrow == "<-" else "info")
+    push_log_threadsafe("%s %s" % (arrow, t), level, serial=True, poll=poll)
 
 
 class StageCtl:
@@ -32,6 +45,7 @@ class StageCtl:
         if self.dev is not None:
             await self.disconnect()
         dev = stage_mod.Stage(port, dry=self.dry)
+        dev.on_line = _serial_line          # 주고받은 줄을 화면 로그로도 보낸다
         banner = await self._call(dev.open)
         if self.dry:
             dev.port_name = "--dry"        # 화면 칩에 '?' 대신 무엇인지 보이게

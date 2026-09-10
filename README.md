@@ -79,7 +79,7 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 |---|---|
 | `version` | `{name, version, build}` |
 | `stage` | `connected, port, homed_x, homed_y, x_mm, y_mm, u, v, moving, dirty, needs_home, last_error` |
-| `camera` | `index, ok, last_error, capturing` |
+| `camera` | `index, ok, last_error, capturing, preview` |
 | `frame` | `{id, ts, w, h, url:"/frame/<id>.jpg"}` 또는 `null` |
 | `calib` | `{refit, used_ids, missing_ids, transform, corner_rms_mm, corner_max_mm, rotation_deg, corners}` 또는 `null` |
 | `sensing` | `{rect:[u0,v0,u1,v1]}` 또는 `null` |
@@ -96,10 +96,37 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 `phase`: `idle | capturing | ready | running | paused | waiting_confirm | parking | done | stopped | error`
 `sequence.estopped`: 비상정지 상태(원점을 다시 잡을 때까지 유지)
 
-그 밖에 `{"type":"log", msg, level:"info|ok|warn|err"}`,
-`{"type":"ack", of, ok, reason, needs_confirm:[사유...]}`.
+그 밖에 `{"type":"log", msg, level, serial?, poll?}`,
+`{"type":"ack", of, ok, reason, needs_confirm:[사유...], ...}`.
 
-### 화면 → 서버
+`log.level`: `info | ok | warn | err` 에 시리얼 원문용 `tx`(-> 보냄) · `rx`(<- 받음)
+가 더 있다. `serial:true` 는 시리얼 원문, `poll:true` 는 2초 상태 폴링(`st` / `ST …`)
+이라는 표시다. 화면은 이 두 값으로 걸러 보여 주고(기본: 원문 켬 · 폴링 끔), 파일
+`data/out/serial.log` 에는 걸러진 것까지 전부 남는다.
+
+#### HTTP
+
+| 경로 | 내용 |
+|---|---|
+| `GET /` | 콘솔 화면 |
+| `GET /health` | `{ok, version}` |
+| `GET /frame/<id>.jpg` | 마지막 촬영본 (검출 결과를 그릴 바탕) |
+| `GET /preview.jpg` | 미리보기 최신 한 장(640×360). 없으면 204 |
+
+미리보기는 서버 기동과 함께 4 fps 로 돈다. 카메라 장치는 한 번에 한 곳만 열 수
+있으므로 미리보기와 촬영이 같은 객체를 lock 으로 나눠 쓴다 — 촬영 때 닫았다 다시
+열지 않는다. `--image` 로 띄우면 그 사진이 미리보기로 나온다(카메라를 열지 않는다).
+
+## 실장 첫 실행 절차
+
+1. [연결] — 시리얼 포트가 잡히는지, 칩이 `COM7 · 원점 필요` 로 바뀌는지 확인
+2. [원점 설정] — 경로에 프로브·웨이퍼가 없는지 보고 실행. 칩이 `원점 설정` 으로 바뀐다
+3. [미리보기] — 웨이퍼 위치·조명·초점을 눈으로 확인(마커 4개가 가리지 않게)
+4. [촬영 · 검출] — 검출 개수와 배너(글레어·마커)를 확인
+5. 번호 선택 모드로 샘플 1개만 [선택 위치 이동] — 프로브가 실제로 그 위 ±1~2mm 인지 확인
+6. 확인 후 진행 모드로 2~3개를 돌려 보고, 문제 없으면 자동 모드로 전체 순회
+
+## 화면 → 서버
 
 `{"cmd": ...}` 한 종류다.
 
@@ -118,6 +145,8 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 | `measure_here` | |
 | `open_out_dir` | 결과 폴더를 탐색기로 연다 |
 | `open_results` | results.csv 를 연다(없으면 폴더) |
+| `preview_start` `preview_stop` | 카메라 미리보기 |
+| `list_ports` | 시리얼 포트 목록 → `ack{of:"list_ports", ports:[{device, description}]}` |
 | `settings_save` | `serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure` |
 | `exit` | |
 
