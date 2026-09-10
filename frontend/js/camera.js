@@ -87,22 +87,25 @@
     });
 
     // ---- 포인터(스테이지 현재 위치) ----
+    // #ovPointer 는 SVG <g> 다. .hidden 프로퍼티는 HTMLElement 전용이라 여기서는
+    // 아무 일도 하지 않는다(포인터가 영영 안 보였다) - 속성으로 직접 켜고 끈다.
     const st = s.stage || {};
     const gp = $('ovPointer');
-    if (st.u != null && st.v != null) {
-      gp.hidden = false;
+    if (st.connected && st.u != null && st.v != null) {
+      gp.removeAttribute('hidden');
       gp.setAttribute('transform', 'translate(' + st.u + ',' + st.v + ')');
       $('pointerLabel').textContent = 'X ' + UI.fmt(st.x_mm) + ' Y ' + UI.fmt(st.y_mm)
         + (st.moving ? ' 이동중' : '');
     } else {
-      gp.hidden = true;
+      gp.setAttribute('hidden', '');
     }
 
     // ---- 정보 4칸 ----
     const c = s.calib;
     $('infoCal').textContent = c
-      ? (c.used_ids.length + '개 마커 / ' + c.corners + '점 · ' + c.transform
-         + ' · 잔차 ' + c.corner_max_mm.toFixed(2) + ' mm'
+      ? (c.used_ids.length + '마커·' + c.corners + '점 ' + c.transform
+         + ' · 잔차 RMS ' + c.corner_rms_mm.toFixed(2)
+         + ' / 최대 ' + c.corner_max_mm.toFixed(2) + ' mm'
          + (c.missing_ids.length ? ' · id ' + c.missing_ids.join(',') + ' 가려짐' : ''))
       : UI.EMPTY;
     $('infoRect').textContent = r

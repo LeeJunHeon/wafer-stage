@@ -66,7 +66,7 @@
     <!-- 스테이지 맵 + 샘플 목록 -->
     <div class="col">
       <section class="panel" style="height: 392px;">
-        <div class="ph">스테이지 맵 <span class="sub">248×248 mm · 위 X+ · 왼쪽 Y+</span><span class="sp"></span><span class="sub mono" id="mapPos">—</span></div>
+        <div class="ph">스테이지 맵 <span class="sub"><span id="mapSize">—</span> · 위 X+ · 왼쪽 Y+</span><span class="sp"></span><span class="sub mono" id="mapPos">—</span></div>
         <div class="pb"><svg id="map" class="map" viewBox="0 0 300 264" preserveAspectRatio="xMidYMid meet"></svg></div>
         <div class="legend"><span><i></i>대기</span><span><i class="target"></i>현재</span><span><i class="done"></i>완료</span><span><i class="skip"></i>제외</span><span style="margin-left:auto">■ 마커 · ┅ 감지영역 · ✚ 포인터 · P 파킹</span></div>
       </section>
@@ -136,7 +136,7 @@
     <div class="f"><span class="k">계측기 driver</span><input class="v" id="setDriver" placeholder="dummy"></div>
     <div class="f full"><span class="k">기준 마커 중심 (30 mm, DICT_4X4_50) — 기계좌표 mm</span>
       <table><thead><tr><th>id</th><th class="r">X</th><th class="r">Y</th></tr></thead><tbody id="setMarkers"></tbody></table></div>
-    <div class="f full"><span class="k">데이터 폴더</span><span class="v mono" id="setData">..\data\</span></div>
+    <div class="f full"><span class="k">데이터 폴더</span><span class="v mono" id="setData">—</span></div>
     <div class="f full note">settings.json 에 저장되고 다음 촬영부터 적용됩니다. 검출 파라미터는 settings.json 에서 직접 편집하세요.</div>
   </div>
   <footer><button class="btn" id="btnCloseSettings">취소</button><button class="btn primary" id="btnSaveSettings">저장</button></footer>

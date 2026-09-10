@@ -39,7 +39,9 @@ async def status_loop():
             fail += 1
             if fail == 1:                  # 도배하지 않는다 - 첫 실패만 알린다
                 logger.exc("상태 폴링 실패", e)
-                state.stage["connected"] = False
+                state.stage.update({"connected": False, "port": None, "moving": False,
+                                    "x_mm": None, "y_mm": None, "u": None, "v": None,
+                                    "homed_x": False, "homed_y": False})
                 state.stage["last_error"] = str(e)
                 await push_log("스테이지 응답 없음 - 연결이 끊어졌습니다 (%s)" % e, "err")
                 with contextlib.suppress(Exception):

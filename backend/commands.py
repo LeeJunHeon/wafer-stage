@@ -84,7 +84,11 @@ async def _stage_connect(data):
 
 async def _stage_disconnect(_data):
     await stagectl.ctl.disconnect()
-    state.stage.update({"connected": False, "port": None, "moving": False})
+    # 끊긴 뒤의 위치는 아는 값이 아니다. 마지막 값을 그대로 두면 화면이 '지금
+    # 거기 있다' 고 거짓말한다 - 전부 None 으로 내리고 화면은 '—' 를 그린다.
+    state.stage.update({"connected": False, "port": None, "moving": False,
+                        "x_mm": None, "y_mm": None, "u": None, "v": None,
+                        "homed_x": False, "homed_y": False})
     await push_log("스테이지 연결 해제", "warn")
     await push_state()
 
@@ -102,6 +106,7 @@ async def _stage_home(data):
         engine._apply_status(st)
         if st["homed_x"] and st["homed_y"]:
             engine.reset_estop()           # 비상정지 잠금 해제
+            state.stage["last_error"] = "" # 원점을 다시 잡았으니 옛 오류는 지운다
         else:
             state.stage["needs_home"] = True
         await push_log("원점 설정 완료 - X%.2f Y%.2f" % (st["x_mm"], st["y_mm"]), "ok")
@@ -199,6 +204,25 @@ async def _open_out_dir(_data):
         await push_log("폴더를 열지 못했습니다: %s (%s)" % (d, e), "warn")
 
 
+async def _open_results(_data):
+    """결과 CSV 를 연다. 없으면 폴더를 연다(창 없는 환경에서는 경로만 로그)."""
+    d = state.sequence.get("out_dir")
+    if not d:
+        await push_log("아직 결과 폴더가 없습니다 (촬영 후 생깁니다)", "warn")
+        return
+    csv_p = os.path.join(d, "results.csv")
+    target = csv_p if os.path.exists(csv_p) else d
+    opener = getattr(os, "startfile", None)
+    if opener is None:
+        await push_log("결과 %s: %s" % ("CSV" if target is csv_p else "폴더", target))
+        return
+    try:
+        opener(target)
+        await push_log("결과를 열었습니다: %s" % target, "ok")
+    except OSError as e:
+        await push_log("열지 못했습니다: %s (%s)" % (target, e), "warn")
+
+
 async def _settings_save(data):
     patch = {k: data[k] for k in ("serial_port", "camera_index", "park_xy", "dwell_s",
                                   "marker_mm_xy", "measure") if k in data}
@@ -252,6 +276,7 @@ _TABLE = {
     "set_all": _set_all,
     "measure_here": _measure_here,
     "open_out_dir": _open_out_dir,
+    "open_results": _open_results,
     "settings_save": _settings_save,
     "exit": _exit,
 }

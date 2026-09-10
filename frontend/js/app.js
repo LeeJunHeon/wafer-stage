@@ -61,7 +61,7 @@
     UI.applySamples(s);
     UI.applySequence(s);
     UI.lock();
-    fillSettings(s.settings || {});
+    fillSettings(s.settings || {}, s.data_dir);
   }
 
   // ---------------- 연결 / 설정 ----------------
@@ -72,8 +72,9 @@
 
   const dlg = $('dlgSettings');
   let settingsOpen = false;
-  function fillSettings(cfg) {
+  function fillSettings(cfg, dataDir) {
     if (settingsOpen) return;             // 편집 중에는 덮어쓰지 않는다
+    $('setData').textContent = dataDir || UI.EMPTY;
     $('setPort').value = cfg.serial_port || '';
     $('setCam').value = cfg.camera_index != null ? cfg.camera_index : 1;
     const p = cfg.park_xy || [0, 90];
@@ -98,7 +99,7 @@
     });
   }
   $('btnSettings').onclick = () => { settingsOpen = true; dlg.showModal(); };
-  $('btnCloseSettings').onclick = () => { settingsOpen = false; dlg.close(); fillSettings((UI.state || {}).settings || {}); };
+  $('btnCloseSettings').onclick = () => { settingsOpen = false; dlg.close(); fillSettings((UI.state || {}).settings || {}, (UI.state || {}).data_dir); };
   $('btnSaveSettings').onclick = () => {
     const mk = {};
     document.querySelectorAll('.mkin').forEach(inp => {

@@ -192,6 +192,7 @@ def run(app, host, port, no_window=False):
                 "pywebview 가 없습니다.\n%s 를 브라우저에서 여세요." % url)
         return
     WINDOW = webview.create_window("Sample Auto Measurement", url,
-                                   width=1440, height=900, js_api=_JsBridge())
+                                   width=1440, height=900, maximized=True,
+                                   js_api=_JsBridge())
     WINDOW.events.closing += _on_closing
     webview.start()

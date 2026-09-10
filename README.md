@@ -85,6 +85,7 @@ python test/e2e_smoke.py          # 서버를 띄워 capture→run→done 전 �
 | `warnings` | 검출 경고 문자열 목록 |
 | `settings` | `{serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure}` |
 | `limits` | `{x_max_mm, y_max_mm}` — 스테이지 맵의 축척 |
+| `data_dir` | 데이터 폴더 절대경로(설정 창에 표시) |
 
 `status`: `wait | moving | measuring | done | skip | error`
 `phase`: `idle | capturing | ready | running | paused | waiting_confirm | parking | done | stopped | error`
@@ -111,6 +112,7 @@ python test/e2e_smoke.py          # 서버를 띄워 capture→run→done 전 �
 | `set_all` | `on` |
 | `measure_here` | |
 | `open_out_dir` | 결과 폴더를 탐색기로 연다 |
+| `open_results` | results.csv 를 연다(없으면 폴더) |
 | `settings_save` | `serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure` |
 | `exit` | |
 

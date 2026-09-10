@@ -128,6 +128,7 @@ class State:
             "sequence": dict(self.sequence, estopped=_estopped()),
             "warnings": list(self.warnings),
             "settings": dict(self.settings),
+            "data_dir": paths.DATA_DIR,
             "ts": time.time(),
         }
 

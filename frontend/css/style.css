@@ -35,11 +35,11 @@
      아래가 잘린다. 절대 위치 + translate(-50%,-50%) 로 '축소 후' 중심을 맞춘다. */
   #app { position: absolute; left: 50%; top: 50%; width: 1920px; height: 1040px;
          background: var(--bg); display: grid;
-         grid-template-rows: 64px auto 1fr 210px; gap: 8px; padding: 8px;
+         grid-template-rows: 64px auto 1fr 210px; gap: 0; padding: 8px;
          transform-origin: center center; transform: translate(-50%, -50%); }
 
   /* ---------- header ---------- */
-  header { display: flex; align-items: center; gap: 14px; padding: 0 14px; background: linear-gradient(180deg, #fbfcfd, #e9edf2); border: 1px solid var(--line2); border-radius: 6px; }
+  header { margin-bottom: 8px; display: flex; align-items: center; gap: 14px; padding: 0 14px; background: linear-gradient(180deg, #fbfcfd, #e9edf2); border: 1px solid var(--line2); border-radius: 6px; }
   .brand h1 { font-size: 18px; font-weight: 700; letter-spacing: .2px; white-space: nowrap; }
   .brand .sub { font-size: 10.5px; color: var(--faint); letter-spacing: .3px; }
   .statepill { display: inline-flex; align-items: center; gap: 8px; min-width: 132px; justify-content: center; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line2); background: #fff; font-weight: 700; font-size: 14px; letter-spacing: .6px; color: var(--dim); }
@@ -47,7 +47,9 @@
   .statepill.ready { color: #21303f; }
   .statepill.running { background: #e2f4e8; border-color: var(--run); color: #176b35; } .statepill.running .dot { background: var(--run); }
   .statepill.paused, .statepill.waiting { background: #fbefd8; border-color: var(--attn); color: #8a5300; } .statepill.paused .dot, .statepill.waiting .dot { background: var(--attn); }
-  .statepill.stopped, .statepill.error, .statepill.estop { background: #f9e0e1; border-color: var(--alarm); color: #9c2328; } .statepill.stopped .dot, .statepill.error .dot, .statepill.estop .dot { background: var(--alarm); }
+  /* 사용자 정지는 경보가 아니다 - 빨강은 estop/error 에만 쓴다. */
+  .statepill.stopped { background: #fbefd8; border-color: var(--attn); color: #8a5300; } .statepill.stopped .dot { background: var(--attn); }
+  .statepill.error, .statepill.estop { background: #f9e0e1; border-color: var(--alarm); color: #9c2328; } .statepill.error .dot, .statepill.estop .dot { background: var(--alarm); }
   .pos { display: flex; gap: 14px; padding: 0 14px; border-left: 1px solid var(--line2); border-right: 1px solid var(--line2); }
   .pos .ax { display: flex; flex-direction: column; line-height: 1.1; }
   .pos .k { font-size: 10px; color: var(--faint); letter-spacing: .8px; }
@@ -72,17 +74,17 @@
   .appver { font-family: var(--mono); font-size: 10px; color: var(--faint); }
 
   /* ---------- notice strip (경보 배너: 있을 때만) ---------- */
-  .notice { display: flex; align-items: center; gap: 10px; padding: 6px 14px; border-radius: 5px; border: 1px solid #e0b25f; background: #fff3dc; color: #6e4300; font-size: 12.5px; }
+  .notice { margin-bottom: 8px; display: flex; align-items: center; gap: 10px; padding: 6px 14px; border-radius: 5px; border: 1px solid #e0b25f; background: #fff3dc; color: #6e4300; font-size: 12.5px; }
   .notice.alarm { border-color: #e29a9d; background: #fbe3e4; color: #8c1f24; }
   /* 경보가 없을 때도 그리드 '행' 은 남겨 둔다. display:none 이 되면 그리드 항목이
      3개가 되어 main 이 auto 행, foot 이 1fr 행을 가져가면서 로그 패널이 26px 로
      찌그러졌다(실측). 높이만 0 으로 접는다. */
-  .notice[hidden] { display: flex !important; height: 0; padding: 0; border: 0; overflow: hidden; }
+  .notice[hidden] { display: flex !important; height: 0; margin: 0; padding: 0; border: 0; overflow: hidden; }
   .notice .tag { font-weight: 700; letter-spacing: .5px; font-size: 11px; padding: 2px 7px; border-radius: 3px; background: rgba(0,0,0,.08); }
   .notice .items { display: flex; gap: 18px; flex-wrap: wrap; }
 
   /* ---------- main grid ---------- */
-  .main { display: grid; grid-template-columns: 1086px 1fr 330px; gap: 8px; min-height: 0; }
+  .main { margin-bottom: 8px; display: grid; grid-template-columns: 1086px 1fr 330px; gap: 8px; min-height: 0; }
   .col { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
   .panel > .ph { display: flex; align-items: center; gap: 10px; padding: 6px 12px; height: 32px; background: var(--panelhead); border-bottom: 1px solid var(--line); border-radius: 6px 6px 0 0; font-size: 12px; font-weight: 700; color: #3a4757; letter-spacing: .3px; }
@@ -93,12 +95,14 @@
   /* camera */
   .camview { position: relative; background: var(--img-bg); height: 610px; }
   .camview svg { display: block; width: 100%; height: 100%; }
-  .caminfo { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); }
-  .caminfo > div { padding: 6px 12px; border-right: 1px solid var(--line); min-width: 0; }
+  .caminfo { display: grid; grid-template-columns: 1.5fr 1.15fr 1fr .85fr; border-top: 1px solid var(--line); }
+  .caminfo > div { padding: 6px 10px; border-right: 1px solid var(--line); min-width: 0; }
   .caminfo > div:last-child { border-right: 0; }
   .caminfo .k, .caminfo .v { display: block; }
   .caminfo .k { font-size: 10px; color: var(--faint); letter-spacing: .6px; text-transform: uppercase; }
-  .caminfo .v { font-family: var(--mono); font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 4칸이 1086px 를 나눠 쓴다. 보정 문구(잔차 RMS/최대까지)가 가장 길어
+     12px 로 맞춘다 - 잘려서 '...' 이 되면 숫자를 못 읽는다. */
+  .caminfo .v { font-family: var(--mono); font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .capturing { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(14,20,24,.6); color: #fff; font-weight: 600; letter-spacing: .3px; }
   .ov-rect { fill: none; stroke: #ffd400; stroke-width: 2; stroke-dasharray: 8 6; }
   .ov-wafer { fill: none; stroke: #ffd400; stroke-width: 1.5; opacity: .9; }
@@ -185,9 +189,11 @@
   .statusbar .sp { flex: 1; }
 
   /* settings dialog */
-  dialog { border: 1px solid var(--line2); border-radius: 6px; background: var(--panel); color: var(--ink); padding: 0; width: 640px; }
+  /* 전역 * { margin: 0 } 리셋이 <dialog> 기본 margin:auto 를 지워 창이 (0,0) 에
+     붙는다. 가운데로 되돌린다. */
+  dialog { margin: auto; border: 1px solid var(--line2); border-radius: 6px; background: var(--panel); color: var(--ink); padding: 0; width: 640px; }
   dialog::backdrop { background: rgba(10,14,18,.45); }
-  dialog header { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 10px 14px; background: var(--panelhead); }
+  dialog header { margin: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 10px 14px; background: var(--panelhead); }
   dialog header h2 { font-size: 14px; flex: 1; }
   .settings { padding: 12px 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
   .settings .f { display: flex; flex-direction: column; gap: 3px; }

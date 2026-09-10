@@ -105,8 +105,9 @@
     $('statePill').className = 'statepill ' + cls;
     $('stateText').textContent = txt;
 
-    $('posX').textContent = fmt(st.x_mm);
-    $('posY').textContent = fmt(st.y_mm);
+    // 연결이 없으면 위치는 모르는 값이다 - 마지막 숫자를 남겨 두지 않는다.
+    $('posX').textContent = st.connected ? fmt(st.x_mm) : EMPTY;
+    $('posY').textContent = st.connected ? fmt(st.y_mm) : EMPTY;
 
     chip($('chipCam'), cam.ok === false ? 'bad' : (cam.ok ? 'ok' : 'warn'),
       'index ' + cam.index + (cam.capturing ? ' · 촬영 중' : (cam.last_error ? ' · 오류' : '')));
@@ -198,9 +199,11 @@
     dis('btnSettings', !on || running);
     dis('btnEstop', !on);                    // 비상정지는 항상 활성
     dis('btnStart', !canMove || running || !(s && s.samples && s.samples.length));
-    dis('btnPause', !(q.phase === 'running' || q.phase === 'paused'));
-    dis('btnNext', q.phase !== 'waiting_confirm');
-    dis('btnStop', !running);
+    dis('btnPause', !on || !(q.phase === 'running' || q.phase === 'paused'));
+    dis('btnNext', !on || q.phase !== 'waiting_confirm');
+    dis('btnStop', !on || !running);
+    dis('btnAll', !on);
+    dis('btnNone', !on);
     dis('btnGoto', !canMove || running || UI.selected == null);
     dis('btnMeasureHere', !canMove || running);
     dis('btnOpenDir', !on || !q.out_dir);

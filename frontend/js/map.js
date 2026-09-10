@@ -8,7 +8,10 @@
   const UI = window.UI, $ = UI.$;
   const NS = 'http://www.w3.org/2000/svg';
 
-  const M = { ox: 18, oy: 12, w: 264, h: 240 };   // viewBox 300×264 안의 작업영역
+  // viewBox 300×264 안의 작업영역. 두 축을 같은 축척(k)으로 그린다 - 축척이
+  // 다르면 원형 웨이퍼가 타원으로 보이고 거리 감이 틀어진다.
+  //   ox 34 = 왼쪽 X 라벨 자리, oy 6 = 아래 Y 라벨(oy+h+14)까지 264 안에 들어오는 값
+  const M = { ox: 34, oy: 6, w: 240, h: 240, k: 1 };
   let XMAX = 247.6, YMAX = 247.8;
 
   const mx = (Y) => M.ox + (YMAX - Y) / YMAX * M.w;
@@ -18,6 +21,7 @@
     for (const k in at) e.setAttribute(k, at[k]);
     return e;
   };
+  const anchorEnd = (e) => { e.setAttribute('text-anchor', 'end'); return e; };
   const txt = (cls, x, y, t) => {
     const e = el('text', { class: cls, x: x, y: y });
     e.textContent = t;
@@ -30,21 +34,26 @@
     const lim = s.limits || {};
     XMAX = lim.x_max_mm || XMAX;
     YMAX = lim.y_max_mm || YMAX;
+    M.k = Math.min(264 / YMAX, 240 / XMAX);
+    M.w = YMAX * M.k;
+    M.h = XMAX * M.k;
+    const sz = $('mapSize');
+    if (sz) sz.textContent = Math.round(XMAX) + '×' + Math.round(YMAX) + ' mm';
 
     // 작업영역 · 격자 · 축 라벨
     g.appendChild(el('rect', { class: 'm-frame', x: M.ox, y: M.oy, width: M.w, height: M.h }));
     for (let v = 50; v < Math.max(XMAX, YMAX); v += 50) {
       if (v < YMAX) {
         g.appendChild(el('line', { class: 'm-grid', x1: mx(v), y1: M.oy, x2: mx(v), y2: M.oy + M.h }));
-        g.appendChild(txt('m-axis', mx(v) - 6, M.oy + M.h + 9, 'Y' + v));
+        g.appendChild(txt('m-axis', mx(v) - 6, M.oy + M.h + 14, 'Y' + v));
       }
       if (v < XMAX) {
         g.appendChild(el('line', { class: 'm-grid', x1: M.ox, y1: my(v), x2: M.ox + M.w, y2: my(v) }));
-        g.appendChild(txt('m-axis', 2, my(v) + 3, 'X' + v));
+        g.appendChild(anchorEnd(txt('m-axis', M.ox - 10, my(v) + 3, 'X' + v)));
       }
     }
-    g.appendChild(txt('m-axis', M.ox + M.w - 14, M.oy + M.h + 9, 'Y0'));
-    g.appendChild(txt('m-axis', 3, M.oy + M.h - 2, 'X0'));
+    g.appendChild(txt('m-axis', M.ox + M.w - 14, M.oy + M.h + 14, 'Y0'));
+    g.appendChild(anchorEnd(txt('m-axis', M.ox - 10, M.oy + M.h + 3, 'X0')));
 
     // X 레일(좌우 볼스크류)
     g.appendChild(el('line', { class: 'm-rail', x1: M.ox - 6, y1: M.oy + 4,
@@ -62,7 +71,7 @@
         width: mx(Math.min.apply(null, ys)) - mx(Math.max.apply(null, ys)),
         height: my(Math.min.apply(null, xs)) - my(Math.max.apply(null, xs)),
       }));
-      const side = 30 / XMAX * M.h;          // 마커 30mm 를 축척대로
+      const side = 30 * M.k;                 // 마커 30mm 를 축척대로
       ids.forEach(id => {
         const X = +mk[id][0], Y = +mk[id][1];
         g.appendChild(el('rect', { class: 'm-marker', x: mx(Y) - side / 2,
@@ -75,7 +84,7 @@
     const w = s.wafer;
     if (w && w.found && w.center_mm) {
       g.appendChild(el('circle', { class: 'm-wafer', cx: mx(w.center_mm[1]),
-                                   cy: my(w.center_mm[0]), r: 50 / XMAX * M.h }));
+                                   cy: my(w.center_mm[0]), r: 50 * M.k }));
     }
 
     // 파킹 위치
@@ -99,7 +108,7 @@
 
     // 빔(현재 X) + 캐리지(현재 Y) + 포인터
     const st = s.stage || {};
-    if (st.x_mm != null && st.y_mm != null) {
+    if (st.connected && st.x_mm != null && st.y_mm != null) {
       const x = mx(st.y_mm), y = my(st.x_mm);
       g.appendChild(el('line', { class: 'm-beam', x1: M.ox - 6, y1: y, x2: M.ox + M.w + 6, y2: y }));
       g.appendChild(el('rect', { class: 'm-carriage', x: x - 9, y: y - 5,

@@ -289,9 +289,6 @@ class Stage:
     def reset_abort(self):
         """원점을 다시 잡았으므로 잠금을 푼다."""
         self._aborted = False
-        # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면 검증이
-        # 무의미해진다(포인터·맵이 안 움직인다). 보낸 명령대로 위치를 옮겨 둔다.
-        self._dry_xy = [0.0, 0.0]
 
     def find_zero(self, axis, search_pulses=None):
         """원점 탐색. "fz x [n]" 을 보내고 "원점 설정 완료" 줄까지 기다린다.
@@ -316,6 +313,8 @@ class Stage:
                 self.reset_abort()
         if self.dry:
             self.reset_abort()
+            # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면
+            # 검증이 무의미해지므로(포인터·맵이 안 움직인다) 명령대로 옮겨 둔다.
             self._dry_xy = [0.0, 0.0]      # 원점을 잡았으니 0
         return self.status()
 

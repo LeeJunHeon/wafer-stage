@@ -69,7 +69,7 @@
   $('btnStop').onclick = () => UI.send({ cmd: 'stop' });
   $('btnEstop').onclick = () => UI.send({ cmd: 'estop' });   // 확인 없이 즉시
   $('btnOpenDir').onclick = () => UI.send({ cmd: 'open_out_dir' });
-  $('btnExport').onclick = () => UI.send({ cmd: 'open_out_dir' });  // 결과 CSV 는 그 폴더에 있다
+  $('btnExport').onclick = () => UI.send({ cmd: 'open_results' });
 
   // 서버가 needs_confirm 을 돌려주면 확인 모달을 띄우고 confirm:true 로 다시 보낸다.
   UI.confirmRun = function (reasons) {

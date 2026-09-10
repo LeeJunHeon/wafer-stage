@@ -159,6 +159,15 @@ async def stop_flow(c):
     ph = await c.wait_phase(("stopped", "done", "error"), 60)
     check(ph == "stopped", "stop -> stopped (%s)" % ph)
 
+    # 연결을 끊으면 위치는 모르는 값이 된다 - 마지막 숫자를 남기지 않는다.
+    await c.send(cmd="stage_disconnect")
+    await c.pump(2.0)
+    st = c.state["stage"]
+    check(st["connected"] is False, "stage_disconnect -> connected=False")
+    check(all(st[k] is None for k in ("x_mm", "y_mm", "u", "v")),
+          "끊긴 뒤 x_mm/y_mm/u/v 가 None (%s)"
+          % {k: st[k] for k in ("x_mm", "y_mm", "u", "v")})
+
 
 async def estop_flow(c):
     """순회 중 비상정지 → 파킹·save 없이 멈추고, 원점을 다시 잡기 전까지 잠긴다."""
@@ -188,6 +197,11 @@ async def estop_flow(c):
     await c.send(cmd="stage_home", axis="xy")
     await c.pump(3.0)
     check(not c.state["stage"]["needs_home"], "원점잡기 후 잠금 해제")
+    q = c.state["sequence"]
+    check(q["phase"] == "ready", "원점잡기 후 phase=ready (%s)" % q["phase"])
+    check(q["estopped"] is False, "원점잡기 후 estopped=False")
+    check(c.state["stage"]["last_error"] == "",
+          "원점잡기 후 last_error 비움 (%r)" % c.state["stage"]["last_error"])
     c.logs.clear()
     await c.send(cmd="park")
     await c.pump(2.0)

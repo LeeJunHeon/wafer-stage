@@ -26,6 +26,7 @@ _task = None                      # 진행 중인 순회 태스크
 _next_evt = None                  # confirm 모드에서 '다음' 을 기다리는 이벤트
 _pause_evt = None                 # 일시정지 해제 이벤트(set = 진행)
 _stop = False                     # 정지 요청
+_stop_evt = None                  # 정지·비상정지 시 set (대기(dwell)를 즉시 끊는다)
 _estopped = False                 # 비상정지 상태(원점을 다시 잡을 때까지 유지)
 _measurer = None
 
@@ -174,6 +175,8 @@ def _save_seq(bgr, res):
 # 이동
 # --------------------------------------------------------------------------
 async def _goto(x_mm, y_mm, no=None):
+    # 성공한 이동은 옛 오류 문구를 지운다(배너에 지난 오류가 남지 않게).
+    state.stage["last_error"] = ""
     state.stage["moving"] = True
     await push_state()
     try:
@@ -282,7 +285,7 @@ def needs_confirm():
 
 
 async def start_run(mode="auto", dwell_s=None, only=None):
-    global _task, _next_evt, _pause_evt, _stop, _measurer
+    global _task, _next_evt, _pause_evt, _stop, _stop_evt, _measurer
     if busy():
         await push_log("이미 순회 중입니다", "warn")
         return False
@@ -306,6 +309,7 @@ async def start_run(mode="auto", dwell_s=None, only=None):
         return False
     _stop = False
     _next_evt = asyncio.Event()
+    _stop_evt = asyncio.Event()
     _pause_evt = asyncio.Event()
     _pause_evt.set()
     _measurer = measure_mod.make(state.settings)
@@ -346,8 +350,13 @@ async def _run_loop(todo):
             except stagectl.StageError as e:
                 s["status"] = "error"
                 state.stage["last_error"] = str(e)
-                _phase("error", "이동 실패: %s" % e)
-                await push_log("이동 실패로 순회를 중단합니다: %s" % e, "err")
+                if _estopped:
+                    # 비상정지가 만든 오류다. phase 는 estop() 이 세운 stopped 를
+                    # 유지한다 - 사용자가 누른 정지를 '오류' 로 바꾸지 않는다.
+                    await push_log("비상정지로 이동 중단 (#%s)" % s["no"], "warn")
+                else:
+                    _phase("error", "이동 실패: %s" % e)
+                    await push_log("이동 실패로 순회를 중단합니다: %s" % e, "err")
                 ok = False
                 break
             await push_log("#%s 도착 X%.1f Y%.1f" % (s["no"], s["X"], s["Y"]))
@@ -375,7 +384,11 @@ async def _run_loop(todo):
                     break
                 _progress("#%s 확인 완료" % s["no"])
             elif dwell > 0:
-                await asyncio.sleep(dwell)
+                # 정지·비상정지가 대기를 즉시 끊는다(5초를 기다린 뒤 멈추지 않는다).
+                try:
+                    await asyncio.wait_for(_stop_evt.wait(), timeout=dwell)
+                except asyncio.TimeoutError:
+                    pass
 
             s["status"] = "done"
             state.sequence["done"] += 1
@@ -473,6 +486,8 @@ async def next_step():
 async def stop():
     global _stop
     _stop = True
+    if _stop_evt is not None:
+        _stop_evt.set()
     if _pause_evt is not None:
         _pause_evt.set()
     if _next_evt is not None:
@@ -492,6 +507,8 @@ async def estop():
     _estopped = True
     ok = stagectl.ctl.abort()
     state.stage["needs_home"] = True       # 원점을 다시 잡기 전까지 이동 잠금
+    if _stop_evt is not None:
+        _stop_evt.set()
     if _pause_evt is not None:
         _pause_evt.set()
     if _next_evt is not None:
@@ -509,7 +526,15 @@ def estopped():
 
 
 def reset_estop():
-    """원점을 다시 잡았다 - 잠금을 푼다(commands.stage_home 이 부른다)."""
+    """원점을 다시 잡았다 - 잠금을 푼다(commands.stage_home 이 부른다).
+
+    비상정지로 멈춰 있던 화면도 함께 정리한다. 이동이 다시 되는데 phase 가
+    stopped/error 로 남아 있으면 사용자는 아직 잠긴 줄 안다.
+    """
     global _estopped
+    was = _estopped
     _estopped = False
     state.stage["needs_home"] = False
+    if was and state.sequence.get("phase") in ("stopped", "error"):
+        _phase("ready" if state.samples else "idle", "원점 재설정 완료 - 이동 가능",
+               cur_no=None)
