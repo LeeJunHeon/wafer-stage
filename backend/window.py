@@ -205,8 +205,9 @@ def run(app, host, port, no_window=False):
         import webview
     except ImportError:
         _fail("pywebview 가 없습니다.\n%s 를 브라우저에서 여세요." % url)
+    # text_select 가 없으면 로그를 드래그해 복사할 수 없다(기본 False).
     WINDOW = webview.create_window("Sample Auto Measurement", url,
                                    width=1440, height=900, maximized=True,
-                                   js_api=_JsBridge())
+                                   text_select=True, js_api=_JsBridge())
     WINDOW.events.closing += _on_closing
     webview.start()

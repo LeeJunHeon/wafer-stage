@@ -34,6 +34,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response  # noqa: E402
 from fastapi.staticfiles import StaticFiles                        # noqa: E402
 
 import commands                                                    # noqa: E402
+import engine                                                      # noqa: E402
 import logger                                                      # noqa: E402
 import loops                                                       # noqa: E402
 from core import paths                                                  # noqa: E402
@@ -91,6 +92,8 @@ async def lifespan(_app):
     try:
         yield
     finally:
+        for t in list(_cmd_tasks):
+            t.cancel()
         await loops.stop_all(tasks)
         with contextlib.suppress(Exception):
             await stagectl.ctl.disconnect()
@@ -155,8 +158,29 @@ async def frame(name):
                     headers={"Cache-Control": "no-cache"})
 
 
+@app.post("/estop")
+async def http_estop():
+    """비상정지 우회로.
+
+    WebSocket 이 막혀 있어도(오래 걸리는 명령을 처리하는 중이었다면 그랬다)
+    비상정지는 도착해야 한다. 화면은 WS 와 이 경로로 동시에 보낸다.
+    """
+    await engine.estop()
+    return JSONResponse({"ok": True})
+
+
+_cmd_tasks = set()
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
+    """명령을 줄 세우지 않는다.
+
+    예전에는 receive -> await handle_command 를 한 줄로 돌렸다. 원점 탐색처럼
+    69초 걸리는 명령을 처리하는 동안 뒤이어 온 비상정지가 소켓에 그대로 앉아
+    있다가 탐색이 끝난 뒤에야 펌웨어로 나갔다(실측). 명령마다 태스크를 띄워
+    받는 쪽이 절대 막히지 않게 한다.
+    """
     await manager.connect(ws)
     try:
         while True:
@@ -166,7 +190,9 @@ async def ws_endpoint(ws: WebSocket):
             except Exception:              # noqa: BLE001
                 continue
             if isinstance(data, dict) and "cmd" in data:
-                await handle_command(data)
+                t = asyncio.create_task(handle_command(data))
+                _cmd_tasks.add(t)
+                t.add_done_callback(_cmd_tasks.discard)
     except WebSocketDisconnect:
         manager.disconnect(ws)
     except Exception:                      # noqa: BLE001

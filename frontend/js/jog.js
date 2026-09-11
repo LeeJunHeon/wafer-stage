@@ -165,7 +165,7 @@
       '파킹 위치 저장');
     if (ok) UI.send({ cmd: 'park_here' });
   };
-  $('jogEstop').onclick = () => UI.send({ cmd: 'estop' });   // 확인 없이 즉시
+  $('jogEstop').onclick = () => UI.sendEstop();   // 확인 없이 즉시 · WS + HTTP
 
   // 스테이지 맵 클릭 → 절대 이동 칸 채우기(이동은 [이동] 을 눌러야 한다)
   UI.jogPickXY = function (x, y) {

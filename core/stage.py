@@ -29,6 +29,11 @@ import time
 
 from . import paths
 
+# --dry 이동을 실제처럼 오래 걸리게 만든다(초). 기본 0 = 즉시.
+# 비상정지가 '이동 중' 에 도착하는 상황은 이 시간이 없으면 재현되지 않는다.
+DRY_MOVE_S = float(os.environ.get("WAFER_STAGE_DRY_MOVE_S", "0") or 0)
+DRY_TICK_S = 0.05                  # 자는 동안 이만큼마다 중단을 확인한다
+
 PPMM = 160.0                  # 160 펄스 = 1mm (.ino 의 PPMM)
 X_MAX_PULSE = 39620           # 247.6mm
 Y_MAX_PULSE = 39640           # 247.8mm
@@ -252,11 +257,26 @@ class Stage:
         out["y_mm"] = out["y_pulse"] / PPMM
         return out
 
+    def _dry_wait(self, what):
+        """dry 이동이 걸리는 시간을 흉내 낸다. 자는 동안 중단을 확인한다.
+
+        조각으로 나눠 자면서 _aborted 를 보기 때문에, 이동 중에 들어온
+        비상정지가 실제 펌웨어처럼 이동을 끊는다.
+        """
+        if DRY_MOVE_S <= 0:
+            return
+        end = time.time() + DRY_MOVE_S
+        while time.time() < end:
+            if self._aborted:
+                raise StageError("비상정지로 중단됨 · (dry) [!] 중단")
+            time.sleep(min(DRY_TICK_S, max(0.0, end - time.time())))
+
     def _move(self, cmd, what):
         if self._aborted:
             raise StageError("비상정지 상태 · 원점 설정 후 사용")
         self._write(cmd)
         if self.dry:
+            self._dry_wait(what)
             try:
                 axis, val = cmd.split()
                 self._dry_xy[0 if axis == "mx" else 1] = float(val)
@@ -315,6 +335,7 @@ class Stage:
                 cmd += " %d" % int(search_pulses)
             self._write(cmd)
             if self.dry:
+                self._dry_wait("원점 탐색(%s)" % one)
                 continue
             done = self._collect(HOME_TIMEOUT_S,
                                  lambda t: ("원점 설정 완료" in t) or ("중단됨" in t),

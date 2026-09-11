@@ -73,7 +73,7 @@
   };
   $('btnNext').onclick = () => UI.send({ cmd: 'next' });
   $('btnStop').onclick = () => UI.send({ cmd: 'stop' });
-  $('btnEstop').onclick = () => UI.send({ cmd: 'estop' });   // 확인 없이 즉시
+  $('btnEstop').onclick = () => UI.sendEstop();   // 확인 없이 즉시 · WS + HTTP
   $('btnOpenDir').onclick = () => UI.send({ cmd: 'open_out_dir' });
   $('btnExport').onclick = () => UI.send({ cmd: 'open_results' });
 

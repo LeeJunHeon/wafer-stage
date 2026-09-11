@@ -10,7 +10,7 @@
 import asyncio
 import os
 
-from core import calib
+from core import calib, paths
 
 import engine
 import logger
@@ -22,6 +22,9 @@ from state import state
 _shutdown_handler = None
 
 MOVE_CMDS = ("park", "goto", "jog", "run", "resume", "next", "measure_here")
+# 스테이지가 이미 움직이고 있으면 받지 않는다. 명령이 동시에 실행될 수 있게 된
+# 뒤로는(ws_endpoint 가 태스크로 띄운다) 이 검사가 없으면 두 이동이 겹친다.
+MOVING_BLOCKED = ("park", "goto", "jog", "stage_home", "capture", "run", "measure_here")
 # 순회 중에 받으면 안 되는 명령. 스테이지·카메라·설정을 순회 도중에 건드리면
 # 진행 중인 이동과 충돌한다(정지 뒤에 하면 된다).
 BUSY_BLOCKED = ("park", "goto", "jog", "park_here", "stage_home", "stage_disconnect",
@@ -36,6 +39,17 @@ def set_shutdown_handler(fn):
 async def handle_command(data):
     cmd = str(data.get("cmd") or "")
     try:
+        # 비상정지가 맨 앞이다. 어떤 검사도 거치지 않는다 - engine.estop() 의
+        # 첫 줄들(ctl.abort())은 await 이전에 도는 동기 코드라, 여기까지 오기만
+        # 하면 포트에 "!" 가 바로 나간다.
+        if cmd == "estop":
+            await engine.estop()
+            return
+        if cmd in MOVING_BLOCKED and state.stage.get("moving"):
+            await push_log("이동 중 · 명령 무시 (%s)" % cmd, "warn")
+            if cmd == "jog":
+                await push_ack("jog", False, "moving")
+            return
         if cmd in BUSY_BLOCKED and engine.busy():
             await push_log("순회 중 · 명령 무시 (%s)" % cmd, "warn")
             # 조그는 ack 를 기다렸다 다음 스텝을 보낸다. 거절도 알려 줘야
@@ -168,12 +182,22 @@ async def _stage_home(data):
     try:
         st = await stagectl.ctl.find_zero(axis, data.get("search_pulses"))
         engine._apply_status(st)
+        engine.mark_moved()                # 원점도 저장 대상이다
         if st["homed_x"] and st["homed_y"]:
             engine.reset_estop()           # 비상정지 잠금 해제
             state.stage["last_error"] = "" # 원점을 다시 잡았으니 옛 오류는 지운다
+            await push_log("원점 설정 완료 · X%.2f Y%.2f" % (st["x_mm"], st["y_mm"]), "ok")
         else:
+            # 축 하나만 잡힌 상태다. '완료' 로 찍으면 안 된다.
             state.stage["needs_home"] = True
-        await push_log("원점 설정 완료 · X%.2f Y%.2f" % (st["x_mm"], st["y_mm"]), "ok")
+            await push_log("원점 설정 중단 · 다시 실행하세요", "warn")
+    except stagectl.StageError as e:
+        # 비상정지로 끊긴 경우가 대부분이다. 여기서 받아 '중단' 으로 끝낸다
+        # (밖으로 던지면 '스테이지 오류' 로만 찍혀 무엇이 중단됐는지 안 보인다).
+        state.stage["needs_home"] = True
+        state.stage["last_error"] = logger.short(e)
+        logger.write("err", "원점 설정 중단 상세: %s" % e)
+        await push_log("원점 설정 중단 · " + logger.short(e), "warn")
     finally:
         state.stage["moving"] = False
         await push_state()
@@ -262,11 +286,6 @@ async def _stop(_data):
     await engine.stop()
 
 
-async def _estop(_data):
-    # 확인 없이 즉시. 잠금 검사도 거치지 않는다(항상 가능해야 한다).
-    await engine.estop()
-
-
 async def _set_on(data):
     s = state.sample(int(data.get("no", -1)))
     if s is not None:
@@ -303,6 +322,20 @@ async def _open_out_dir(_data):
     try:
         opener(d)
         await push_log("결과 폴더를 열었습니다: %s" % d, "ok")
+    except OSError as e:
+        await push_log("폴더를 열지 못했습니다: %s (%s)" % (d, e), "warn")
+
+
+async def _open_log_dir(_data):
+    """날짜별 로그 폴더를 연다."""
+    d = paths.LOGS_DIR
+    opener = getattr(os, "startfile", None)
+    if opener is None:
+        await push_log("로그 폴더: %s" % d)
+        return
+    try:
+        opener(d)
+        await push_log("로그 폴더를 열었습니다: %s" % d, "ok")
     except OSError as e:
         await push_log("폴더를 열지 못했습니다: %s (%s)" % (d, e), "warn")
 
@@ -379,12 +412,12 @@ _TABLE = {
     "resume": _resume,
     "next": _next,
     "stop": _stop,
-    "estop": _estop,
     "set_on": _set_on,
     "set_all": _set_all,
     "measure_here": _measure_here,
     "open_out_dir": _open_out_dir,
     "open_results": _open_results,
+    "open_log_dir": _open_log_dir,
     "preview_start": _preview_start,
     "preview_stop": _preview_stop,
     "list_ports": _list_ports,

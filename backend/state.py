@@ -128,8 +128,17 @@ class State:
             "warnings": list(self.warnings),
             "settings": dict(self.settings),
             "data_dir": paths.DATA_DIR,
+            "log_file": _log_file(),
             "ts": time.time(),
         }
+
+
+def _log_file():
+    try:
+        import logger
+        return logger.current_file()
+    except Exception:                      # noqa: BLE001
+        return ""
 
 
 def _estopped():

@@ -30,6 +30,44 @@ _stop_evt = None                  # 정지·비상정지 시 set (대기(dwell)�
 _estopped = False                 # 비상정지 상태(원점을 다시 잡을 때까지 유지)
 _measurer = None
 
+# 이동이 끝나고 이만큼 조용하면 위치를 EEPROM 에 굳힌다. USB 가 빠져 보드가
+# 리셋되면(DTR) 마지막 save 이후의 위치는 사라진다 - 실제로 원점을 잃었다.
+SAVE_DEBOUNCE_S = 3.0
+_last_move_at = 0.0
+_save_done = True
+
+
+def mark_moved():
+    """이동이 하나 끝났다. 조용해지면 저장한다(디바운스)."""
+    global _last_move_at, _save_done
+    _last_move_at = time.monotonic()
+    _save_done = False
+
+
+async def autosave_tick():
+    """loops 가 1초마다 부른다. 조건이 맞을 때 한 번만 save 를 보낸다.
+
+    비상정지 상태에서는 보내지 않는다(믿을 수 없는 위치를 굳히면 다음 전원에서
+    그 틀린 값을 '복원' 한다). 결과는 파일 로그에만 남긴다 - 화면 로그를
+    자동 저장으로 채우지 않는다.
+    """
+    global _save_done
+    if _save_done or not _last_move_at:
+        return
+    if time.monotonic() - _last_move_at < SAVE_DEBOUNCE_S:
+        return
+    if _estopped or state.stage.get("moving") or not stagectl.ctl.connected:
+        return
+    _save_done = True                      # 실패해도 다시 쏟아내지 않는다
+    try:
+        for ln in await stagectl.ctl.save():
+            if str(ln).strip():
+                logger.write("info", "자동 저장: %s" % str(ln).strip())
+        _apply_status(await stagectl.ctl.status())
+        await push_state()
+    except Exception as e:                 # noqa: BLE001
+        logger.write("warn", "자동 저장 실패: %s" % logger.short(e))
+
 
 def busy():
     return _task is not None and not _task.done()
@@ -189,6 +227,7 @@ async def _goto(x_mm, y_mm, no=None):
             "report": [r.strip() for r in reports]})
         st = await stagectl.ctl.status()
         _apply_status(st)
+        mark_moved()
         return reports
     finally:
         state.stage["moving"] = False
@@ -290,6 +329,7 @@ async def jog(axis, target_mm):
             "target_mm": [round(target, 2)] if ax == "x" else [None, round(target, 2)],
             "report": [str(report).strip()]})
         _apply_status(await stagectl.ctl.status())
+        mark_moved()
         ok = True
     except stagectl.StageError as e:
         ok = False

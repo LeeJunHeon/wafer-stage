@@ -39,6 +39,7 @@ async def status_loop():
             fail += 1
             if fail == 1:                  # 도배하지 않는다 - 첫 실패만 알린다
                 one = logger.short(e)
+                # 예외 종류까지 파일에 남긴다(USB 절전으로 끊긴 것인지 구분한다).
                 logger.exc("상태 폴링 실패", e)
                 state.stage.update({"connected": False, "port": None, "moving": False,
                                     "x_mm": None, "y_mm": None, "u": None, "v": None,
@@ -50,8 +51,19 @@ async def status_loop():
                 await push_state()
 
 
+async def autosave_loop():
+    """이동이 끝나고 조용해지면 위치를 저장한다(engine 이 조건을 본다)."""
+    while True:
+        await asyncio.sleep(1.0)
+        try:
+            await engine.autosave_tick()
+        except Exception as e:             # noqa: BLE001
+            logger.exc("자동 저장 루프", e)
+
+
 def start_all():
-    return [asyncio.create_task(status_loop())]
+    return [asyncio.create_task(status_loop()),
+            asyncio.create_task(autosave_loop())]
 
 
 async def stop_all(tasks):

@@ -223,7 +223,9 @@
   /* footer: log + status bar */
   .foot { display: grid; grid-template-rows: 1fr 24px; gap: 6px; min-height: 0; }
   .log { background: #101820; color: #cfe3ee; font-family: var(--mono); font-size: 12px; line-height: 1.45; padding: 8px 12px; overflow: auto; border-radius: 0 0 6px 6px; flex: 1; min-height: 0; }
-  .log div { white-space: pre; }
+  /* 로그는 드래그해서 복사할 수 있어야 한다(창 쪽은 window.py 의 text_select). */
+  .log div { white-space: pre; user-select: text; }
+  .log { user-select: text; }
   /* tx 노랑(보냄) / rx 하늘(받음) / ok 초록. rx 와 ok 가 같은 초록이라
      시리얼 응답인지 서버가 낸 성공 로그인지 구분되지 않았다. */
   .log .t { color: #6f8796; } .log .tx { color: #ffcf6e; } .log .rx { color: #8fd0ff; }

@@ -46,6 +46,8 @@
 `data` 위치는 `settings.json` 의 `data_dir` (기본 `../data`, wafer_stage 기준 상대경로).
 환경변수 `WAFER_STAGE_DATA` 가 있으면 그쪽이 우선한다 — `tools/e2e_smoke.py` 가
 임시 폴더로 돌려 실제 `data/` 를 건드리지 않는 데 쓴다.
+`WAFER_STAGE_DRY_MOVE_S` 는 `--dry` 이동을 그 초만큼 걸리게 한다(기본 0). 비상정지가
+'이동 중' 에 도착하는 상황은 이것 없이 재현되지 않아 검증에서 쓴다.
 
 ## 실행
 
@@ -84,6 +86,7 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 | `version` | `{name, version, build}` |
 | `stage` | `connected, port, homed_x, homed_y, x_mm, y_mm, u, v, moving, dirty, needs_home, last_error` |
 | `camera` | `index, ok, last_error, capturing, preview` |
+| `log_file` | 오늘 로그 파일 이름(상태줄에 표시) |
 | `frame` | `{id, ts, w, h, url:"/frame/<id>.jpg"}` 또는 `null` |
 | `calib` | `{refit, used_ids, missing_ids, transform, corner_rms_mm, corner_max_mm, rotation_deg, corners}` 또는 `null` |
 | `sensing` | `{rect:[u0,v0,u1,v1]}` 또는 `null` |
@@ -123,10 +126,25 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 | `GET /health` | `{ok, version}` |
 | `GET /frame/<id>.jpg` | 마지막 촬영본 (검출 결과를 그릴 바탕) |
 | `GET /preview.jpg` | 미리보기 최신 한 장(640×360). 없으면 204 |
+| `POST /estop` | 비상정지 우회로 — WebSocket 이 막혀도 도착한다 |
 
 미리보기는 서버 기동과 함께 4 fps 로 돈다. 카메라 장치는 한 번에 한 곳만 열 수
 있으므로 미리보기와 촬영이 같은 객체를 lock 으로 나눠 쓴다 — 촬영 때 닫았다 다시
 열지 않는다. `--image` 로 띄우면 그 사진이 미리보기로 나온다(카메라를 열지 않는다).
+
+## 명령 처리
+
+WebSocket 으로 온 명령은 **줄 세우지 않는다**. 메시지마다 태스크를 띄워 받는 쪽이
+막히지 않게 한다. 예전에는 `receive -> await handle_command` 를 한 줄로 돌려,
+원점 탐색(69초) 중에 누른 비상정지가 탐색이 끝난 뒤에야 펌웨어로 나갔다(실장 사고).
+비상정지는 `handle_command` 맨 앞에서 다른 검사 없이 처리하고, 화면은 WebSocket 과
+`POST /estop` 로 동시에 보낸다.
+
+이동 계열 명령은 스테이지가 이미 움직이는 중이면 거절한다(`이동 중 · 명령 무시`).
+동시에 실행될 수 있게 된 뒤로는 이 검사가 없으면 두 이동이 겹친다.
+
+이동이 끝나고 3초 동안 새 이동이 없으면 위치를 EEPROM 에 저장한다(자동, 파일 로그에만).
+USB 가 빠져 보드가 리셋되면 마지막 저장 이후의 위치는 사라진다.
 
 ## 실장 첫 실행 절차
 
@@ -158,6 +176,7 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 | `measure_here` | |
 | `open_out_dir` | 결과 폴더를 탐색기로 연다 |
 | `open_results` | results.csv 를 연다(없으면 폴더) |
+| `open_log_dir` | 날짜별 로그 폴더를 연다 |
 | `preview_start` `preview_stop` | 카메라 미리보기 |
 | `list_ports` | 시리얼 포트 목록 → `ack{of:"list_ports", ports:[{device, description}]}` |
 | `settings_save` | `serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure` |

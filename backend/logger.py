@@ -48,6 +48,11 @@ def _path():
     return os.path.join(_dir, time.strftime("%Y-%m-%d") + ".log")
 
 
+def current_file():
+    """오늘 로그 파일 이름(화면 상태줄에 띄운다)."""
+    return os.path.basename(_path())
+
+
 def write(level, msg):
     """파일에만 쓴다. 화면으로 보내는 것은 connection.push_log 의 몫."""
     line = "%s [%s] %s" % (time.strftime("%H:%M:%S"), level, msg)

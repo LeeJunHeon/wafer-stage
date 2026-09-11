@@ -130,6 +130,58 @@ class Client:
         return ((self.state or {}).get("sequence") or {}).get("phase")
 
 
+async def wait_log(c, needle, timeout):
+    """로그에 그 말이 나올 때까지 기다린다. 걸린 시간(초) 또는 None."""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
+        await c.pump(0.1)
+        if any(needle in l["msg"] for l in c.logs):
+            return time.monotonic() - t0
+    return None
+
+
+async def estop_delay_home_flow(c):
+    """원점 탐색(긴 이동) 중에 도착한 비상정지가 기다리지 않고 바로 나가는가.
+
+    실장 사고: 원점 탐색(69초) 중에 누른 비상정지 3번이 탐색이 끝난 뒤에야
+    펌웨어로 나갔다. 서버가 WebSocket 을 receive -> await handle_command 로
+    한 줄에 돌려, 뒤이어 온 메시지가 소켓에서 기다렸기 때문이다.
+    """
+    c.logs.clear()
+    await c.send(cmd="stage_home", axis="xy")
+    await asyncio.sleep(0.3)               # 탐색이 확실히 시작된 뒤
+    c.logs.clear()
+    await c.send(cmd="estop")
+    dt = await wait_log(c, "비상정지", 3.0)
+    check(dt is not None and dt < 0.5,
+          "원점 탐색 중 비상정지가 0.5초 안에 처리 (%s초)"
+          % ("안 옴" if dt is None else round(dt, 2)))
+    dt2 = await wait_log(c, "원점 설정 중단", 10.0)
+    check(dt2 is not None, "원점 탐색이 '원점 설정 중단' 으로 끝남")
+    await c.pump(1.0)
+    check(bool(c.state["stage"]["needs_home"]), "중단 뒤 needs_home=True")
+
+
+async def estop_delay_move_flow(c):
+    """일반 이동 중의 비상정지. 서버를 새로 띄운 케이스라 앞 단계의 밀린 명령이 없다.
+
+    이동이 끊겼는지를 '목표에 도달했는가' 로 본다 - 비상정지가 줄을 서면 이동이
+    끝까지 가서 목표에 도달해 버린다.
+    """
+    await c.send(cmd="goto", x=200, y=200)
+    await asyncio.sleep(0.3)               # 이동이 시작된 뒤
+    await c.send(cmd="estop")
+    # 끊기지 않았다면 이동(3초 × 2축)이 끝나 목표에 도달할 시간을 준다.
+    await c.pump(8.0)
+    st = c.state["stage"]
+    check(not (st["x_mm"] == 200.0 and st["y_mm"] == 200.0),
+          "이동 중 비상정지로 목표에 도달하지 않음 (X%s Y%s)" % (st["x_mm"], st["y_mm"]))
+    check(bool(st["needs_home"]), "이동 중 비상정지 뒤 이동 잠금")
+    # 이동이 실제로 시작은 했어야 한다(시작도 못 했으면 위 검사가 의미 없다).
+    check(any("이동" in l["msg"] or "mx" in l["msg"] for l in c.logs),
+          "이동이 시작은 했다")
+
+
 async def run_case(port, image, fn):
     import websockets
     async with websockets.connect("ws://127.0.0.1:%d/ws" % port) as ws:
@@ -150,10 +202,11 @@ def http_get(port, path):
         return 0, b""
 
 
-def start_server(port, image):
+def start_server(port, image, env_extra=None):
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env[paths.ENV_DATA_DIR] = DATA_DIR     # 실제 data 폴더 대신 임시 폴더에 쓴다
+    env.update(env_extra or {})
     p = subprocess.Popen(
         [sys.executable, os.path.join(ROOT, "run.py"),
          "--dry", "--no-window", "--port", str(port), "--image", image],
@@ -358,15 +411,19 @@ def main():
     img = setup_data()
     good, glare = img["seq_20260909_150413"], img["seq_20260909_150621"]
     try:
-        for name, image, flow in (("정상 흐름", good, main_flow),
-                                  ("수동 이동", good, jog_flow),
-                                  ("정지 경로", good, stop_flow),
-                                  ("비상정지 경로", good, estop_flow),
-                                  ("확인 필요 경로", glare, confirm_flow)):
+        SLOW = {"WAFER_STAGE_DRY_MOVE_S": "3"}    # dry 이동을 3초로 늘린다
+        for name, image, flow, env_extra in (
+                ("정상 흐름", good, main_flow, None),
+                ("수동 이동", good, jog_flow, None),
+                ("비상정지 지연(원점)", good, estop_delay_home_flow, SLOW),
+                ("비상정지 지연(이동)", good, estop_delay_move_flow, SLOW),
+                ("정지 경로", good, stop_flow, None),
+                ("비상정지 경로", good, estop_flow, None),
+                ("확인 필요 경로", glare, confirm_flow, None)):
             port = free_port()
             print("[%s] 서버 :%d  %s"
                   % (name, port, os.path.basename(os.path.dirname(image))), flush=True)
-            p = start_server(port, image)
+            p = start_server(port, image, env_extra)
             try:
                 asyncio.run(run_case(port, image, flow))
             finally:

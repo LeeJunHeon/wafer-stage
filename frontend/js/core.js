@@ -51,6 +51,28 @@
     logEl.scrollTop = logEl.scrollHeight;
   };
   $('btnClearLog').onclick = () => { logEl.textContent = ''; };
+  $('btnLogDir').onclick = () => UI.send({ cmd: 'open_log_dir' });
+  // 표시 중인 줄을 그대로 클립보드로. 창(WebView2)에서 권한이 막히면 textarea 로.
+  $('btnCopyLog').onclick = async () => {
+    const text = [...logEl.children].map(d => d.textContent).join('\n');
+    if (!text) return;
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { ok = document.execCommand('copy'); } catch (e2) { ok = false; }
+      document.body.removeChild(ta);
+    }
+    UI.log(ok ? ('로그 ' + logEl.childElementCount + '줄 복사') : '복사 실패',
+           ok ? 'ok' : 'warn');
+  };
 
   // ---------------- 모달 ----------------
   const dlgAsk = $('dlgAsk');
@@ -105,6 +127,16 @@
   function fmt(v) { return (v == null) ? EMPTY : (+v).toFixed(1); }
   UI.fmt = fmt;
 
+  // 비상정지는 두 경로로 보낸다. WebSocket 이 막혀 있어도(오래 걸리는 명령을
+  // 처리하는 중이었다면 그랬다) HTTP 로는 도착한다. 서버 쪽은 두 번 받아도
+  // 같은 상태가 되므로 중복이 문제되지 않는다.
+  UI.sendEstop = function () {
+    UI.send({ cmd: 'estop' });
+    try {
+      fetch('/estop', { method: 'POST', keepalive: true }).catch(() => {});
+    } catch (e) { /* fetch 자체가 막힌 환경 */ }
+  };
+
   UI.applyHeader = function (s) {
     const st = s.stage || {}, cam = s.camera || {}, q = s.sequence || {};
     let txt = '—', cls = '';
@@ -129,6 +161,7 @@
       st.connected
         ? (st.port || '미연결') + ' · '
           + ((st.homed_x && st.homed_y && !st.needs_home) ? '원점 설정' : '원점 필요')
+          + ' · ' + (st.dirty ? '미저장' : '저장됨')
         : '미연결');
     const drv = ((s.settings || {}).measure || {}).driver || 'dummy';
     chip($('chipMeter'), drv === 'dummy' ? null : 'ok',
@@ -137,6 +170,7 @@
     $('appVer').textContent = 'v' + (v.version || '?');
     $('barVer').textContent = (v.name || 'Sample Auto Measurement') + ' v' + (v.version || '?');
     $('outDir').textContent = q.out_dir || EMPTY;
+    $('logFile').textContent = s.log_file || EMPTY;
   };
 
   // ---------------- 배너 ----------------
