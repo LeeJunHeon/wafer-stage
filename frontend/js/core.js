@@ -154,7 +154,7 @@
 
   // 창 X → window.py 가 부른다. 확인해야 실제로 닫힌다.
   window.requestExitConfirm = function () {
-    UI.confirm('파킹 및 위치 저장 후 프로그램을 종료합니다.', '종료')
+    UI.confirm('위치를 저장하고 프로그램을 종료합니다. 스테이지는 움직이지 않습니다.', '종료')
       .then(ok => {
         if (!ok) return;
         if (!UI.send({ cmd: 'exit' }) && window.pywebview && window.pywebview.api) {
@@ -336,6 +336,9 @@
     dis('btnCapture', !on || running);
     dis('btnPark', !canMove || running);
     dis('btnJog', !on);                      // 팝업은 열리고, 안에서 다시 잠근다
+    // 종료는 이동을 일으키지 않지만, 이동 중에 창이 닫히면 비상정지를 누를 데가
+    // 없다. 순회 중·이동 중에는 막는다(서버도 같은 조건으로 거절한다).
+    dis('btnExit', !on || running || !!st.moving);
     dis('btnConnect', !on || running);
     dis('btnSettings', !on || running);
     dis('btnEstop', !on);                    // 비상정지는 항상 활성

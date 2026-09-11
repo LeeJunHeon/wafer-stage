@@ -164,6 +164,10 @@ async def _stage_connect(data):
     if not (state.stage["homed_x"] and state.stage["homed_y"]):
         state.stage["needs_home"] = True
         await push_log("원점 없음 · 수동 이동에서 끝단까지 민 뒤 원점 등록", "warn")
+    elif not state.stage["dirty"]:
+        # 저장하고 껐다 - EEPROM 의 위치가 그대로 돌아왔다.
+        await push_log("저장된 위치 복원 · X%.2f Y%.2f"
+                       % (state.stage["x_mm"], state.stage["y_mm"]), "ok")
     await push_state()
 
 
@@ -438,22 +442,34 @@ async def _settings_save(data):
 
 
 async def _exit(_data):
-    await push_log("종료 · 파킹 후 위치 저장", "warn")
+    """종료는 위치를 저장만 하고 끝난다. 스테이지를 움직이지 않는다.
+
+    예전에는 종료가 파킹까지 이동했다. 종료를 누른 사람은 이동을 지시한 것이
+    아닌데 축이 움직였고, 그 이동 중에 비상정지가 오면 예외로 빠져 save 없이
+    끝나 위치를 잃었다. 위치는 펌웨어 EEPROM 에 남으므로 다음 실행에서 복원된다.
+
+    순회 중·이동 중에는 종료를 받지 않는다 - 종료를 기다리며 이동이 이어지면
+    창이 닫힌 뒤 비상정지를 누를 데가 없다.
+    """
     if engine.busy():
-        # 순회 중이면 먼저 멈춘다. 이동 한가운데서 포트를 닫으면 스테이지가
-        # 그 이동을 끝까지 하고 우리는 그 위치를 모른 채 끝난다.
-        await push_log("순회를 정지하고 기다립니다", "warn")
-        await engine.stop()
-        for _ in range(600):               # 최대 60초
-            if not engine.busy():
-                break
-            await asyncio.sleep(0.1)
-    try:
-        if state.stage["connected"] and state.can_move() is None:
-            await engine.park()
-            await stagectl.ctl.save()
-    except Exception as e:                 # noqa: BLE001
-        await push_log("종료 정리 중 오류: %s" % e, "warn")
+        await push_log("순회 중 · 정지 후 종료", "warn")
+        await push_ack("exit", False, "busy")
+        return
+    if state.stage["moving"]:
+        await push_log("이동 중 · 완료 후 종료", "warn")
+        await push_ack("exit", False, "moving")
+        return
+
+    await push_log("종료 · 위치 저장 (스테이지는 움직이지 않음)", "warn")
+    # 비상정지 상태에서는 저장하지 않는다. 믿을 수 없는 위치를 EEPROM 에 굳히면
+    # 다음 전원에서 그 값이 복원된다(원점 기록은 비상정지 때 forget 으로 지웠다).
+    if state.stage["connected"] and not engine.estopped():
+        try:
+            for ln in await stagectl.ctl.save():
+                if str(ln).strip():
+                    await push_log("펌웨어: %s" % str(ln).strip())
+        except Exception as e:             # noqa: BLE001
+            await push_log("위치 저장 실패 · " + logger.short(e), "warn")
     try:
         await stagectl.ctl.disconnect()
     except Exception:                      # noqa: BLE001

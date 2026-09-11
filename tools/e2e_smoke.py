@@ -25,6 +25,7 @@ async def fw_old_flow(c):
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -107,9 +108,16 @@ class Client:
         self.state = None
         self.acks = []
         self.logs = []
+        self.closed = False            # 서버가 스스로 끝났다(종료 명령)
 
     async def pump(self, seconds=0.0):
-        """들어오는 메시지를 지정 시간 동안(또는 한 번) 처리한다."""
+        """들어오는 메시지를 지정 시간 동안(또는 한 번) 처리한다.
+
+        종료 명령을 보내면 서버가 스스로 끝나므로 소켓이 닫힌다. 그것은 오류가
+        아니라 기대한 결과다 - closed 로 표시하고 조용히 돌아온다.
+        """
+        if self.closed:
+            return
         end = time.monotonic() + seconds
         while True:
             try:
@@ -118,6 +126,9 @@ class Client:
                 if time.monotonic() >= end:
                     return
                 continue
+            except Exception:              # noqa: BLE001 - 연결 종료
+                self.closed = True
+                return
             m = json.loads(raw)
             if m.get("type") == "state":
                 self.state = m
@@ -307,6 +318,42 @@ async def fw_v6_flow(c):
           "V6 에서 수동 이동 거부 (%s)" % [l["msg"] for l in c.logs][:3])
 
 
+async def exit_moving_flow(c):
+    """이동 중에는 종료를 받지 않는다(DRY_MOVE_S=3 으로 이동을 늘려 둔다)."""
+    await c.send(cmd="goto", x=100, y=100)
+    await asyncio.sleep(0.4)               # 이동이 시작된 뒤
+    c.acks.clear()
+    await c.send(cmd="exit")
+    await c.pump(2.0)
+    ex = [a for a in c.acks if a.get("of") == "exit"]
+    check(bool(ex) and ex[0]["ok"] is False and ex[0]["reason"] == "moving",
+          "이동 중 exit 거절 (%s)" % (ex[0] if ex else "없음"))
+    st, _ = http_get(c.port, "/health")
+    check(st == 200, "거절 뒤 서버는 살아 있다 (status %s)" % st)
+
+
+async def exit_flow(c):
+    """종료는 위치를 저장만 하고 끝난다 - 스테이지를 움직이지 않는다."""
+    await c.send(cmd="goto", x=50, y=50)
+    await c.pump(3.5)                      # 이동 완료 + 자동 저장까지
+    before = (c.state["stage"]["x_mm"], c.state["stage"]["y_mm"])
+    check(before == (50.0, 50.0), "이동 완료 X50 Y50 (%s)" % (before,))
+
+    c.logs.clear()
+    c.acks.clear()
+    await c.send(cmd="exit")
+    await c.pump(3.0)
+    ex = [a for a in c.acks if a.get("of") == "exit"]
+    check(bool(ex) and ex[0]["ok"] is True, "exit ack ok (%s)" % (ex[0] if ex else "없음"))
+
+    msgs = [l["msg"] for l in c.logs]
+    check(any("save" in m for m in msgs), "종료 때 save 를 보낸다 (%s)" % msgs[:6])
+    moved = [m for m in msgs if ("파킹" in m) or ("-> mx" in m) or ("-> my" in m)]
+    check(not moved, "종료 경로에 이동 명령이 없다 (%s)" % moved)
+    after = (c.state["stage"]["x_mm"], c.state["stage"]["y_mm"])
+    check(after == before, "종료해도 위치 그대로 (%s -> %s)" % (before, after))
+
+
 async def run_case(port, image, fn):
     import websockets
     async with websockets.connect("ws://127.0.0.1:%d/ws" % port) as ws:
@@ -444,6 +491,17 @@ async def jog_flow(c):
     check(bool(rej) and bool(blocked),
           "순회 중 jog 거절 (ack %s · 로그 %d건)" % (rej[0]["reason"] if rej else "없음",
                                               len(blocked)))
+
+    # 순회 중에는 종료도 받지 않는다(거절만 하고 순회는 계속된다).
+    c.acks.clear()
+    await c.send(cmd="exit")
+    await c.pump(2.0)
+    ex = [a for a in c.acks if a.get("of") == "exit"]
+    check(bool(ex) and ex[0]["ok"] is False and ex[0]["reason"] == "busy",
+          "순회 중 exit 거절 (%s)" % (ex[0] if ex else "없음"))
+    ph = ((c.state or {}).get("sequence") or {}).get("phase")
+    check(ph in ("running", "paused"), "거절 뒤에도 순회는 계속 (%s)" % ph)
+
     await c.send(cmd="stop")
     await c.wait_phase(("stopped", "done", "error"), 60)
 
@@ -549,7 +607,9 @@ def main():
                  {"WAFER_STAGE_DRY_FW": "V7", "WAFER_STAGE_DRY_NO_HOME": "1"}),
                 ("정지 경로", good, stop_flow, None),
                 ("비상정지 경로", good, estop_flow, None),
-                ("확인 필요 경로", glare, confirm_flow, None)):
+                ("확인 필요 경로", glare, confirm_flow, None),
+                ("이동 중 종료 거절", good, exit_moving_flow, SLOW),
+                ("종료", good, exit_flow, None)):
             port = free_port()
             print("[%s] 서버 :%d  %s"
                   % (name, port, os.path.basename(os.path.dirname(image))), flush=True)
@@ -557,8 +617,11 @@ def main():
             try:
                 asyncio.run(run_case(port, image, flow))
             finally:
-                p.kill()
-                p.wait(timeout=10)
+                # 종료 케이스는 서버가 스스로 끝난다. 이미 죽었어도 정상이다.
+                with contextlib.suppress(Exception):
+                    p.kill()
+                with contextlib.suppress(Exception):
+                    p.wait(timeout=10)
             time.sleep(0.5)
     finally:
         _restore_settings()

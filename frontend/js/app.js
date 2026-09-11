@@ -51,6 +51,12 @@
     }
     if (msg.of === 'list_ports') fillPorts(msg.ports || []);
     if (msg.of === 'jog' && UI.onJogAck) UI.onJogAck(msg);
+    if (msg.of === 'exit' && msg.ok === false) {
+      // 창 X 로 온 종료 요청이 거절됐다. 창은 그대로 두고 이유를 알린다.
+      UI.alert(msg.reason === 'busy'
+        ? '순회 중에는 종료할 수 없습니다. 정지 후 종료하십시오.'
+        : '이동 중에는 종료할 수 없습니다. 완료 후 종료하십시오.', '종료');
+    }
   }
 
   // 설정창의 시리얼 포트 목록. 직접 입력도 되므로 <datalist> 로만 붙인다.
