@@ -331,11 +331,9 @@ async def jog(axis, target_mm=None, delta_mm=None):
     state.stage["last_error"] = ""
     state.stage["moving"] = True
     await push_state()
-    old_speed = None
     try:
         if rel:
-            # 원점이 없으면 소프트리밋도 없다. 끝단에 닿아도 부담이 없게 느리게 간다.
-            old_speed = await stagectl.ctl.set_speed(stagectl.stage_mod.JOG_SLOW_PPS)
+            # 속도는 드라이버가 맞춘다(jog_rel 은 JOG_SLOW_PPS, 절대 이동은 기본값).
             report = await stagectl.ctl.jog_rel(ax, amount)
         else:
             mover = stagectl.ctl.move_x if ax == "x" else stagectl.ctl.move_y
@@ -353,9 +351,6 @@ async def jog(axis, target_mm=None, delta_mm=None):
         logger.write("err", "수동 이동 실패 상세(%s %.2f): %s" % (ax, amount, e))
         await push_log("수동 이동 실패 · " + logger.short(e), "err")
     finally:
-        if old_speed:
-            with contextlib.suppress(Exception):
-                await stagectl.ctl.set_speed(old_speed)
         state.stage["moving"] = False
         await push_state()
     await push_ack("jog", ok, "" if ok else "error",
@@ -603,17 +598,29 @@ async def stop():
     await push_log("정지 요청 · 현재 이동 후 파킹", "warn")
 
 
+_last_estop_at = 0.0
+ESTOP_DEDUP_S = 2.0                # 이 안에 다시 오면 중단만 하고 로그는 생략
+
+
 async def estop():
     """확인 없이 즉시. 파킹도 save 도 하지 않는다.
 
     태스크를 cancel 하지 않는다 - 진행 중이던 이동은 펌웨어 보고 줄의 "[!] 중단"
     으로 StageError 가 되어 순회 루프가 스스로 빠져나온다. cancel 하면 finally
     가 파킹까지 실행해 '비상정지 직후 다시 움직이는' 일이 벌어진다.
+
+    화면은 WebSocket 과 HTTP 두 경로로 보낸다(둘 중 하나가 막혀도 도착하게).
+    그래서 같은 누름이 두 번 들어오는데, 중단은 두 번 해도 무해하지만 로그와
+    원점 기록 삭제까지 두 번 할 이유는 없다.
     """
-    global _stop, _estopped
+    global _stop, _estopped, _last_estop_at
     _stop = True
+    dup = _estopped and (time.monotonic() - _last_estop_at) < ESTOP_DEDUP_S
     _estopped = True
+    _last_estop_at = time.monotonic()
     ok = stagectl.ctl.abort()
+    if dup:
+        return
     state.stage["needs_home"] = True       # 원점을 다시 잡기 전까지 이동 잠금
     if _stop_evt is not None:
         _stop_evt.set()
@@ -625,8 +632,18 @@ async def estop():
     _phase("stopped", "비상정지 · 원점 설정 필요")
     await push_log("비상정지 · 펌웨어 중단 명령 전송%s" % ("" if ok else " (실패)"),
                    "err" if not ok else "warn")
-    await push_log("정지 후 위치 신뢰 불가 · 원점 설정을 다시 하세요", "warn")
+    await push_log("정지 후 위치 신뢰 불가 · 원점 등록을 다시 하세요", "warn")
     await push_state()
+    # 펌웨어의 원점 기록도 지운다. 그대로 두면 다음 부팅에서 EEPROM 의 '원점OK'
+    # 가 복원되어, 믿을 수 없는 좌표를 가진 채 절대 모드로 켜진다(2026-09-11).
+    # 워커 큐를 거치므로 진행 중이던 이동이 [!] 중단으로 끝난 뒤에 나간다.
+    if stagectl.ctl.connected:
+        try:
+            _apply_status(await stagectl.ctl.forget())
+            await push_log("원점 기록 삭제 · 두 축 원점 등록 필요", "warn")
+        except Exception as e:         # noqa: BLE001
+            await push_log("원점 기록 삭제 실패 · " + logger.short(e), "warn")
+        await push_state()
 
 
 def estopped():
@@ -634,7 +651,7 @@ def estopped():
 
 
 def reset_estop():
-    """원점을 다시 잡았다 - 잠금을 푼다(commands 의 원점 등록·끝단 맞춤이 부른다).
+    """원점을 다시 잡았다 - 잠금을 푼다(commands 의 원점 등록이 부른다).
 
     비상정지로 멈춰 있던 화면도 함께 정리한다. 이동이 다시 되는데 phase 가
     stopped/error 로 남아 있으면 사용자는 아직 잠긴 줄 안다.

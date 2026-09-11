@@ -1,5 +1,15 @@
 //====================================================================
-// 3축 스텝모터 제어 V6 — 절대좌표 + 원점 + 소프트리밋 + 위치 기억(세션 단위)
+// 3축 스텝모터 제어 V8 — 절대좌표 + 원점 + 소프트리밋 + 위치 기억(세션 단위)
+//
+// V7 에서 바뀐 것:
+//   jx/jy  원점이 있는 축이라도 가동범위 밖으로 나가는 명령을 거부하지 않는다.
+//          대신 움직이기 전에 그 축의 원점을 해제한다 - 범위를 벗어나 끝에 닿으면
+//          탈조할 수 있어 그 좌표를 더는 믿을 수 없기 때문이다.
+//          거부하던 V7 에서는, 사고 뒤 EEPROM 에 원점OK 가 남아 있으면 0 에서 더
+//          가지 못해 하드스톱에 맞출 수가 없었다(2026-09-11).
+//   fz     남겨 두지만 앱은 쓰지 않는다(시리얼 모니터용). 끝단으로 미는 것과
+//          원점을 등록하는 것은 사람이 따로 한다.
+// 그 밖의 명령·출력 형식은 V7 과 같다.
 // Arduino Mega 2560 + MotorBank MSD-224 x3
 //
 //   X1 : PUL=D2  DIR=D31  ENA=D30
@@ -11,7 +21,7 @@
 //
 // 시리얼: 115200 bps, 줄 끝 = "새 줄". 명령어와 숫자 사이 띄어쓰기 필수.
 //
-// [핵심 규칙]  원점이 없으면 fz 외에는 아무것도 움직이지 않는다.
+// [핵심 규칙]  원점이 없으면 fz 와 jx/jy 외에는 아무것도 움직이지 않는다.
 //
 // [위치 기억]  위치는 RAM. EEPROM에는 "저장 이후 움직였는가"만 표시.
 //   첫 이동 시  ok=0 기록 (세션에 1회)   /   save 시  ok=1 기록
@@ -20,13 +30,14 @@
 //   파이썬이 메인이면: 이동 보고를 파일에 기록하고, 파킹/종료 때 save 전송.
 //
 // [원점]
-//   fz x [탐색펄스] / fz y [탐색펄스]   - 끝까지 밀고 2mm 이격 후 0 (모터 자동 ON)
+//   fz x [탐색펄스] / fz y [탐색펄스]   - 그만큼 밀고 2mm 이격 후 0 (기본 800 = 5mm, 상한 1600)
 //   z / zx / zy      지금 위치를 0 으로 등록 (움직이지 않음)
 //   sp x y           PC가 알려준 위치로 세팅 + 원점OK  (파이썬 복구용)
 //   home             (0,0) 으로 복귀
 //
 // [절대 이동]  gx 16000   gy 8000   g 16000 8000   mx 100.0   my 50.5
 // [상대 이동]  x 1600   y -1600   x1 200   x2 200
+// [수동 이동]  jx 1600   jy -1600   (원점 없어도 됨. 8000 펄스까지. 범위 밖이면 그 축 원점 해제)
 // [테스트]     rx 5000 10   ry 5000 10   fx 5000 5   fy 5000 5
 // [상태]       p  (사람용)     st  (파싱용 한 줄: ST X= Y= X2= HX= HY= DIRTY=)
 // [기타]       save   forget   v a b w   e 0/1   !
@@ -108,6 +119,11 @@ void markDirty() { if (!eeDirty) eeWrite(false); }   // 세션 첫 이동에만 
 // ==================================================================
 long  axPos(Axis ax)   { return (ax == AX_Y) ? posY : posX1; }
 long  axMax(Axis ax)   { return (ax == AX_Y) ? Y_MAX : X_MAX; }
+
+// V7 추가 상수
+const long HOME_SEARCH_DEFAULT = 800;    // fz 인자 없을 때 5mm 만 민다
+const long HOME_SEARCH_MAX     = 1600;   // fz 탐색 상한 10mm (넘으면 거부)
+const long JOG_MAX_PULSE       = 8000;   // jx/jy 한 번에 50mm 까지
 bool  axHomed(Axis ax) { return (ax == AX_Y) ? homedY : homedX; }
 long  labs2(long v)    { return v < 0 ? -v : v; }
 
@@ -292,13 +308,47 @@ void gotoAbs(Axis ax, long target) {
   moveAxis(ax, labs2(d), d > 0);
 }
 
+// ---- 수동 이동 (원점이 없어도 움직인다) ----
+// 사람이 보면서 캐리지를 끝단까지 몰고 가는 용도다. 가동범위 밖이라고 거부하지
+// 않는다 - 거부하면 원점이 있는 축을 하드스톱까지 몰고 갈 방법이 없다. 대신 범위를
+// 벗어나는 순간 그 축의 원점을 해제한다(끝에 닿아 탈조하면 좌표를 못 믿는다).
+// 한 번에 갈 수 있는 거리는 제한해 '크게 잘못 보내는' 사고를 막는다.
+void jogRel(Axis ax, long delta) {
+  if (delta == 0) return;
+  if (labs2(delta) > JOG_MAX_PULSE) {
+    Serial.println(F("  [거부] jx/jy 는 한 번에 8000 펄스까지"));
+    return;
+  }
+  if (axHomed(ax)) {
+    long t = axPos(ax) + delta;
+    if (t < 0 || t > axMax(ax)) {
+      if (ax == AX_Y) {
+        homedY = false;
+        Serial.println(F("  [!] Y 가동범위 밖 → 원점 해제 (다시 등록 필요)"));
+      } else {
+        homedX = false;
+        Serial.println(F("  [!] X 가동범위 밖 → 원점 해제 (다시 등록 필요)"));
+      }
+      eeWrite(true);
+    }
+  }
+  motorsOn();                 // e 1 로 풀어 둔 뒤에도 바로 움직일 수 있게
+  moveAxis(ax, labs2(delta), delta > 0);
+}
+
 // ---- 자동 원점 (원점 없이 움직이는 유일한 명령) ----
 void findZero(Axis ax, long searchLen) {
-  if (searchLen <= 0)
-    searchLen = axHomed(ax) ? (axPos(ax) + 800) : (axMax(ax) + 800);
+  // 인자가 없으면 짧게만 민다. 스트로크 전체를 미는 기본값은 이미 끝에 닿아
+  // 있을 때 수십 초를 갈아 먹는다. 긴 거리는 잘라 주는 대신 거부한다 -
+  // 사람이 끝단 근처까지 몰고 온 뒤에 쓰는 명령이다.
+  if (searchLen <= 0) searchLen = HOME_SEARCH_DEFAULT;
+  if (searchLen > HOME_SEARCH_MAX) {
+    Serial.println(F("  [거부] fz 탐색은 1600 펄스(10mm)까지"));
+    return;
+  }
 
-  Serial.print(F("--- 원점 탐색 (")); Serial.print(searchLen);
-  Serial.println(F(" 펄스 이내) --- 끝에 닿으면 드르륵 소리 (정상)"));
+  Serial.print(F("--- 원점 탐색 (탐색 ")); Serial.print(searchLen);
+  Serial.println(F(" 펄스) --- 끝에 닿으면 드르륵 소리 (정상)"));
 
   motorsOn();
   float sv = vMax, sa = accel;
@@ -361,7 +411,7 @@ void setup() {
 
   Serial.begin(115200);
   Serial.setTimeout(30);
-  Serial.println(F("=== 3-AXIS V6 ==="));
+  Serial.println(F("=== 3-AXIS V8 ==="));
   Serial.print(F("  X 0~")); Serial.print(X_MAX);
   Serial.print(F("  Y 0~")); Serial.print(Y_MAX);
   Serial.println(F("   (160 pulse = 1mm)"));
@@ -398,7 +448,7 @@ void loop() {
   if (c == "fz") {
     if      (s1 == "x") findZero(AX_X, a2);
     else if (s1 == "y") findZero(AX_Y, a2);
-    else Serial.println(F("  ? fz x [탐색펄스]  또는  fz y [탐색펄스]"));
+    else Serial.println(F("  ? fz x [탐색펄스]  또는  fz y [탐색펄스]  (기본 800 = 5mm, 상한 1600)"));
   }
   else if (c == "z")  { posX1 = 0; posX2 = 0; posY = 0; homedX = true; homedY = true;
                         eeWrite(true); Serial.println(F("  X, Y 여기를 0 으로 등록 (저장됨)")); printStatus(); }
@@ -437,6 +487,8 @@ void loop() {
   }
 
   // ---- 상대 이동 ----
+  else if (c == "jx") jogRel(AX_X, a1);        // 원점 없어도 됨
+  else if (c == "jy") jogRel(AX_Y, a1);        // 원점 없어도 됨
   else if (c == "x")  moveRel(AX_X, a1);
   else if (c == "y")  moveRel(AX_Y, a1);
   else if (c == "x1") moveSingle(AX_X1, a1);
@@ -468,5 +520,8 @@ void loop() {
     } else { motorsOn(); Serial.println(F("  모터 켜짐")); }
   }
   else if (c == "!") Serial.println(F("  (이동 중에만 유효)"));
-  else Serial.println(F("  ? fz z zx zy sp home gx gy g mx my x y x1 x2 rx ry fx fy save forget st p v a b w e !"));
+  else {
+    Serial.println(F("  ? fz z zx zy sp home gx gy g mx my jx jy x y x1 x2 rx ry fx fy save forget st p v a b w e !"));
+    Serial.println(F("    jx/jy <±펄스> : 원점 없어도 되는 이동. 범위 밖으로 나가면 그 축 원점 해제"));
+  }
 }

@@ -74,6 +74,63 @@
            ok ? 'ok' : 'warn');
   };
 
+  // ---------------- 툴팁 ----------------
+  // data-tip 을 단 요소에 마우스를 0.4초 올리면 설명을 띄운다. 비활성 버튼은
+  // 마우스 이벤트를 받지 못하므로(CSS 에서 pointer-events:none) 좌표로 찾는다.
+  const tipBox = $('tip');
+  let tipTimer = null, tipEl = null, tipLast = 0;
+
+  function tipTargetAt(x, y) {
+    const nodes = document.querySelectorAll('[data-tip]');
+    let best = null, bestArea = Infinity, bestInDlg = false;
+    const openDlg = document.querySelector('dialog[open]');
+    for (const el of nodes) {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+      // 열린 팝업 안의 요소가 우선, 그다음 면적이 작은 것(가장 구체적인 것).
+      const inDlg = !!(openDlg && openDlg.contains(el));
+      const area = r.width * r.height;
+      if ((inDlg && !bestInDlg) || ((inDlg === bestInDlg) && area < bestArea)) {
+        best = el; bestArea = area; bestInDlg = inDlg;
+      }
+    }
+    return best;
+  }
+
+  function showTip(el) {
+    tipBox.textContent = el.getAttribute('data-tip');
+    tipBox.hidden = false;
+    const r = el.getBoundingClientRect();
+    const b = tipBox.getBoundingClientRect();
+    let left = Math.min(Math.max(4, r.left), window.innerWidth - b.width - 4);
+    let top = r.bottom + 6;
+    if (top + b.height > window.innerHeight - 4) top = r.top - b.height - 6;
+    tipBox.style.left = Math.round(left) + 'px';
+    tipBox.style.top = Math.round(Math.max(4, top)) + 'px';
+  }
+
+  function hideTip() {
+    if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
+    tipEl = null;
+    tipBox.hidden = true;
+  }
+
+  document.addEventListener('mousemove', (e) => {
+    const now = Date.now();
+    if (now - tipLast < 50) return;        // 스로틀 - 매 픽셀마다 훑지 않는다
+    tipLast = now;
+    const el = tipTargetAt(e.clientX, e.clientY);
+    if (el === tipEl) return;
+    hideTip();
+    if (!el) return;
+    tipEl = el;
+    tipTimer = setTimeout(() => { if (tipEl === el) showTip(el); }, 400);
+  });
+  document.addEventListener('mousedown', hideTip);
+  document.addEventListener('mouseleave', hideTip);
+  window.addEventListener('blur', hideTip);
+
   // ---------------- 모달 ----------------
   const dlgAsk = $('dlgAsk');
   let askResolve = null;
@@ -124,6 +181,15 @@
     if (m && text != null) m.textContent = text;
   }
 
+  // 원점은 축마다 따로다. 한쪽만 없으면 어느 쪽인지 말해 준다.
+  function originText(st) {
+    if (st.needs_home) return '원점 없음';
+    if (st.homed_x && st.homed_y) return '원점 등록됨';
+    if (!st.homed_x && !st.homed_y) return '원점 없음';
+    return (st.homed_x ? 'Y' : 'X') + ' 원점 없음';
+  }
+  UI.originText = originText;
+
   function fmt(v) { return (v == null) ? EMPTY : (+v).toFixed(1); }
   UI.fmt = fmt;
 
@@ -160,7 +226,7 @@
       st.connected ? ((st.homed_x && st.homed_y && !st.needs_home) ? 'ok' : 'warn') : 'bad',
       st.connected
         ? (st.port || '미연결') + ' · '
-          + ((st.homed_x && st.homed_y && !st.needs_home) ? '원점 등록됨' : '원점 없음')
+          + originText(st)
           + ' · ' + (st.dirty ? '미저장' : '저장됨')
         : '미연결');
     const drv = ((s.settings || {}).measure || {}).driver || 'dummy';
@@ -200,7 +266,9 @@
       add('보정', '마커 id' + c.missing_ids.join(',') + ' 미검출 · ' + c.corners
                   + '점 보정(오차 ≈1 mm)');
     }
-    if (st.needs_home) add('스테이지', '원점 없음 · 수동 이동에서 원점 등록');
+    if (st.connected && (st.needs_home || !st.homed_x || !st.homed_y)) {
+      add('스테이지', originText(st) + ' · 수동 이동에서 등록');
+    }
     if (st.last_error) add('스테이지', st.last_error, true);
     if (cam.last_error) add('카메라', cam.last_error, true);
     if (q.estopped) add('스테이지', '비상정지', true);
@@ -290,8 +358,8 @@
     let why = '';
     if (!on) why = '서버 연결 끊김';
     else if (!st.connected) why = '스테이지 미연결';
-    else if (!(st.homed_x && st.homed_y)) why = '원점 없음 · 수동 이동에서 원점 등록';
     else if (st.needs_home) why = '비상정지 · 원점 등록 필요';
+    else if (!(st.homed_x && st.homed_y)) why = originText(st) + ' · 수동 이동에서 등록';
     else if (running) why = '순회 중 · 조작 잠금';
     lm.hidden = !why;
     lm.textContent = why;

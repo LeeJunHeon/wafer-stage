@@ -88,17 +88,14 @@ class StageCtl:
     async def move_y(self, mm):
         return await self._call(self._need().move_y_mm, mm)
 
-    async def find_zero(self, axis, search_mm=stage_mod.HOME_SEARCH_MM_DEFAULT):
-        return await self._call(self._need().find_zero, axis, search_mm)
-
     async def jog_rel(self, axis, mm):
         return await self._call(self._need().jog_rel, axis, mm)
 
     async def set_zero(self, axis="xy"):
         return await self._call(self._need().set_zero, axis)
 
-    async def set_speed(self, pps):
-        return await self._call(self._need().set_speed, pps)
+    async def forget(self):
+        return await self._call(self._need().forget)
 
     @property
     def fw_version(self):

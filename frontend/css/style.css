@@ -269,6 +269,16 @@
   .jogstate { font-size: 11.5px; color: #8a5300; white-space: nowrap; }
   .badge { font-size: 10.5px; font-weight: 700; padding: 2px 6px; border-radius: 3px; white-space: nowrap; }
   .badge.warn { background: #fbefd8; border: 1px solid #e0b25f; color: #8a5300; }
+  .badge.ok { background: #e2f4e8; border: 1px solid #7fbf99; color: #176b35; }
+  .originrow { display: flex; align-items: center; gap: 6px; }
+  .originrow .k { font-size: 10.5px; color: var(--faint); letter-spacing: .5px; }
+
+  /* 툴팁. 비활성 버튼은 마우스 이벤트를 받지 못하게 해서(부모로 내려간다)
+     좌표로 찾는 쪽이 항상 맞게 한다. */
+  button:disabled, input:disabled { pointer-events: none; }
+  .tip { position: fixed; z-index: 90; max-width: 280px; padding: 6px 9px; border-radius: 4px;
+         background: rgba(20,26,32,.96); color: #eaf0f5; font-size: 12.5px; line-height: 1.45;
+         box-shadow: 0 4px 14px rgba(10,14,18,.3); pointer-events: none; }
   /* 십자 배치: 맵과 같은 방향(위 X+ · 왼쪽 Y+) */
   .jogpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; justify-items: stretch; }
   .jogpad .up { grid-area: 1 / 2; } .jogpad .left { grid-area: 2 / 1; }

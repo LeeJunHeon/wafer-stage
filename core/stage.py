@@ -35,15 +35,12 @@ from . import paths
 DRY_MOVE_S = float(os.environ.get("WAFER_STAGE_DRY_MOVE_S", "0") or 0)
 DRY_TICK_S = 0.05                  # 자는 동안 이만큼마다 중단을 확인한다
 # --dry 가 흉내 낼 펌웨어 버전(검증용). 실제 연결에서는 배너에서 읽는다.
-DRY_FW = os.environ.get("WAFER_STAGE_DRY_FW", "V7").upper()
+DRY_FW = os.environ.get("WAFER_STAGE_DRY_FW", "V8").upper()
 # --dry 는 늘 "원점 있음" 으로 답해 왔다. 원점이 없는 상태의 동작(수동 이동만
 # 허용, goto 거절)을 검증하려면 그것도 흉내 낼 수 있어야 한다.
 DRY_NO_HOME = os.environ.get("WAFER_STAGE_DRY_NO_HOME", "") not in ("", "0")
 
-JOG_MAX_PULSE = 8000               # 펌웨어 V7 의 jx/jy 한도와 같은 값
-HOME_SEARCH_MM_MIN = 1.0
-HOME_SEARCH_MM_MAX = 10.0          # 펌웨어 V7 의 fz 상한(1600 펄스)과 같은 값
-HOME_SEARCH_MM_DEFAULT = 5.0
+JOG_MAX_PULSE = 8000               # 펌웨어 V8 의 jx/jy 한도와 같은 값
 
 PPMM = 160.0                  # 160 펄스 = 1mm (.ino 의 PPMM)
 DEFAULT_SPEED_PPS = 6000      # 펌웨어 기본 vMax (v6000)
@@ -128,8 +125,9 @@ class Stage:
         # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면 검증이
         # 무의미해진다(포인터·맵이 안 움직인다). 보낸 명령대로 위치를 옮겨 둔다.
         self._dry_xy = [0.0, 0.0]
-        self._dry_homed = not DRY_NO_HOME
-        self.speed_pps = DEFAULT_SPEED_PPS
+        # 원점은 축마다 따로다(펌웨어의 HX/HY 가 진실). dry 도 같게 흉내 낸다.
+        self._dry_homed = {"x": not DRY_NO_HOME, "y": not DRY_NO_HOME}
+        self.speed_pps = None          # 아직 펌웨어에 속도를 보낸 적이 없다
 
     # ---- 로그 ----------------------------------------------------------
     def _log(self, arrow, text):
@@ -260,7 +258,7 @@ class Stage:
             x, y = self._dry_xy
             return {"x_pulse": int(x * PPMM), "y_pulse": int(y * PPMM),
                     "x2_pulse": int(x * PPMM),
-                    "homed_x": self._dry_homed, "homed_y": self._dry_homed,
+                    "homed_x": self._dry_homed["x"], "homed_y": self._dry_homed["y"],
                     "dirty": False, "x_mm": x, "y_mm": y, "raw": "(dry)"}
         self._write("st")
         ln = self._collect(LINE_TIMEOUT_S, lambda s: s.startswith("ST "), "st")
@@ -316,19 +314,53 @@ class Stage:
                              lambda s: (DONE_MARK in s) or (ALREADY_MARK in s), what)
 
     def move_x_mm(self, mm):
+        self._ensure_speed(DEFAULT_SPEED_PPS)
         return self._move("mx %.1f" % float(mm), "X 이동")
 
     def move_y_mm(self, mm):
+        self._ensure_speed(DEFAULT_SPEED_PPS)
         return self._move("my %.1f" % float(mm), "Y 이동")
 
     # ---- 수동 원점 잡기(V7) --------------------------------------------
-    def _need_v7(self, what):
-        if self.fw_version and self.fw_version != "V7":
-            raise StageError("펌웨어 V7 필요 (%s · 지금 %s)" % (what, self.fw_version))
+    def _need_fw(self, want, what):
+        if self.fw_version and self.fw_version != want:
+            raise StageError("펌웨어 %s 필요 (%s · 지금 %s)"
+                             % (want, what, self.fw_version))
+
+    def _ensure_speed(self, pps):
+        """속도가 다를 때만 v 를 보낸다.
+
+        조그는 스텝마다 부르므로, 매번 보내고 응답을 읽으면 스텝당 0.4~0.5초가
+        그냥 사라진다(실측). 바뀔 때만 보낸다.
+        """
+        pps = int(pps)
+        if self.speed_pps == pps:
+            return
+        self._write("v %d" % pps)
+        if not self.dry:
+            # v 는 printStatus 한 덩어리를 뱉는다. 조용해질 때까지만 읽어 버린다.
+            t0 = time.time()
+            while time.time() - t0 < 1.0:
+                if self._readline() is None:
+                    break
+        self.speed_pps = pps
+
+    def forget(self):
+        """펌웨어의 원점 기록을 지운다(비상정지 뒤).
+
+        지우지 않으면 다음 부팅에서 EEPROM 의 '원점OK' 가 복원되어, 믿을 수 없는
+        좌표를 가진 채로 앱이 절대 모드로 켜진다(2026-09-11 실장).
+        """
+        self._write("forget")
+        if self.dry:
+            self._dry_homed = {"x": False, "y": False}
+        else:
+            self._collect(LINE_TIMEOUT_S, lambda t: "기록 삭제" in t, "원점 기록 삭제")
+        return self.status()
 
     def jog_rel(self, axis, mm):
         """원점이 없어도 되는 상대 이동. 사람이 보면서 끝단까지 몰 때 쓴다."""
-        self._need_v7("수동 이동")
+        self._need_fw("V8", "수동 이동")
         ax = str(axis).lower()
         if ax not in ("x", "y"):
             raise StageError("축은 x 또는 y 여야 합니다: %s" % axis)
@@ -339,13 +371,19 @@ class Stage:
         # 비상정지 뒤에도 막지 않는다. 위치는 못 믿지만 상대 이동은 사람이 보면서
         # 끝단까지 몰아 원점을 다시 등록하는 복구 경로다(절대 이동은 그대로 잠긴다).
         cmd = "j%s %d" % (ax, pulse)
+        self._ensure_speed(JOG_SLOW_PPS)
         self._write(cmd)
         if self.dry:
             self._dry_wait("수동 이동(%s)" % ax)
             i = 0 if ax == "x" else 1
-            # 원점이 없으면 음수 좌표도 말이 된다(아직 기준이 없다).
             nxt = self._dry_xy[i] + pulse / PPMM
-            self._dry_xy[i] = nxt if not self._dry_homed else max(0.0, nxt)
+            # 펌웨어 V8 과 같은 규칙: 원점이 있는 축이 가동범위를 벗어나면 그 축의
+            # 원점을 해제한다. 원점이 없으면 음수 좌표도 말이 된다(기준이 없다).
+            if self._dry_homed[ax]:
+                top = (X_MAX_PULSE if ax == "x" else Y_MAX_PULSE) / PPMM
+                if nxt < 0 or nxt > top:
+                    self._dry_homed[ax] = False
+            self._dry_xy[i] = nxt
             return "(dry) %s" % cmd
         return self._collect(MOVE_TIMEOUT_S,
                              lambda s: (DONE_MARK in s) or (ALREADY_MARK in s),
@@ -361,23 +399,11 @@ class Stage:
         if not self.dry:
             self._collect(LINE_TIMEOUT_S, lambda t: "0 으로 등록" in t, "원점 등록")
         else:
-            self._dry_xy = [0.0, 0.0]
-            self._dry_homed = True
+            for one in (["x", "y"] if ax == "xy" else [ax]):
+                self._dry_xy[0 if one == "x" else 1] = 0.0
+                self._dry_homed[one] = True
         self.reset_abort()
         return self.status()
-
-    def set_speed(self, pps):
-        """이동 속도(v). 되돌릴 수 있도록 이전 값을 돌려준다."""
-        old = self.speed_pps
-        self._write("v %d" % int(pps))
-        if not self.dry:
-            # v 는 printStatus 한 덩어리를 뱉는다. 조용해질 때까지만 읽어 버린다.
-            t0 = time.time()
-            while time.time() - t0 < 1.0:
-                if self._readline() is None:
-                    break
-        self.speed_pps = int(pps)
-        return old
 
     def goto_mm(self, x, y):
         """펌웨어에 동시 이동이 없으므로 X 먼저, 그다음 Y."""
@@ -405,37 +431,6 @@ class Stage:
     def reset_abort(self):
         """원점을 다시 잡았으므로 잠금을 푼다."""
         self._aborted = False
-
-    def find_zero(self, axis, search_mm=HOME_SEARCH_MM_DEFAULT):
-        """끝단 맞춤. 입력한 거리만큼만 끝단 쪽으로 밀고 물러나 0 으로 등록한다.
-
-        탐색 거리를 항상 명시해서 보낸다 - 인자가 없으면 펌웨어가 스트로크 전체를
-        밀어, 이미 끝에 닿아 있으면 수십 초를 갈아 먹는다(2026-09-11).
-        """
-        ax = str(axis).lower()
-        if ax not in ("x", "y", "xy"):
-            raise StageError("축은 x, y, xy 중 하나여야 합니다: %s" % axis)
-        mm = max(HOME_SEARCH_MM_MIN,
-                 min(HOME_SEARCH_MM_MAX, float(search_mm or HOME_SEARCH_MM_DEFAULT)))
-        search_pulses = int(round(mm * PPMM))
-        for one in (["x", "y"] if ax == "xy" else [ax]):
-            cmd = "fz %s %d" % (one, search_pulses)
-            self._write(cmd)
-            if self.dry:
-                self._dry_wait("원점 탐색(%s)" % one)
-                continue
-            done = self._collect(HOME_TIMEOUT_S,
-                                 lambda t: ("원점 설정 완료" in t) or ("중단됨" in t),
-                                 "원점 탐색(%s)" % one)
-            if "원점 설정 완료" in done:
-                self.reset_abort()
-        if self.dry:
-            self.reset_abort()
-            # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면
-            # 검증이 무의미해지므로(포인터·맵이 안 움직인다) 명령대로 옮겨 둔다.
-            self._dry_xy = [0.0, 0.0]      # 원점을 잡았으니 0
-            self._dry_homed = True
-        return self.status()
 
     def save(self):
         if self._aborted:

@@ -1,3 +1,14 @@
+async def fw_old_flow(c):
+    """V7 펌웨어에서는 수동 이동(jx/jy)이 범위 밖으로 못 나간다 - 절차를 못 쓴다."""
+    st = c.state["stage"]
+    check(st["fw"] == "V7", "펌웨어 V7 인식 (%s)" % st["fw"])
+    c.logs.clear()
+    await c.send(cmd="jog", axis="x", delta_mm=5)
+    await c.pump(2.0)
+    check(any("V8 필요" in l["msg"] for l in c.logs),
+          "V7 에서 수동 이동 거부 (%s)" % [l["msg"] for l in c.logs][:3])
+
+
 """e2e_smoke.py - 서버를 실제로 띄워 WebSocket 으로 전 흐름을 확인한다.
 
   python tools/e2e_smoke.py
@@ -141,23 +152,23 @@ async def wait_log(c, needle, timeout):
 
 
 async def estop_delay_home_flow(c):
-    """원점 탐색(긴 이동) 중에 도착한 비상정지가 기다리지 않고 바로 나가는가.
+    """긴 이동(끝단 이동) 중에 도착한 비상정지가 기다리지 않고 바로 나가는가.
 
     실장 사고: 원점 탐색(69초) 중에 누른 비상정지 3번이 탐색이 끝난 뒤에야
     펌웨어로 나갔다. 서버가 WebSocket 을 receive -> await handle_command 로
     한 줄에 돌려, 뒤이어 온 메시지가 소켓에서 기다렸기 때문이다.
     """
     c.logs.clear()
-    await c.send(cmd="home_touch", axis="xy", search_mm=5)
-    await asyncio.sleep(0.3)               # 탐색이 확실히 시작된 뒤
+    await c.send(cmd="touch_end", axis="x", mm=10)
+    await asyncio.sleep(0.3)               # 이동이 확실히 시작된 뒤
     c.logs.clear()
     await c.send(cmd="estop")
     dt = await wait_log(c, "비상정지", 3.0)
     check(dt is not None and dt < 0.5,
-          "원점 탐색 중 비상정지가 0.5초 안에 처리 (%s초)"
+          "끝단 이동 중 비상정지가 0.5초 안에 처리 (%s초)"
           % ("안 옴" if dt is None else round(dt, 2)))
-    dt2 = await wait_log(c, "끝단 맞춤 중단", 10.0)
-    check(dt2 is not None, "끝단 맞춤이 '중단' 으로 끝남")
+    dt2 = await wait_log(c, "끝단 이동 중단", 10.0)
+    check(dt2 is not None, "끝단 이동이 '중단' 으로 끝남")
     await c.pump(1.0)
     check(bool(c.state["stage"]["needs_home"]), "중단 뒤 needs_home=True")
 
@@ -183,11 +194,10 @@ async def estop_delay_move_flow(c):
 
 
 async def origin_flow(c):
-    """수동 원점 등록(V7). 원점이 없는 상태에서 시작한다."""
-    # 서버를 WAFER_STAGE_DRY_NO_HOME=1 로 띄웠다 - 원점이 없는 상태로 시작한다.
+    """수동 원점 등록(V8). 원점이 없는 상태에서 시작한다."""
     st = c.state["stage"]
     check(not (st["homed_x"] and st["homed_y"]), "원점 없이 시작")
-    check(st["fw"] == "V7", "펌웨어 V7 인식 (%s)" % st["fw"])
+    check(st["fw"] == "V8", "펌웨어 V8 인식 (%s)" % st["fw"])
 
     c.acks.clear()
     await c.send(cmd="jog", axis="x", delta_mm=5)
@@ -195,50 +205,91 @@ async def origin_flow(c):
     acks = [a for a in c.acks if a.get("of") == "jog"]
     check(bool(acks) and acks[-1]["ok"],
           "원점 없이 수동 이동 ok (%s)" % (acks[-1] if acks else "없음"))
-    check(c.state["stage"]["jog_mode"] == "rel",
-          "jog_mode=rel (%s)" % c.state["stage"]["jog_mode"])
+    check(c.state["stage"]["jog_mode_x"] == "rel",
+          "jog_mode_x=rel (%s)" % c.state["stage"]["jog_mode_x"])
 
-    # 절대 이동 계열은 여전히 잠겨 있다.
     c.logs.clear()
     await c.send(cmd="goto", x=50, y=50)
     await c.pump(1.5)
     check(any("원점 없음" in l["msg"] for l in c.logs), "원점 없으면 goto 는 거절")
 
-    # 원점 등록
+    # 두 축 등록
     c.logs.clear()
-    await c.send(cmd="set_origin", gap_mm=2)
+    await c.send(cmd="set_origin", axis="xy", gap_mm=2)
     await c.pump(4.0)
     st = c.state["stage"]
-    check(st["homed_x"] and st["homed_y"], "원점 등록 후 homed")
-    check(not st["needs_home"], "원점 등록 후 이동 잠금 해제")
-    check(st["jog_mode"] == "abs", "원점 등록 후 jog_mode=abs (%s)" % st["jog_mode"])
+    check(st["homed_x"] and st["homed_y"], "원점 등록(X·Y) 후 homed")
+    check(st["jog_mode_x"] == "abs" and st["jog_mode_y"] == "abs",
+          "등록 후 두 축 abs (%s/%s)" % (st["jog_mode_x"], st["jog_mode_y"]))
     check(any("원점 등록" in l["msg"] for l in c.logs), "원점 등록 로그")
+
+    # 비상정지 -> 펌웨어 원점 기록까지 지운다
+    c.logs.clear()
+    await c.send(cmd="estop")
+    await c.pump(3.0)
+    st = c.state["stage"]
+    check(not st["homed_x"] and not st["homed_y"], "비상정지 뒤 두 축 원점 해제(forget)")
+    check(any("원점 기록 삭제" in l["msg"] for l in c.logs), "원점 기록 삭제 로그")
+
+    # 축 하나만 등록하면 잠금은 그대로
+    await c.send(cmd="set_origin", axis="x", gap_mm=0)
+    await c.pump(3.0)
+    st = c.state["stage"]
+    check(st["homed_x"] and not st["homed_y"], "X 만 등록됨")
+    check(bool(st["needs_home"]), "한 축만 등록하면 잠금 유지")
+    await c.send(cmd="set_origin", axis="y", gap_mm=0)
+    await c.pump(3.0)
+    st = c.state["stage"]
+    check(st["homed_x"] and st["homed_y"], "Y 까지 등록됨")
+    check(not st["needs_home"], "두 축 등록 후 잠금 해제")
     ph = ((c.state or {}).get("sequence") or {}).get("phase")
     check(ph in ("idle", "ready"), "원점 등록 후 phase (%s)" % ph)
 
-    # 끝단 맞춤: 10mm 초과는 거부
-    c.logs.clear()
-    await c.send(cmd="home_touch", axis="xy", search_mm=12)
-    await c.pump(1.5)
-    check(any("10mm 까지" in l["msg"] for l in c.logs), "끝단 맞춤 12mm 거부")
-    c.logs.clear()
-    await c.send(cmd="home_touch", axis="xy", search_mm=5)
-    await c.pump(4.0)
-    check(any("끝단 맞춤 완료" in l["msg"] for l in c.logs), "끝단 맞춤 5mm 통과")
 
-    # 비상정지 뒤: 수동 이동은 되고 goto 는 막힌다
-    await c.send(cmd="estop")
-    await c.pump(1.5)
-    check(c.state["stage"]["jog_mode"] == "rel", "비상정지 뒤 jog_mode=rel")
-    c.acks.clear()
-    await c.send(cmd="jog", axis="y", delta_mm=3)
-    await c.pump(2.5)
-    acks = [a for a in c.acks if a.get("of") == "jog"]
-    check(bool(acks) and acks[-1]["ok"], "비상정지 뒤에도 수동 이동은 허용")
+async def touch_end_flow(c):
+    """끝단 이동: 원점이 있는 축도 밀 수 있고, 범위를 벗어나면 그 축 원점이 풀린다."""
+    st = c.state["stage"]
+    check(st["homed_x"] and st["homed_y"], "원점 있는 상태로 시작")
+
+    c.logs.clear()
+    await c.send(cmd="touch_end", axis="y", mm=5)
+    await c.pump(3.0)
+    st = c.state["stage"]
+    check(not st["homed_y"], "끝단 이동으로 Y 원점 해제")
+    check(st["homed_x"], "X 원점은 그대로")
+    check(st["jog_mode_y"] == "rel" and st["jog_mode_x"] == "abs",
+          "축별 모드 (x %s · y %s)" % (st["jog_mode_x"], st["jog_mode_y"]))
+    check(any("Y 원점 해제" in l["msg"] for l in c.logs), "원점 해제 안내 로그")
+
     c.logs.clear()
     await c.send(cmd="goto", x=50, y=50)
     await c.pump(1.5)
-    check(any("비상정지" in l["msg"] for l in c.logs), "비상정지 뒤 goto 는 거절")
+    check(any("Y 원점 없음" in l["msg"] for l in c.logs),
+          "goto 거절 사유가 축별 (%s)" % [l["msg"] for l in c.logs][:2])
+
+    await c.send(cmd="set_origin", axis="y", gap_mm=2)
+    await c.pump(3.0)
+    check(c.state["stage"]["homed_y"], "Y 원점 다시 등록")
+    c.logs.clear()
+    await c.send(cmd="goto", x=50, y=50)
+    await c.pump(3.0)
+    check(any("이동 완료" in l["msg"] for l in c.logs), "등록 뒤 goto 성공")
+
+    c.logs.clear()
+    await c.send(cmd="touch_end", axis="x", mm=12)
+    await c.pump(1.5)
+    check(any("1~10 mm" in l["msg"] for l in c.logs), "끝단 이동 12mm 거부")
+
+
+async def estop_dedup_flow(c):
+    """비상정지를 두 경로로 보내도 로그는 한 번만 남는가(WS + HTTP)."""
+    c.logs.clear()
+    await c.send(cmd="estop")
+    await asyncio.sleep(0.2)
+    await c.send(cmd="estop")
+    await c.pump(3.0)
+    n = len([l for l in c.logs if "펌웨어 중단 명령 전송" in l["msg"]])
+    check(n == 1, "비상정지 2회에도 로그 1건 (%d건)" % n)
 
 
 async def fw_v6_flow(c):
@@ -354,9 +405,7 @@ async def main_flow(c):
 
 async def jog_flow(c):
     """수동 이동: 목표는 서버가 만들고 가동범위로 자른다."""
-    await c.send(cmd="home_touch", axis="xy", search_mm=5)
-    await c.pump(3.0)
-    check(c.state["stage"]["x_mm"] == 0.0, "원점 직후 x=0 (%s)" % c.state["stage"]["x_mm"])
+    check(c.state["stage"]["x_mm"] == 0.0, "시작 위치 x=0 (%s)" % c.state["stage"]["x_mm"])
 
     c.acks.clear()
     await c.send(cmd="jog", axis="x", delta_mm=10)
@@ -441,22 +490,24 @@ async def estop_flow(c):
     await c.send(cmd="goto", no=1)
     await c.send(cmd="run", mode="auto", dwell_s=0.1, confirm=True)
     await c.pump(2.5)
-    blocked = [l for l in c.logs if "원점 등록" in l["msg"]]
+    # 비상정지 뒤에는 forget 으로 두 축 원점이 풀리므로 사유가 "원점 없음 · …"
+    # 으로 바뀐다. 어느 쪽이든 원점을 요구하는 잠금이면 된다.
+    blocked = [l for l in c.logs if "원점" in l["msg"] and "등록" in l["msg"]]
     check(len(blocked) >= 3, "park/goto/run 이 모두 잠김 (%d건)" % len(blocked))
 
-    await c.send(cmd="home_touch", axis="xy", search_mm=5)
+    await c.send(cmd="set_origin", axis="xy", gap_mm=0)
     await c.pump(3.0)
-    check(not c.state["stage"]["needs_home"], "원점잡기 후 잠금 해제")
+    check(not c.state["stage"]["needs_home"], "원점 등록 후 잠금 해제")
     q = c.state["sequence"]
-    check(q["phase"] == "ready", "원점잡기 후 phase=ready (%s)" % q["phase"])
-    check(q["estopped"] is False, "원점잡기 후 estopped=False")
+    check(q["phase"] == "ready", "원점 등록 후 phase=ready (%s)" % q["phase"])
+    check(q["estopped"] is False, "원점 등록 후 estopped=False")
     check(c.state["stage"]["last_error"] == "",
-          "원점잡기 후 last_error 비움 (%r)" % c.state["stage"]["last_error"])
+          "원점 등록 후 last_error 비움 (%r)" % c.state["stage"]["last_error"])
     c.logs.clear()
     await c.send(cmd="park")
     await c.pump(2.0)
     ok = any("이동 완료" in l["msg"] for l in c.logs)
-    check(ok, "원점잡기 후 이동이 다시 된다")
+    check(ok, "원점 등록 후 이동이 다시 된다")
 
 
 async def confirm_flow(c):
@@ -492,8 +543,10 @@ def main():
                 ("비상정지 지연(원점)", good, estop_delay_home_flow, SLOW),
                 ("비상정지 지연(이동)", good, estop_delay_move_flow, SLOW),
                 ("수동 원점 등록", good, origin_flow, {"WAFER_STAGE_DRY_NO_HOME": "1"}),
-                ("펌웨어 V6", good, fw_v6_flow,
-                 {"WAFER_STAGE_DRY_FW": "V6", "WAFER_STAGE_DRY_NO_HOME": "1"}),
+                ("끝단 이동", good, touch_end_flow, None),
+                ("비상정지 중복", good, estop_dedup_flow, None),
+                ("펌웨어 V7", good, fw_old_flow,
+                 {"WAFER_STAGE_DRY_FW": "V7", "WAFER_STAGE_DRY_NO_HOME": "1"}),
                 ("정지 경로", good, stop_flow, None),
                 ("비상정지 경로", good, estop_flow, None),
                 ("확인 필요 경로", glare, confirm_flow, None)):
