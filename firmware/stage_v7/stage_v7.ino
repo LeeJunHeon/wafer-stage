@@ -4,7 +4,7 @@
 // V6 에서 바뀐 것만:
 //   jx/jy  원점이 없어도 되는 상대 이동(한 번에 8000 펄스 = 50mm 까지).
 //          사람이 보면서 끝단까지 몰고 가 zx/zy 로 원점을 등록하는 절차용이다.
-//   fz     인자 없으면 3200 펄스(20mm)만 탐색한다. V6 는 스트로크 전체를 밀어,
+//   fz     인자 없으면 800 펄스(5mm)만 탐색한다(상한 1600 = 10mm). V6 는 전체를 밀어,
 //          이미 끝에 있으면 33초를 갈았다(2026-09-11).
 // 그 밖의 명령·출력 형식은 V6 와 같다.
 // Arduino Mega 2560 + MotorBank MSD-224 x3
@@ -27,7 +27,7 @@
 //   파이썬이 메인이면: 이동 보고를 파일에 기록하고, 파킹/종료 때 save 전송.
 //
 // [원점]
-//   fz x [탐색펄스] / fz y [탐색펄스]   - 그만큼 밀고 2mm 이격 후 0 (기본 3200 = 20mm)
+//   fz x [탐색펄스] / fz y [탐색펄스]   - 그만큼 밀고 2mm 이격 후 0 (기본 800 = 5mm, 상한 1600)
 //   z / zx / zy      지금 위치를 0 으로 등록 (움직이지 않음)
 //   sp x y           PC가 알려준 위치로 세팅 + 원점OK  (파이썬 복구용)
 //   home             (0,0) 으로 복귀
@@ -118,7 +118,8 @@ long  axPos(Axis ax)   { return (ax == AX_Y) ? posY : posX1; }
 long  axMax(Axis ax)   { return (ax == AX_Y) ? Y_MAX : X_MAX; }
 
 // V7 추가 상수
-const long HOME_SEARCH_DEFAULT = 3200;   // fz 인자 없을 때 20mm 만 민다
+const long HOME_SEARCH_DEFAULT = 800;    // fz 인자 없을 때 5mm 만 민다
+const long HOME_SEARCH_MAX     = 1600;   // fz 탐색 상한 10mm (넘으면 거부)
 const long JOG_MAX_PULSE       = 8000;   // jx/jy 한 번에 50mm 까지
 bool  axHomed(Axis ax) { return (ax == AX_Y) ? homedY : homedX; }
 long  labs2(long v)    { return v < 0 ? -v : v; }
@@ -322,10 +323,13 @@ void jogRel(Axis ax, long delta) {
 // ---- 자동 원점 (원점 없이 움직이는 유일한 명령) ----
 void findZero(Axis ax, long searchLen) {
   // 인자가 없으면 짧게만 민다. 스트로크 전체를 미는 기본값은 이미 끝에 닿아
-  // 있을 때 수십 초를 갈아 먹는다.
+  // 있을 때 수십 초를 갈아 먹는다. 긴 거리는 잘라 주는 대신 거부한다 -
+  // 사람이 끝단 근처까지 몰고 온 뒤에 쓰는 명령이다.
   if (searchLen <= 0) searchLen = HOME_SEARCH_DEFAULT;
-  long cap = axMax(ax) + 800;
-  if (searchLen > cap) searchLen = cap;
+  if (searchLen > HOME_SEARCH_MAX) {
+    Serial.println(F("  [거부] fz 탐색은 1600 펄스(10mm)까지"));
+    return;
+  }
 
   Serial.print(F("--- 원점 탐색 (탐색 ")); Serial.print(searchLen);
   Serial.println(F(" 펄스) --- 끝에 닿으면 드르륵 소리 (정상)"));
@@ -428,7 +432,7 @@ void loop() {
   if (c == "fz") {
     if      (s1 == "x") findZero(AX_X, a2);
     else if (s1 == "y") findZero(AX_Y, a2);
-    else Serial.println(F("  ? fz x [탐색펄스]  또는  fz y [탐색펄스]  (기본 3200 = 20mm)"));
+    else Serial.println(F("  ? fz x [탐색펄스]  또는  fz y [탐색펄스]  (기본 800 = 5mm, 상한 1600)"));
   }
   else if (c == "z")  { posX1 = 0; posX2 = 0; posY = 0; homedX = true; homedY = true;
                         eeWrite(true); Serial.println(F("  X, Y 여기를 0 으로 등록 (저장됨)")); printStatus(); }

@@ -88,7 +88,7 @@ class StageCtl:
     async def move_y(self, mm):
         return await self._call(self._need().move_y_mm, mm)
 
-    async def find_zero(self, axis, search_mm=10.0):
+    async def find_zero(self, axis, search_mm=stage_mod.HOME_SEARCH_MM_DEFAULT):
         return await self._call(self._need().find_zero, axis, search_mm)
 
     async def jog_rel(self, axis, mm):

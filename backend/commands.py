@@ -188,12 +188,14 @@ async def _home_touch(data):
         await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
         return
     axis = str(data.get("axis") or "xy").lower()
+    default_mm = stagectl.stage_mod.HOME_SEARCH_MM_DEFAULT
     try:
-        search_mm = float(data.get("search_mm", 10.0))
+        search_mm = float(data.get("search_mm", default_mm))
     except (TypeError, ValueError):
-        search_mm = 10.0
-    if search_mm > 20.0:
-        await push_log("끝단 맞춤 거리는 20mm 까지입니다 (%g)" % search_mm, "warn")
+        search_mm = default_mm
+    if search_mm > stagectl.stage_mod.HOME_SEARCH_MM_MAX:
+        await push_log("끝단 맞춤 거리는 %gmm 까지입니다 (%g)"
+                       % (stagectl.stage_mod.HOME_SEARCH_MM_MAX, search_mm), "warn")
         return
     await push_log("끝단 맞춤 (%s · %gmm) · 끝에 닿는 소리는 정상입니다"
                    % (axis, search_mm))

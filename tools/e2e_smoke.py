@@ -148,7 +148,7 @@ async def estop_delay_home_flow(c):
     한 줄에 돌려, 뒤이어 온 메시지가 소켓에서 기다렸기 때문이다.
     """
     c.logs.clear()
-    await c.send(cmd="home_touch", axis="xy", search_mm=10)
+    await c.send(cmd="home_touch", axis="xy", search_mm=5)
     await asyncio.sleep(0.3)               # 탐색이 확실히 시작된 뒤
     c.logs.clear()
     await c.send(cmd="estop")
@@ -216,15 +216,15 @@ async def origin_flow(c):
     ph = ((c.state or {}).get("sequence") or {}).get("phase")
     check(ph in ("idle", "ready"), "원점 등록 후 phase (%s)" % ph)
 
-    # 끝단 맞춤: 20mm 초과는 거부
+    # 끝단 맞춤: 10mm 초과는 거부
     c.logs.clear()
-    await c.send(cmd="home_touch", axis="xy", search_mm=25)
+    await c.send(cmd="home_touch", axis="xy", search_mm=12)
     await c.pump(1.5)
-    check(any("20mm 까지" in l["msg"] for l in c.logs), "끝단 맞춤 25mm 거부")
+    check(any("10mm 까지" in l["msg"] for l in c.logs), "끝단 맞춤 12mm 거부")
     c.logs.clear()
-    await c.send(cmd="home_touch", axis="xy", search_mm=10)
+    await c.send(cmd="home_touch", axis="xy", search_mm=5)
     await c.pump(4.0)
-    check(any("끝단 맞춤 완료" in l["msg"] for l in c.logs), "끝단 맞춤 10mm 통과")
+    check(any("끝단 맞춤 완료" in l["msg"] for l in c.logs), "끝단 맞춤 5mm 통과")
 
     # 비상정지 뒤: 수동 이동은 되고 goto 는 막힌다
     await c.send(cmd="estop")
@@ -354,7 +354,7 @@ async def main_flow(c):
 
 async def jog_flow(c):
     """수동 이동: 목표는 서버가 만들고 가동범위로 자른다."""
-    await c.send(cmd="home_touch", axis="xy", search_mm=10)
+    await c.send(cmd="home_touch", axis="xy", search_mm=5)
     await c.pump(3.0)
     check(c.state["stage"]["x_mm"] == 0.0, "원점 직후 x=0 (%s)" % c.state["stage"]["x_mm"])
 
@@ -444,7 +444,7 @@ async def estop_flow(c):
     blocked = [l for l in c.logs if "원점 등록" in l["msg"]]
     check(len(blocked) >= 3, "park/goto/run 이 모두 잠김 (%d건)" % len(blocked))
 
-    await c.send(cmd="home_touch", axis="xy", search_mm=10)
+    await c.send(cmd="home_touch", axis="xy", search_mm=5)
     await c.pump(3.0)
     check(not c.state["stage"]["needs_home"], "원점잡기 후 잠금 해제")
     q = c.state["sequence"]

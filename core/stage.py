@@ -42,7 +42,8 @@ DRY_NO_HOME = os.environ.get("WAFER_STAGE_DRY_NO_HOME", "") not in ("", "0")
 
 JOG_MAX_PULSE = 8000               # 펌웨어 V7 의 jx/jy 한도와 같은 값
 HOME_SEARCH_MM_MIN = 1.0
-HOME_SEARCH_MM_MAX = 20.0
+HOME_SEARCH_MM_MAX = 10.0          # 펌웨어 V7 의 fz 상한(1600 펄스)과 같은 값
+HOME_SEARCH_MM_DEFAULT = 5.0
 
 PPMM = 160.0                  # 160 펄스 = 1mm (.ino 의 PPMM)
 DEFAULT_SPEED_PPS = 6000      # 펌웨어 기본 vMax (v6000)
@@ -405,7 +406,7 @@ class Stage:
         """원점을 다시 잡았으므로 잠금을 푼다."""
         self._aborted = False
 
-    def find_zero(self, axis, search_mm=10.0):
+    def find_zero(self, axis, search_mm=HOME_SEARCH_MM_DEFAULT):
         """끝단 맞춤. 입력한 거리만큼만 끝단 쪽으로 밀고 물러나 0 으로 등록한다.
 
         탐색 거리를 항상 명시해서 보낸다 - 인자가 없으면 펌웨어가 스트로크 전체를
@@ -414,7 +415,8 @@ class Stage:
         ax = str(axis).lower()
         if ax not in ("x", "y", "xy"):
             raise StageError("축은 x, y, xy 중 하나여야 합니다: %s" % axis)
-        mm = max(HOME_SEARCH_MM_MIN, min(HOME_SEARCH_MM_MAX, float(search_mm or 10.0)))
+        mm = max(HOME_SEARCH_MM_MIN,
+                 min(HOME_SEARCH_MM_MAX, float(search_mm or HOME_SEARCH_MM_DEFAULT)))
         search_pulses = int(round(mm * PPMM))
         for one in (["x", "y"] if ax == "xy" else [ax]):
             cmd = "fz %s %d" % (one, search_pulses)

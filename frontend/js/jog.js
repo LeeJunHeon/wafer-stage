@@ -162,11 +162,11 @@
     if (ok) UI.send({ cmd: 'set_origin', gap_mm: gap });
   };
   $('jogTouch').onclick = async () => {
-    const mm = Math.max(1, Math.min(20, +$('jogTouchMm').value || 10));
+    const mm = Math.max(1, Math.min(10, +$('jogTouchMm').value || 5));
     $('jogTouchMm').value = mm;
     const ok = await UI.confirm(
       '각 축을 입력한 거리만큼 끝단 쪽으로 밀고 2 mm 물러나 0 으로 등록합니다.\n'
-      + '끝단 ' + mm + ' mm 이내에서만 사용하십시오.', '끝단 맞춤');
+      + '끝단 5 mm 이내에서만 사용하십시오.', '끝단 맞춤');
     if (ok) UI.send({ cmd: 'home_touch', axis: 'xy', search_mm: mm });
   };
   $('jogSavePark').onclick = async () => {
