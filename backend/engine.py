@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import contextlib
 import csv
 import os
 import time
@@ -299,15 +300,24 @@ async def goto_xy(x_mm, y_mm, no=None):
         await push_state()
 
 
-async def jog(axis, target_mm):
-    """한 축만 절대 좌표로 옮긴다(수동 이동 팝업).
+async def jog(axis, target_mm=None, delta_mm=None):
+    """한 축만 옮긴다(수동 이동 팝업).
 
-    목표는 서버가 정해서 넘겨받는다(화면이 계산한 좌표를 믿지 않는다). 이미
-    이동 중이면 거절한다 - 조그를 큐에 쌓으면 손을 뗀 뒤에도 계속 움직인다.
+    원점이 있으면 절대 좌표로(target_mm, 서버가 가동범위로 자른 값), 없으면
+    상대 이동으로(delta_mm) 간다. 원점 없이 절대 좌표를 말할 수는 없고, 그렇다고
+    못 움직이게 하면 사람이 캐리지를 끝단까지 몰고 갈 방법이 없다.
+
+    이미 이동 중이면 거절한다 - 조그를 큐에 쌓으면 손을 뗀 뒤에도 계속 움직인다.
     """
-    why = state.can_move()
-    if why:
-        await push_log(why, "warn")
+    rel = delta_mm is not None
+    if not rel:
+        why = state.can_move()
+        if why:
+            await push_log(why, "warn")
+            await push_ack("jog", False, "locked")
+            return False
+    elif not stagectl.ctl.connected:
+        await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
         await push_ack("jog", False, "locked")
         return False
     if state.stage["moving"]:
@@ -317,16 +327,22 @@ async def jog(axis, target_mm):
     if ax not in ("x", "y"):
         await push_ack("jog", False, "bad_axis")
         return False
-    target = float(target_mm)
+    amount = float(delta_mm if rel else target_mm)
     state.stage["last_error"] = ""
     state.stage["moving"] = True
     await push_state()
+    old_speed = None
     try:
-        mover = stagectl.ctl.move_x if ax == "x" else stagectl.ctl.move_y
-        report = await mover(target)
+        if rel:
+            # 원점이 없으면 소프트리밋도 없다. 끝단에 닿아도 부담이 없게 느리게 간다.
+            old_speed = await stagectl.ctl.set_speed(stagectl.stage_mod.JOG_SLOW_PPS)
+            report = await stagectl.ctl.jog_rel(ax, amount)
+        else:
+            mover = stagectl.ctl.move_x if ax == "x" else stagectl.ctl.move_y
+            report = await mover(amount)
         storage.append_jsonl(paths.SEQ_LOG_PATH, {
             "time": time.strftime("%Y-%m-%d %H:%M:%S"), "sample_no": "jog",
-            "target_mm": [round(target, 2)] if ax == "x" else [None, round(target, 2)],
+            "mode": "rel" if rel else "abs", "axis": ax, "amount_mm": round(amount, 2),
             "report": [str(report).strip()]})
         _apply_status(await stagectl.ctl.status())
         mark_moved()
@@ -334,9 +350,12 @@ async def jog(axis, target_mm):
     except stagectl.StageError as e:
         ok = False
         state.stage["last_error"] = logger.short(e)
-        logger.write("err", "수동 이동 실패 상세(%s %.2f): %s" % (ax, target, e))
+        logger.write("err", "수동 이동 실패 상세(%s %.2f): %s" % (ax, amount, e))
         await push_log("수동 이동 실패 · " + logger.short(e), "err")
     finally:
+        if old_speed:
+            with contextlib.suppress(Exception):
+                await stagectl.ctl.set_speed(old_speed)
         state.stage["moving"] = False
         await push_state()
     await push_ack("jog", ok, "" if ok else "error",
@@ -615,7 +634,7 @@ def estopped():
 
 
 def reset_estop():
-    """원점을 다시 잡았다 - 잠금을 푼다(commands.stage_home 이 부른다).
+    """원점을 다시 잡았다 - 잠금을 푼다(commands 의 원점 등록·끝단 맞춤이 부른다).
 
     비상정지로 멈춰 있던 화면도 함께 정리한다. 이동이 다시 되는데 phase 가
     stopped/error 로 남아 있으면 사용자는 아직 잠긴 줄 안다.

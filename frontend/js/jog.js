@@ -151,11 +151,23 @@
   };
   $('jogHome').onclick = () => UI.send({ cmd: 'goto', x: 0, y: 0 });
   $('jogPark').onclick = () => UI.send({ cmd: 'park' });
-  $('jogSetHome').onclick = async () => {
+  // 사람이 눈으로 보며 끝단까지 몬 뒤 여기를 0 으로 등록한다.
+  $('jogSetOrigin').onclick = async () => {
+    const gap = $('jogGap').checked ? 2 : 0;
+    const body = gap
+      ? '현재 위치에서 2 mm 물러난 자리를 X·Y 원점(0,0)으로 등록·저장합니다.\n'
+        + '캐리지가 끝단에 닿아 있는지 확인 후 진행하십시오.'
+      : '현재 위치를 그대로 X·Y 원점(0,0)으로 등록·저장합니다.';
+    const ok = await UI.confirm(body, '원점 등록');
+    if (ok) UI.send({ cmd: 'set_origin', gap_mm: gap });
+  };
+  $('jogTouch').onclick = async () => {
+    const mm = Math.max(1, Math.min(20, +$('jogTouchMm').value || 10));
+    $('jogTouchMm').value = mm;
     const ok = await UI.confirm(
-      '원점 설정: 각 축을 끝단까지 이동합니다(끝에 닿는 소리는 정상).\n'
-      + '이동 경로에 프로브·웨이퍼가 없는지 확인 후 진행하십시오.', '원점 설정');
-    if (ok) UI.send({ cmd: 'stage_home', axis: 'xy' });
+      '각 축을 입력한 거리만큼 끝단 쪽으로 밀고 2 mm 물러나 0 으로 등록합니다.\n'
+      + '끝단 ' + mm + ' mm 이내에서만 사용하십시오.', '끝단 맞춤');
+    if (ok) UI.send({ cmd: 'home_touch', axis: 'xy', search_mm: mm });
   };
   $('jogSavePark').onclick = async () => {
     const st = (UI.state && UI.state.stage) || {};
@@ -181,29 +193,39 @@
     if (!on) UI.jogReset();                // 끊긴 동안 오지 않을 ack 를 기다리지 않는다
     if (!dlg.open) return;
     const st = (s && s.stage) || {}, q = (s && s.sequence) || {};
-    canMove = !!(on && st.connected && st.homed_x && st.homed_y && !st.needs_home);
     const running = ['running', 'paused', 'waiting_confirm', 'parking', 'capturing']
       .indexOf(q.phase) >= 0;
-    const usable = canMove && !running;
-    canMove = usable;
-    if (!usable) stop();
+    // usable = 절대 좌표를 말할 수 있는 상태(원점 있음). 패드는 그보다 넓다.
+    const homed = !!(st.homed_x && st.homed_y && !st.needs_home);
+    const usable = !!(on && st.connected && homed && !running);
 
     $('jogX').textContent = st.connected ? UI.fmt(st.x_mm) : UI.EMPTY;
     $('jogY').textContent = st.connected ? UI.fmt(st.y_mm) : UI.EMPTY;
     $('jogMoving').textContent = st.moving ? '이동 중' : '';
 
+    // 원점이 없어도 수동 이동(상대)은 된다 - 그래야 끝단까지 몰고 갈 수 있다.
+    const rel = (st.jog_mode || 'rel') === 'rel';
+    const canStep = on && st.connected && !running;
     const dis = (id, v) => { const e = $(id); if (e) e.disabled = !!v; };
-    document.querySelectorAll('#dlgJog .jogb').forEach(b => { b.disabled = !usable; });
-    ['jogGo', 'jogHome', 'jogPark', 'jogSavePark'].forEach(id => dis(id, !usable));
-    dis('jogSetHome', !on || !st.connected || running);
-    dis('jogEstop', !on);                  // 비상정지는 항상 활성
+    document.querySelectorAll('#dlgJog .jogb').forEach(b => { b.disabled = !canStep; });
+    canMove = canStep;                     // 패드가 쓰는 값
+    if (!canStep) stop();
+    $('jogRelRow').hidden = !(rel && st.connected);
+    // 절대 좌표는 원점이 있어야 말이 된다.
+    ['jogGo', 'jogHome', 'jogPark'].forEach(id => dis(id, !usable));
     dis('jogGx', !usable); dis('jogGy', !usable);
+    dis('jogSavePark', !usable);
+    dis('jogSetOrigin', !canStep);
+    dis('jogTouch', !canStep);
+    dis('jogTouchMm', !canStep);
+    dis('jogGap', !canStep);
+    dis('jogEstop', !on);                  // 비상정지는 항상 활성
 
     let why = '';
     if (!on) why = '서버 연결 끊김';
     else if (!st.connected) why = '스테이지 미연결';
-    else if (!(st.homed_x && st.homed_y)) why = '원점 미설정';
-    else if (st.needs_home) why = '비상정지 · 원점 설정 필요';
+    else if (!(st.homed_x && st.homed_y)) why = '원점 없음 · 끝단까지 옮긴 뒤 원점 등록';
+    else if (st.needs_home) why = '비상정지 · 원점 등록 필요';
     else if (running) why = '순회 중 · 조작 잠금';
     $('jogLock').hidden = !why;
     $('jogLock').textContent = why;

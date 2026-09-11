@@ -24,6 +24,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import time
 
@@ -33,8 +34,19 @@ from . import paths
 # 비상정지가 '이동 중' 에 도착하는 상황은 이 시간이 없으면 재현되지 않는다.
 DRY_MOVE_S = float(os.environ.get("WAFER_STAGE_DRY_MOVE_S", "0") or 0)
 DRY_TICK_S = 0.05                  # 자는 동안 이만큼마다 중단을 확인한다
+# --dry 가 흉내 낼 펌웨어 버전(검증용). 실제 연결에서는 배너에서 읽는다.
+DRY_FW = os.environ.get("WAFER_STAGE_DRY_FW", "V7").upper()
+# --dry 는 늘 "원점 있음" 으로 답해 왔다. 원점이 없는 상태의 동작(수동 이동만
+# 허용, goto 거절)을 검증하려면 그것도 흉내 낼 수 있어야 한다.
+DRY_NO_HOME = os.environ.get("WAFER_STAGE_DRY_NO_HOME", "") not in ("", "0")
+
+JOG_MAX_PULSE = 8000               # 펌웨어 V7 의 jx/jy 한도와 같은 값
+HOME_SEARCH_MM_MIN = 1.0
+HOME_SEARCH_MM_MAX = 20.0
 
 PPMM = 160.0                  # 160 펄스 = 1mm (.ino 의 PPMM)
+DEFAULT_SPEED_PPS = 6000      # 펌웨어 기본 vMax (v6000)
+JOG_SLOW_PPS = 1500           # 원점 없이 수동으로 몰 때 - 끝단에 닿아도 살살
 X_MAX_PULSE = 39620           # 247.6mm
 Y_MAX_PULSE = 39640           # 247.8mm
 
@@ -88,6 +100,12 @@ def pick_port(want=None):
     raise StageError("\n".join(msg))
 
 
+def _fw_of(banner):
+    """배너에서 펌웨어 버전을 읽는다. "=== 3-AXIS V7 ===" -> "V7"."""
+    m = re.search(r"3-AXIS\s+(V\d+)", banner or "", re.I)
+    return m.group(1).upper() if m else ""
+
+
 # --------------------------------------------------------------------------
 class Stage:
     def __init__(self, port=None, dry=False, log_path=None):
@@ -95,6 +113,7 @@ class Stage:
         self.dry = bool(dry)
         self.ser = None
         self.banner = ""
+        self.fw_version = ""           # 배너에서 읽은 "V6" / "V7"
         self.needs_home = False        # 배너에 "원점없음" 이 있었나
         self.log_path = log_path or os.path.join(paths.OUT_DIR, "serial.log")
         # 주고받은 줄을 그대로 넘겨받을 곳(서버가 화면 로그로 보낸다). 파일 로그는
@@ -108,6 +127,8 @@ class Stage:
         # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면 검증이
         # 무의미해진다(포인터·맵이 안 움직인다). 보낸 명령대로 위치를 옮겨 둔다.
         self._dry_xy = [0.0, 0.0]
+        self._dry_homed = not DRY_NO_HOME
+        self.speed_pps = DEFAULT_SPEED_PPS
 
     # ---- 로그 ----------------------------------------------------------
     def _log(self, arrow, text):
@@ -127,7 +148,8 @@ class Stage:
     # ---- 열기/닫기 ------------------------------------------------------
     def open(self):
         if self.dry:
-            self.banner = "(dry) 시리얼 없이 실행"
+            self.banner = "=== 3-AXIS %s ===\n(dry) 시리얼 없이 실행" % DRY_FW
+            self.fw_version = DRY_FW
             self._log("--", self.banner)
             return self.banner
         try:
@@ -156,6 +178,7 @@ class Stage:
             lines.append(ln)
             last = time.time()
         self.banner = "\n".join(lines)
+        self.fw_version = _fw_of(self.banner)
         self.needs_home = "원점없음" in self.banner
         return self.banner
 
@@ -235,7 +258,8 @@ class Stage:
         if self.dry:
             x, y = self._dry_xy
             return {"x_pulse": int(x * PPMM), "y_pulse": int(y * PPMM),
-                    "x2_pulse": int(x * PPMM), "homed_x": True, "homed_y": True,
+                    "x2_pulse": int(x * PPMM),
+                    "homed_x": self._dry_homed, "homed_y": self._dry_homed,
                     "dirty": False, "x_mm": x, "y_mm": y, "raw": "(dry)"}
         self._write("st")
         ln = self._collect(LINE_TIMEOUT_S, lambda s: s.startswith("ST "), "st")
@@ -265,15 +289,18 @@ class Stage:
         """
         if DRY_MOVE_S <= 0:
             return
+        # 이미 잠겨 있던 상태(비상정지 뒤 수동 이동)는 중단이 아니다. 이 이동
+        # 중에 새로 들어온 '!' 만 중단으로 본다.
+        was = self._aborted
         end = time.time() + DRY_MOVE_S
         while time.time() < end:
-            if self._aborted:
+            if self._aborted and not was:
                 raise StageError("비상정지로 중단됨 · (dry) [!] 중단")
             time.sleep(min(DRY_TICK_S, max(0.0, end - time.time())))
 
     def _move(self, cmd, what):
         if self._aborted:
-            raise StageError("비상정지 상태 · 원점 설정 후 사용")
+            raise StageError("비상정지 상태 · 원점 등록 후 사용")
         self._write(cmd)
         if self.dry:
             self._dry_wait(what)
@@ -292,6 +319,64 @@ class Stage:
 
     def move_y_mm(self, mm):
         return self._move("my %.1f" % float(mm), "Y 이동")
+
+    # ---- 수동 원점 잡기(V7) --------------------------------------------
+    def _need_v7(self, what):
+        if self.fw_version and self.fw_version != "V7":
+            raise StageError("펌웨어 V7 필요 (%s · 지금 %s)" % (what, self.fw_version))
+
+    def jog_rel(self, axis, mm):
+        """원점이 없어도 되는 상대 이동. 사람이 보면서 끝단까지 몰 때 쓴다."""
+        self._need_v7("수동 이동")
+        ax = str(axis).lower()
+        if ax not in ("x", "y"):
+            raise StageError("축은 x 또는 y 여야 합니다: %s" % axis)
+        pulse = int(round(float(mm) * PPMM))
+        if pulse == 0:
+            return "  이미 그 위치"
+        pulse = max(-JOG_MAX_PULSE, min(JOG_MAX_PULSE, pulse))
+        # 비상정지 뒤에도 막지 않는다. 위치는 못 믿지만 상대 이동은 사람이 보면서
+        # 끝단까지 몰아 원점을 다시 등록하는 복구 경로다(절대 이동은 그대로 잠긴다).
+        cmd = "j%s %d" % (ax, pulse)
+        self._write(cmd)
+        if self.dry:
+            self._dry_wait("수동 이동(%s)" % ax)
+            i = 0 if ax == "x" else 1
+            # 원점이 없으면 음수 좌표도 말이 된다(아직 기준이 없다).
+            nxt = self._dry_xy[i] + pulse / PPMM
+            self._dry_xy[i] = nxt if not self._dry_homed else max(0.0, nxt)
+            return "(dry) %s" % cmd
+        return self._collect(MOVE_TIMEOUT_S,
+                             lambda s: (DONE_MARK in s) or (ALREADY_MARK in s),
+                             "수동 이동(%s)" % ax)
+
+    def set_zero(self, axis="xy"):
+        """지금 서 있는 자리를 0 으로 등록한다(zx / zy / z)."""
+        ax = str(axis).lower()
+        cmd = {"x": "zx", "y": "zy", "xy": "z"}.get(ax)
+        if cmd is None:
+            raise StageError("축은 x, y, xy 중 하나여야 합니다: %s" % axis)
+        self._write(cmd)
+        if not self.dry:
+            self._collect(LINE_TIMEOUT_S, lambda t: "0 으로 등록" in t, "원점 등록")
+        else:
+            self._dry_xy = [0.0, 0.0]
+            self._dry_homed = True
+        self.reset_abort()
+        return self.status()
+
+    def set_speed(self, pps):
+        """이동 속도(v). 되돌릴 수 있도록 이전 값을 돌려준다."""
+        old = self.speed_pps
+        self._write("v %d" % int(pps))
+        if not self.dry:
+            # v 는 printStatus 한 덩어리를 뱉는다. 조용해질 때까지만 읽어 버린다.
+            t0 = time.time()
+            while time.time() - t0 < 1.0:
+                if self._readline() is None:
+                    break
+        self.speed_pps = int(pps)
+        return old
 
     def goto_mm(self, x, y):
         """펌웨어에 동시 이동이 없으므로 X 먼저, 그다음 Y."""
@@ -320,19 +405,19 @@ class Stage:
         """원점을 다시 잡았으므로 잠금을 푼다."""
         self._aborted = False
 
-    def find_zero(self, axis, search_pulses=None):
-        """원점 탐색. "fz x [n]" 을 보내고 "원점 설정 완료" 줄까지 기다린다.
+    def find_zero(self, axis, search_mm=10.0):
+        """끝단 맞춤. 입력한 거리만큼만 끝단 쪽으로 밀고 물러나 0 으로 등록한다.
 
-        끝까지 밀어붙이는 동작이라 스트로크 전체를 훑을 수 있어 넉넉히 90초를 준다.
-        완료 뒤 status() 로 위치·원점 상태를 갱신해 돌려준다.
+        탐색 거리를 항상 명시해서 보낸다 - 인자가 없으면 펌웨어가 스트로크 전체를
+        밀어, 이미 끝에 닿아 있으면 수십 초를 갈아 먹는다(2026-09-11).
         """
         ax = str(axis).lower()
         if ax not in ("x", "y", "xy"):
             raise StageError("축은 x, y, xy 중 하나여야 합니다: %s" % axis)
+        mm = max(HOME_SEARCH_MM_MIN, min(HOME_SEARCH_MM_MAX, float(search_mm or 10.0)))
+        search_pulses = int(round(mm * PPMM))
         for one in (["x", "y"] if ax == "xy" else [ax]):
-            cmd = "fz %s" % one
-            if search_pulses:
-                cmd += " %d" % int(search_pulses)
+            cmd = "fz %s %d" % (one, search_pulses)
             self._write(cmd)
             if self.dry:
                 self._dry_wait("원점 탐색(%s)" % one)
@@ -347,6 +432,7 @@ class Stage:
             # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면
             # 검증이 무의미해지므로(포인터·맵이 안 움직인다) 명령대로 옮겨 둔다.
             self._dry_xy = [0.0, 0.0]      # 원점을 잡았으니 0
+            self._dry_homed = True
         return self.status()
 
     def save(self):

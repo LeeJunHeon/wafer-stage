@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import contextlib
 import os
 
 from core import calib, paths
@@ -21,14 +22,18 @@ from state import state
 
 _shutdown_handler = None
 
-MOVE_CMDS = ("park", "goto", "jog", "run", "resume", "next", "measure_here")
+# can_move(연결·원점·비상정지) 를 요구하는 명령. jog 는 여기 넣지 않는다 -
+# 원점이 없을 때 상대 이동으로 끝단까지 몰고 가는 것이 원점을 잡는 절차라서,
+# 여기서 막으면 원점을 영영 못 잡는다(_jog 가 모드별로 따로 검사한다).
+MOVE_CMDS = ("park", "goto", "run", "resume", "next", "measure_here")
 # 스테이지가 이미 움직이고 있으면 받지 않는다. 명령이 동시에 실행될 수 있게 된
 # 뒤로는(ws_endpoint 가 태스크로 띄운다) 이 검사가 없으면 두 이동이 겹친다.
-MOVING_BLOCKED = ("park", "goto", "jog", "stage_home", "capture", "run", "measure_here")
+MOVING_BLOCKED = ("park", "goto", "jog", "home_touch", "set_origin", "capture",
+                  "run", "measure_here")
 # 순회 중에 받으면 안 되는 명령. 스테이지·카메라·설정을 순회 도중에 건드리면
 # 진행 중인 이동과 충돌한다(정지 뒤에 하면 된다).
-BUSY_BLOCKED = ("park", "goto", "jog", "park_here", "stage_home", "stage_disconnect",
-                "capture", "settings_save")
+BUSY_BLOCKED = ("park", "goto", "jog", "park_here", "home_touch", "set_origin",
+                "stage_disconnect", "capture", "settings_save")
 
 
 def set_shutdown_handler(fn):
@@ -62,8 +67,6 @@ async def handle_command(data):
             if why:
                 if cmd == "run":
                     await push_ack("run", False, "locked", [why])
-                elif cmd == "jog":
-                    await push_ack("jog", False, "locked")
                 await push_log(why, "warn")
                 return
 
@@ -154,9 +157,13 @@ async def _stage_connect(data):
         engine._apply_status(await stagectl.ctl.status())
     except stagectl.StageError as e:
         await push_log("상태 조회 실패 · " + logger.short(e), "warn")
+    state.stage["fw"] = stagectl.ctl.fw_version
+    if stagectl.ctl.fw_version and stagectl.ctl.fw_version != "V7":
+        await push_log("펌웨어 %s · 수동 원점은 V7 이 필요합니다"
+                       % stagectl.ctl.fw_version, "warn")
     if not (state.stage["homed_x"] and state.stage["homed_y"]):
         state.stage["needs_home"] = True
-        await push_log("원점 미설정 · 원점 설정을 먼저 실행하세요", "warn")
+        await push_log("원점 없음 · 수동 이동에서 끝단까지 옮긴 뒤 원점 등록", "warn")
     await push_state()
 
 
@@ -171,33 +178,46 @@ async def _stage_disconnect(_data):
     await push_state()
 
 
-async def _stage_home(data):
+async def _home_touch(data):
+    """끝단 맞춤. 입력한 거리만큼만 끝단 쪽으로 밀고 물러나 0 으로 등록한다.
+
+    거리를 화면에서 받는다 - 예전처럼 스트로크 전체를 미는 기본값을 쓰면 이미
+    끝에 닿아 있을 때 수십 초를 갈아 먹는다(2026-09-11).
+    """
     if not state.stage["connected"]:
         await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
         return
     axis = str(data.get("axis") or "xy").lower()
-    await push_log("원점 탐색 시작 (%s) · 끝에 닿는 소리는 정상입니다" % axis)
+    try:
+        search_mm = float(data.get("search_mm", 10.0))
+    except (TypeError, ValueError):
+        search_mm = 10.0
+    if search_mm > 20.0:
+        await push_log("끝단 맞춤 거리는 20mm 까지입니다 (%g)" % search_mm, "warn")
+        return
+    await push_log("끝단 맞춤 (%s · %gmm) · 끝에 닿는 소리는 정상입니다"
+                   % (axis, search_mm))
     state.stage["moving"] = True
     await push_state()
     try:
-        st = await stagectl.ctl.find_zero(axis, data.get("search_pulses"))
+        st = await stagectl.ctl.find_zero(axis, search_mm)
         engine._apply_status(st)
         engine.mark_moved()                # 원점도 저장 대상이다
         if st["homed_x"] and st["homed_y"]:
             engine.reset_estop()           # 비상정지 잠금 해제
             state.stage["last_error"] = "" # 원점을 다시 잡았으니 옛 오류는 지운다
-            await push_log("원점 설정 완료 · X%.2f Y%.2f" % (st["x_mm"], st["y_mm"]), "ok")
+            await push_log("끝단 맞춤 완료 · X%.2f Y%.2f" % (st["x_mm"], st["y_mm"]), "ok")
         else:
             # 축 하나만 잡힌 상태다. '완료' 로 찍으면 안 된다.
             state.stage["needs_home"] = True
-            await push_log("원점 설정 중단 · 다시 실행하세요", "warn")
+            await push_log("끝단 맞춤 중단 · 다시 실행하세요", "warn")
     except stagectl.StageError as e:
         # 비상정지로 끊긴 경우가 대부분이다. 여기서 받아 '중단' 으로 끝낸다
         # (밖으로 던지면 '스테이지 오류' 로만 찍혀 무엇이 중단됐는지 안 보인다).
         state.stage["needs_home"] = True
         state.stage["last_error"] = logger.short(e)
-        logger.write("err", "원점 설정 중단 상세: %s" % e)
-        await push_log("원점 설정 중단 · " + logger.short(e), "warn")
+        logger.write("err", "끝단 맞춤 중단 상세: %s" % e)
+        await push_log("끝단 맞춤 중단 · " + logger.short(e), "warn")
     finally:
         state.stage["moving"] = False
         await push_state()
@@ -215,30 +235,79 @@ async def _goto(data):
 
 
 async def _jog(data):
-    """수동 이동. 목표는 서버가 만든다 - 화면이 준 좌표를 그대로 쓰지 않는다.
+    """수동 이동.
 
-    현재 위치에 delta 를 더하고 가동범위로 자른다(끝이면 그 끝까지만 간다).
+    원점이 있으면 절대 좌표로 간다 - 목표는 서버가 만들고(화면이 준 좌표를 쓰지
+    않는다) 가동범위로 자른다. 원점이 없으면(또는 비상정지 뒤면) 잘라 낼 기준이
+    없으므로 상대 이동으로 보낸다. 사람이 캐리지를 끝단까지 몰고 가 원점을
+    등록하는 절차가 이 경로다.
     """
     axis = str(data.get("axis") or "").lower()
     if axis not in ("x", "y"):
         await push_log("수동 이동 축이 잘못되었습니다: %s" % axis, "warn")
-        return
-    cur = state.stage["x_mm"] if axis == "x" else state.stage["y_mm"]
-    if cur is None:
-        await push_log("현재 위치를 모릅니다 · 원점 설정 후 사용하세요", "warn")
-        await push_ack("jog", False, "no_position")
         return
     try:
         delta = float(data.get("delta_mm", 0))
     except (TypeError, ValueError):
         await push_ack("jog", False, "bad_delta")
         return
+
+    if state.jog_mode() == "rel":
+        await engine.jog(axis, delta_mm=delta)
+        return
+
+    cur = state.stage["x_mm"] if axis == "x" else state.stage["y_mm"]
+    if cur is None:
+        await push_log("현재 위치를 모릅니다 · 원점 등록 후 사용하세요", "warn")
+        await push_ack("jog", False, "no_position")
+        return
     target = min(calib.AXIS_MAX, max(calib.AXIS_MIN, cur + delta))
     if abs(target - cur) < 0.005:          # 이미 끝이다 - 시리얼을 괴롭히지 않는다
         await push_ack("jog", False, "at_limit",
                        x_mm=state.stage["x_mm"], y_mm=state.stage["y_mm"])
         return
-    await engine.jog(axis, target)
+    await engine.jog(axis, target_mm=target)
+
+
+async def _set_origin(data):
+    """지금 자리를 원점으로 등록한다(사람이 끝단까지 몰고 온 뒤).
+
+    끝단에 바짝 붙은 자리를 0 으로 잡으면 이후 모든 이동이 하드스톱에 눌린다.
+    기본 2mm 물러난 자리를 0 으로 등록한다.
+    """
+    if not state.stage["connected"]:
+        await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
+        return
+    try:
+        gap = float(data.get("gap_mm", 2.0))
+    except (TypeError, ValueError):
+        gap = 2.0
+    gap = max(0.0, min(20.0, gap))
+    state.stage["moving"] = True
+    await push_state()
+    try:
+        if gap > 0:
+            old = await stagectl.ctl.set_speed(stagectl.stage_mod.JOG_SLOW_PPS)
+            try:
+                await stagectl.ctl.jog_rel("x", gap)
+                await stagectl.ctl.jog_rel("y", gap)
+            finally:
+                with contextlib.suppress(Exception):
+                    await stagectl.ctl.set_speed(old)
+        st = await stagectl.ctl.set_zero("xy")
+        engine._apply_status(st)
+        engine.reset_estop()
+        state.stage["last_error"] = ""
+        engine.mark_moved()                # 자동 저장이 뒤따른다
+        await push_log("원점 등록 · %gmm 이격 · X%.2f Y%.2f"
+                       % (gap, st["x_mm"], st["y_mm"]), "ok")
+    except stagectl.StageError as e:
+        state.stage["last_error"] = logger.short(e)
+        logger.write("err", "원점 등록 실패 상세: %s" % e)
+        await push_log("원점 등록 실패 · " + logger.short(e), "err")
+    finally:
+        state.stage["moving"] = False
+        await push_state()
 
 
 async def _park_here(_data):
@@ -401,7 +470,8 @@ async def _exit(_data):
 _TABLE = {
     "stage_connect": _stage_connect,
     "stage_disconnect": _stage_disconnect,
-    "stage_home": _stage_home,
+    "home_touch": _home_touch,
+    "set_origin": _set_origin,
     "park": _park,
     "goto": _goto,
     "jog": _jog,

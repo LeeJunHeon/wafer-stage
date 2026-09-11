@@ -182,12 +182,6 @@
   // 카메라 도구 버튼
   $('btnCapture').onclick = () => UI.send({ cmd: 'capture' });
   $('btnPark').onclick = () => UI.send({ cmd: 'park' });
-  $('btnHome').onclick = async () => {
-    const ok = await UI.confirm(
-      '원점 설정: 각 축을 끝단까지 이동합니다(끝에 닿는 소리는 정상).\n'
-      + '이동 경로에 프로브·웨이퍼가 없는지 확인 후 진행하십시오.', '원점 설정');
-    if (ok) UI.send({ cmd: 'stage_home', axis: 'xy' });
-  };
   $('viewLive').onchange = () => setLive(true);
   $('viewSnap').onchange = () => setLive(false);
   // 처음에는 미리보기로 시작한다 - 촬영본이 없는 상태에서 검은 화면을 보여 줄

@@ -36,7 +36,7 @@ class State:
         self.stage = {"connected": False, "port": None, "homed_x": False, "homed_y": False,
                       "x_mm": None, "y_mm": None, "u": None, "v": None,
                       "moving": False, "dirty": False, "needs_home": False,
-                      "last_error": ""}
+                      "jog_mode": "rel", "fw": "", "last_error": ""}
         self.camera = {"index": self.settings.get("camera_index", 1), "ok": None,
                        "last_error": "", "capturing": False, "preview": False}
         self.frame = None                  # {"id","ts","w","h","url"}
@@ -93,15 +93,25 @@ class State:
                 return s
         return None
 
+    def jog_mode(self):
+        """수동 이동이 절대(abs)인가 상대(rel)인가.
+
+        원점이 있고 비상정지 뒤가 아니면 절대 좌표로 자를 수 있다. 아니면 기준이
+        없으므로 상대 이동뿐이다(사람이 끝단까지 몰고 가 원점을 등록하는 경로).
+        """
+        st = self.stage
+        homed = st["homed_x"] and st["homed_y"] and not st.get("needs_home")
+        return "abs" if homed else "rel"
+
     def can_move(self):
         """이동 명령을 받아도 되는 상태인가. 사유 문자열 또는 None."""
         if not self.stage["connected"]:
             return "스테이지 미연결 · 연결 후 사용하세요"
         if not (self.stage["homed_x"] and self.stage["homed_y"]):
-            return "원점 미설정 · 원점 설정 후 사용하세요"
+            return "원점 없음 · 수동 이동에서 원점 등록"
         if self.stage.get("needs_home"):
             # 비상정지 뒤에는 펌웨어가 위치를 안다고 해도 믿을 수 없다.
-            return "비상정지 · 원점 설정 후 사용하세요"
+            return "비상정지 · 원점 등록 필요"
         return None
 
     def set_warnings(self, ws):
@@ -113,7 +123,7 @@ class State:
             "type": "state",
             "version": {"name": version.APP_NAME, "version": version.APP_VERSION,
                         "build": version.BUILD_DATE},
-            "stage": dict(self.stage),
+            "stage": dict(self.stage, jog_mode=self.jog_mode()),
             "camera": dict(self.camera),
             "frame": dict(self.frame) if self.frame else None,
             "calib": dict(self.calib) if self.calib else None,

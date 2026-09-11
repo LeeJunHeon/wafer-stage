@@ -48,6 +48,8 @@
 임시 폴더로 돌려 실제 `data/` 를 건드리지 않는 데 쓴다.
 `WAFER_STAGE_DRY_MOVE_S` 는 `--dry` 이동을 그 초만큼 걸리게 한다(기본 0). 비상정지가
 '이동 중' 에 도착하는 상황은 이것 없이 재현되지 않아 검증에서 쓴다.
+`WAFER_STAGE_DRY_FW`(기본 V7) · `WAFER_STAGE_DRY_NO_HOME` 도 검증용이다 — 각각
+흉내 낼 펌웨어 버전과 '원점 없는 상태로 시작'.
 
 ## 실행
 
@@ -87,6 +89,8 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 | `stage` | `connected, port, homed_x, homed_y, x_mm, y_mm, u, v, moving, dirty, needs_home, last_error` |
 | `camera` | `index, ok, last_error, capturing, preview` |
 | `log_file` | 오늘 로그 파일 이름(상태줄에 표시) |
+| `stage.jog_mode` | `abs`(원점 있음) / `rel`(원점 없음·비상정지 뒤) |
+| `stage.fw` | 펌웨어 버전(`V6` / `V7`) |
 | `frame` | `{id, ts, w, h, url:"/frame/<id>.jpg"}` 또는 `null` |
 | `calib` | `{refit, used_ids, missing_ids, transform, corner_rms_mm, corner_max_mm, rotation_deg, corners}` 또는 `null` |
 | `sensing` | `{rect:[u0,v0,u1,v1]}` 또는 `null` |
@@ -146,10 +150,33 @@ WebSocket 으로 온 명령은 **줄 세우지 않는다**. 메시지마다 태�
 이동이 끝나고 3초 동안 새 이동이 없으면 위치를 EEPROM 에 저장한다(자동, 파일 로그에만).
 USB 가 빠져 보드가 리셋되면 마지막 저장 이후의 위치는 사라진다.
 
+## 펌웨어
+
+`firmware/stage_v7/` 이 현재 버전이다(V6 폴더는 남겨 둔다). 업로드는 Arduino IDE 로 수동.
+
+| 명령 | 내용 |
+|---|---|
+| `jx <±펄스>` `jy <±펄스>` | **원점 없이도 되는 상대 이동**. 한 번에 8000 펄스(50mm)까지 |
+| `fz x [펄스]` `fz y [펄스]` | 끝단 맞춤. 인자가 없으면 3200 펄스(20mm)만 민다 |
+| `zx` `zy` `z` | 지금 자리를 0 으로 등록 |
+
+V6 와 달라진 것은 이 둘뿐이고 나머지 명령·출력 형식은 같다. V6 는 원점이 없으면
+상대 이동(`x`/`y`)까지 거부하고 `fz` 가 스트로크 전체를 밀어, 이미 끝에 닿아 있으면
+33초를 갈았다(2026-09-11).
+
+## 원점 잡기
+
+사람이 보면서 잡는다.
+
+1. [수동 이동] 팝업을 연다. 원점이 없으면 "원점 없음 · 상대 이동 · 느림" 배지가 뜬다.
+2. 패드로 X·Y 를 각각 끝단까지 몬다(원점이 없는 동안은 1500 pps 로 느리게 간다).
+3. [원점 등록] — 2 mm 물러난 자리를 (0,0) 으로 등록·저장한다.
+4. 더 정밀하게는 끝단 10 mm 이내에서 [끝단 맞춤] — 입력한 거리만큼만 밀고 물러나 0 으로 등록한다.
+
 ## 실장 첫 실행 절차
 
 1. [연결] — 시리얼 포트가 잡히는지, 칩이 `COM7 · 원점 필요` 로 바뀌는지 확인
-2. [원점 설정] — 경로에 프로브·웨이퍼가 없는지 보고 실행. 칩이 `원점 설정` 으로 바뀐다
+2. [수동 이동] → 끝단까지 몬 뒤 [원점 등록]. 칩이 `원점 등록됨` 으로 바뀐다
 3. [미리보기] — 웨이퍼 위치·조명·초점을 눈으로 확인(마커 4개가 가리지 않게)
 4. [촬영 · 검출] — 검출 개수와 배너(반사광·마커)를 확인
 5. 번호 선택 모드로 샘플 1개만 [선택 위치 이동] — 프로브가 실제로 그 위 ±1~2mm 인지 확인
@@ -163,10 +190,11 @@ USB 가 빠져 보드가 리셋되면 마지막 저장 이후의 위치는 사�
 |---|---|
 | `stage_connect` | `port?` |
 | `stage_disconnect` | |
-| `stage_home` | `axis:"x"\|"y"\|"xy"`, `search_pulses?` |
+| `home_touch` | `axis`, `search_mm`(기본 10, 최대 20) — 끝단 맞춤 |
+| `set_origin` | `gap_mm`(기본 2) — 지금 자리에서 물러나 0 으로 등록 |
 | `park` | |
 | `goto` | `no` 또는 `x, y` |
-| `jog` | `axis:"x"\|"y"`, `delta_mm` — 현재 위치 + delta 를 서버가 가동범위로 자른다 |
+| `jog` | `axis:"x"\|"y"`, `delta_mm` — 원점이 있으면 절대(가동범위로 자름), 없으면 상대 |
 | `park_here` | 현재 위치를 `settings.park_xy` 로 저장 |
 | `capture` | |
 | `run` | `mode:"auto"\|"confirm"\|"pick"`, `dwell_s`, `only?:[no]`, `confirm?` |

@@ -148,7 +148,7 @@ async def estop_delay_home_flow(c):
     한 줄에 돌려, 뒤이어 온 메시지가 소켓에서 기다렸기 때문이다.
     """
     c.logs.clear()
-    await c.send(cmd="stage_home", axis="xy")
+    await c.send(cmd="home_touch", axis="xy", search_mm=10)
     await asyncio.sleep(0.3)               # 탐색이 확실히 시작된 뒤
     c.logs.clear()
     await c.send(cmd="estop")
@@ -156,8 +156,8 @@ async def estop_delay_home_flow(c):
     check(dt is not None and dt < 0.5,
           "원점 탐색 중 비상정지가 0.5초 안에 처리 (%s초)"
           % ("안 옴" if dt is None else round(dt, 2)))
-    dt2 = await wait_log(c, "원점 설정 중단", 10.0)
-    check(dt2 is not None, "원점 탐색이 '원점 설정 중단' 으로 끝남")
+    dt2 = await wait_log(c, "끝단 맞춤 중단", 10.0)
+    check(dt2 is not None, "끝단 맞춤이 '중단' 으로 끝남")
     await c.pump(1.0)
     check(bool(c.state["stage"]["needs_home"]), "중단 뒤 needs_home=True")
 
@@ -180,6 +180,80 @@ async def estop_delay_move_flow(c):
     # 이동이 실제로 시작은 했어야 한다(시작도 못 했으면 위 검사가 의미 없다).
     check(any("이동" in l["msg"] or "mx" in l["msg"] for l in c.logs),
           "이동이 시작은 했다")
+
+
+async def origin_flow(c):
+    """수동 원점 등록(V7). 원점이 없는 상태에서 시작한다."""
+    # 서버를 WAFER_STAGE_DRY_NO_HOME=1 로 띄웠다 - 원점이 없는 상태로 시작한다.
+    st = c.state["stage"]
+    check(not (st["homed_x"] and st["homed_y"]), "원점 없이 시작")
+    check(st["fw"] == "V7", "펌웨어 V7 인식 (%s)" % st["fw"])
+
+    c.acks.clear()
+    await c.send(cmd="jog", axis="x", delta_mm=5)
+    await c.pump(2.5)
+    acks = [a for a in c.acks if a.get("of") == "jog"]
+    check(bool(acks) and acks[-1]["ok"],
+          "원점 없이 수동 이동 ok (%s)" % (acks[-1] if acks else "없음"))
+    check(c.state["stage"]["jog_mode"] == "rel",
+          "jog_mode=rel (%s)" % c.state["stage"]["jog_mode"])
+
+    # 절대 이동 계열은 여전히 잠겨 있다.
+    c.logs.clear()
+    await c.send(cmd="goto", x=50, y=50)
+    await c.pump(1.5)
+    check(any("원점 없음" in l["msg"] for l in c.logs), "원점 없으면 goto 는 거절")
+
+    # 원점 등록
+    c.logs.clear()
+    await c.send(cmd="set_origin", gap_mm=2)
+    await c.pump(4.0)
+    st = c.state["stage"]
+    check(st["homed_x"] and st["homed_y"], "원점 등록 후 homed")
+    check(not st["needs_home"], "원점 등록 후 이동 잠금 해제")
+    check(st["jog_mode"] == "abs", "원점 등록 후 jog_mode=abs (%s)" % st["jog_mode"])
+    check(any("원점 등록" in l["msg"] for l in c.logs), "원점 등록 로그")
+    ph = ((c.state or {}).get("sequence") or {}).get("phase")
+    check(ph in ("idle", "ready"), "원점 등록 후 phase (%s)" % ph)
+
+    # 끝단 맞춤: 20mm 초과는 거부
+    c.logs.clear()
+    await c.send(cmd="home_touch", axis="xy", search_mm=25)
+    await c.pump(1.5)
+    check(any("20mm 까지" in l["msg"] for l in c.logs), "끝단 맞춤 25mm 거부")
+    c.logs.clear()
+    await c.send(cmd="home_touch", axis="xy", search_mm=10)
+    await c.pump(4.0)
+    check(any("끝단 맞춤 완료" in l["msg"] for l in c.logs), "끝단 맞춤 10mm 통과")
+
+    # 비상정지 뒤: 수동 이동은 되고 goto 는 막힌다
+    await c.send(cmd="estop")
+    await c.pump(1.5)
+    check(c.state["stage"]["jog_mode"] == "rel", "비상정지 뒤 jog_mode=rel")
+    c.acks.clear()
+    await c.send(cmd="jog", axis="y", delta_mm=3)
+    await c.pump(2.5)
+    acks = [a for a in c.acks if a.get("of") == "jog"]
+    check(bool(acks) and acks[-1]["ok"], "비상정지 뒤에도 수동 이동은 허용")
+    c.logs.clear()
+    await c.send(cmd="goto", x=50, y=50)
+    await c.pump(1.5)
+    check(any("비상정지" in l["msg"] for l in c.logs), "비상정지 뒤 goto 는 거절")
+
+
+async def fw_v6_flow(c):
+    """V6 펌웨어에서는 상대 이동(jx/jy)이 없다 - 수동 원점 절차를 쓸 수 없다.
+
+    원점이 있으면 절대 이동으로 가므로 V6 에서도 움직인다. 문제가 되는 것은
+    원점이 없을 때뿐이라 이 케이스는 원점 없는 상태로 띄운다.
+    """
+    st = c.state["stage"]
+    check(st["fw"] == "V6", "펌웨어 V6 인식 (%s)" % st["fw"])
+    c.logs.clear()
+    await c.send(cmd="jog", axis="x", delta_mm=5)
+    await c.pump(2.0)
+    check(any("V7 필요" in l["msg"] for l in c.logs),
+          "V6 에서 수동 이동 거부 (%s)" % [l["msg"] for l in c.logs][:3])
 
 
 async def run_case(port, image, fn):
@@ -280,7 +354,7 @@ async def main_flow(c):
 
 async def jog_flow(c):
     """수동 이동: 목표는 서버가 만들고 가동범위로 자른다."""
-    await c.send(cmd="stage_home", axis="xy")
+    await c.send(cmd="home_touch", axis="xy", search_mm=10)
     await c.pump(3.0)
     check(c.state["stage"]["x_mm"] == 0.0, "원점 직후 x=0 (%s)" % c.state["stage"]["x_mm"])
 
@@ -367,10 +441,10 @@ async def estop_flow(c):
     await c.send(cmd="goto", no=1)
     await c.send(cmd="run", mode="auto", dwell_s=0.1, confirm=True)
     await c.pump(2.5)
-    blocked = [l for l in c.logs if "원점 설정 후 사용" in l["msg"]]
+    blocked = [l for l in c.logs if "원점 등록" in l["msg"]]
     check(len(blocked) >= 3, "park/goto/run 이 모두 잠김 (%d건)" % len(blocked))
 
-    await c.send(cmd="stage_home", axis="xy")
+    await c.send(cmd="home_touch", axis="xy", search_mm=10)
     await c.pump(3.0)
     check(not c.state["stage"]["needs_home"], "원점잡기 후 잠금 해제")
     q = c.state["sequence"]
@@ -417,6 +491,9 @@ def main():
                 ("수동 이동", good, jog_flow, None),
                 ("비상정지 지연(원점)", good, estop_delay_home_flow, SLOW),
                 ("비상정지 지연(이동)", good, estop_delay_move_flow, SLOW),
+                ("수동 원점 등록", good, origin_flow, {"WAFER_STAGE_DRY_NO_HOME": "1"}),
+                ("펌웨어 V6", good, fw_v6_flow,
+                 {"WAFER_STAGE_DRY_FW": "V6", "WAFER_STAGE_DRY_NO_HOME": "1"}),
                 ("정지 경로", good, stop_flow, None),
                 ("비상정지 경로", good, estop_flow, None),
                 ("확인 필요 경로", glare, confirm_flow, None)):

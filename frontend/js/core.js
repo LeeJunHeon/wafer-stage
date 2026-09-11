@@ -160,7 +160,7 @@
       st.connected ? ((st.homed_x && st.homed_y && !st.needs_home) ? 'ok' : 'warn') : 'bad',
       st.connected
         ? (st.port || '미연결') + ' · '
-          + ((st.homed_x && st.homed_y && !st.needs_home) ? '원점 설정' : '원점 필요')
+          + ((st.homed_x && st.homed_y && !st.needs_home) ? '원점 등록됨' : '원점 없음')
           + ' · ' + (st.dirty ? '미저장' : '저장됨')
         : '미연결');
     const drv = ((s.settings || {}).measure || {}).driver || 'dummy';
@@ -200,7 +200,7 @@
       add('보정', '마커 id' + c.missing_ids.join(',') + ' 미검출 · ' + c.corners
                   + '점 보정(오차 ≈1 mm)');
     }
-    if (st.needs_home) add('스테이지', '원점 미설정 · 이동 잠금');
+    if (st.needs_home) add('스테이지', '원점 없음 · 수동 이동에서 원점 등록');
     if (st.last_error) add('스테이지', st.last_error, true);
     if (cam.last_error) add('카메라', cam.last_error, true);
     if (q.estopped) add('스테이지', '비상정지', true);
@@ -267,7 +267,6 @@
     const dis = (id, v) => { const e = $(id); if (e) e.disabled = !!v; };
     dis('btnCapture', !on || running);
     dis('btnPark', !canMove || running);
-    dis('btnHome', !on || !st.connected || running);
     dis('btnJog', !on);                      // 팝업은 열리고, 안에서 다시 잠근다
     dis('btnConnect', !on || running);
     dis('btnSettings', !on || running);
@@ -291,8 +290,8 @@
     let why = '';
     if (!on) why = '서버 연결 끊김';
     else if (!st.connected) why = '스테이지 미연결';
-    else if (!(st.homed_x && st.homed_y)) why = '원점 미설정';
-    else if (st.needs_home) why = '비상정지 · 원점 설정 필요';
+    else if (!(st.homed_x && st.homed_y)) why = '원점 없음 · 수동 이동에서 원점 등록';
+    else if (st.needs_home) why = '비상정지 · 원점 등록 필요';
     else if (running) why = '순회 중 · 조작 잠금';
     lm.hidden = !why;
     lm.textContent = why;

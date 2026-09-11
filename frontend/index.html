@@ -88,8 +88,7 @@
       <div class="pb stack">
         <div class="sec">
           <div class="t">스테이지</div>
-          <div class="row"><button class="btn" id="btnConnect">연결</button><button class="btn" id="btnHome">원점 설정</button><button class="btn" id="btnPark">파킹</button></div>
-          <div class="row"><button class="btn block" id="btnJog">수동 이동</button></div>
+          <div class="row"><button class="btn" id="btnConnect">연결</button><button class="btn" id="btnJog">수동 이동</button><button class="btn" id="btnPark">파킹</button></div>
           <div class="lockmsg" id="lockMsg" hidden></div>
         </div>
         <div class="sec">
@@ -155,6 +154,7 @@
       <div class="ax"><span class="k">Y</span><span class="v mono" id="jogY">—</span><span class="u">mm</span></div>
       <span class="sp"></span><span class="jogstate" id="jogNote"></span><span class="jogstate" id="jogMoving"></span>
     </div>
+    <div id="jogRelRow" hidden><span class="badge warn">원점 없음 · 상대 이동 · 느림</span></div>
     <div class="lockmsg" id="jogLock" hidden></div>
 
     <div class="t">스텝</div>
@@ -177,8 +177,13 @@
     <div class="row"><span class="note">X</span><input type="number" id="jogGx" step="0.1" min="0" max="247"><span class="note">Y</span><input type="number" id="jogGy" step="0.1" min="0" max="247"><span class="note">mm</span><button class="btn" id="jogGo">이동</button></div>
     <div class="note">스테이지 맵을 클릭하면 그 지점 좌표가 채워집니다.</div>
 
+    <div class="t">원점</div>
+    <div class="note">수동 이동으로 끝단까지 → [원점 등록]. 정밀하게는 끝단 근처에서 [끝단 맞춤].</div>
+    <div class="row"><button class="btn" id="jogSetOrigin">원점 등록</button><label class="logopt"><input type="checkbox" id="jogGap" checked>2 mm 이격</label></div>
+    <div class="row"><span class="note">끝단 맞춤</span><input type="number" id="jogTouchMm" value="10" min="1" max="20" step="1"><span class="note">mm</span><button class="btn" id="jogTouch">실행</button></div>
+
     <div class="row"><button class="btn" id="jogHome">원점 이동</button><button class="btn" id="jogPark">파킹</button></div>
-    <div class="row"><button class="btn" id="jogSetHome">원점 설정</button><button class="btn" id="jogSavePark">현재 위치를 파킹으로</button></div>
+    <div class="row"><button class="btn" id="jogSavePark">현재 위치를 파킹으로</button></div>
     <button class="btn lg estop block" id="jogEstop">비상정지</button>
   </div>
 </dialog>
