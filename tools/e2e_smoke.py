@@ -1,14 +1,3 @@
-async def fw_old_flow(c):
-    """V7 펌웨어에서는 수동 이동(jx/jy)이 범위 밖으로 못 나간다 - 절차를 못 쓴다."""
-    st = c.state["stage"]
-    check(st["fw"] == "V7", "펌웨어 V7 인식 (%s)" % st["fw"])
-    c.logs.clear()
-    await c.send(cmd="jog", axis="x", delta_mm=5)
-    await c.pump(2.0)
-    check(any("V8 필요" in l["msg"] for l in c.logs),
-          "V7 에서 수동 이동 거부 (%s)" % [l["msg"] for l in c.logs][:3])
-
-
 """e2e_smoke.py - 서버를 실제로 띄워 WebSocket 으로 전 흐름을 확인한다.
 
   python tools/e2e_smoke.py
@@ -243,9 +232,12 @@ async def origin_flow(c):
     check(any("원점 기록 삭제" in l["msg"] for l in c.logs), "원점 기록 삭제 로그")
 
     # 축 하나만 등록하면 잠금은 그대로
-    await c.send(cmd="set_origin", axis="x", gap_mm=0)
+    c.logs.clear()
+    await c.send(cmd="set_origin", axis="x", gap_mm=0)   # gap_mm 은 무시된다
     await c.pump(3.0)
     st = c.state["stage"]
+    check(any(l["msg"] == "-> jx 320" for l in c.logs),
+          "gap_mm 0 을 보내도 2mm(320 펄스) 물러난다")
     check(st["homed_x"] and not st["homed_y"], "X 만 등록됨")
     check(bool(st["needs_home"]), "한 축만 등록하면 잠금 유지")
     await c.send(cmd="set_origin", axis="y", gap_mm=0)
@@ -263,9 +255,14 @@ async def touch_end_flow(c):
     check(st["homed_x"] and st["homed_y"], "원점 있는 상태로 시작")
 
     c.logs.clear()
-    await c.send(cmd="touch_end", axis="y", mm=5)
-    await c.pump(3.0)
+    await c.send(cmd="touch_end", axis="y", mm=120)
+    await c.pump(4.0)
     st = c.state["stage"]
+    check(st["y_mm"] == -120.0, "끝단 이동 120mm 로 Y -120 (%s)" % st["y_mm"])
+    # 펌웨어 한도는 한 번에 8000 펄스(50mm)다. 드라이버가 나눠 보내야 한다.
+    sent = [l["msg"] for l in c.logs if l["msg"].startswith("-> jy ")]
+    check(sent == ["-> jy -8000", "-> jy -8000", "-> jy -3200"],
+          "50mm 조각으로 나눠 보냄 (%s)" % sent)
     check(not st["homed_y"], "끝단 이동으로 Y 원점 해제")
     check(st["homed_x"], "X 원점은 그대로")
     check(st["jog_mode_y"] == "rel" and st["jog_mode_x"] == "abs",
@@ -287,9 +284,21 @@ async def touch_end_flow(c):
     check(any("이동 완료" in l["msg"] for l in c.logs), "등록 뒤 goto 성공")
 
     c.logs.clear()
-    await c.send(cmd="touch_end", axis="x", mm=12)
+    await c.send(cmd="touch_end", axis="x", mm=300)
     await c.pump(1.5)
-    check(any("1~10 mm" in l["msg"] for l in c.logs), "끝단 이동 12mm 거부")
+    check(any("1~248 mm" in l["msg"] for l in c.logs), "끝단 이동 300mm 거부")
+
+
+async def touch_end_abort_flow(c):
+    """조각으로 나눈 끝단 이동이 비상정지에서 멈추는가(남은 조각을 보내지 않는다)."""
+    c.logs.clear()
+    await c.send(cmd="touch_end", axis="x", mm=150)     # 8000 x3 + 나머지
+    await asyncio.sleep(0.5)                            # 첫 조각이 도는 중
+    await c.send(cmd="estop")
+    dt = await wait_log(c, "끝단 이동 중단", 10.0)
+    check(dt is not None, "조각 도중 비상정지로 끝단 이동 중단")
+    n = len([l for l in c.logs if l["msg"].startswith("-> jx ")])
+    check(n == 1, "남은 조각을 보내지 않았다 (jx %d건)" % n)
 
 
 async def estop_dedup_flow(c):
@@ -303,19 +312,15 @@ async def estop_dedup_flow(c):
     check(n == 1, "비상정지 2회에도 로그 1건 (%d건)" % n)
 
 
-async def fw_v6_flow(c):
-    """V6 펌웨어에서는 상대 이동(jx/jy)이 없다 - 수동 원점 절차를 쓸 수 없다.
-
-    원점이 있으면 절대 이동으로 가므로 V6 에서도 움직인다. 문제가 되는 것은
-    원점이 없을 때뿐이라 이 케이스는 원점 없는 상태로 띄운다.
-    """
+async def fw_old_flow(c):
+    """V7 펌웨어에서는 수동 이동(jx/jy)이 범위 밖으로 못 나간다 - 절차를 못 쓴다."""
     st = c.state["stage"]
-    check(st["fw"] == "V6", "펌웨어 V6 인식 (%s)" % st["fw"])
+    check(st["fw"] == "V7", "펌웨어 V7 인식 (%s)" % st["fw"])
     c.logs.clear()
     await c.send(cmd="jog", axis="x", delta_mm=5)
     await c.pump(2.0)
-    check(any("V7 필요" in l["msg"] for l in c.logs),
-          "V6 에서 수동 이동 거부 (%s)" % [l["msg"] for l in c.logs][:3])
+    check(any("V8 필요" in l["msg"] for l in c.logs),
+          "V7 에서 수동 이동 거부 (%s)" % [l["msg"] for l in c.logs][:3])
 
 
 async def exit_moving_flow(c):
@@ -602,6 +607,8 @@ def main():
                 ("비상정지 지연(이동)", good, estop_delay_move_flow, SLOW),
                 ("수동 원점 등록", good, origin_flow, {"WAFER_STAGE_DRY_NO_HOME": "1"}),
                 ("끝단 이동", good, touch_end_flow, None),
+                ("끝단 이동 중단", good, touch_end_abort_flow,
+                 {"WAFER_STAGE_DRY_MOVE_S": "1"}),
                 ("비상정지 중복", good, estop_dedup_flow, None),
                 ("펌웨어 V7", good, fw_old_flow,
                  {"WAFER_STAGE_DRY_FW": "V7", "WAFER_STAGE_DRY_NO_HOME": "1"}),

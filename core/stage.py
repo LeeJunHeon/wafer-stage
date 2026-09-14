@@ -41,6 +41,10 @@ DRY_FW = os.environ.get("WAFER_STAGE_DRY_FW", "V8").upper()
 DRY_NO_HOME = os.environ.get("WAFER_STAGE_DRY_NO_HOME", "") not in ("", "0")
 
 JOG_MAX_PULSE = 8000               # 펌웨어 V8 의 jx/jy 한도와 같은 값
+# 원점(0)은 끝단에서 이만큼 물러난 자리다. 펌웨어의 HOME_GAP(320 펄스)과 같은
+# 값이어야 한다. settings.json 의 마커 좌표가 이 원점 기준으로 실측되어 있어서,
+# 이격 거리는 취향이 아니라 좌표계의 일부다 - 바꾸면 모든 샘플이 그만큼 어긋난다.
+ORIGIN_GAP_MM = 2.0
 
 PPMM = 160.0                  # 160 펄스 = 1mm (.ino 의 PPMM)
 DEFAULT_SPEED_PPS = 6000      # 펌웨어 기본 vMax (v6000)
@@ -223,6 +227,11 @@ class Stage:
             return None
         ln = raw.decode("utf-8", errors="replace").rstrip("\r\n")
         self._log("<-", ln)
+        # 연결 중에 배너가 다시 보이면 보드가 리셋된 것이다(USB 흔들림·워치독).
+        # 펌웨어 속도는 기본값으로 돌아갔는데 우리는 마지막으로 보낸 값을 믿고
+        # 있어서 v 를 다시 보내지 않는다. 믿음을 버려 다음 이동에서 보내게 한다.
+        if "3-AXIS" in ln:
+            self.speed_pps = None
         return ln
 
     def _collect(self, deadline_s, is_done, what):
@@ -359,19 +368,41 @@ class Stage:
         return self.status()
 
     def jog_rel(self, axis, mm):
-        """원점이 없어도 되는 상대 이동. 사람이 보면서 끝단까지 몰 때 쓴다."""
+        """원점이 없어도 되는 상대 이동. 사람이 보면서 끝단까지 몰 때 쓴다.
+
+        펌웨어는 jx/jy 를 한 번에 8000 펄스(50mm)까지만 받는다. 그보다 먼 거리는
+        여기서 조각으로 나눠 차례로 보낸다 - 실장에서 원점이 수십 mm 치우쳐
+        있을 때 10mm 씩 아홉 번 누르게 하지 않으려는 것이다(2026-09-11).
+        조각 사이마다 중단을 확인한다.
+        """
         self._need_fw("V8", "수동 이동")
         ax = str(axis).lower()
         if ax not in ("x", "y"):
             raise StageError("축은 x 또는 y 여야 합니다: %s" % axis)
-        pulse = int(round(float(mm) * PPMM))
-        if pulse == 0:
+        total = int(round(float(mm) * PPMM))
+        if total == 0:
             return "  이미 그 위치"
-        pulse = max(-JOG_MAX_PULSE, min(JOG_MAX_PULSE, pulse))
         # 비상정지 뒤에도 막지 않는다. 위치는 못 믿지만 상대 이동은 사람이 보면서
         # 끝단까지 몰아 원점을 다시 등록하는 복구 경로다(절대 이동은 그대로 잠긴다).
-        cmd = "j%s %d" % (ax, pulse)
         self._ensure_speed(JOG_SLOW_PPS)
+        sign = 1 if total > 0 else -1
+        left = abs(total)
+        out = "  이미 그 위치"
+        first = True
+        while left > 0:
+            if not first and self._aborted:
+                # 앞 조각 뒤에 비상정지가 왔다. 남은 조각을 보내면 멈춘 줄 아는
+                # 사람 앞에서 스테이지가 다시 움직인다.
+                raise StageError("비상정지로 중단됨")
+            first = False
+            chunk = min(left, JOG_MAX_PULSE) * sign
+            left -= abs(chunk)
+            out = self._jog_chunk(ax, chunk)
+        return out
+
+    def _jog_chunk(self, ax, pulse):
+        """jx/jy 한 번(8000 펄스 이하). 보고 줄을 기다려 돌려준다."""
+        cmd = "j%s %d" % (ax, pulse)
         self._write(cmd)
         if self.dry:
             self._dry_wait("수동 이동(%s)" % ax)

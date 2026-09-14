@@ -151,8 +151,14 @@
     if (st.connected && st.u != null && st.v != null) {
       gp.removeAttribute('hidden');
       gp.setAttribute('transform', 'translate(' + st.u + ',' + st.v + ')');
+      // 미리보기에는 검출 결과가 없다. 십자는 보정으로 계산한 자리이므로 무엇을
+      // 기준으로 그렸는지 밝힌다 - 이번 실행에 촬영이 없으면 저장된(이전) 보정을
+      // 쓰는데, 그 사이 카메라가 돌아갔다면 십자가 실제 포인터와 수십 mm 떨어진다.
+      const stale = !s.calib;
       $('pointerLabel').textContent = 'X ' + UI.fmt(st.x_mm) + ' Y ' + UI.fmt(st.y_mm)
-        + (st.moving ? ' 이동중' : '');
+        + (st.moving ? ' 이동중' : '')
+        + (live ? (stale ? ' · 이전 보정 기준' : ' · 마지막 촬영 기준') : '');
+      gp.classList.toggle('stale', live && stale);
     } else {
       gp.setAttribute('hidden', '');
     }

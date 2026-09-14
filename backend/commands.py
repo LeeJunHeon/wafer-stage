@@ -8,7 +8,6 @@
 """
 
 import asyncio
-import contextlib
 import os
 
 from core import calib, paths
@@ -231,8 +230,10 @@ async def _jog(data):
 async def _set_origin(data):
     """지금 자리를 그 축의 원점으로 등록한다(사람이 끝단까지 몰고 온 뒤).
 
-    끝단에 바짝 붙은 자리를 0 으로 잡으면 이후 모든 이동이 하드스톱에 눌린다.
-    기본 2mm 물러난 자리를 0 으로 등록한다. 축은 x / y / xy.
+    0 은 언제나 끝단에서 stagectl.ORIGIN_GAP_MM(2mm) 물러난 자리다. 화면에서
+    이 거리를 고를 수 없게 한 이유: settings.json 의 마커 좌표가 이 원점을
+    기준으로 실측되어 있다. 이격을 빼고 등록하면 하드스톱에 붙은 자리가 0 이
+    되어 모든 샘플이 X·Y 로 2mm 씩 모자라게 간다(2026-09-11 실장).
     """
     if not state.stage["connected"]:
         await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
@@ -241,25 +242,20 @@ async def _set_origin(data):
     if axis not in ("x", "y", "xy"):
         await push_log("원점 등록 축이 잘못되었습니다: %s" % axis, "warn")
         return
-    try:
-        gap = float(data.get("gap_mm", 2.0))
-    except (TypeError, ValueError):
-        gap = 2.0
-    gap = max(0.0, min(20.0, gap))
+    gap = stagectl.ORIGIN_GAP_MM
     axes = ["x", "y"] if axis == "xy" else [axis]
     state.stage["moving"] = True
     await push_state()
     try:
-        if gap > 0:
-            for one in axes:
-                await stagectl.ctl.jog_rel(one, gap)
+        for one in axes:
+            await stagectl.ctl.jog_rel(one, gap)
         st = await stagectl.ctl.set_zero(axis)
         engine._apply_status(st)
         if st["homed_x"] and st["homed_y"]:
             engine.reset_estop()
             state.stage["last_error"] = ""
         engine.mark_moved()                # 자동 저장이 뒤따른다
-        await push_log("원점 등록 (%s · %gmm 이격) · X%.2f Y%.2f"
+        await push_log("원점 등록 (%s · 끝단에서 %g mm) · X%.2f Y%.2f"
                        % (axis.upper().replace("XY", "X·Y"), gap,
                           st["x_mm"], st["y_mm"]), "ok")
     except stagectl.StageError as e:
@@ -289,8 +285,8 @@ async def _touch_end(data):
         mm = float(data.get("mm", 5.0))
     except (TypeError, ValueError):
         mm = 5.0
-    if not (1.0 <= mm <= 10.0):
-        await push_log("끝단 이동 거리는 1~10 mm 입니다 (%g)" % mm, "warn")
+    if not (1.0 <= mm <= 248.0):
+        await push_log("끝단 이동 거리는 1~248 mm 입니다 (%g)" % mm, "warn")
         return
     was_homed = state.stage["homed_" + axis]
     await push_log("끝단 이동 (%s · %g mm)" % (axis.upper(), mm))

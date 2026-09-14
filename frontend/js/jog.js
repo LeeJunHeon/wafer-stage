@@ -151,30 +151,38 @@
   };
   $('jogHome').onclick = () => UI.send({ cmd: 'goto', x: 0, y: 0 });
   $('jogPark').onclick = () => UI.send({ cmd: 'park' });
+  // 지금 자리를 파킹으로 저장한다(설정에 남는다). fc964d4 에서 이 핸들러가
+  // 딸려 나가 버튼이 눌리지 않는 채로 있었다.
+  $('jogSavePark').onclick = async () => {
+    const st = (UI.state && UI.state.stage) || {};
+    if (st.x_mm == null || st.y_mm == null) return;
+    const ok = await UI.confirm(
+      '파킹 위치를 X' + UI.fmt(st.x_mm) + ' Y' + UI.fmt(st.y_mm) + ' 로 저장합니다.',
+      '파킹 위치 저장');
+    if (ok) UI.send({ cmd: 'park_here' });
+  };
   // 끝단 이동과 원점 등록은 따로다. 밀기는 여러 번 반복하는 조작이라 확인을
   // 묻지 않고, 등록은 되돌리기 어려우므로 묻는다.
   const touchMm = () => {
-    const mm = Math.max(1, Math.min(10, +$('jogTouchMm').value || 5));
-    $('jogTouchMm').value = mm;
+    // 한 번에 미는 거리. 펌웨어 한도(50 mm)보다 커도 된다 - 드라이버가 나눠 보낸다.
+    const mm = Math.max(1, Math.min(248, Math.round(+$('jogPushMm').value || 10)));
+    $('jogPushMm').value = mm;
     return mm;
   };
-  $('jogTouchX').onclick = () => UI.send({ cmd: 'touch_end', axis: 'x', mm: touchMm() });
-  $('jogTouchY').onclick = () => UI.send({ cmd: 'touch_end', axis: 'y', mm: touchMm() });
+  $('jogPushX').onclick = () => UI.send({ cmd: 'touch_end', axis: 'x', mm: touchMm() });
+  $('jogPushY').onclick = () => UI.send({ cmd: 'touch_end', axis: 'y', mm: touchMm() });
 
-  const AXNAME = { x: 'X', y: 'Y', xy: '두 축 모두' };
+  // 물러나는 거리(2 mm)는 서버가 정한다 - 마커 좌표가 그 원점 기준으로 실측되어
+  // 있어서 화면에서 고를 수 있는 값이 아니다.
   async function setOrigin(axis) {
-    const gap = $('jogGap').checked ? 2 : 0;
-    const who = axis === 'xy' ? '두 축 모두의 원점(0, 0)' : (AXNAME[axis] + ' 원점(0)');
-    const body = gap
-      ? '현재 위치에서 2 mm 물러난 자리를 ' + who + '으로 등록·저장합니다.'
-      : '현재 위치를 그대로 ' + who + '으로 등록·저장합니다.';
+    const body = '끝단에서 2 mm 물러난 자리를 ' + axis.toUpperCase()
+      + ' 의 0 으로 등록·저장합니다. 캐리지가 끝단에 닿아 있는지 확인 후 진행하십시오.';
     if (await UI.confirm(body, '원점 등록')) {
-      UI.send({ cmd: 'set_origin', axis: axis, gap_mm: gap });
+      UI.send({ cmd: 'set_origin', axis: axis });
     }
   }
   $('jogZeroX').onclick = () => setOrigin('x');
   $('jogZeroY').onclick = () => setOrigin('y');
-  $('jogZeroXY').onclick = () => setOrigin('xy');
 
   $('jogEstop').onclick = () => UI.sendEstop();   // 확인 없이 즉시 · WS + HTTP
 
@@ -212,21 +220,21 @@
     // 원점 상태는 축마다 따로 보여 준다.
     const relX = (st.jog_mode_x || 'rel') === 'rel';
     const relY = (st.jog_mode_y || 'rel') === 'rel';
-    const badge = (el, name, rel) => {
-      el.textContent = st.connected
-        ? (name + (rel ? ' 없음' : ' 등록됨')) : (name + ' —');
+    // 표의 '원점' 칸이다. 축 이름은 왼쪽 칸에 이미 있으므로 상태만 쓴다.
+    const badge = (el, rel) => {
+      el.textContent = st.connected ? (rel ? '없음' : '등록됨') : UI.EMPTY;
       el.className = 'badge' + (st.connected && rel ? ' warn' : ' ok');
     };
-    badge($('jogOriginX'), 'X', relX);
-    badge($('jogOriginY'), 'Y', relY);
+    badge($('jogOriginX'), relX);
+    badge($('jogOriginY'), relY);
 
     // 절대 좌표는 두 축 원점이 있어야 말이 된다.
     ['jogGo', 'jogHome', 'jogPark'].forEach(id => dis(id, !usable));
     dis('jogGx', !usable); dis('jogGy', !usable);
     dis('jogSavePark', !usable);
     // 끝단 이동·원점 등록은 원점 유무와 무관하다(그것을 만드는 절차다).
-    ['jogTouchX', 'jogTouchY', 'jogTouchMm',
-     'jogZeroX', 'jogZeroY', 'jogZeroXY', 'jogGap'].forEach(id => dis(id, !canStep));
+    ['jogPushX', 'jogPushY', 'jogPushMm',
+     'jogZeroX', 'jogZeroY'].forEach(id => dis(id, !canStep));
     dis('jogEstop', !on);                  // 비상정지는 항상 활성
 
     let why = '';

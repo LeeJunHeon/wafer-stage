@@ -119,4 +119,6 @@ class StageCtl:
 
 
 StageError = stage_mod.StageError
+# 원점(0)이 끝단에서 물러나는 거리. 드라이버 상수를 그대로 쓴다(단일 출처).
+ORIGIN_GAP_MM = stage_mod.ORIGIN_GAP_MM
 ctl = StageCtl()

@@ -127,7 +127,9 @@
   /* 미리보기에서는 검출 결과가 없다. 촬영본은 감추고 감지영역·포인터만 흐리게. */
   #cam.livemode #frame { display: none; }
   #cam.livemode #ovMarkers, #cam.livemode #ovWafer, #cam.livemode #ovSamples { display: none; }
-  #cam.livemode #ovRect, #cam.livemode #ovPointer { opacity: .45; }
+  #cam.livemode #ovRect { opacity: .45; }
+  /* 이전 보정으로 찍은 십자. 카메라가 돌아갔으면 실제와 어긋나므로 흐리게. */
+  #ovPointer.stale { opacity: .4; }
   .ov-wafer { fill: none; stroke: #ffd400; stroke-width: 1.5; opacity: .9; }
   .ov-marker { fill: none; stroke: #2f8cff; stroke-width: 2; }
   .ov-marker-label { font: 600 14px var(--mono); fill: #2f8cff; paint-order: stroke; stroke: #0e1418; stroke-width: 3px; }
@@ -270,8 +272,16 @@
   .badge { font-size: 10.5px; font-weight: 700; padding: 2px 6px; border-radius: 3px; white-space: nowrap; }
   .badge.warn { background: #fbefd8; border: 1px solid #e0b25f; color: #8a5300; }
   .badge.ok { background: #e2f4e8; border: 1px solid #7fbf99; color: #176b35; }
-  .originrow { display: flex; align-items: center; gap: 6px; }
-  .originrow .k { font-size: 10.5px; color: var(--faint); letter-spacing: .5px; }
+  /* 구역 구분선 - 위치/조그/좌표 이동/원점 잡기를 눈으로 갈라 준다. */
+  .jogbody .hr { height: 1px; background: var(--line); margin: 2px 0; }
+  /* 원점 잡기: 축이 행, 동작이 열. 실장에서 [X][Y] 버튼이 두 줄에 흩어져
+     어느 동작의 X 인지 보이지 않았다(2026-09-11). */
+  .origintbl { width: 100%; border-collapse: collapse; }
+  .origintbl th { font-size: 10px; font-weight: 700; color: var(--faint);
+    letter-spacing: .3px; text-align: left; padding: 0 4px 3px; white-space: nowrap; }
+  .origintbl td { height: 34px; padding: 0 4px; vertical-align: middle; }
+  .origintbl td.ax { font-size: 12.5px; font-weight: 700; color: #21303f; width: 20px; }
+  .origintbl td > .btn { width: 100%; }
 
   /* 툴팁. 비활성 버튼은 마우스 이벤트를 받지 못하게 해서(부모로 내려간다)
      좌표로 찾는 쪽이 항상 맞게 한다. */

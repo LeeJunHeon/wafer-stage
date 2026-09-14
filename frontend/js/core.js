@@ -81,9 +81,12 @@
   let tipTimer = null, tipEl = null, tipLast = 0;
 
   function tipTargetAt(x, y) {
-    const nodes = document.querySelectorAll('[data-tip]');
+    // 모달(showModal)이 열려 있으면 그 뒤는 inert 다. 바깥 요소의 설명이 모달
+    // 위로 새어 나오지 않게 찾는 범위를 모달 안으로 제한한다.
+    const modal = document.querySelector('dialog:modal');
+    const nodes = (modal || document).querySelectorAll('[data-tip]');
     let best = null, bestArea = Infinity, bestInDlg = false;
-    const openDlg = document.querySelector('dialog[open]');
+    const openDlg = modal || document.querySelector('dialog[open]');
     for (const el of nodes) {
       const r = el.getBoundingClientRect();
       if (!r.width || !r.height) continue;
