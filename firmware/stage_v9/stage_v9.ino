@@ -14,7 +14,7 @@
 //   X1 : PUL=D2  DIR=D31  ENA=D30
 //   X2 : PUL=D3  DIR=D49  ENA=D48
 //   Y1 : PUL=D4  DIR=D53  ENA=D52
-//   Z  : PUL=D5  DIR=D44  ENA=D45
+//   Z  : PUL=D5  DIR=D45  ENA=D44
 //
 //   160 펄스 = 1mm
 //   X 스트로크 39,620 펄스 (247.6mm)   Y 스트로크 39,640 펄스 (247.8mm)
@@ -49,7 +49,7 @@
 const uint8_t X1_PUL = 2,  X1_DIR = 31, X1_ENA = 30;
 const uint8_t X2_PUL = 3,  X2_DIR = 49, X2_ENA = 48;
 const uint8_t Y1_PUL = 4,  Y1_DIR = 53, Y1_ENA = 52;
-const uint8_t Z_PUL  = 5,  Z_DIR  = 44, Z_ENA  = 45;
+const uint8_t Z_PUL  = 5,  Z_DIR  = 45, Z_ENA  = 44;
 
 const uint8_t M_X1 = 0x10, M_X2 = 0x20, M_X = 0x30;   // PORTE (D2=PE4 D3=PE5)
 const uint8_t M_Y  = 0x20;                            // PORTG (D4=PG5)

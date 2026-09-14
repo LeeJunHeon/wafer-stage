@@ -52,7 +52,7 @@
 - 컨트롤러: Arduino Mega 2560 + 자작 펌웨어 V9(firmware/stage_v9). USB 시리얼 115200, 줄끝 \n. COM7.
 - 드라이버: 모터뱅크 MSD-224 ×4(2상, 1/8분주 = 1600펄스/회전). ENA LOW = 동작
 - 축: X = 모터 2개 동기(갠트리 양측, 논리축 하나) / Y = 빔 위 캐리지 / Z = 모터만 장착(프로브 미장착)
-- 핀: X1 PUL2 DIR31 ENA30 / X2 PUL3 DIR49 ENA48 / Y PUL4 DIR53 ENA52 / Z PUL5 DIR44 ENA45
+- 핀: X1 PUL2 DIR31 ENA30 / X2 PUL3 DIR49 ENA48 / Y PUL4 DIR53 ENA52 / Z PUL5 DIR45 ENA44
   (D5 = PORTE 비트3 → M_Z 0x08)
 - 스케일: 160 펄스 = 1mm. 스트로크 X 0~39620(247.6mm), Y 0~39640(247.8mm). 속도 v6000/a40000/b300 ≈ 37.5 mm/s
 - 좌표계: 각 축 모터 쪽 끝(하드스톱 2mm 이격) = 0. 파킹 위치 (0, 90) — 캐리지를 카메라 시야에서 치우는 자리
