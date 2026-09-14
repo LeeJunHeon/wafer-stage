@@ -65,10 +65,6 @@ class StageCtl:
     def port(self):
         return getattr(self.dev, "port_name", None)
 
-    @property
-    def needs_home(self):
-        return bool(getattr(self.dev, "needs_home", False))
-
     def _need(self):
         if self.dev is None:
             raise stage_mod.StageError("스테이지가 연결되지 않았습니다")

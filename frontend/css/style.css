@@ -262,10 +262,12 @@
   .jogbody .row { display: flex; gap: 6px; align-items: center; }
   .jogbody .row > .btn { flex: 1; }
   .jogbody input[type=number] { width: 68px; }
-  .jogpos { display: flex; align-items: baseline; gap: 14px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 5px; background: #fff; }
-  .jogpos .ax { display: flex; align-items: baseline; gap: 5px; }
+  /* 세 축(X·Y·Z)이 340px 팝업 한 줄에 들어가야 한다. 예전 20px/62px 로는
+     Z 의 'mm' 이 잘렸다. 알림 문구는 자리가 모자라면 다음 줄로 내려간다. */
+  .jogpos { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 5px; background: #fff; }
+  .jogpos .ax { display: flex; align-items: baseline; gap: 4px; }
   .jogpos .k { font-size: 10px; color: var(--faint); letter-spacing: .8px; }
-  .jogpos .v { font-size: 20px; font-weight: 700; color: #21303f; min-width: 62px; text-align: right; }
+  .jogpos .v { font-size: 18px; font-weight: 700; color: #21303f; min-width: 46px; text-align: right; }
   .jogpos .u { font-size: 10.5px; color: var(--faint); }
   .jogpos .sp { flex: 1; }
   .jogstate { font-size: 11.5px; color: #8a5300; white-space: nowrap; }

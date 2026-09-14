@@ -98,11 +98,15 @@ class State:
     def jog_mode(self, axis):
         """그 축의 수동 이동이 절대(abs)인가 상대(rel)인가.
 
-        원점은 축마다 따로다(펌웨어의 HX/HY). 원점이 있고 비상정지 뒤가 아니면
+        원점은 축마다 따로다(펌웨어의 HX/HY/HZ). 원점이 있고 비상정지 뒤가 아니면
         그 축은 절대 좌표로 자를 수 있고, 아니면 기준이 없어 상대 이동뿐이다
         (사람이 끝단까지 몰고 가 원점을 등록하는 경로).
         """
         st = self.stage
+        if axis == "z":
+            # Z 는 X·Y 잠금과 무관한 독립 축이다. 비상정지 때는 펌웨어 forget 이
+            # HZ 까지 지우므로 homed_z 만 봐도 그때는 rel 이 된다.
+            return "abs" if st["homed_z"] else "rel"
         homed = st["homed_" + axis] and not st.get("needs_home")
         return "abs" if homed else "rel"
 

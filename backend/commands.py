@@ -146,7 +146,11 @@ async def _stage_connect(data):
     banner = await stagectl.ctl.connect(port)
     state.stage["connected"] = True
     state.stage["port"] = stagectl.ctl.port
-    state.stage["needs_home"] = stagectl.ctl.needs_home
+    # needs_home 은 '비상정지 뒤' 전용이다. 원점이 없다는 사실은 homed_x/homed_y
+    # 가 이미 말하고 can_move 가 그것으로 잠근다. 연결 직후에 이것을 세웠더니
+    # 비상정지가 없었는데도 화면이 "비상정지 · 원점 등록 필요" 라고 했고,
+    # jog_mode 가 세 축 모두 rel 로 굳어 Z 를 등록해도 Z 가 상대 이동이었다.
+    state.stage["needs_home"] = False
     state.stage["last_error"] = ""
     await push_log("스테이지 연결: %s" % stagectl.ctl.port, "ok")
     for ln in (banner or "").splitlines():
@@ -161,7 +165,6 @@ async def _stage_connect(data):
         await push_log("펌웨어 %s · 이 앱은 V9 이 필요합니다"
                        % stagectl.ctl.fw_version, "warn")
     if not (state.stage["homed_x"] and state.stage["homed_y"]):
-        state.stage["needs_home"] = True
         await push_log("원점 없음 · 수동 이동에서 끝단까지 민 뒤 원점 등록", "warn")
     elif not state.stage["dirty"]:
         # 저장하고 껐다 - EEPROM 의 위치가 그대로 돌아왔다.

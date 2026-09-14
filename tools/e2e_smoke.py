@@ -358,6 +358,47 @@ async def z_flow(c):
           "z_top 뒤 Z 0 (%s)" % c.state["stage"]["z_mm"])
 
 
+async def z_alone_flow(c):
+    """세 축 모두 원점이 없는 상태에서 Z 만 등록한다.
+
+    연결 직후에는 비상정지가 없었으므로 needs_home 이 서면 안 되고(그러면 화면이
+    "비상정지 · 원점 등록 필요" 라고 한다), Z 는 X·Y 와 무관하게 abs 가 되어야 한다.
+    """
+    st = c.state["stage"]
+    check(not st["needs_home"],
+          "연결 직후 needs_home=False (%s)" % st["needs_home"])
+    check(not st["homed_x"] and not st["homed_y"] and not st["homed_z"],
+          "세 축 모두 원점 없음")
+    check(st["jog_mode_z"] == "rel", "등록 전 Z 는 rel (%s)" % st["jog_mode_z"])
+
+    c.logs.clear()
+    await c.send(cmd="set_origin", axis="z")
+    await c.pump(3.0)
+    st = c.state["stage"]
+    check(st["homed_z"] and st["jog_mode_z"] == "abs",
+          "Z 만 등록해도 Z 는 abs (homed_z=%s mode=%s)"
+          % (st["homed_z"], st["jog_mode_z"]))
+    check(not st["homed_x"] and not st["homed_y"], "X·Y 는 그대로 원점 없음")
+    check(not st["needs_home"], "Z 등록이 needs_home 을 건드리지 않는다")
+
+    await c.send(cmd="jog", axis="z", delta_mm=6)
+    await c.pump(2.5)
+    c.logs.clear()
+    await c.send(cmd="z_top")
+    await c.pump(3.0)
+    check(any(l["msg"].startswith("-> mz 0") for l in c.logs),
+          "X·Y 원점 없이도 z_top -> mz 0 (%s)"
+          % [l["msg"] for l in c.logs if l["msg"].startswith("-> m")])
+
+    # X·Y 는 여전히 잠겨 있고, 사유는 '비상정지' 가 아니라 '원점 없음' 이다.
+    c.logs.clear()
+    await c.send(cmd="goto", x=50, y=50)
+    await c.pump(1.5)
+    msgs = [l["msg"] for l in c.logs]
+    check(any("원점 없음" in m for m in msgs), "goto 는 원점 없음으로 거절 (%s)" % msgs[:2])
+    check(not any("비상정지" in m for m in msgs), "거절 사유에 '비상정지' 가 없다")
+
+
 async def fw_v8_flow(c):
     """V8 펌웨어에는 Z 가 없다 - Z 만 거부하고 X 는 그대로 된다."""
     check(c.state["stage"]["fw"] == "V8", "펌웨어 V8 인식 (%s)" % c.state["stage"]["fw"])
@@ -682,6 +723,7 @@ def main():
                 ("끝단 이동 중단", good, touch_end_abort_flow,
                  {"WAFER_STAGE_DRY_MOVE_S": "1"}),
                 ("Z 축", good, z_flow, None),
+                ("Z 단독 등록", good, z_alone_flow, {"WAFER_STAGE_DRY_NO_HOME": "1"}),
                 ("펌웨어 V8", good, fw_v8_flow, {"WAFER_STAGE_DRY_FW": "V8"}),
                 ("비상정지 중복", good, estop_dedup_flow, None),
                 ("펌웨어 V7", good, fw_old_flow,
