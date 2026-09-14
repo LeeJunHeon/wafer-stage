@@ -364,9 +364,64 @@ async def jog(axis, target_mm=None, delta_mm=None):
     return ok
 
 
+async def lift_z():
+    """X·Y 를 움직이기 전에 Z 를 맨 위(0)로 올린다.
+
+    Z 가 내려가 있는 채로 X·Y 가 움직이면 프로브가 시료를 긁는다. 지금은 Z 에
+    아무것도 달려 있지 않지만, 올리는 것은 어느 상황에서도 안전한 쪽이라 미리
+    이 순서를 고정해 둔다.
+
+    Z 원점이 없으면 0 이 어디인지 모르므로 경고만 남기고 X·Y 는 그대로 간다.
+    프로브를 단 뒤에는 이 경우를 거절(인터록)로 바꾼다.
+    이동 실패(비상정지 포함)는 그대로 던진다 - 호출자가 X·Y 를 보내면 안 된다.
+    """
+    if not state.stage["homed_z"]:
+        await push_log("Z 원점 없음 · Z 는 두고 이동", "warn")
+        return False
+    if state.stage["z_mm"] in (0, 0.0):
+        return True                        # 이미 맨 위다
+    state.stage["moving"] = True
+    await push_state()
+    try:
+        await stagectl.ctl.move_z(0)
+        _apply_status(await stagectl.ctl.status())
+        mark_moved()
+    finally:
+        state.stage["moving"] = False
+        await push_state()
+    await push_log("Z 맨 위로", "ok")
+    return True
+
+
 async def park():
     px, py = state.park_xy()
+    try:
+        await lift_z()
+    except stagectl.StageError as e:
+        state.stage["last_error"] = logger.short(e)
+        logger.write("err", "파킹 전 Z 상승 실패 상세: %s" % e)
+        await push_log("Z 상승 실패 · " + logger.short(e), "err")
+        await push_state()
+        return False
     return await goto_xy(px, py, no="park")
+
+
+async def return_origin():
+    """원점 복귀. Z 를 먼저 맨 위로 올리고 X·Y 를 (0, 0) 으로."""
+    why = state.can_move()
+    if why:
+        await push_log(why, "warn")
+        return False
+    try:
+        await lift_z()
+    except stagectl.StageError as e:
+        state.stage["last_error"] = logger.short(e)
+        logger.write("err", "원점 복귀 중 Z 상승 실패 상세: %s" % e)
+        await push_log("Z 상승 실패 · " + logger.short(e), "err")
+        await push_state()
+        return False
+    await push_log("원점 복귀 · Z0 → X0 Y0")
+    return await goto_xy(0.0, 0.0, no="home")
 
 
 # --------------------------------------------------------------------------

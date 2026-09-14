@@ -53,7 +53,7 @@ X_MAX_PULSE = 39620           # 247.6mm
 Y_MAX_PULSE = 39640           # 247.8mm
 # 펌웨어 V9 의 Z_PPMM · Z_MAX 와 같은 값이어야 한다.
 # 실측: 위 끝단에서 2mm 이격한 0 에서 아래 끝단까지 약 45mm -> 아래도 2mm 남긴다.
-Z_PPMM      = 160.0           # X·Y 와 같다고 가정 - 자로 재서 갱신할 것
+Z_PPMM      = 160.0           # 실측 확인 2026-09-14 (1mm 명령 = 1mm 이동)
 Z_MAX_PULSE = 6880            # 43mm - 실측값
 Z_MAX_MM    = Z_MAX_PULSE / Z_PPMM
 

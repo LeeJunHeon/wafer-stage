@@ -24,15 +24,16 @@ _shutdown_handler = None
 # can_move(연결·원점·비상정지) 를 요구하는 명령. jog 는 여기 넣지 않는다 -
 # 원점이 없을 때 상대 이동으로 끝단까지 몰고 가는 것이 원점을 잡는 절차라서,
 # 여기서 막으면 원점을 영영 못 잡는다(_jog 가 모드별로 따로 검사한다).
-MOVE_CMDS = ("park", "goto", "run", "resume", "next", "measure_here")
+MOVE_CMDS = ("park", "goto", "return_origin", "run", "resume", "next",
+             "measure_here")
 # 스테이지가 이미 움직이고 있으면 받지 않는다. 명령이 동시에 실행될 수 있게 된
 # 뒤로는(ws_endpoint 가 태스크로 띄운다) 이 검사가 없으면 두 이동이 겹친다.
-MOVING_BLOCKED = ("park", "goto", "jog", "touch_end", "set_origin", "z_top",
-                  "capture", "run", "measure_here")
+MOVING_BLOCKED = ("park", "goto", "return_origin", "jog", "touch_end",
+                  "set_origin", "capture", "run", "measure_here")
 # 순회 중에 받으면 안 되는 명령. 스테이지·카메라·설정을 순회 도중에 건드리면
 # 진행 중인 이동과 충돌한다(정지 뒤에 하면 된다).
-BUSY_BLOCKED = ("park", "goto", "jog", "park_here", "touch_end", "set_origin",
-                "z_top", "stage_disconnect", "capture", "settings_save")
+BUSY_BLOCKED = ("park", "goto", "return_origin", "jog", "park_here", "touch_end",
+                "set_origin", "stage_disconnect", "capture", "settings_save")
 
 
 def set_shutdown_handler(fn):
@@ -274,20 +275,9 @@ async def _set_origin(data):
         await push_state()
 
 
-async def _z_top(_data):
-    """Z 를 0(맨 위)으로 올린다.
-
-    X·Y 의 원점 유무와 무관하다 - Z 는 아직 독립 축이고, 올리는 것은 어느
-    상황에서도 안전한 쪽이다(내리는 것이 위험하다).
-    """
-    if not state.stage["connected"]:
-        await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
-        return
-    if not state.stage["homed_z"] or state.jog_mode("z") == "rel":
-        await push_log("Z 원점 없음 · 수동 이동에서 등록", "warn")
-        await push_ack("z_top", False, "no_origin")
-        return
-    await engine.jog("z", target_mm=0.0)
+async def _return_origin(_data):
+    """원점 복귀. Z 를 먼저 맨 위로 올린 뒤 X·Y 를 (0, 0) 으로."""
+    await engine.return_origin()
 
 
 async def _touch_end(data):
@@ -510,7 +500,7 @@ _TABLE = {
     "goto": _goto,
     "jog": _jog,
     "park_here": _park_here,
-    "z_top": _z_top,
+    "return_origin": _return_origin,
     "capture": _capture,
     "run": _run,
     "pause": _pause,

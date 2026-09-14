@@ -180,7 +180,7 @@
     }
     UI.send({ cmd: 'goto', x: x, y: y });
   };
-  $('jogHome').onclick = () => UI.send({ cmd: 'goto', x: 0, y: 0 });
+  $('jogHome').onclick = () => UI.send({ cmd: 'return_origin' });
   $('jogPark').onclick = () => UI.send({ cmd: 'park' });
   // 지금 자리를 파킹으로 저장한다(설정에 남는다). fc964d4 에서 이 핸들러가
   // 딸려 나가 버튼이 눌리지 않는 채로 있었다.
@@ -206,7 +206,6 @@
   $('jogPushX').onclick = () => UI.send({ cmd: 'touch_end', axis: 'x', mm: touchMm('x') });
   $('jogPushY').onclick = () => UI.send({ cmd: 'touch_end', axis: 'y', mm: touchMm('y') });
   $('jogPushZ').onclick = () => UI.send({ cmd: 'touch_end', axis: 'z', mm: touchMm('z') });
-  $('jogZTop').onclick = () => UI.send({ cmd: 'z_top' });
 
   // 물러나는 거리(2 mm)는 서버가 정한다 - 마커 좌표가 그 원점 기준으로 실측되어
   // 있어서 화면에서 고를 수 있는 값이 아니다.
@@ -278,8 +277,6 @@
     // 끝단 이동·원점 등록은 원점 유무와 무관하다(그것을 만드는 절차다).
     ['jogPushX', 'jogPushY', 'jogPushZ', 'jogPushMm',
      'jogZeroX', 'jogZeroY', 'jogZeroZ'].forEach(id => dis(id, !canStep));
-    // Z 는 X·Y 원점과 무관하다 - Z 원점만 있으면 맨 위로 올릴 수 있다.
-    dis('jogZTop', !(canStep && (st.jog_mode_z || 'rel') === 'abs'));
     dis('jogEstop', !on);                  // 비상정지는 항상 활성
 
     let why = '';

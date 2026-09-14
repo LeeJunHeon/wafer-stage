@@ -316,7 +316,7 @@ async def touch_end_abort_flow(c):
 
 
 async def z_flow(c):
-    """Z 축(V9): 조그 · 끝단 이동 · 원점 등록 · 맨 위로. X·Y 와 독립이다."""
+    """Z 축(V9): 조그 · 끝단 이동 · 원점 등록, 그리고 복귀·파킹의 Z 선행."""
     st = c.state["stage"]
     check("z_mm" in st and "homed_z" in st and "jog_mode_z" in st,
           "state 에 Z 필드 (z_mm=%s homed_z=%s mode=%s)"
@@ -347,15 +347,39 @@ async def z_flow(c):
     check(st["homed_z"] and st["z_mm"] == 0.0,
           "Z 원점 등록 후 Z0 (homed=%s z=%s)" % (st["homed_z"], st["z_mm"]))
 
+    # 원점 복귀는 Z 를 먼저 올리고 X·Y 를 간다. 순서가 전부다.
     await c.send(cmd="jog", axis="z", delta_mm=8)
     await c.pump(2.5)
-    c.logs.clear()
-    await c.send(cmd="z_top")
+    await c.send(cmd="goto", x=30, y=30)
     await c.pump(3.0)
-    check(any(l["msg"].startswith("-> mz 0") for l in c.logs),
-          "z_top -> mz 0 (%s)" % [l["msg"] for l in c.logs if l["msg"].startswith("-> m")])
-    check(c.state["stage"]["z_mm"] == 0.0,
-          "z_top 뒤 Z 0 (%s)" % c.state["stage"]["z_mm"])
+    c.logs.clear()
+    await c.send(cmd="return_origin")
+    await c.pump(5.0)
+    sent = [l["msg"] for l in c.logs if l["msg"].startswith("-> m")]
+    check(sent == ["-> mz 0.00", "-> mx 0.0", "-> my 0.0"],
+          "원점 복귀 순서 mz -> mx -> my (%s)" % sent)
+    st = c.state["stage"]
+    check((st["x_mm"], st["y_mm"], st["z_mm"]) == (0.0, 0.0, 0.0),
+          "원점 복귀 뒤 (0,0,0) (%s)" % [st["x_mm"], st["y_mm"], st["z_mm"]])
+
+    # 이미 Z 가 0 이면 mz 를 보내지 않는다.
+    await c.send(cmd="goto", x=30, y=30)
+    await c.pump(3.0)
+    c.logs.clear()
+    await c.send(cmd="return_origin")
+    await c.pump(5.0)
+    sent = [l["msg"] for l in c.logs if l["msg"].startswith("-> m")]
+    check(sent == ["-> mx 0.0", "-> my 0.0"], "Z 가 0 이면 mz 생략 (%s)" % sent)
+
+    # 파킹도 같은 순서다.
+    await c.send(cmd="jog", axis="z", delta_mm=7)
+    await c.pump(2.5)
+    c.logs.clear()
+    await c.send(cmd="park")
+    await c.pump(5.0)
+    sent = [l["msg"] for l in c.logs if l["msg"].startswith("-> m")]
+    check(bool(sent) and sent[0] == "-> mz 0.00" and len(sent) == 3,
+          "파킹도 mz 가 먼저 (%s)" % sent)
 
     # 끝단 이동 상한은 그 축의 가동범위다. Z 는 43mm(실측).
     top = c.state["limits"]["z_max_mm"]
@@ -399,12 +423,8 @@ async def z_alone_flow(c):
 
     await c.send(cmd="jog", axis="z", delta_mm=6)
     await c.pump(2.5)
-    c.logs.clear()
-    await c.send(cmd="z_top")
-    await c.pump(3.0)
-    check(any(l["msg"].startswith("-> mz 0") for l in c.logs),
-          "X·Y 원점 없이도 z_top -> mz 0 (%s)"
-          % [l["msg"] for l in c.logs if l["msg"].startswith("-> m")])
+    check(c.state["stage"]["z_mm"] == 6.0,
+          "X·Y 원점 없이도 Z 는 움직인다 (%s)" % c.state["stage"]["z_mm"])
 
     # X·Y 는 여전히 잠겨 있고, 사유는 '비상정지' 가 아니라 '원점 없음' 이다.
     c.logs.clear()
@@ -413,6 +433,38 @@ async def z_alone_flow(c):
     msgs = [l["msg"] for l in c.logs]
     check(any("원점 없음" in m for m in msgs), "goto 는 원점 없음으로 거절 (%s)" % msgs[:2])
     check(not any("비상정지" in m for m in msgs), "거절 사유에 '비상정지' 가 없다")
+
+
+async def no_z_origin_flow(c):
+    """Z 원점이 없을 때 파킹·원점 복귀는 경고만 남기고 X·Y 만 간다."""
+    await c.send(cmd="set_origin", axis="x")
+    await c.pump(3.0)
+    await c.send(cmd="set_origin", axis="y")
+    await c.pump(3.0)
+    st = c.state["stage"]
+    check(st["homed_x"] and st["homed_y"] and not st["homed_z"],
+          "X·Y 만 원점 있음 (%s)" % [st["homed_x"], st["homed_y"], st["homed_z"]])
+
+    c.logs.clear()
+    await c.send(cmd="park")
+    await c.pump(5.0)
+    msgs = [l["msg"] for l in c.logs]
+    check(any("Z 원점 없음 · Z 는 두고 이동" in m for m in msgs),
+          "파킹이 Z 원점 없음을 경고 (%s)" % [m for m in msgs if "Z" in m][:2])
+    check(not any(m.startswith("-> mz") for m in msgs), "Z 명령을 보내지 않았다")
+    px, py = c.state["settings"]["park_xy"]
+    check((c.state["stage"]["x_mm"], c.state["stage"]["y_mm"]) == (px, py),
+          "경고 뒤에도 파킹은 갔다 (%s)"
+          % [c.state["stage"]["x_mm"], c.state["stage"]["y_mm"]])
+
+    c.logs.clear()
+    await c.send(cmd="return_origin")
+    await c.pump(5.0)
+    msgs = [l["msg"] for l in c.logs]
+    check(any("Z 원점 없음 · Z 는 두고 이동" in m for m in msgs), "원점 복귀도 같은 경고")
+    check((c.state["stage"]["x_mm"], c.state["stage"]["y_mm"]) == (0.0, 0.0),
+          "원점 복귀는 (0,0) 까지 갔다 (%s)"
+          % [c.state["stage"]["x_mm"], c.state["stage"]["y_mm"]])
 
 
 async def fw_v8_flow(c):
@@ -740,6 +792,8 @@ def main():
                  {"WAFER_STAGE_DRY_MOVE_S": "1"}),
                 ("Z 축", good, z_flow, None),
                 ("Z 단독 등록", good, z_alone_flow, {"WAFER_STAGE_DRY_NO_HOME": "1"}),
+                ("Z 원점 없이 파킹·복귀", good, no_z_origin_flow,
+                 {"WAFER_STAGE_DRY_NO_HOME": "1"}),
                 ("펌웨어 V8", good, fw_v8_flow, {"WAFER_STAGE_DRY_FW": "V8"}),
                 ("비상정지 중복", good, estop_dedup_flow, None),
                 ("펌웨어 V7", good, fw_old_flow,
