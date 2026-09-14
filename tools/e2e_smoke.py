@@ -357,6 +357,22 @@ async def z_flow(c):
     check(c.state["stage"]["z_mm"] == 0.0,
           "z_top 뒤 Z 0 (%s)" % c.state["stage"]["z_mm"])
 
+    # 끝단 이동 상한은 그 축의 가동범위다. Z 는 43mm(실측).
+    top = c.state["limits"]["z_max_mm"]
+    check(top == 43.0, "limits.z_max_mm = 43 (%s)" % top)
+    c.logs.clear()
+    await c.send(cmd="touch_end", axis="z", mm=50)
+    await c.pump(1.5)
+    check(any("1~43 mm" in l["msg"] for l in c.logs),
+          "끝단 이동 z 50 거부 (%s)" % [l["msg"] for l in c.logs][:2])
+    check(c.state["stage"]["z_mm"] == 0.0, "거부됐으니 Z 는 그대로 0")
+
+    c.logs.clear()
+    await c.send(cmd="touch_end", axis="z", mm=43)
+    await c.pump(4.0)
+    check(c.state["stage"]["z_mm"] == -43.0,
+          "끝단 이동 z 43 통과 -> Z -43 (%s)" % c.state["stage"]["z_mm"])
+
 
 async def z_alone_flow(c):
     """세 축 모두 원점이 없는 상태에서 Z 만 등록한다.

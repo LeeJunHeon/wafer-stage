@@ -7,6 +7,11 @@
    보내는 방식이다(한 번에 하나만 보낸다). 타이머로 밀어 넣으면 손을 뗀 뒤에도
    큐에 남은 명령이 계속 실행돼 스테이지가 멋대로 더 간다.
 
+   반복 시작 지연: 클릭 한 번은 정확히 한 스텝이고, 0.5초 이상 누르고 있어야
+   연속으로 간다. 첫 스텝의 ack 가 0.15초쯤에 오는데 그때 아직 버튼을 누르고
+   있으면 곧장 다음 스텝이 나가, 스텝 1 로 한 번 눌러도 2mm 가 갔다(2026-09-14).
+   키보드는 OS 의 키 반복 지연이 같은 역할을 하므로 그대로 둔다.
+
    데드맨: 키보드 조그는 keydown 자동 반복이 계속 와야 유지된다. 창이 포커스를
    잃거나 탭이 가려지면 keyup 이 오지 않을 수 있고, 그러면 손을 뗀 줄 알면서도
    스테이지가 계속 간다. 마지막 keydown 이 400ms 넘게 끊기면 스스로 멈춘다. */
@@ -16,6 +21,7 @@
 
   const dlg = $('dlgJog');
   const KEY_ALIVE_MS = 400;   // 키보드 반복이 이보다 끊기면 손을 뗀 것으로 본다
+  const HOLD_REPEAT_MS = 500; // 패드를 이만큼 누르고 있어야 두 번째 스텝이 나간다
 
   let held = null;        // 누르고 있는 방향 {axis, dir, src:'key'|'pointer'}
   let inFlight = false;   // 보낸 조그의 ack 를 기다리는 중인가
@@ -23,6 +29,8 @@
   let lastKeyAt = 0;      // 마지막 keydown 시각(데드맨)
   let keySeq = 0;         // keydown 이 올 때마다 증가(자동 반복 포함)
   let sentSeq = -1;       // 마지막으로 보낸 스텝이 어느 keydown 에서 나왔나
+  let heldSince = 0;      // 패드를 누르기 시작한 시각(반복 시작 지연)
+  let repeatTimer = null; // 지연이 끝나면 다음 스텝을 보낼 타이머(항상 하나)
 
   function step() {
     const el = document.querySelector('input[name=jogstep]:checked');
@@ -59,17 +67,37 @@
       stop();
       return;
     }
+    if (held.src === 'pointer') {
+      // 아직 지연이 안 찼으면 남은 시간만큼 기다렸다 보낸다. 그 사이에 손을
+      // 떼면 held 가 null 이라 타이머가 아무것도 보내지 않는다.
+      const left = HOLD_REPEAT_MS - (Date.now() - heldSince);
+      if (left > 0) {
+        clearRepeat();
+        repeatTimer = setTimeout(() => {
+          repeatTimer = null;
+          if (held && held.src === 'pointer' && !inFlight) send(held.axis, held.dir);
+        }, left);
+        return;
+      }
+    }
     send(held.axis, held.dir);
   };
 
+  function clearRepeat() {
+    if (repeatTimer) { clearTimeout(repeatTimer); repeatTimer = null; }
+  }
+
   function start(axis, dir, src) {
     if (!canMove) return;
+    clearRepeat();
     held = { axis: axis, dir: dir, src: src };
+    heldSince = Date.now();
     send(axis, dir);
   }
 
   function stop() {
     held = null;          // in-flight 인 한 스텝은 끝까지 간다(중간에 못 끊는다)
+    clearRepeat();
   }
 
   // 알림 한 줄(1초 뒤 사라진다). 상태 갱신이 덮지 않게 칸을 따로 쓴다.
@@ -85,6 +113,7 @@
   UI.jogReset = function () {
     inFlight = false;
     held = null;
+    clearRepeat();
   };
 
   // ---------------- 패드 ----------------
@@ -169,7 +198,7 @@
   // 상한은 그 축의 가동범위다(Z 는 훨씬 짧다). 범위는 서버가 state 로 준다.
   const touchMm = (axis) => {
     const lim = (UI.state && UI.state.limits) || {};
-    const top = (axis === 'z') ? Math.floor(lim.z_max_mm || 60) : 248;
+    const top = (axis === 'z') ? Math.floor(lim.z_max_mm || 43) : 248;
     const mm = Math.max(1, Math.min(top, Math.round(+$('jogPushMm').value || 10)));
     $('jogPushMm').value = mm;
     return mm;

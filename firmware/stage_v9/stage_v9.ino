@@ -18,7 +18,7 @@
 //
 //   160 펄스 = 1mm
 //   X 스트로크 39,620 펄스 (247.6mm)   Y 스트로크 39,640 펄스 (247.8mm)
-//   Z 스트로크 9,600 펄스 (60mm) — 실측 후 갱신할 것 (Z_MAX / Z_PPMM)
+//   Z 스트로크 6,880 펄스 (43mm) — 실측값. Z_PPMM 은 아직 가정(160)
 //
 // 시리얼: 115200 bps, 줄 끝 = "새 줄". 명령어와 숫자 사이 띄어쓰기 필수.
 //
@@ -57,9 +57,9 @@ const uint8_t M_Z  = 0x08;                            // PORTE (D5=PE3)
 
 const long  X_MAX    = 39620;
 const long  Y_MAX    = 39640;
-// Z 는 아직 아무것도 달지 않고 방향·스케일을 확인하는 중이다. 자로 재서 갱신할 것.
-const long  Z_MAX    = 9600;     // 60mm — 실측 후 갱신
-const float Z_PPMM   = 160.0;    // X·Y 와 같다고 가정 — 실측 후 갱신
+// 실측: 위 끝단에서 2mm 이격한 0 에서 아래 끝단까지 약 45mm → 아래도 2mm 남긴다.
+const long  Z_MAX    = 6880;     // 43mm — 실측값
+const float Z_PPMM   = 160.0;    // X·Y 와 같다고 가정 — 자로 재서 갱신할 것
 const float PPMM     = 160.0;
 const long  HOME_GAP = 320;
 
