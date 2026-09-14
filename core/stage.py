@@ -385,16 +385,19 @@ class Stage:
         # 비상정지 뒤에도 막지 않는다. 위치는 못 믿지만 상대 이동은 사람이 보면서
         # 끝단까지 몰아 원점을 다시 등록하는 복구 경로다(절대 이동은 그대로 잠긴다).
         self._ensure_speed(JOG_SLOW_PPS)
+        # 이미 잠겨 있던 상태(비상정지 뒤 복구)는 중단이 아니다. _aborted 는 원점을
+        # 다시 등록할 때까지 유지되는 잠금이라, 그대로 보면 비상정지 뒤 끝단까지
+        # 미는 복구 절차가 늘 첫 조각에서 멈춘다 - 이 명령 도중에 새로 들어온 '!'
+        # 만 중단으로 본다(_dry_wait 와 같은 방식).
+        was = self._aborted
         sign = 1 if total > 0 else -1
         left = abs(total)
         out = "  이미 그 위치"
-        first = True
         while left > 0:
-            if not first and self._aborted:
-                # 앞 조각 뒤에 비상정지가 왔다. 남은 조각을 보내면 멈춘 줄 아는
+            if self._aborted and not was:
+                # 앞 조각 도중에 비상정지가 왔다. 남은 조각을 보내면 멈춘 줄 아는
                 # 사람 앞에서 스테이지가 다시 움직인다.
                 raise StageError("비상정지로 중단됨")
-            first = False
             chunk = min(left, JOG_MAX_PULSE) * sign
             left -= abs(chunk)
             out = self._jog_chunk(ax, chunk)

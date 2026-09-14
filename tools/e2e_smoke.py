@@ -231,6 +231,20 @@ async def origin_flow(c):
     check(not st["homed_x"] and not st["homed_y"], "비상정지 뒤 두 축 원점 해제(forget)")
     check(any("원점 기록 삭제" in l["msg"] for l in c.logs), "원점 기록 삭제 로그")
 
+    # 비상정지 잠금이 남아 있어도 끝단까지 미는 복구는 끝까지 가야 한다.
+    # (_aborted 를 그대로 보면 두 번째 조각 앞에서 '중단' 으로 끝났다)
+    x0 = c.state["stage"]["x_mm"]
+    c.logs.clear()
+    await c.send(cmd="touch_end", axis="x", mm=120)
+    await c.pump(4.0)
+    sent = [l["msg"] for l in c.logs if l["msg"].startswith("-> jx ")]
+    check(sent == ["-> jx -8000", "-> jx -8000", "-> jx -3200"],
+          "비상정지 뒤에도 조각이 모두 나간다 (%s)" % sent)
+    check(c.state["stage"]["x_mm"] == x0 - 120.0,
+          "비상정지 뒤 끝단 이동 120mm 완주 (%s -> %s)" % (x0, c.state["stage"]["x_mm"]))
+    check(not any("중단" in l["msg"] for l in c.logs),
+          "복구 이동이 '중단' 으로 끝나지 않는다")
+
     # 축 하나만 등록하면 잠금은 그대로
     c.logs.clear()
     await c.send(cmd="set_origin", axis="x", gap_mm=0)   # gap_mm 은 무시된다
