@@ -197,7 +197,7 @@ async def origin_flow(c):
     """수동 원점 등록(V8). 원점이 없는 상태에서 시작한다."""
     st = c.state["stage"]
     check(not (st["homed_x"] and st["homed_y"]), "원점 없이 시작")
-    check(st["fw"] == "V8", "펌웨어 V8 인식 (%s)" % st["fw"])
+    check(st["fw"] == "V9", "펌웨어 V9 인식 (%s)" % st["fw"])
 
     c.acks.clear()
     await c.send(cmd="jog", axis="x", delta_mm=5)
@@ -313,6 +313,64 @@ async def touch_end_abort_flow(c):
     check(dt is not None, "조각 도중 비상정지로 끝단 이동 중단")
     n = len([l for l in c.logs if l["msg"].startswith("-> jx ")])
     check(n == 1, "남은 조각을 보내지 않았다 (jx %d건)" % n)
+
+
+async def z_flow(c):
+    """Z 축(V9): 조그 · 끝단 이동 · 원점 등록 · 맨 위로. X·Y 와 독립이다."""
+    st = c.state["stage"]
+    check("z_mm" in st and "homed_z" in st and "jog_mode_z" in st,
+          "state 에 Z 필드 (z_mm=%s homed_z=%s mode=%s)"
+          % (st.get("z_mm"), st.get("homed_z"), st.get("jog_mode_z")))
+    check(st["homed_z"] and st["jog_mode_z"] == "abs", "Z 원점 있는 상태로 시작")
+
+    await c.send(cmd="jog", axis="z", delta_mm=5)
+    await c.pump(2.5)
+    check(c.state["stage"]["z_mm"] == 5.0,
+          "jog z +5 -> Z 5 (%s)" % c.state["stage"]["z_mm"])
+
+    # 끝단 이동은 0 쪽 = 위로 민다. 범위를 벗어나면 Z 원점이 풀린다.
+    c.logs.clear()
+    await c.send(cmd="touch_end", axis="z", mm=10)
+    await c.pump(3.0)
+    st = c.state["stage"]
+    # 앞의 조그로 Z 는 +5 에 있었다. 거기서 10 을 위로 밀면 -5 다(0 쪽 = 위).
+    check(st["z_mm"] == -5.0, "끝단 이동 z 10 -> Z -5 (%s)" % st["z_mm"])
+    check(not st["homed_z"], "끝단 이동으로 Z 원점 해제")
+    check(st["homed_x"] and st["homed_y"], "X·Y 원점은 그대로")
+
+    c.logs.clear()
+    await c.send(cmd="set_origin", axis="z")
+    await c.pump(3.0)
+    st = c.state["stage"]
+    check(any(l["msg"] == "-> jz 320" for l in c.logs), "Z 등록 전 2mm 물러남 (jz 320)")
+    check(any(l["msg"] == "-> zz" for l in c.logs), "Z 원점 등록 명령 (zz)")
+    check(st["homed_z"] and st["z_mm"] == 0.0,
+          "Z 원점 등록 후 Z0 (homed=%s z=%s)" % (st["homed_z"], st["z_mm"]))
+
+    await c.send(cmd="jog", axis="z", delta_mm=8)
+    await c.pump(2.5)
+    c.logs.clear()
+    await c.send(cmd="z_top")
+    await c.pump(3.0)
+    check(any(l["msg"].startswith("-> mz 0") for l in c.logs),
+          "z_top -> mz 0 (%s)" % [l["msg"] for l in c.logs if l["msg"].startswith("-> m")])
+    check(c.state["stage"]["z_mm"] == 0.0,
+          "z_top 뒤 Z 0 (%s)" % c.state["stage"]["z_mm"])
+
+
+async def fw_v8_flow(c):
+    """V8 펌웨어에는 Z 가 없다 - Z 만 거부하고 X 는 그대로 된다."""
+    check(c.state["stage"]["fw"] == "V8", "펌웨어 V8 인식 (%s)" % c.state["stage"]["fw"])
+    c.logs.clear()
+    await c.send(cmd="jog", axis="z", delta_mm=5)
+    await c.pump(2.0)
+    check(any("V9 필요" in l["msg"] for l in c.logs),
+          "V8 에서 Z 이동 거부 (%s)" % [l["msg"] for l in c.logs][:3])
+    c.acks.clear()
+    await c.send(cmd="jog", axis="x", delta_mm=5)
+    await c.pump(2.5)
+    acks = [a for a in c.acks if a.get("of") == "jog"]
+    check(bool(acks) and acks[-1]["ok"], "V8 에서도 X 이동은 된다 (%s)" % (acks[-1] if acks else "없음"))
 
 
 async def estop_dedup_flow(c):
@@ -623,6 +681,8 @@ def main():
                 ("끝단 이동", good, touch_end_flow, None),
                 ("끝단 이동 중단", good, touch_end_abort_flow,
                  {"WAFER_STAGE_DRY_MOVE_S": "1"}),
+                ("Z 축", good, z_flow, None),
+                ("펌웨어 V8", good, fw_v8_flow, {"WAFER_STAGE_DRY_FW": "V8"}),
                 ("비상정지 중복", good, estop_dedup_flow, None),
                 ("펌웨어 V7", good, fw_old_flow,
                  {"WAFER_STAGE_DRY_FW": "V7", "WAFER_STAGE_DRY_NO_HOME": "1"}),

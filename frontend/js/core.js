@@ -217,6 +217,7 @@
     // 연결이 없으면 위치는 모르는 값이다 - 마지막 숫자를 남겨 두지 않는다.
     $('posX').textContent = st.connected ? fmt(st.x_mm) : EMPTY;
     $('posY').textContent = st.connected ? fmt(st.y_mm) : EMPTY;
+    $('posZ').textContent = st.connected ? fmt(st.z_mm) : EMPTY;
 
     let camTxt;
     if (cam.capturing) camTxt = '촬영 중';
@@ -230,6 +231,7 @@
       st.connected
         ? (st.port || '미연결') + ' · '
           + originText(st)
+          + ' · Z ' + (st.homed_z ? '등록됨' : '없음')
           + ' · ' + (st.dirty ? '미저장' : '저장됨')
         : '미연결');
     const drv = ((s.settings || {}).measure || {}).driver || 'dummy';
@@ -314,7 +316,7 @@
       chip($('chipMeter'), null, EMPTY);
       $('statePill').className = 'statepill error';
       $('stateText').textContent = '연결 끊김';
-      ['posX', 'posY', 'infoCal', 'infoRect', 'infoWafer', 'infoSamples',
+      ['posX', 'posY', 'posZ', 'infoCal', 'infoRect', 'infoWafer', 'infoSamples',
        'mapPos', 'progText', 'curSample', 'curTarget', 'curStatus', 'countInfo',
        'outDir'].forEach(id => { if ($(id)) $(id).textContent = EMPTY; });
       $('frameTime').textContent = '촬영 없음';

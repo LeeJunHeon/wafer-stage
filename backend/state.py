@@ -33,10 +33,11 @@ class State:
         self.params = {}                   # detect/calib 에 넘기는 전체 파라미터
         self.load_settings()
 
-        self.stage = {"connected": False, "port": None, "homed_x": False, "homed_y": False,
-                      "x_mm": None, "y_mm": None, "u": None, "v": None,
+        self.stage = {"connected": False, "port": None,
+                      "homed_x": False, "homed_y": False, "homed_z": False,
+                      "x_mm": None, "y_mm": None, "z_mm": None, "u": None, "v": None,
                       "moving": False, "dirty": False, "needs_home": False,
-                      "jog_mode_x": "rel", "jog_mode_y": "rel",
+                      "jog_mode_x": "rel", "jog_mode_y": "rel", "jog_mode_z": "rel",
                       "fw": "", "last_error": ""}
         self.camera = {"index": self.settings.get("camera_index", 1), "ok": None,
                        "last_error": "", "capturing": False, "preview": False}
@@ -129,7 +130,8 @@ class State:
             "version": {"name": version.APP_NAME, "version": version.APP_VERSION,
                         "build": version.BUILD_DATE},
             "stage": dict(self.stage, jog_mode_x=self.jog_mode("x"),
-                          jog_mode_y=self.jog_mode("y")),
+                          jog_mode_y=self.jog_mode("y"),
+                          jog_mode_z=self.jog_mode("z")),
             "camera": dict(self.camera),
             "frame": dict(self.frame) if self.frame else None,
             "calib": dict(self.calib) if self.calib else None,
@@ -138,7 +140,8 @@ class State:
             "markers": {str(k): v for k, v in (self.markers or {}).items()},
             # 가동범위. 화면의 스테이지 맵이 축척을 잡는 데 쓴다(펌웨어 상수에서 계산).
             "limits": {"x_max_mm": round(stage_mod.X_MAX_PULSE / stage_mod.PPMM, 1),
-                       "y_max_mm": round(stage_mod.Y_MAX_PULSE / stage_mod.PPMM, 1)},
+                       "y_max_mm": round(stage_mod.Y_MAX_PULSE / stage_mod.PPMM, 1),
+                       "z_max_mm": round(stage_mod.Z_MAX_MM, 1)},
             "samples": [dict(s) for s in self.samples],
             "sequence": dict(self.sequence, estopped=_estopped()),
             "warnings": list(self.warnings),

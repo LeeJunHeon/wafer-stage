@@ -1,24 +1,28 @@
 //====================================================================
-// 3축 스텝모터 제어 V7 — 절대좌표 + 원점 + 소프트리밋 + 위치 기억(세션 단위)
+// 4축 스텝모터 제어 V9 — 절대좌표 + 원점 + 소프트리밋 + 위치 기억(세션 단위)
 //
-// V6 에서 바뀐 것만:
-//   jx/jy  원점이 없어도 되는 상대 이동(한 번에 8000 펄스 = 50mm 까지).
-//          사람이 보면서 끝단까지 몰고 가 zx/zy 로 원점을 등록하는 절차용이다.
-//   fz     인자 없으면 800 펄스(5mm)만 탐색한다(상한 1600 = 10mm). V6 는 전체를 밀어,
-//          이미 끝에 있으면 33초를 갈았다(2026-09-11).
-// 그 밖의 명령·출력 형식은 V6 와 같다.
-// Arduino Mega 2560 + MotorBank MSD-224 x3
+// V8 에서 바뀐 것:
+//   Z 축 추가. X·Y 와 똑같이 다룬다(jz / mz / gz / zz / fz z).
+//   [Z 규약]  Z=0 이 맨 위(들어 올린 자리)다. 값이 커질수록 아래로 내려간다.
+//             펄스 부호도 같다(+ = 아래). 원점은 위쪽 하드스톱으로 밀어서 잡고,
+//             거기서 HOME_GAP 만큼 아래로 물러난 자리가 0 이다(X·Y 와 같은 규칙).
+//   EEPROM 기록에 z·homedZ 가 들어가 형식이 바뀌었다 → EE_MAGIC "POS9".
+//             V8 이하로 저장한 기록은 '기록 없음' 으로 읽힌다(원점을 다시 잡는다).
+// 그 밖의 명령·출력 형식은 V8 과 같다.
+// Arduino Mega 2560 + MotorBank MSD-224 x4
 //
 //   X1 : PUL=D2  DIR=D31  ENA=D30
 //   X2 : PUL=D3  DIR=D49  ENA=D48
 //   Y1 : PUL=D4  DIR=D53  ENA=D52
+//   Z  : PUL=D5  DIR=D44  ENA=D45
 //
 //   160 펄스 = 1mm
 //   X 스트로크 39,620 펄스 (247.6mm)   Y 스트로크 39,640 펄스 (247.8mm)
+//   Z 스트로크 9,600 펄스 (60mm) — 실측 후 갱신할 것 (Z_MAX / Z_PPMM)
 //
 // 시리얼: 115200 bps, 줄 끝 = "새 줄". 명령어와 숫자 사이 띄어쓰기 필수.
 //
-// [핵심 규칙]  원점이 없으면 fz 와 jx/jy 외에는 아무것도 움직이지 않는다.
+// [핵심 규칙]  원점이 없으면 fz 와 jx/jy/jz 외에는 아무것도 움직이지 않는다.
 //
 // [위치 기억]  위치는 RAM. EEPROM에는 "저장 이후 움직였는가"만 표시.
 //   첫 이동 시  ok=0 기록 (세션에 1회)   /   save 시  ok=1 기록
@@ -27,16 +31,17 @@
 //   파이썬이 메인이면: 이동 보고를 파일에 기록하고, 파킹/종료 때 save 전송.
 //
 // [원점]
-//   fz x [탐색펄스] / fz y [탐색펄스]   - 그만큼 밀고 2mm 이격 후 0 (기본 800 = 5mm, 상한 1600)
-//   z / zx / zy      지금 위치를 0 으로 등록 (움직이지 않음)
+//   fz x [탐색펄스] / fz y / fz z   - 그만큼 0 쪽으로 밀고 2mm 이격 후 0
+//                                     (기본 800 = 5mm, 상한 1600. Z 는 위쪽이 0 쪽)
+//   z / zx / zy / zz  지금 위치를 0 으로 등록 (움직이지 않음. z 는 X·Y 만)
 //   sp x y           PC가 알려준 위치로 세팅 + 원점OK  (파이썬 복구용)
-//   home             (0,0) 으로 복귀
+//   home             (0,0) 으로 복귀 (X·Y 만)
 //
-// [절대 이동]  gx 16000   gy 8000   g 16000 8000   mx 100.0   my 50.5
+// [절대 이동]  gx 16000   gy 8000   gz 1600   g 16000 8000   mx 100.0   my 50.5   mz 10.0
 // [상대 이동]  x 1600   y -1600   x1 200   x2 200
-// [수동 이동]  jx 1600   jy -1600      (원점 없어도 됨. 한 번에 8000 펄스까지)
+// [수동 이동]  jx 1600   jy -1600   jz 800   (원점 없어도 됨. 8000 펄스까지. 범위 밖이면 그 축 원점 해제)
 // [테스트]     rx 5000 10   ry 5000 10   fx 5000 5   fy 5000 5
-// [상태]       p  (사람용)     st  (파싱용 한 줄: ST X= Y= X2= HX= HY= DIRTY=)
+// [상태]       p  (사람용)     st  (파싱용 한 줄: ST X= Y= X2= Z= HX= HY= HZ= DIRTY=)
 // [기타]       save   forget   v a b w   e 0/1   !
 //====================================================================
 #include <EEPROM.h>
@@ -44,16 +49,23 @@
 const uint8_t X1_PUL = 2,  X1_DIR = 31, X1_ENA = 30;
 const uint8_t X2_PUL = 3,  X2_DIR = 49, X2_ENA = 48;
 const uint8_t Y1_PUL = 4,  Y1_DIR = 53, Y1_ENA = 52;
+const uint8_t Z_PUL  = 5,  Z_DIR  = 44, Z_ENA  = 45;
 
-const uint8_t M_X1 = 0x10, M_X2 = 0x20, M_X = 0x30;   // PORTE
-const uint8_t M_Y  = 0x20;                            // PORTG
+const uint8_t M_X1 = 0x10, M_X2 = 0x20, M_X = 0x30;   // PORTE (D2=PE4 D3=PE5)
+const uint8_t M_Y  = 0x20;                            // PORTG (D4=PG5)
+const uint8_t M_Z  = 0x08;                            // PORTE (D5=PE3)
 
 const long  X_MAX    = 39620;
 const long  Y_MAX    = 39640;
+// Z 는 아직 아무것도 달지 않고 방향·스케일을 확인하는 중이다. 자로 재서 갱신할 것.
+const long  Z_MAX    = 9600;     // 60mm — 실측 후 갱신
+const float Z_PPMM   = 160.0;    // X·Y 와 같다고 가정 — 실측 후 갱신
 const float PPMM     = 160.0;
 const long  HOME_GAP = 320;
 
 const bool X2_DIR_INVERT   = false;
+// Z 가 반대로 움직이면(+ 인데 위로 간다) 이것만 true 로 바꾼다.
+const bool Z_DIR_INVERT    = false;
 const long BACKLASH_TAKEUP = 0;
 
 const uint16_t PULSE_HIGH_US = 5;
@@ -62,24 +74,25 @@ const uint16_t DIR_SETUP_US  = 50;
 float    vMax = 6000.0, accel = 40000.0, vStart = 300.0;
 uint16_t pauseMs = 200;
 
-long posX1 = 0, posX2 = 0, posY = 0;
-bool homedX = false, homedY = false;
+long posX1 = 0, posX2 = 0, posY = 0, posZ = 0;
+bool homedX = false, homedY = false, homedZ = false;
 bool abortFlag = false;
 bool eeDirty   = false;     // 저장 이후 이동이 있었는가 (RAM)
 
-enum Axis { AX_X, AX_Y, AX_X1, AX_X2 };
+enum Axis { AX_X, AX_Y, AX_Z, AX_X1, AX_X2 };
 
 // ==================================================================
 //  EEPROM — 슬롯 1개, 세션당 2회 쓰기
 // ==================================================================
 struct PosRec {
   uint32_t magic;
-  int32_t  x1, x2, y;
-  uint8_t  homedX, homedY;
+  int32_t  x1, x2, y, z;
+  uint8_t  homedX, homedY, homedZ;
   uint8_t  ok;       // 1 = 저장 이후 이동 없음 (신뢰)  0 = 이동 있었음 (불신)
   uint8_t  sum;
 };
-const uint32_t EE_MAGIC = 0x504F5336UL;   // "POS6"
+// 기록 형식이 바뀌면 매직도 바꾼다 - 옛 기록을 새 구조로 읽으면 위치가 엉킨다.
+const uint32_t EE_MAGIC = 0x504F5339UL;   // "POS9"
 const int      EE_ADDR  = 0;
 
 uint8_t recSum(const PosRec &r) {
@@ -92,9 +105,10 @@ uint8_t recSum(const PosRec &r) {
 void eeWrite(bool ok) {
   PosRec r;
   r.magic = EE_MAGIC;
-  r.x1 = posX1; r.x2 = posX2; r.y = posY;
+  r.x1 = posX1; r.x2 = posX2; r.y = posY; r.z = posZ;
   r.homedX = homedX ? 1 : 0;
   r.homedY = homedY ? 1 : 0;
+  r.homedZ = homedZ ? 1 : 0;
   r.ok  = ok ? 1 : 0;
   r.sum = recSum(r);
   EEPROM.put(EE_ADDR, r);     // 바뀐 바이트만 실제로 씀
@@ -106,27 +120,29 @@ int eeLoad() {   // 0=기록없음  1=복원  2=저장 안 하고 꺼짐
   EEPROM.get(EE_ADDR, r);
   if (r.magic != EE_MAGIC || recSum(r) != r.sum) return 0;
   if (!r.ok) return 2;
-  posX1 = r.x1; posX2 = r.x2; posY = r.y;
-  homedX = r.homedX; homedY = r.homedY;
+  posX1 = r.x1; posX2 = r.x2; posY = r.y; posZ = r.z;
+  homedX = r.homedX; homedY = r.homedY; homedZ = r.homedZ;
   return 1;
 }
 
 void markDirty() { if (!eeDirty) eeWrite(false); }   // 세션 첫 이동에만 실제 쓰기
 
 // ==================================================================
-long  axPos(Axis ax)   { return (ax == AX_Y) ? posY : posX1; }
-long  axMax(Axis ax)   { return (ax == AX_Y) ? Y_MAX : X_MAX; }
+long  axPos(Axis ax)   { return (ax == AX_Y) ? posY : (ax == AX_Z) ? posZ : posX1; }
+long  axMax(Axis ax)   { return (ax == AX_Y) ? Y_MAX : (ax == AX_Z) ? Z_MAX : X_MAX; }
 
 // V7 추가 상수
 const long HOME_SEARCH_DEFAULT = 800;    // fz 인자 없을 때 5mm 만 민다
 const long HOME_SEARCH_MAX     = 1600;   // fz 탐색 상한 10mm (넘으면 거부)
 const long JOG_MAX_PULSE       = 8000;   // jx/jy 한 번에 50mm 까지
-bool  axHomed(Axis ax) { return (ax == AX_Y) ? homedY : homedX; }
+bool  axHomed(Axis ax) { return (ax == AX_Y) ? homedY : (ax == AX_Z) ? homedZ : homedX; }
+void  clearHomed(Axis ax) { if (ax == AX_Y) homedY = false; else if (ax == AX_Z) homedZ = false; else homedX = false; }
 long  labs2(long v)    { return v < 0 ? -v : v; }
 
 const __FlashStringHelper* axName(Axis ax) {
   switch (ax) {
     case AX_X:  return F("X ");
+    case AX_Z:  return F("Z ");
     case AX_X1: return F("X1");
     case AX_X2: return F("X2");
     default:    return F("Y ");
@@ -135,6 +151,7 @@ const __FlashStringHelper* axName(Axis ax) {
 
 void motorsOn() {
   digitalWrite(X1_ENA, LOW); digitalWrite(X2_ENA, LOW); digitalWrite(Y1_ENA, LOW);
+  digitalWrite(Z_ENA, LOW);
 }
 
 void printStatus() {
@@ -151,12 +168,17 @@ void printStatus() {
   Serial.print(homedY ? F(" [원점OK]") : F(" [원점없음]"));
   Serial.println(eeDirty ? F("   (저장 안 됨)") : F("   (저장됨)"));
 
+  Serial.print(F("  Z=")); Serial.print(posZ);
+  Serial.print(F(" (")); Serial.print(posZ / Z_PPMM, 2); Serial.print(F("mm)"));
+  Serial.print(homedZ ? F(" [원점OK]") : F(" [원점없음]"));
+  Serial.println(F("   (0 = 맨 위, + = 아래)"));
+
   if (posX1 != posX2) {
     Serial.print(F("  [!] X 틀어짐  X1=")); Serial.print(posX1);
     Serial.print(F(" X2=")); Serial.println(posX2);
   }
-  if (!homedX || !homedY)
-    Serial.println(F("  → 원점이 없는 축은 움직이지 않습니다. fz x / fz y 또는 sp x y"));
+  if (!homedX || !homedY || !homedZ)
+    Serial.println(F("  → 원점이 없는 축은 움직이지 않습니다. fz x / fz y / fz z 또는 sp x y"));
 }
 
 // 파싱용 한 줄
@@ -164,13 +186,19 @@ void printST() {
   Serial.print(F("ST X="));  Serial.print(posX1);
   Serial.print(F(" Y="));    Serial.print(posY);
   Serial.print(F(" X2="));   Serial.print(posX2);
+  Serial.print(F(" Z="));    Serial.print(posZ);
   Serial.print(F(" HX="));   Serial.print(homedX ? 1 : 0);
   Serial.print(F(" HY="));   Serial.print(homedY ? 1 : 0);
+  Serial.print(F(" HZ="));   Serial.print(homedZ ? 1 : 0);
   Serial.print(F(" DIRTY=")); Serial.println(eeDirty ? 1 : 0);
 }
 
 bool requireHomed(Axis ax) {
   if (axHomed(ax)) return true;
+  if (ax == AX_Z) {
+    Serial.println(F("  [거부] 원점 미확정 → fz z 또는 zz"));
+    return false;
+  }
   Serial.print(F("  [거부] 원점 미확정 → fz "));
   Serial.print(ax == AX_Y ? F("y") : F("x"));
   Serial.println(F(" 또는 sp x y"));
@@ -195,6 +223,7 @@ void setDir(Axis ax, bool pos) {
     case AX_X1: digitalWrite(X1_DIR, pos); break;
     case AX_X2: digitalWrite(X2_DIR, d2);  break;
     case AX_Y:  digitalWrite(Y1_DIR, pos); break;
+    case AX_Z:  digitalWrite(Z_DIR, Z_DIR_INVERT ? !pos : pos); break;
   }
   delayMicroseconds(DIR_SETUP_US);
 }
@@ -206,6 +235,7 @@ void getMask(Axis ax, uint8_t &mE, uint8_t &mG) {
     case AX_X1: mE = M_X1; break;
     case AX_X2: mE = M_X2; break;
     case AX_Y:  mG = M_Y;  break;
+    case AX_Z:  mE = M_Z;  break;
   }
 }
 
@@ -215,6 +245,7 @@ void addPos(Axis ax, long d) {
     case AX_X1: posX1 += d; break;
     case AX_X2: posX2 += d; break;
     case AX_Y:  posY  += d; break;
+    case AX_Z:  posZ  += d; break;
   }
 }
 
@@ -268,6 +299,7 @@ void moveAxis(Axis ax, unsigned long steps, bool pos) {
   Serial.print(F(" t=")); Serial.print(dt / 1000.0, 2); Serial.print(F("ms"));
   Serial.print(F(" | X=")); Serial.print(posX1);
   Serial.print(F(" Y=")); Serial.print(posY);
+  Serial.print(F(" Z=")); Serial.print(posZ);
   if (posX1 != posX2) Serial.print(F("  [!] X 틀어짐"));
   if (lagged)         Serial.print(F("  [!] CPU"));
   if (abortFlag)      Serial.print(F("  [!] 중단"));
@@ -306,16 +338,25 @@ void gotoAbs(Axis ax, long target) {
 }
 
 // ---- 수동 이동 (원점이 없어도 움직인다) ----
-// 사람이 보면서 캐리지를 끝단까지 몰고 가는 용도다. 원점이 있으면 소프트리밋을
-// 그대로 지키고, 없으면 범위를 볼 기준이 없으므로 검사하지 않는다. 한 번에 갈 수
-// 있는 거리를 제한해 '원점 없이 크게 보내는' 사고를 막는다.
+// 사람이 보면서 캐리지를 끝단까지 몰고 가는 용도다. 가동범위 밖이라고 거부하지
+// 않는다 - 거부하면 원점이 있는 축을 하드스톱까지 몰고 갈 방법이 없다. 대신 범위를
+// 벗어나는 순간 그 축의 원점을 해제한다(끝에 닿아 탈조하면 좌표를 못 믿는다).
+// 한 번에 갈 수 있는 거리는 제한해 '크게 잘못 보내는' 사고를 막는다.
 void jogRel(Axis ax, long delta) {
   if (delta == 0) return;
   if (labs2(delta) > JOG_MAX_PULSE) {
-    Serial.println(F("  [거부] jx/jy 는 한 번에 8000 펄스까지"));
+    Serial.println(F("  [거부] jx/jy/jz 는 한 번에 8000 펄스까지"));
     return;
   }
-  if (axHomed(ax) && !checkLimit(ax, axPos(ax) + delta)) return;
+  if (axHomed(ax)) {
+    long t = axPos(ax) + delta;
+    if (t < 0 || t > axMax(ax)) {
+      clearHomed(ax);
+      Serial.print(F("  [!] ")); Serial.print(axName(ax));
+      Serial.println(F(" 가동범위 밖 → 원점 해제 (다시 등록 필요)"));
+      eeWrite(true);
+    }
+  }
   motorsOn();                 // e 1 로 풀어 둔 뒤에도 바로 움직일 수 있게
   moveAxis(ax, labs2(delta), delta > 0);
 }
@@ -336,8 +377,8 @@ void findZero(Axis ax, long searchLen) {
 
   motorsOn();
   float sv = vMax, sa = accel;
-  bool  hx = homedX, hy = homedY;
-  homedX = false; homedY = false;
+  bool  hx = homedX, hy = homedY, hz = homedZ;
+  homedX = false; homedY = false; homedZ = false;
   vMax = 1200.0; accel = 20000.0;
 
   moveAxis(ax, searchLen, false);
@@ -345,11 +386,12 @@ void findZero(Axis ax, long searchLen) {
   if (!abortFlag) moveAxis(ax, HOME_GAP, true);
 
   vMax = sv; accel = sa;
-  homedX = hx; homedY = hy;
+  homedX = hx; homedY = hy; homedZ = hz;
 
   if (abortFlag) { Serial.println(F("--- 중단됨. 원점 설정 안 됨 ---")); return; }
-  if (ax == AX_X) { posX1 = 0; posX2 = 0; homedX = true; }
-  else            { posY = 0; homedY = true; }
+  if      (ax == AX_X) { posX1 = 0; posX2 = 0; homedX = true; }
+  else if (ax == AX_Z) { posZ = 0; homedZ = true; }
+  else                 { posY = 0; homedY = true; }
   eeWrite(true);
   Serial.println(F("--- 원점 설정 완료 (저장됨) ---"));
   printStatus();
@@ -390,15 +432,17 @@ void repeatSame(Axis ax, long n, int cycles, bool pos) {
 void setup() {
   const uint8_t outs[] = { X1_PUL, X1_DIR, X1_ENA,
                            X2_PUL, X2_DIR, X2_ENA,
-                           Y1_PUL, Y1_DIR, Y1_ENA };
-  for (uint8_t i = 0; i < 9; i++) { pinMode(outs[i], OUTPUT); digitalWrite(outs[i], LOW); }
+                           Y1_PUL, Y1_DIR, Y1_ENA,
+                           Z_PUL,  Z_DIR,  Z_ENA };
+  for (uint8_t i = 0; i < 12; i++) { pinMode(outs[i], OUTPUT); digitalWrite(outs[i], LOW); }
 
   Serial.begin(115200);
   Serial.setTimeout(30);
-  Serial.println(F("=== 3-AXIS V7 ==="));
+  Serial.println(F("=== 3-AXIS V9 ==="));
   Serial.print(F("  X 0~")); Serial.print(X_MAX);
   Serial.print(F("  Y 0~")); Serial.print(Y_MAX);
-  Serial.println(F("   (160 pulse = 1mm)"));
+  Serial.print(F("  Z 0~")); Serial.print(Z_MAX);
+  Serial.println(F("   (160 pulse = 1mm, Z: 0 = 맨 위)"));
 
   int r = eeLoad();
   if (r == 1)      Serial.println(F("  EEPROM: 마지막 저장 위치 복원  (꺼진 동안 손으로 밀었다면 fz 로 재등록)"));
@@ -432,7 +476,8 @@ void loop() {
   if (c == "fz") {
     if      (s1 == "x") findZero(AX_X, a2);
     else if (s1 == "y") findZero(AX_Y, a2);
-    else Serial.println(F("  ? fz x [탐색펄스]  또는  fz y [탐색펄스]  (기본 800 = 5mm, 상한 1600)"));
+    else if (s1 == "z") findZero(AX_Z, a2);   // Z 는 0 쪽 = 위
+    else Serial.println(F("  ? fz x [탐색펄스]  (x / y / z. 기본 800 = 5mm, 상한 1600)"));
   }
   else if (c == "z")  { posX1 = 0; posX2 = 0; posY = 0; homedX = true; homedY = true;
                         eeWrite(true); Serial.println(F("  X, Y 여기를 0 으로 등록 (저장됨)")); printStatus(); }
@@ -440,6 +485,8 @@ void loop() {
                         eeWrite(true); Serial.println(F("  X 여기를 0 으로 등록 (저장됨)")); printStatus(); }
   else if (c == "zy") { posY = 0; homedY = true;
                         eeWrite(true); Serial.println(F("  Y 여기를 0 으로 등록 (저장됨)")); printStatus(); }
+  else if (c == "zz") { posZ = 0; homedZ = true;
+                        eeWrite(true); Serial.println(F("  Z 여기를 0 으로 등록 (저장됨)")); printStatus(); }
   else if (c == "sp") {                              // PC가 알려준 위치
     if (nTok < 3) Serial.println(F("  ? sp <x> <y>"));
     else if (a1 < 0 || a1 > X_MAX || a2 < 0 || a2 > Y_MAX)
@@ -460,8 +507,10 @@ void loop() {
   // ---- 절대 이동 ----
   else if (c == "gx") gotoAbs(AX_X, a1);
   else if (c == "gy") gotoAbs(AX_Y, a1);
+  else if (c == "gz") gotoAbs(AX_Z, a1);
   else if (c == "mx") gotoAbs(AX_X, (long)(f1 * PPMM + 0.5));
   else if (c == "my") gotoAbs(AX_Y, (long)(f1 * PPMM + 0.5));
+  else if (c == "mz") gotoAbs(AX_Z, (long)(f1 * Z_PPMM + 0.5));
   else if (c == "g") {
     if (requireHomed(AX_X) && requireHomed(AX_Y)
         && checkLimit(AX_X, a1) && checkLimit(AX_Y, a2)) {
@@ -473,6 +522,7 @@ void loop() {
   // ---- 상대 이동 ----
   else if (c == "jx") jogRel(AX_X, a1);        // 원점 없어도 됨
   else if (c == "jy") jogRel(AX_Y, a1);        // 원점 없어도 됨
+  else if (c == "jz") jogRel(AX_Z, a1);        // 원점 없어도 됨 (- = 위)
   else if (c == "x")  moveRel(AX_X, a1);
   else if (c == "y")  moveRel(AX_Y, a1);
   else if (c == "x1") moveSingle(AX_X1, a1);
@@ -486,7 +536,7 @@ void loop() {
 
   // ---- 저장 / 상태 ----
   else if (c == "save")   { eeWrite(true); Serial.println(F("  저장됨 (신뢰 확정)")); }
-  else if (c == "forget") { homedX = false; homedY = false; eeWrite(true);
+  else if (c == "forget") { homedX = false; homedY = false; homedZ = false; eeWrite(true);
                             Serial.println(F("  기록 삭제")); printStatus(); }
   else if (c == "st")     printST();
   else if (c == "p")      printStatus();
@@ -499,10 +549,15 @@ void loop() {
   else if (c == "e") {
     if (a1) {
       digitalWrite(X1_ENA, HIGH); digitalWrite(X2_ENA, HIGH); digitalWrite(Y1_ENA, HIGH);
-      homedX = false; homedY = false; eeWrite(true);
+      digitalWrite(Z_ENA, HIGH);
+      homedX = false; homedY = false; homedZ = false; eeWrite(true);
       Serial.println(F("  모터 풀림 - 위치 신뢰 해제. 다시 움직이려면 fz 또는 sp 필요"));
     } else { motorsOn(); Serial.println(F("  모터 켜짐")); }
   }
   else if (c == "!") Serial.println(F("  (이동 중에만 유효)"));
-  else Serial.println(F("  ? fz z zx zy sp home gx gy g mx my jx jy x y x1 x2 rx ry fx fy save forget st p v a b w e !"));
+  else {
+    Serial.println(F("  ? fz z zx zy zz sp home gx gy gz g mx my mz jx jy jz x y x1 x2 rx ry fx fy save forget st p v a b w e !"));
+    Serial.println(F("    jx/jy/jz <±펄스> : 원점 없어도 되는 이동. 범위 밖으로 나가면 그 축 원점 해제"));
+    Serial.println(F("    Z: 0 = 맨 위, + = 아래. 원점은 위쪽 하드스톱 (fz z)"));
+  }
 }

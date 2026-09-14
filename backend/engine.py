@@ -234,9 +234,12 @@ async def _goto(x_mm, y_mm, no=None):
 
 
 def _apply_status(st):
+    z = st.get("z_mm")
     state.stage.update({
         "x_mm": round(st["x_mm"], 2), "y_mm": round(st["y_mm"], 2),
-        "homed_x": st["homed_x"], "homed_y": st["homed_y"], "dirty": st["dirty"],
+        "z_mm": None if z is None else round(z, 2),
+        "homed_x": st["homed_x"], "homed_y": st["homed_y"],
+        "homed_z": bool(st.get("homed_z")), "dirty": st["dirty"],
     })
     _update_pointer_px()
 
@@ -309,22 +312,25 @@ async def jog(axis, target_mm=None, delta_mm=None):
     이미 이동 중이면 거절한다 - 조그를 큐에 쌓으면 손을 뗀 뒤에도 계속 움직인다.
     """
     rel = delta_mm is not None
-    if not rel:
+    ax = str(axis).lower()
+    if ax not in ("x", "y", "z"):
+        await push_ack("jog", False, "bad_axis")
+        return False
+    # Z 는 X·Y 원점 잠금과 무관하다 - 아직 X·Y 와 인터록이 없는 독립 축이다
+    # (인터록은 프로브를 단 뒤에 넣는다). 연결만 있으면 움직인다.
+    if rel or ax == "z":
+        if not stagectl.ctl.connected:
+            await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
+            await push_ack("jog", False, "locked")
+            return False
+    else:
         why = state.can_move()
         if why:
             await push_log(why, "warn")
             await push_ack("jog", False, "locked")
             return False
-    elif not stagectl.ctl.connected:
-        await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
-        await push_ack("jog", False, "locked")
-        return False
     if state.stage["moving"]:
         await push_ack("jog", False, "moving")
-        return False
-    ax = str(axis).lower()
-    if ax not in ("x", "y"):
-        await push_ack("jog", False, "bad_axis")
         return False
     amount = float(delta_mm if rel else target_mm)
     state.stage["last_error"] = ""
@@ -335,7 +341,8 @@ async def jog(axis, target_mm=None, delta_mm=None):
             # 속도는 드라이버가 맞춘다(jog_rel 은 JOG_SLOW_PPS, 절대 이동은 기본값).
             report = await stagectl.ctl.jog_rel(ax, amount)
         else:
-            mover = stagectl.ctl.move_x if ax == "x" else stagectl.ctl.move_y
+            mover = {"x": stagectl.ctl.move_x, "y": stagectl.ctl.move_y,
+                     "z": stagectl.ctl.move_z}[ax]
             report = await mover(amount)
         storage.append_jsonl(paths.SEQ_LOG_PATH, {
             "time": time.strftime("%Y-%m-%d %H:%M:%S"), "sample_no": "jog",

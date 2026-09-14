@@ -102,9 +102,11 @@
   });
 
   // 키보드: ↑ X+ ↓ X− ← Y+ → Y−. 맵·패드와 같은 방향이다.
+  // Z 는 PageUp/PageDown - Z 는 0 이 맨 위라 '위로' 가 음수다.
   const KEYS = {
     ArrowUp: ['x', 1], ArrowDown: ['x', -1],
     ArrowLeft: ['y', 1], ArrowRight: ['y', -1],
+    PageUp: ['z', -1], PageDown: ['z', 1],
   };
   dlg.addEventListener('keydown', (e) => {
     // 비모달 dialog 는 Esc 로 닫히지 않는다(모달만 기본 동작이 있다).
@@ -163,26 +165,36 @@
   };
   // 끝단 이동과 원점 등록은 따로다. 밀기는 여러 번 반복하는 조작이라 확인을
   // 묻지 않고, 등록은 되돌리기 어려우므로 묻는다.
-  const touchMm = () => {
-    // 한 번에 미는 거리. 펌웨어 한도(50 mm)보다 커도 된다 - 드라이버가 나눠 보낸다.
-    const mm = Math.max(1, Math.min(248, Math.round(+$('jogPushMm').value || 10)));
+  // 한 번에 미는 거리. 펌웨어 한도(50 mm)보다 커도 된다 - 드라이버가 나눠 보낸다.
+  // 상한은 그 축의 가동범위다(Z 는 훨씬 짧다). 범위는 서버가 state 로 준다.
+  const touchMm = (axis) => {
+    const lim = (UI.state && UI.state.limits) || {};
+    const top = (axis === 'z') ? Math.floor(lim.z_max_mm || 60) : 248;
+    const mm = Math.max(1, Math.min(top, Math.round(+$('jogPushMm').value || 10)));
     $('jogPushMm').value = mm;
     return mm;
   };
-  $('jogPushX').onclick = () => UI.send({ cmd: 'touch_end', axis: 'x', mm: touchMm() });
-  $('jogPushY').onclick = () => UI.send({ cmd: 'touch_end', axis: 'y', mm: touchMm() });
+  $('jogPushX').onclick = () => UI.send({ cmd: 'touch_end', axis: 'x', mm: touchMm('x') });
+  $('jogPushY').onclick = () => UI.send({ cmd: 'touch_end', axis: 'y', mm: touchMm('y') });
+  $('jogPushZ').onclick = () => UI.send({ cmd: 'touch_end', axis: 'z', mm: touchMm('z') });
+  $('jogZTop').onclick = () => UI.send({ cmd: 'z_top' });
 
   // 물러나는 거리(2 mm)는 서버가 정한다 - 마커 좌표가 그 원점 기준으로 실측되어
   // 있어서 화면에서 고를 수 있는 값이 아니다.
   async function setOrigin(axis) {
-    const body = '끝단에서 2 mm 물러난 자리를 ' + axis.toUpperCase()
-      + ' 의 0 으로 등록·저장합니다. 캐리지가 끝단에 닿아 있는지 확인 후 진행하십시오.';
+    const body = (axis === 'z' ? '위 끝단' : '끝단')
+      + '에서 2 mm 물러난 자리를 ' + axis.toUpperCase()
+      + ' 의 0' + (axis === 'z' ? '(맨 위)' : '')
+      + ' 으로 등록·저장합니다. '
+      + (axis === 'z' ? 'Z 가 위 끝단에' : '캐리지가 끝단에')
+      + ' 닿아 있는지 확인 후 진행하십시오.';
     if (await UI.confirm(body, '원점 등록')) {
       UI.send({ cmd: 'set_origin', axis: axis });
     }
   }
   $('jogZeroX').onclick = () => setOrigin('x');
   $('jogZeroY').onclick = () => setOrigin('y');
+  $('jogZeroZ').onclick = () => setOrigin('z');
 
   $('jogEstop').onclick = () => UI.sendEstop();   // 확인 없이 즉시 · WS + HTTP
 
@@ -208,6 +220,7 @@
 
     $('jogX').textContent = st.connected ? UI.fmt(st.x_mm) : UI.EMPTY;
     $('jogY').textContent = st.connected ? UI.fmt(st.y_mm) : UI.EMPTY;
+    $('jogZ').textContent = st.connected ? UI.fmt(st.z_mm) : UI.EMPTY;
     $('jogMoving').textContent = st.moving ? '이동 중' : '';
 
     // 패드는 원점이 없어도 열려 있다 - 그래야 끝단까지 몰고 갈 수 있다.
@@ -227,14 +240,17 @@
     };
     badge($('jogOriginX'), relX);
     badge($('jogOriginY'), relY);
+    badge($('jogOriginZ'), (st.jog_mode_z || 'rel') === 'rel');
 
     // 절대 좌표는 두 축 원점이 있어야 말이 된다.
     ['jogGo', 'jogHome', 'jogPark'].forEach(id => dis(id, !usable));
     dis('jogGx', !usable); dis('jogGy', !usable);
     dis('jogSavePark', !usable);
     // 끝단 이동·원점 등록은 원점 유무와 무관하다(그것을 만드는 절차다).
-    ['jogPushX', 'jogPushY', 'jogPushMm',
-     'jogZeroX', 'jogZeroY'].forEach(id => dis(id, !canStep));
+    ['jogPushX', 'jogPushY', 'jogPushZ', 'jogPushMm',
+     'jogZeroX', 'jogZeroY', 'jogZeroZ'].forEach(id => dis(id, !canStep));
+    // Z 는 X·Y 원점과 무관하다 - Z 원점만 있으면 맨 위로 올릴 수 있다.
+    dis('jogZTop', !(canStep && (st.jog_mode_z || 'rel') === 'abs'));
     dis('jogEstop', !on);                  // 비상정지는 항상 활성
 
     let why = '';

@@ -16,6 +16,7 @@
     <div class="pos">
       <div class="ax"><span class="k">X</span><span class="v" id="posX">—</span><span class="u">mm</span></div>
       <div class="ax"><span class="k">Y</span><span class="v" id="posY">—</span><span class="u">mm</span></div>
+      <div class="ax"><span class="k">Z</span><span class="v" id="posZ">—</span><span class="u">mm</span></div>
     </div>
     <div class="chips">
       <span class="chip" id="chipServer" data-tip="화면과 서버의 연결 상태입니다."><i class="dot"></i><b>서버</b><span class="mono">연결 중</span></span>
@@ -153,6 +154,7 @@
     <div class="jogpos">
       <div class="ax"><span class="k">X</span><span class="v mono" id="jogX">—</span><span class="u">mm</span></div>
       <div class="ax"><span class="k">Y</span><span class="v mono" id="jogY">—</span><span class="u">mm</span></div>
+      <div class="ax"><span class="k">Z</span><span class="v mono" id="jogZ">—</span><span class="u">mm</span></div>
       <span class="sp"></span><span class="jogstate" id="jogNote"></span><span class="jogstate" id="jogMoving"></span>
     </div>
     <div class="lockmsg" id="jogLock" hidden></div>
@@ -165,24 +167,30 @@
       <label><input type="radio" name="jogstep" value="50">50</label>
     </div>
 
-    <div class="jogpad">
-      <button class="btn jogb up" data-axis="x" data-dir="1" data-tip="X+ 방향으로 스텝만큼 이동합니다(키보드 ↑).">X+</button>
-      <button class="btn jogb left" data-axis="y" data-dir="1" data-tip="Y+ 방향으로 스텝만큼 이동합니다(키보드 ←).">Y+</button>
-      <span class="jogmid"></span>
-      <button class="btn jogb right" data-axis="y" data-dir="-1" data-tip="Y− 방향으로 스텝만큼 이동합니다(키보드 →).">Y−</button>
-      <button class="btn jogb down" data-axis="x" data-dir="-1" data-tip="X− 방향으로 스텝만큼 이동합니다(키보드 ↓).">X−</button>
+    <div class="jogpads">
+      <div class="jogpad">
+        <button class="btn jogb up" data-axis="x" data-dir="1" data-tip="X+ 방향으로 스텝만큼 이동합니다(키보드 ↑).">X+</button>
+        <button class="btn jogb left" data-axis="y" data-dir="1" data-tip="Y+ 방향으로 스텝만큼 이동합니다(키보드 ←).">Y+</button>
+        <span class="jogmid"></span>
+        <button class="btn jogb right" data-axis="y" data-dir="-1" data-tip="Y− 방향으로 스텝만큼 이동합니다(키보드 →).">Y−</button>
+        <button class="btn jogb down" data-axis="x" data-dir="-1" data-tip="X− 방향으로 스텝만큼 이동합니다(키보드 ↓).">X−</button>
+      </div>
+      <div class="jogz">
+        <button class="btn jogb" data-axis="z" data-dir="-1" data-tip="Z 를 위로 스텝만큼 이동합니다(PageUp).">Z↑</button>
+        <button class="btn jogb" data-axis="z" data-dir="1" data-tip="Z 를 아래로 스텝만큼 이동합니다(PageDown).">Z↓</button>
+      </div>
     </div>
 
     <div class="hr"></div>
     <div class="t">좌표 이동</div>
     <div class="row"><span class="note">X</span><input type="number" id="jogGx" step="0.1" min="0" max="247" data-tip="이동할 X 좌표입니다(mm)."><span class="note">Y</span><input type="number" id="jogGy" step="0.1" min="0" max="247" data-tip="이동할 Y 좌표입니다(mm)."><span class="note">mm</span><button class="btn" id="jogGo" data-tip="입력한 좌표로 이동합니다. 두 축 원점이 있어야 합니다.">이동</button></div>
     <div class="row"><button class="btn" id="jogHome" data-tip="(0, 0) 으로 이동합니다.">원점 복귀</button><button class="btn" id="jogPark" data-tip="파킹 위치로 이동합니다. 촬영 전에 카메라 시야를 비우는 자리입니다.">파킹</button></div>
-    <div class="row"><button class="btn" id="jogSavePark" data-tip="지금 좌표를 파킹 위치로 저장합니다(설정에 기록).">현재 위치를 파킹으로</button></div>
+    <div class="row"><button class="btn" id="jogSavePark" data-tip="지금 좌표를 파킹 위치로 저장합니다(설정에 기록).">현재 위치를 파킹으로</button><button class="btn" id="jogZTop" data-tip="Z 를 0(맨 위)으로 올립니다.">Z 맨 위로</button></div>
     <div class="note">스테이지 맵을 클릭하면 좌표가 채워집니다.</div>
 
     <div class="hr"></div>
     <div class="t">원점 잡기</div>
-    <div class="note">축마다 ① 끝단으로 밀기(끝에 닿는 소리) → ② 등록. 0 은 끝단에서 2 mm 물러난 자리(마커 좌표 기준)</div>
+    <div class="note">축마다 ① 끝단으로 밀기(끝에 닿는 소리) → ② 등록. 0 은 끝단에서 2 mm 물러난 자리(마커 좌표 기준). Z 는 위 끝단이 0</div>
     <div class="row"><span class="note">밀 거리</span><input type="number" id="jogPushMm" value="10" min="1" max="248" step="1" data-tip="한 번에 끝단 쪽으로 미는 거리입니다(1~248 mm). 끝에 닿으면 남은 거리만큼 소리가 나므로 남은 거리를 어림해 넣고 마지막은 짧게."><span class="note">mm</span></div>
     <table class="origintbl">
       <thead><tr><th>축</th><th>원점</th><th>① 끝단으로 밀기</th><th>② 여기를 0 으로</th></tr></thead>
@@ -198,6 +206,12 @@
           <td><span id="jogOriginY" class="badge">—</span></td>
           <td><button class="btn sm" id="jogPushY" data-tip="Y 축을 끝단(0 쪽) 방향으로 밀 거리만큼 천천히 밉니다. 원점은 등록하지 않습니다. 가동범위를 벗어나면 Y 원점이 해제됩니다. 끝에 닿아 소리가 나면 [등록].">밀기</button></td>
           <td><button class="btn sm" id="jogZeroY" data-tip="끝단에서 2 mm 물러난 자리를 Y 의 0 으로 등록하고 저장합니다. 마커 좌표가 이 원점 기준이라 물러나는 거리는 바꾸지 않습니다.">등록</button></td>
+        </tr>
+        <tr>
+          <td class="ax">Z</td>
+          <td><span id="jogOriginZ" class="badge">—</span></td>
+          <td><button class="btn sm" id="jogPushZ" data-tip="Z 축을 맨 위(0 쪽) 방향으로 밀 거리만큼 천천히 밉니다. 원점은 등록하지 않습니다. 위 끝에 닿아 소리가 나면 [등록].">밀기</button></td>
+          <td><button class="btn sm" id="jogZeroZ" data-tip="위 끝단에서 2 mm 물러난 자리를 Z 의 0(맨 위)으로 등록하고 저장합니다.">등록</button></td>
         </tr>
       </tbody>
     </table>

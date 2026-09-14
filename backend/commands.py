@@ -27,12 +27,12 @@ _shutdown_handler = None
 MOVE_CMDS = ("park", "goto", "run", "resume", "next", "measure_here")
 # 스테이지가 이미 움직이고 있으면 받지 않는다. 명령이 동시에 실행될 수 있게 된
 # 뒤로는(ws_endpoint 가 태스크로 띄운다) 이 검사가 없으면 두 이동이 겹친다.
-MOVING_BLOCKED = ("park", "goto", "jog", "touch_end", "set_origin", "capture",
-                  "run", "measure_here")
+MOVING_BLOCKED = ("park", "goto", "jog", "touch_end", "set_origin", "z_top",
+                  "capture", "run", "measure_here")
 # 순회 중에 받으면 안 되는 명령. 스테이지·카메라·설정을 순회 도중에 건드리면
 # 진행 중인 이동과 충돌한다(정지 뒤에 하면 된다).
 BUSY_BLOCKED = ("park", "goto", "jog", "park_here", "touch_end", "set_origin",
-                "stage_disconnect", "capture", "settings_save")
+                "z_top", "stage_disconnect", "capture", "settings_save")
 
 
 def set_shutdown_handler(fn):
@@ -157,8 +157,8 @@ async def _stage_connect(data):
     except stagectl.StageError as e:
         await push_log("상태 조회 실패 · " + logger.short(e), "warn")
     state.stage["fw"] = stagectl.ctl.fw_version
-    if stagectl.ctl.fw_version and stagectl.ctl.fw_version != "V8":
-        await push_log("펌웨어 %s · 수동 원점은 V8 이 필요합니다"
+    if stagectl.ctl.fw_version and stagectl.ctl.fw_version != "V9":
+        await push_log("펌웨어 %s · 이 앱은 V9 이 필요합니다"
                        % stagectl.ctl.fw_version, "warn")
     if not (state.stage["homed_x"] and state.stage["homed_y"]):
         state.stage["needs_home"] = True
@@ -201,7 +201,7 @@ async def _jog(data):
     끝단까지 몰고 가 원점을 등록하는 절차가 이 경로다.
     """
     axis = str(data.get("axis") or "").lower()
-    if axis not in ("x", "y"):
+    if axis not in ("x", "y", "z"):
         await push_log("수동 이동 축이 잘못되었습니다: %s" % axis, "warn")
         return
     try:
@@ -214,12 +214,15 @@ async def _jog(data):
         await engine.jog(axis, delta_mm=delta)
         return
 
-    cur = state.stage["x_mm"] if axis == "x" else state.stage["y_mm"]
+    cur = state.stage[axis + "_mm"]
     if cur is None:
         await push_log("현재 위치를 모릅니다 · 원점 등록 후 사용하세요", "warn")
         await push_ack("jog", False, "no_position")
         return
-    target = min(calib.AXIS_MAX, max(calib.AXIS_MIN, cur + delta))
+    # Z 의 가동범위는 펌웨어 상수에서 온다(X·Y 는 보정이 쓰는 작업영역 범위).
+    lo, hi = ((0.0, stagectl.Z_MAX_MM) if axis == "z"
+              else (calib.AXIS_MIN, calib.AXIS_MAX))
+    target = min(hi, max(lo, cur + delta))
     if abs(target - cur) < 0.005:          # 이미 끝이다 - 시리얼을 괴롭히지 않는다
         await push_ack("jog", False, "at_limit",
                        x_mm=state.stage["x_mm"], y_mm=state.stage["y_mm"])
@@ -239,7 +242,7 @@ async def _set_origin(data):
         await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
         return
     axis = str(data.get("axis") or "xy").lower()
-    if axis not in ("x", "y", "xy"):
+    if axis not in ("x", "y", "z", "xy"):
         await push_log("원점 등록 축이 잘못되었습니다: %s" % axis, "warn")
         return
     gap = stagectl.ORIGIN_GAP_MM
@@ -255,9 +258,10 @@ async def _set_origin(data):
             engine.reset_estop()
             state.stage["last_error"] = ""
         engine.mark_moved()                # 자동 저장이 뒤따른다
-        await push_log("원점 등록 (%s · 끝단에서 %g mm) · X%.2f Y%.2f"
-                       % (axis.upper().replace("XY", "X·Y"), gap,
-                          st["x_mm"], st["y_mm"]), "ok")
+        where = ("Z%.2f" % st["z_mm"] if axis == "z"
+                 else "X%.2f Y%.2f" % (st["x_mm"], st["y_mm"]))
+        await push_log("원점 등록 (%s · 끝단에서 %g mm) · %s"
+                       % (axis.upper().replace("XY", "X·Y"), gap, where), "ok")
     except stagectl.StageError as e:
         state.stage["last_error"] = logger.short(e)
         logger.write("err", "원점 등록 실패 상세: %s" % e)
@@ -265,6 +269,22 @@ async def _set_origin(data):
     finally:
         state.stage["moving"] = False
         await push_state()
+
+
+async def _z_top(_data):
+    """Z 를 0(맨 위)으로 올린다.
+
+    X·Y 의 원점 유무와 무관하다 - Z 는 아직 독립 축이고, 올리는 것은 어느
+    상황에서도 안전한 쪽이다(내리는 것이 위험하다).
+    """
+    if not state.stage["connected"]:
+        await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
+        return
+    if not state.stage["homed_z"] or state.jog_mode("z") == "rel":
+        await push_log("Z 원점 없음 · 수동 이동에서 등록", "warn")
+        await push_ack("z_top", False, "no_origin")
+        return
+    await engine.jog("z", target_mm=0.0)
 
 
 async def _touch_end(data):
@@ -278,15 +298,17 @@ async def _touch_end(data):
         await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
         return
     axis = str(data.get("axis") or "").lower()
-    if axis not in ("x", "y"):
+    if axis not in ("x", "y", "z"):
         await push_log("끝단 이동 축이 잘못되었습니다: %s" % axis, "warn")
         return
     try:
         mm = float(data.get("mm", 5.0))
     except (TypeError, ValueError):
         mm = 5.0
-    if not (1.0 <= mm <= 248.0):
-        await push_log("끝단 이동 거리는 1~248 mm 입니다 (%g)" % mm, "warn")
+    # Z 는 스트로크가 훨씬 짧다. 0 쪽(Z 는 위)으로 미는 것은 축마다 같다.
+    top = stagectl.Z_MAX_MM if axis == "z" else 248.0
+    if not (1.0 <= mm <= top):
+        await push_log("끝단 이동 거리는 1~%g mm 입니다 (%g)" % (top, mm), "warn")
         return
     was_homed = state.stage["homed_" + axis]
     await push_log("끝단 이동 (%s · %g mm)" % (axis.upper(), mm))
@@ -485,6 +507,7 @@ _TABLE = {
     "goto": _goto,
     "jog": _jog,
     "park_here": _park_here,
+    "z_top": _z_top,
     "capture": _capture,
     "run": _run,
     "pause": _pause,

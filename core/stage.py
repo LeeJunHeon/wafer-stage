@@ -35,7 +35,7 @@ from . import paths
 DRY_MOVE_S = float(os.environ.get("WAFER_STAGE_DRY_MOVE_S", "0") or 0)
 DRY_TICK_S = 0.05                  # 자는 동안 이만큼마다 중단을 확인한다
 # --dry 가 흉내 낼 펌웨어 버전(검증용). 실제 연결에서는 배너에서 읽는다.
-DRY_FW = os.environ.get("WAFER_STAGE_DRY_FW", "V8").upper()
+DRY_FW = os.environ.get("WAFER_STAGE_DRY_FW", "V9").upper()
 # --dry 는 늘 "원점 있음" 으로 답해 왔다. 원점이 없는 상태의 동작(수동 이동만
 # 허용, goto 거절)을 검증하려면 그것도 흉내 낼 수 있어야 한다.
 DRY_NO_HOME = os.environ.get("WAFER_STAGE_DRY_NO_HOME", "") not in ("", "0")
@@ -51,6 +51,14 @@ DEFAULT_SPEED_PPS = 6000      # 펌웨어 기본 vMax (v6000)
 JOG_SLOW_PPS = 1500           # 원점 없이 수동으로 몰 때 - 끝단에 닿아도 살살
 X_MAX_PULSE = 39620           # 247.6mm
 Y_MAX_PULSE = 39640           # 247.8mm
+# Z 는 아직 아무것도 달지 않고 방향·스케일을 확인하는 단계다. 펌웨어 V9 의
+# Z_PPMM · Z_MAX 와 같은 값이어야 한다 - 자로 재서 둘 다 갱신할 것.
+Z_PPMM      = 160.0           # X·Y 와 같다고 가정 - 실측 후 갱신
+Z_MAX_PULSE = 9600            # 60mm - 실측 후 갱신
+Z_MAX_MM    = Z_MAX_PULSE / Z_PPMM
+
+# Z=0 은 맨 위(들어 올린 자리)다. 값이 커질수록 아래로 내려가고 펄스 부호도 같다.
+# 원점은 위쪽 하드스톱으로 밀어서 잡는다 - 끝단 이동(touch_end)은 Z 에서 '위로' 다.
 
 BAUD = 115200
 BOOT_MAX_S = 5.0              # 포트를 열면 DTR 로 보드가 리셋된다. 배너를 이만큼 기다린다
@@ -102,6 +110,21 @@ def pick_port(want=None):
     raise StageError("\n".join(msg))
 
 
+def _major_of(fw):
+    """"V9" -> 9. 읽을 수 없으면 0(검사하지 않는다)."""
+    m = re.match(r"V(\d+)$", (fw or "").strip(), re.I)
+    return int(m.group(1)) if m else 0
+
+
+def _ppmm(ax):
+    return Z_PPMM if ax == "z" else PPMM
+
+
+def _max_mm(ax):
+    top = {"x": X_MAX_PULSE, "y": Y_MAX_PULSE, "z": Z_MAX_PULSE}[ax]
+    return top / _ppmm(ax)
+
+
 def _fw_of(banner):
     """배너에서 펌웨어 버전을 읽는다. "=== 3-AXIS V7 ===" -> "V7"."""
     m = re.search(r"3-AXIS\s+(V\d+)", banner or "", re.I)
@@ -115,7 +138,7 @@ class Stage:
         self.dry = bool(dry)
         self.ser = None
         self.banner = ""
-        self.fw_version = ""           # 배너에서 읽은 "V6" / "V7"
+        self.fw_version = ""           # 배너에서 읽은 "V8" / "V9"
         self.needs_home = False        # 배너에 "원점없음" 이 있었나
         self.log_path = log_path or os.path.join(paths.OUT_DIR, "serial.log")
         # 주고받은 줄을 그대로 넘겨받을 곳(서버가 화면 로그로 보낸다). 파일 로그는
@@ -128,9 +151,10 @@ class Stage:
         self._aborted = False
         # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면 검증이
         # 무의미해진다(포인터·맵이 안 움직인다). 보낸 명령대로 위치를 옮겨 둔다.
-        self._dry_xy = [0.0, 0.0]
-        # 원점은 축마다 따로다(펌웨어의 HX/HY 가 진실). dry 도 같게 흉내 낸다.
-        self._dry_homed = {"x": not DRY_NO_HOME, "y": not DRY_NO_HOME}
+        self._dry_xy = {"x": 0.0, "y": 0.0, "z": 0.0}
+        # 원점은 축마다 따로다(펌웨어의 HX/HY/HZ 가 진실). dry 도 같게 흉내 낸다.
+        self._dry_homed = {"x": not DRY_NO_HOME, "y": not DRY_NO_HOME,
+                           "z": not DRY_NO_HOME}
         self.speed_pps = None          # 아직 펌웨어에 속도를 보낸 적이 없다
 
     # ---- 로그 ----------------------------------------------------------
@@ -264,11 +288,12 @@ class Stage:
     def status(self):
         """'st' -> ST 줄을 dict 로. 펄스와 mm 를 함께 담는다."""
         if self.dry:
-            x, y = self._dry_xy
+            x, y, z = self._dry_xy["x"], self._dry_xy["y"], self._dry_xy["z"]
             return {"x_pulse": int(x * PPMM), "y_pulse": int(y * PPMM),
-                    "x2_pulse": int(x * PPMM),
+                    "x2_pulse": int(x * PPMM), "z_pulse": int(z * Z_PPMM),
                     "homed_x": self._dry_homed["x"], "homed_y": self._dry_homed["y"],
-                    "dirty": False, "x_mm": x, "y_mm": y, "raw": "(dry)"}
+                    "homed_z": self._dry_homed["z"],
+                    "dirty": False, "x_mm": x, "y_mm": y, "z_mm": z, "raw": "(dry)"}
         self._write("st")
         ln = self._collect(LINE_TIMEOUT_S, lambda s: s.startswith("ST "), "st")
         d = {}
@@ -281,12 +306,20 @@ class Stage:
                 "x_pulse": int(d["X"]), "y_pulse": int(d["Y"]),
                 "x2_pulse": int(d.get("X2", d["X"])),
                 "homed_x": d.get("HX") == "1", "homed_y": d.get("HY") == "1",
+                "homed_z": d.get("HZ") == "1",
                 "dirty": d.get("DIRTY") == "1", "raw": ln.strip(),
             }
         except (KeyError, ValueError):
             raise StageError("ST 줄을 해석할 수 없습니다: %s" % ln)
         out["x_mm"] = out["x_pulse"] / PPMM
         out["y_mm"] = out["y_pulse"] / PPMM
+        # V8 이하에는 Z 가 없다. 그때는 z 를 모른다고 답한다(죽지 않는다).
+        if "Z" in d:
+            out["z_pulse"] = int(d["Z"])
+            out["z_mm"] = out["z_pulse"] / Z_PPMM
+        else:
+            out["z_pulse"] = None
+            out["z_mm"] = None
         return out
 
     def _dry_wait(self, what):
@@ -314,8 +347,8 @@ class Stage:
             self._dry_wait(what)
             try:
                 axis, val = cmd.split()
-                self._dry_xy[0 if axis == "mx" else 1] = float(val)
-            except ValueError:
+                self._dry_xy[axis[1]] = float(val)
+            except (ValueError, KeyError):
                 pass
             return "(dry) %s" % cmd
         # 완료는 이동 보고 줄, 또는 '이미 그 위치'(움직일 필요가 없던 경우).
@@ -330,11 +363,22 @@ class Stage:
         self._ensure_speed(DEFAULT_SPEED_PPS)
         return self._move("my %.1f" % float(mm), "Y 이동")
 
+    def move_z_mm(self, mm):
+        """Z 절대 이동. 0 이 맨 위이고 값이 커질수록 내려간다."""
+        self._need_fw(9, "Z 이동")
+        self._ensure_speed(DEFAULT_SPEED_PPS)
+        return self._move("mz %.2f" % float(mm), "Z 이동")
+
     # ---- 수동 원점 잡기(V7) --------------------------------------------
-    def _need_fw(self, want, what):
-        if self.fw_version and self.fw_version != want:
-            raise StageError("펌웨어 %s 필요 (%s · 지금 %s)"
-                             % (want, what, self.fw_version))
+    def _need_fw(self, min_major, what):
+        """이 기능에 필요한 최소 펌웨어 버전. 같은지가 아니라 이상인지를 본다.
+
+        같은지로 보면 펌웨어를 올릴 때마다 멀쩡한 기능이 전부 막힌다.
+        """
+        cur = _major_of(self.fw_version)
+        if cur and cur < int(min_major):
+            raise StageError("펌웨어 V%d 필요 (%s · 지금 %s)"
+                             % (int(min_major), what, self.fw_version))
 
     def _ensure_speed(self, pps):
         """속도가 다를 때만 v 를 보낸다.
@@ -362,7 +406,9 @@ class Stage:
         """
         self._write("forget")
         if self.dry:
-            self._dry_homed = {"x": False, "y": False}
+            # 펌웨어 V9 의 forget 은 세 축을 모두 지운다. 키를 빠뜨리면 다음
+            # status() 가 KeyError 로 죽어 위치가 통째로 사라진다.
+            self._dry_homed = {k: False for k in self._dry_homed}
         else:
             self._collect(LINE_TIMEOUT_S, lambda t: "기록 삭제" in t, "원점 기록 삭제")
         return self.status()
@@ -375,11 +421,11 @@ class Stage:
         있을 때 10mm 씩 아홉 번 누르게 하지 않으려는 것이다(2026-09-11).
         조각 사이마다 중단을 확인한다.
         """
-        self._need_fw("V8", "수동 이동")
         ax = str(axis).lower()
-        if ax not in ("x", "y"):
-            raise StageError("축은 x 또는 y 여야 합니다: %s" % axis)
-        total = int(round(float(mm) * PPMM))
+        if ax not in ("x", "y", "z"):
+            raise StageError("축은 x, y, z 중 하나여야 합니다: %s" % axis)
+        self._need_fw(9 if ax == "z" else 8, "수동 이동")
+        total = int(round(float(mm) * _ppmm(ax)))
         if total == 0:
             return "  이미 그 위치"
         # 비상정지 뒤에도 막지 않는다. 위치는 못 믿지만 상대 이동은 사람이 보면서
@@ -409,15 +455,13 @@ class Stage:
         self._write(cmd)
         if self.dry:
             self._dry_wait("수동 이동(%s)" % ax)
-            i = 0 if ax == "x" else 1
-            nxt = self._dry_xy[i] + pulse / PPMM
+            nxt = self._dry_xy[ax] + pulse / _ppmm(ax)
             # 펌웨어 V8 과 같은 규칙: 원점이 있는 축이 가동범위를 벗어나면 그 축의
             # 원점을 해제한다. 원점이 없으면 음수 좌표도 말이 된다(기준이 없다).
             if self._dry_homed[ax]:
-                top = (X_MAX_PULSE if ax == "x" else Y_MAX_PULSE) / PPMM
-                if nxt < 0 or nxt > top:
+                if nxt < 0 or nxt > _max_mm(ax):
                     self._dry_homed[ax] = False
-            self._dry_xy[i] = nxt
+            self._dry_xy[ax] = nxt
             return "(dry) %s" % cmd
         return self._collect(MOVE_TIMEOUT_S,
                              lambda s: (DONE_MARK in s) or (ALREADY_MARK in s),
@@ -426,15 +470,17 @@ class Stage:
     def set_zero(self, axis="xy"):
         """지금 서 있는 자리를 0 으로 등록한다(zx / zy / z)."""
         ax = str(axis).lower()
-        cmd = {"x": "zx", "y": "zy", "xy": "z"}.get(ax)
+        cmd = {"x": "zx", "y": "zy", "z": "zz", "xy": "z"}.get(ax)
         if cmd is None:
-            raise StageError("축은 x, y, xy 중 하나여야 합니다: %s" % axis)
+            raise StageError("축은 x, y, z, xy 중 하나여야 합니다: %s" % axis)
+        if ax == "z":
+            self._need_fw(9, "원점 등록")
         self._write(cmd)
         if not self.dry:
             self._collect(LINE_TIMEOUT_S, lambda t: "0 으로 등록" in t, "원점 등록")
         else:
             for one in (["x", "y"] if ax == "xy" else [ax]):
-                self._dry_xy[0 if one == "x" else 1] = 0.0
+                self._dry_xy[one] = 0.0
                 self._dry_homed[one] = True
         self.reset_abort()
         return self.status()

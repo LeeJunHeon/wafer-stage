@@ -88,6 +88,9 @@ class StageCtl:
     async def move_y(self, mm):
         return await self._call(self._need().move_y_mm, mm)
 
+    async def move_z(self, mm):
+        return await self._call(self._need().move_z_mm, mm)
+
     async def jog_rel(self, axis, mm):
         return await self._call(self._need().jog_rel, axis, mm)
 
@@ -121,4 +124,6 @@ class StageCtl:
 StageError = stage_mod.StageError
 # 원점(0)이 끝단에서 물러나는 거리. 드라이버 상수를 그대로 쓴다(단일 출처).
 ORIGIN_GAP_MM = stage_mod.ORIGIN_GAP_MM
+# Z 가동범위(mm). 0 = 맨 위, 값이 커질수록 아래다.
+Z_MAX_MM = stage_mod.Z_MAX_MM
 ctl = StageCtl()
