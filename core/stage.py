@@ -49,13 +49,63 @@ ORIGIN_GAP_MM = 2.0
 PPMM = 160.0                  # 160 펄스 = 1mm (.ino 의 PPMM)
 DEFAULT_SPEED_PPS = 6000      # 펌웨어 기본 vMax (v6000)
 JOG_SLOW_PPS = 1500           # 원점 없이 수동으로 몰 때 - 끝단에 닿아도 살살
+# 가동범위(기본값). 펌웨어의 X_MAX/Y_MAX/Z_MAX 는 기계 한계이고, 앱은 그 안에서
+# 실사용 범위를 settings.json 의 "limits" 로 정한다 - set_limits() 가 아래 값을
+# 런타임에 바꾼다. 다른 모듈은 stage.Z_MAX_MM 처럼 모듈 속성으로 읽으므로 값을
+# 복사해 두지 말고 매번 stage_mod.X 로 읽어야 바뀐 값을 본다.
 X_MAX_PULSE = 39620           # 247.6mm
 Y_MAX_PULSE = 39640           # 247.8mm
 # 펌웨어 V9 의 Z_PPMM · Z_MAX 와 같은 값이어야 한다.
-# 실측: 위 끝단에서 2mm 이격한 0 에서 아래 끝단까지 약 45mm -> 아래도 2mm 남긴다.
+# 실측: 위 끝단에서 2mm 이격한 0 에서 아래 끝단까지 45mm (2026-09-16 재실측).
 Z_PPMM      = 160.0           # 실측 확인 2026-09-14 (1mm 명령 = 1mm 이동)
-Z_MAX_PULSE = 6880            # 43mm - 실측값
+Z_MAX_PULSE = 7200            # 45mm - 실측값
 Z_MAX_MM    = Z_MAX_PULSE / Z_PPMM
+LIMIT_MIN_MM, LIMIT_MAX_MM = 1.0, 1000.0   # set_limits 가 받는 값의 범위
+
+
+def set_limits(x_max_mm=None, y_max_mm=None, z_max_mm=None):
+    """축 상한(mm)을 바꾼다. 펄스로 환산해(반올림) 그 축의 상한에 반영한다.
+
+    None 이거나 1~1000 mm 를 벗어난 값은 무시하고 지금 값을 유지한다.
+    calib.set_marker_mm 과 같은 방식 - 설정을 저장하면 다음 이동부터 적용된다.
+    """
+    global X_MAX_PULSE, Y_MAX_PULSE, Z_MAX_PULSE, Z_MAX_MM
+
+    def _ok(v):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return v if LIMIT_MIN_MM <= v <= LIMIT_MAX_MM else None
+
+    x, y, z = _ok(x_max_mm), _ok(y_max_mm), _ok(z_max_mm)
+    if x is not None:
+        X_MAX_PULSE = int(round(x * PPMM))
+    if y is not None:
+        Y_MAX_PULSE = int(round(y * PPMM))
+    if z is not None:
+        Z_MAX_PULSE = int(round(z * Z_PPMM))
+        Z_MAX_MM = Z_MAX_PULSE / Z_PPMM
+    return limits_mm()
+
+
+def limits_mm():
+    """지금 쓰는 축 상한(mm). 화면의 limits 와 조그 자르기가 이 값을 쓴다."""
+    return {"x_max_mm": X_MAX_PULSE / PPMM, "y_max_mm": Y_MAX_PULSE / PPMM,
+            "z_max_mm": Z_MAX_PULSE / Z_PPMM}
+
+
+def fw_limits_pulse(banner):
+    """부팅 배너의 "X 0~39620  Y 0~39640  Z 0~7200" 에서 펌웨어 한계(펄스)를 읽는다.
+
+    못 읽은 축은 빠진다. 연결 때 앱 설정이 이 한계보다 크면 경고를 남기는 데 쓴다.
+    """
+    out = {}
+    for ax in ("x", "y", "z"):
+        m = re.search(r"(?<![A-Z])%s\s+0~(\d+)" % ax.upper(), banner or "")
+        if m:
+            out[ax] = int(m.group(1))
+    return out
 
 # Z=0 은 맨 위(들어 올린 자리)다. 값이 커질수록 아래로 내려가고 펄스 부호도 같다.
 # 원점은 위쪽 하드스톱으로 밀어서 잡는다 - 끝단 이동(touch_end)은 Z 에서 '위로' 다.
@@ -121,6 +171,7 @@ def _ppmm(ax):
 
 
 def _max_mm(ax):
+    """그 축의 상한(mm). set_limits 가 바꾼 뒤에도 늘 지금 값에서 계산한다."""
     top = {"x": X_MAX_PULSE, "y": Y_MAX_PULSE, "z": Z_MAX_PULSE}[ax]
     return top / _ppmm(ax)
 

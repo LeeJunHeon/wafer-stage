@@ -198,7 +198,7 @@
   // 상한은 그 축의 가동범위다(Z 는 훨씬 짧다). 범위는 서버가 state 로 준다.
   const touchMm = (axis) => {
     const lim = (UI.state && UI.state.limits) || {};
-    const top = (axis === 'z') ? Math.floor(lim.z_max_mm || 43) : 248;
+    const top = Math.floor(lim[axis + '_max_mm'] || (axis === 'z' ? 45 : 248));
     const mm = Math.max(1, Math.min(top, Math.round(+$('jogPushMm').value || 10)));
     $('jogPushMm').value = mm;
     return mm;

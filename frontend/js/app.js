@@ -82,7 +82,7 @@
     UI.applySequence(s);
     UI.applyJog(s);
     UI.lock();
-    fillSettings(s.settings || {}, s.data_dir);
+    fillSettings(s.settings || {}, s.data_dir, s);
   }
 
   // ---------------- 연결 / 설정 ----------------
@@ -93,8 +93,9 @@
 
   const dlg = $('dlgSettings');
   let settingsOpen = false;
-  function fillSettings(cfg, dataDir) {
+  function fillSettings(cfg, dataDir, live) {
     if (settingsOpen) return;             // 편집 중에는 덮어쓰지 않는다
+    live = live || {};
     $('setData').textContent = dataDir || UI.EMPTY;
     $('setPort').value = cfg.serial_port || '';
     $('setCam').value = cfg.camera_index != null ? cfg.camera_index : 1;
@@ -102,9 +103,18 @@
     $('setParkX').value = p[0]; $('setParkY').value = p[1];
     $('setDwell').value = cfg.dwell_s != null ? cfg.dwell_s : 5;
     $('setDriver').value = (cfg.measure || {}).driver || 'dummy';
+    // 가동범위·Z 측정 깊이. 설정에 없으면 서버가 지금 쓰는 값(state.limits)을 보여 준다.
+    const lim = Object.assign({}, live.limits || {}, cfg.limits || {});
+    $('setLimX').value = lim.x_max_mm != null ? lim.x_max_mm : '';
+    $('setLimY').value = lim.y_max_mm != null ? lim.y_max_mm : '';
+    $('setLimZ').value = lim.z_max_mm != null ? lim.z_max_mm : '';
+    $('setZMeas').value = cfg.z_measure_mm != null ? cfg.z_measure_mm : '';
     const tb = $('setMarkers');
     tb.textContent = '';
-    const mk = cfg.marker_mm_xy || {};
+    // 설정에 marker_mm_xy 가 없으면 표가 비어 값을 넣을 수 없었다. 서버가 지금
+    // 쓰는 기준값(state.marker_mm)으로 채운다 - id 0~3 네 줄이 항상 보인다.
+    const mk = Object.assign({}, live.marker_mm || {}, cfg.marker_mm_xy || {});
+    ['0', '1', '2', '3'].forEach(id => { if (!mk[id]) mk[id] = [0, 0]; });
     Object.keys(mk).sort().forEach(id => {
       const tr = document.createElement('tr');
       const td0 = document.createElement('td'); td0.textContent = id; tr.appendChild(td0);
@@ -124,7 +134,7 @@
     UI.send({ cmd: 'list_ports' });      // 열 때마다 최신 목록으로
     dlg.showModal();
   };
-  $('btnCloseSettings').onclick = () => { settingsOpen = false; dlg.close(); fillSettings((UI.state || {}).settings || {}, (UI.state || {}).data_dir); };
+  $('btnCloseSettings').onclick = () => { settingsOpen = false; dlg.close(); fillSettings((UI.state || {}).settings || {}, (UI.state || {}).data_dir, UI.state || {}); };
   $('btnSaveSettings').onclick = () => {
     const mk = {};
     document.querySelectorAll('.mkin').forEach(inp => {
@@ -140,6 +150,9 @@
       dwell_s: +$('setDwell').value,
       marker_mm_xy: mk,
       measure: { driver: $('setDriver').value.trim() || 'dummy' },
+      limits: { x_max_mm: +$('setLimX').value, y_max_mm: +$('setLimY').value,
+                z_max_mm: +$('setLimZ').value },
+      z_measure_mm: +$('setZMeas').value,
     });
     settingsOpen = false;
     dlg.close();

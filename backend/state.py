@@ -15,7 +15,8 @@ from storage import atomic_write_json, safe_read_json
 
 # 앱이 편집하는 설정 키만 여기에 기본값을 둔다. 검출 파라미터(detect.DEFAULTS)는
 # settings.json 에 그대로 있고 화면에서 건드리지 않는다.
-APP_KEYS = ("serial_port", "camera_index", "park_xy", "dwell_s", "marker_mm_xy", "measure")
+APP_KEYS = ("serial_port", "camera_index", "park_xy", "dwell_s", "marker_mm_xy", "measure",
+            "limits", "z_measure_mm")
 
 DEFAULT_APP = {
     "serial_port": None,
@@ -24,6 +25,12 @@ DEFAULT_APP = {
     "dwell_s": 5,
     "marker_mm_xy": {"3": [15, 20], "2": [15, 160], "1": [201, 19], "0": [201, 160]},
     "measure": {"driver": "dummy"},
+    # 축 가동범위(mm). 펌웨어의 X_MAX/Y_MAX/Z_MAX 는 기계 한계이고 이 값은 그 안에서
+    # 쓰는 실사용 범위다. 저장하면 stage.set_limits · calib.set_limits 로 곧바로 반영.
+    "limits": {"x_max_mm": 247.6, "y_max_mm": 247.8, "z_max_mm": 45.0},
+    # 순회 중 측정할 때 Z 를 내릴 깊이(mm). 지금은 저장·표시·검증(z_max_mm 이하)만
+    # 하고 순회에서는 아직 쓰지 않는다 - 순회에 Z 하강·상승을 넣는 다음 단계에서 쓴다.
+    "z_measure_mm": 44.0,
 }
 
 
@@ -70,8 +77,18 @@ class State:
                 logger.early("warn", "settings.json 을 만들지 못했습니다: %s" % e)
         self.params = p
         self.settings = {k: p.get(k, DEFAULT_APP[k]) for k in APP_KEYS}
-        calib.set_marker_mm(self.settings.get("marker_mm_xy"))
+        self.apply_to_core()
         return p
+
+    def apply_to_core(self):
+        """설정 중 core 가 쓰는 값(마커 좌표·가동범위)을 core 모듈에 반영한다."""
+        calib.set_marker_mm(self.settings.get("marker_mm_xy"))
+        lim = self.settings.get("limits")
+        if not isinstance(lim, dict):
+            lim = {}
+        stage_mod.set_limits(lim.get("x_max_mm"), lim.get("y_max_mm"), lim.get("z_max_mm"))
+        got = stage_mod.limits_mm()
+        calib.set_limits(got["x_max_mm"], got["y_max_mm"])
 
     def save_settings(self, patch):
         """앱이 편집하는 키만 반영해 저장한다 (검출 파라미터는 건드리지 않는다)."""
@@ -142,10 +159,11 @@ class State:
             "sensing": dict(self.sensing) if self.sensing else None,
             "wafer": dict(self.wafer) if self.wafer else None,
             "markers": {str(k): v for k, v in (self.markers or {}).items()},
-            # 가동범위. 화면의 스테이지 맵이 축척을 잡는 데 쓴다(펌웨어 상수에서 계산).
-            "limits": {"x_max_mm": round(stage_mod.X_MAX_PULSE / stage_mod.PPMM, 1),
-                       "y_max_mm": round(stage_mod.Y_MAX_PULSE / stage_mod.PPMM, 1),
-                       "z_max_mm": round(stage_mod.Z_MAX_MM, 1)},
+            # 가동범위(지금 드라이버가 쓰는 값). 스테이지 맵의 축척과 조그 상한이 쓴다.
+            "limits": {k: round(v, 1) for k, v in stage_mod.limits_mm().items()},
+            # 서버가 지금 쓰는 마커 기준 좌표. settings 에 marker_mm_xy 가 없어도
+            # 설정 창이 이 값으로 표를 채운다.
+            "marker_mm": {str(k): [v[0], v[1]] for k, v in calib.MARKER_MM.items()},
             "samples": [dict(s) for s in self.samples],
             "sequence": dict(self.sequence, estopped=_estopped()),
             "warnings": list(self.warnings),

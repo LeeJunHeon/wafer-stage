@@ -120,6 +120,20 @@ class StageCtl:
 StageError = stage_mod.StageError
 # 원점(0)이 끝단에서 물러나는 거리. 드라이버 상수를 그대로 쓴다(단일 출처).
 ORIGIN_GAP_MM = stage_mod.ORIGIN_GAP_MM
-# Z 가동범위(mm). 0 = 맨 위, 값이 커질수록 아래다.
-Z_MAX_MM = stage_mod.Z_MAX_MM
+
+
+def z_max_mm():
+    """Z 가동범위(mm). 0 = 맨 위, 값이 커질수록 아래다.
+
+    설정(limits.z_max_mm)으로 바뀌므로 값을 복사해 두지 않고 매번 드라이버에서 읽는다.
+    """
+    return stage_mod.Z_MAX_MM
+
+
+def limits_mm():
+    """세 축의 가동범위(mm). 화면 state 의 limits 가 이 값이다."""
+    return stage_mod.limits_mm()
+
+
+fw_limits_pulse = stage_mod.fw_limits_pulse
 ctl = StageCtl()

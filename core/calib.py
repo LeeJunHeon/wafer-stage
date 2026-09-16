@@ -77,8 +77,35 @@ def _load_marker_mm_from_settings():
 
 _load_marker_mm_from_settings()
 
-# 갠트리 가동범위. 이 밖의 좌표는 경고만 하고 값은 그대로 보여준다.
-AXIS_MIN, AXIS_MAX = 0.0, 247.0
+# 갠트리 가동범위(mm). 이 밖의 좌표는 경고만 하고 값은 그대로 보여준다.
+# 기본값은 core/stage.py 의 축 상한과 같고, 설정(settings.json "limits")이 바뀌면
+# set_limits 로 따라온다. 축마다 다르므로 X·Y 를 따로 둔다.
+AXIS_MIN = 0.0
+AXIS_MAX_X, AXIS_MAX_Y = 247.6, 247.8
+
+
+def set_limits(x_max=None, y_max=None):
+    """X·Y 상한(mm)을 바꾼다. None 이거나 1~1000 mm 밖이면 그 축은 그대로 둔다."""
+    global AXIS_MAX_X, AXIS_MAX_Y
+
+    def _ok(v):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return v if 1.0 <= v <= 1000.0 else None
+
+    x, y = _ok(x_max), _ok(y_max)
+    if x is not None:
+        AXIS_MAX_X = x
+    if y is not None:
+        AXIS_MAX_Y = y
+    return AXIS_MAX_X, AXIS_MAX_Y
+
+
+def range_text():
+    """경고 문구용 "X 0~247.6 · Y 0~247.8"."""
+    return "X %g~%g · Y %g~%g" % (AXIS_MIN, AXIS_MAX_X, AXIS_MIN, AXIS_MAX_Y)
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -264,12 +291,12 @@ def perspective_gap(A, H, src):
 
 
 def in_range(x, y):
-    return AXIS_MIN <= x <= AXIS_MAX and AXIS_MIN <= y <= AXIS_MAX
+    return AXIS_MIN <= x <= AXIS_MAX_X and AXIS_MIN <= y <= AXIS_MAX_Y
 
 
 def warn_range(x, y):
     if not in_range(x, y):
-        print("경고      : 가동범위(%.0f~%.0f mm) 밖입니다." % (AXIS_MIN, AXIS_MAX))
+        print("경고      : 가동범위(%s mm) 밖입니다." % range_text())
 
 
 # --------------------------------------------------------------------------
@@ -452,9 +479,10 @@ def grid_diff_mm(new, old, n=5):
     읽는다. 곧 '옛 보정을 그대로 쓰면 생기는 좌표 오차' 다.
     """
     ds = []
-    g = np.linspace(AXIS_MIN, AXIS_MAX, n)
-    for x in g:
-        for y in g:
+    gx = np.linspace(AXIS_MIN, AXIS_MAX_X, n)
+    gy = np.linspace(AXIS_MIN, AXIS_MAX_Y, n)
+    for x in gx:
+        for y in gy:
             u, v = mm_to_px(old, x, y)
             nx, ny = px_to_mm(new, u, v)
             ds.append(float(np.hypot(nx - x, ny - y)))
@@ -826,8 +854,8 @@ def cmd_check(args):
           % (float(old.get("rotation_deg", 0.0)), new["rotation_deg"],
              new["rotation_deg"] - float(old.get("rotation_deg", 0.0))))
     mx, avg = grid_diff_mm(new, old)
-    print("좌표 차이  : 가동범위 %g~%g mm 5x5 격자에서 최대 %.2f mm / 평균 %.2f mm"
-          % (AXIS_MIN, AXIS_MAX, mx, avg))
+    print("좌표 차이  : 가동범위(%s mm) 5x5 격자에서 최대 %.2f mm / 평균 %.2f mm"
+          % (range_text(), mx, avg))
     if mx > 1.0:
         print("             -> 카메라가 움직였습니다. samples 는 매번 재보정하므로")
         print("                영향이 없지만, 저장값을 쓰는 px2mm/mm2px 는 --save 후 쓰세요.")

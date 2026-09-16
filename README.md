@@ -99,8 +99,9 @@ python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 
 | `samples` | `[{no, shape, u, v, X, Y, verts, on, status, value, unit, edge_completed, area_mm2}]` |
 | `sequence` | `{phase, mode, dwell_s, cur_no, done, total, elapsed_s, out_dir, message}` |
 | `warnings` | 검출 경고 문자열 목록 |
-| `settings` | `{serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure}` |
-| `limits` | `{x_max_mm, y_max_mm, z_max_mm}` — 스테이지 맵의 축척(맵은 X·Y 만) |
+| `settings` | `{serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure, limits, z_measure_mm}` |
+| `limits` | `{x_max_mm, y_max_mm, z_max_mm}` — 지금 드라이버가 쓰는 가동범위(settings.limits 반영값). 스테이지 맵의 축척·조그 상한 |
+| `marker_mm` | `{"0":[X,Y],…}` — 서버가 지금 쓰는 마커 기준 좌표. settings 에 `marker_mm_xy` 가 없어도 설정 창이 이것으로 표를 채운다 |
 | `data_dir` | 데이터 폴더 절대경로(설정 창에 표시) |
 
 `status`: `wait | moving | measuring | done | skip | error`
@@ -177,9 +178,18 @@ V9 에서 Z 축이 붙었다. EEPROM 기록 형식이 바뀌어(매직 `POS9`) V
 펄스 부호도 같다(`+` = 아래). 원점은 **위쪽** 하드스톱으로 밀어서 잡고, 거기서
 2 mm 물러난 자리가 0 이다(X·Y 와 같은 규칙). 끝단 이동은 Z 에서 '위로' 다.
 
-`Z_MAX`(6880 = 43 mm)와 `Z_PPMM`(160) 둘 다 실측 확인했다(2026-09-14). 스트로크는
-위 끝단에서 2 mm 이격한 0 에서 아래 끝단까지 약 45 mm 인데 아래도 2 mm 를 남겼고,
+`Z_MAX`(7200 = 45 mm)와 `Z_PPMM`(160) 둘 다 실측 확인했다(2026-09-14 · 스트로크
+2026-09-16 재실측). 스트로크는 위 끝단에서 2 mm 이격한 0 에서 아래 끝단까지 45 mm 이고,
 펄스/mm 는 1 mm 명령이 실제로 1 mm 를 간다.
+
+**가동범위는 두 겹이다.** 펌웨어의 `X_MAX/Y_MAX/Z_MAX` 는 기계 한계이고(넘으면 펌웨어가
+거부), 앱은 그 안에서 실사용 범위를 `settings.json` 의 `limits`
+(`x_max_mm`·`y_max_mm`·`z_max_mm`, 기본 247.6·247.8·45)로 정한다. 설정 창에서 고쳐
+저장하면 `core/stage.py set_limits` 와 `core/calib.py set_limits` 에 곧바로 반영되어
+다음 이동부터 조그 자르기·범위 검사·끝단 이동 상한이 그 값을 쓴다(1~1000 mm 밖의
+값은 무시). 연결할 때 앱 설정이 배너의 펌웨어 한계보다 크면 경고 로그를 남긴다.
+`z_measure_mm`(기본 44)은 순회 중 측정할 때 Z 를 내릴 깊이다 — `z_max_mm` 보다 크면
+저장을 거절한다. 아직 순회에서는 쓰지 않는다(아래 [미결] 2).
 
 ### Z 실측 (프로브를 달기 전에)
 
@@ -188,7 +198,7 @@ V9 에서 Z 축이 붙었다. EEPROM 기록 형식이 바뀌어(매직 `POS9`) V
 1. ~~펄스/mm~~ — 완료(160). 스텝 10 으로 [Z↓] 를 다섯 번 눌러 실제로 내려온 거리를
    자로 잰다. `Z_PPMM = 160 x (지시 50) / (실제 mm)`. 고칠 때는 펌웨어와
    `core/stage.py` 의 `Z_PPMM` 을 같은 값으로, `Z_MAX`(펄스)도 다시 계산한다.
-2. ~~스트로크~~ — 완료(43 mm = 6880 펄스).
+2. ~~스트로크~~ — 완료(45 mm = 7200 펄스).
 3. [Z↓] 인데 위로 올라가면 펌웨어의 `Z_DIR_INVERT` 를 `true` 로 바꾸고 다시 올린다.
 
 **원점 복귀와 파킹은 Z 를 먼저 맨 위(0)로 올린 뒤 X·Y 를 움직인다.** Z 원점이 없으면
@@ -207,7 +217,7 @@ V9 에서 Z 축이 붙었다. EEPROM 기록 형식이 바뀌어(매직 `POS9`) V
 
 1. [수동 이동] 팝업을 연다. [원점 잡기] 는 축이 행, 동작이 열인 표다.
 2. 패드로 대강 끝 근처까지 옮긴다(원점이 없는 축은 1500 pps 로 느리게 간다).
-3. [밀 거리] 에 남은 거리를 어림해 넣고(1~248 mm) X 행의 [밀기] 를 누른다. 펌웨어
+3. [밀 거리] 에 남은 거리를 어림해 넣고(1~그 축의 가동범위) X 행의 [밀기] 를 누른다. 펌웨어
    한도는 한 번에 50 mm 지만 드라이버가 나눠 보내므로 한 번에 멀리 갈 수 있다.
    끝에 닿으면 드르륵 소리가 난다(정상) — 그만큼 덜 갔다는 뜻이니 마지막은 짧게.
    가동범위를 벗어나는 순간 그 축의 원점은 자동으로 풀린다(탈조하면 좌표를 못 믿는다).
@@ -237,7 +247,7 @@ V9 에서 Z 축이 붙었다. EEPROM 기록 형식이 바뀌어(매직 `POS9`) V
 |---|---|
 | `stage_connect` | `port?` |
 | `stage_disconnect` | |
-| `touch_end` | `axis:"x"\|"y"\|"z"`, `mm`(기본 5, 1~248. z 는 1~`z_max_mm`) — 그 축을 0 쪽(z 는 위)으로 민다. 50 mm 조각으로 나눠 보낸다. 등록하지 않는다 |
+| `touch_end` | `axis:"x"\|"y"\|"z"`, `mm`(기본 5, 1~그 축의 `limits`) — 그 축을 0 쪽(z 는 위)으로 민다. 50 mm 조각으로 나눠 보낸다. 등록하지 않는다 |
 | `set_origin` | `axis:"x"\|"y"\|"z"\|"xy"` — 끝단에서 2 mm 물러난 자리를 0 으로 등록(거리는 고정) |
 | `park` | |
 | `goto` | `no` 또는 `x, y` |
@@ -255,7 +265,7 @@ V9 에서 Z 축이 붙었다. EEPROM 기록 형식이 바뀌어(매직 `POS9`) V
 | `open_log_dir` | 날짜별 로그 폴더를 연다 |
 | `preview_start` `preview_stop` | 카메라 미리보기 |
 | `list_ports` | 시리얼 포트 목록 → `ack{of:"list_ports", ports:[{device, description}]}` |
-| `settings_save` | `serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure` |
+| `settings_save` | `serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure, limits, z_measure_mm` — `z_measure_mm > limits.z_max_mm` 면 거절(ack `z_measure_over`) |
 | `exit` | |
 
 `run` 은 검출 경고에 "wafer is cut off" 또는 반사광 50% 이상이 있거나 마커가 3개뿐이면
@@ -291,8 +301,8 @@ X 레일과 현재 위치의 빔·캐리지, 마커 4개, 감지영역, 웨이�
    하고 X·Y 가 간다. 프로브를 달면 이것을 **거절**로 올리고, 좌표 이동·순회 전체에
    같은 규칙을 적용해야 한다(Z 가 내려가 있는 동안 X·Y 금지).
 2. **순회에 Z 넣기** — [Z 상승 → X·Y 이동 → Z 하강 → 측정 → Z 상승] 자리를 engine 에
-   비워 두었다. 하강 깊이는 설정값이 된다.
-3. ~~**Z 실측**~~ — 완료(2026-09-14). `Z_PPMM` 160 · `Z_MAX` 6880(43 mm).
+   비워 두었다. 하강 깊이는 설정 `z_measure_mm`(이미 저장·검증됨)을 쓴다.
+3. ~~**Z 실측**~~ — 완료(2026-09-14). `Z_PPMM` 160 · `Z_MAX` 7200(45 mm, 2026-09-16 재실측).
 4. **조명** — 밝은 회색/반투명 칩은 웨이퍼와 밝기 차가 4~9% 라 영상만으로 구분되지
    않는다. 확산광으로 바꾸면 반사광과 함께 해결된다.
 5. **렌즈 왜곡 보정** — 지금은 호모그래피(평면 가정)뿐이다.

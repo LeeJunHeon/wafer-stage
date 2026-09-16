@@ -10,13 +10,14 @@
 import asyncio
 import os
 
-from core import calib, paths
+from core import paths
 
 import engine
 import logger
 import stagectl
 import vision
 from connection import push_ack, push_log, push_state, run_on_loop
+import state as state_mod
 from state import state
 
 _shutdown_handler = None
@@ -165,6 +166,7 @@ async def _stage_connect(data):
     if stagectl.ctl.fw_version and stagectl.ctl.fw_version != "V9":
         await push_log("펌웨어 %s · 이 앱은 V9 이 필요합니다"
                        % stagectl.ctl.fw_version, "warn")
+    _warn_fw_limits(banner)
     if not (state.stage["homed_x"] and state.stage["homed_y"]):
         await push_log("원점 없음 · 수동 이동에서 끝단까지 민 뒤 원점 등록", "warn")
     elif not state.stage["dirty"]:
@@ -172,6 +174,24 @@ async def _stage_connect(data):
         await push_log("저장된 위치 복원 · X%.2f Y%.2f"
                        % (state.stage["x_mm"], state.stage["y_mm"]), "ok")
     await push_state()
+
+
+def _warn_fw_limits(banner):
+    """앱의 가동범위 설정이 펌웨어 한계(배너의 X 0~… 값)보다 크면 경고를 남긴다.
+
+    펌웨어 값이 기계 한계이고 앱 설정은 그 안에서 쓰는 실사용 범위다. 설정이 더
+    크면 펌웨어가 거부하므로 위험하지는 않지만, 화면이 갈 수 있다고 보여 주는
+    자리에 실제로는 못 가는 셈이라 알려 둔다.
+    """
+    fw = stagectl.fw_limits_pulse(banner)
+    app = stagectl.limits_mm()
+    for ax, pulse in fw.items():
+        ppmm = stagectl.stage_mod.Z_PPMM if ax == "z" else stagectl.stage_mod.PPMM
+        fw_mm = pulse / ppmm
+        app_mm = app[ax + "_max_mm"]
+        if app_mm > fw_mm + 1e-6:
+            logger.write("warn", "%s 가동범위 설정 %.1f mm 가 펌웨어 한계 %.1f mm 보다 큽니다"
+                         % (ax.upper(), app_mm, fw_mm))
 
 
 async def _stage_disconnect(_data):
@@ -223,9 +243,8 @@ async def _jog(data):
         await push_log("현재 위치를 모릅니다 · 원점 등록 후 사용하세요", "warn")
         await push_ack("jog", False, "no_position")
         return
-    # Z 의 가동범위는 펌웨어 상수에서 온다(X·Y 는 보정이 쓰는 작업영역 범위).
-    lo, hi = ((0.0, stagectl.Z_MAX_MM) if axis == "z"
-              else (calib.AXIS_MIN, calib.AXIS_MAX))
+    # 가동범위는 설정(limits)에서 온다. 드라이버·보정 둘 다 같은 값으로 맞춰져 있다.
+    lo, hi = 0.0, stagectl.limits_mm()[axis + "_max_mm"]
     target = min(hi, max(lo, cur + delta))
     if abs(target - cur) < 0.005:          # 이미 끝이다 - 시리얼을 괴롭히지 않는다
         await push_ack("jog", False, "at_limit",
@@ -299,7 +318,7 @@ async def _touch_end(data):
     except (TypeError, ValueError):
         mm = 5.0
     # Z 는 스트로크가 훨씬 짧다. 0 쪽(Z 는 위)으로 미는 것은 축마다 같다.
-    top = stagectl.Z_MAX_MM if axis == "z" else 248.0
+    top = stagectl.limits_mm()[axis + "_max_mm"]
     if not (1.0 <= mm <= top):
         await push_log("끝단 이동 거리는 1~%g mm 입니다 (%g)" % (top, mm), "warn")
         return
@@ -440,12 +459,33 @@ async def _open_results(_data):
         await push_log("열지 못했습니다: %s (%s)" % (target, e), "warn")
 
 
+def _num(v, default):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 async def _settings_save(data):
-    patch = {k: data[k] for k in ("serial_port", "camera_index", "park_xy", "dwell_s",
-                                  "marker_mm_xy", "measure") if k in data}
+    patch = {k: data[k] for k in state_mod.APP_KEYS if k in data}
+    # Z 측정 깊이는 Z 가동범위 안이어야 한다(순회 때 그만큼 내린다). 저장하기 전에
+    # 거른다 - 저장 뒤에 걸러 봐야 settings.json 에는 이미 잘못 남는다.
+    lim = patch.get("limits")
+    if not isinstance(lim, dict):
+        lim = {}
+    # 저장 뒤 실제로 쓰일 Z 상한과 비교한다(1~1000 mm 밖의 값은 무시되고 지금 값이 남는다).
+    z_max = _num(lim.get("z_max_mm"), stagectl.z_max_mm())
+    if not (stagectl.stage_mod.LIMIT_MIN_MM <= z_max <= stagectl.stage_mod.LIMIT_MAX_MM):
+        z_max = stagectl.z_max_mm()
+    z_meas = _num(patch.get("z_measure_mm", state.settings.get("z_measure_mm")),
+                  state_mod.DEFAULT_APP["z_measure_mm"])
+    if z_meas > z_max:
+        await push_log("Z 측정 깊이가 가동범위보다 큽니다 (%g > %g mm)"
+                       % (z_meas, z_max), "warn")
+        await push_ack("settings_save", False, "z_measure_over")
+        return
     old_index = state.camera["index"]
-    state.save_settings(patch)
-    calib.set_marker_mm(state.settings.get("marker_mm_xy"))
+    state.save_settings(patch)          # 안에서 마커·가동범위를 core 에 반영한다
     if state.camera["index"] != old_index and state.camera.get("preview"):
         vision.holder.reopen(state.params)   # 카메라 번호가 바뀌었다
     await push_log("설정을 저장했습니다 (다음 촬영부터 적용)", "ok")

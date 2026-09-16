@@ -300,7 +300,7 @@ async def touch_end_flow(c):
     c.logs.clear()
     await c.send(cmd="touch_end", axis="x", mm=300)
     await c.pump(1.5)
-    check(any("1~248 mm" in l["msg"] for l in c.logs), "끝단 이동 300mm 거부")
+    check(any("1~247.6 mm" in l["msg"] for l in c.logs), "끝단 이동 300mm 거부")
 
 
 async def touch_end_abort_flow(c):
@@ -381,21 +381,89 @@ async def z_flow(c):
     check(bool(sent) and sent[0] == "-> mz 0.00" and len(sent) == 3,
           "파킹도 mz 가 먼저 (%s)" % sent)
 
-    # 끝단 이동 상한은 그 축의 가동범위다. Z 는 43mm(실측).
+    # 끝단 이동 상한은 그 축의 가동범위다. Z 는 45mm(실측).
     top = c.state["limits"]["z_max_mm"]
-    check(top == 43.0, "limits.z_max_mm = 43 (%s)" % top)
+    check(top == 45.0, "limits.z_max_mm = 45 (%s)" % top)
     c.logs.clear()
     await c.send(cmd="touch_end", axis="z", mm=50)
     await c.pump(1.5)
-    check(any("1~43 mm" in l["msg"] for l in c.logs),
+    check(any("1~45 mm" in l["msg"] for l in c.logs),
           "끝단 이동 z 50 거부 (%s)" % [l["msg"] for l in c.logs][:2])
     check(c.state["stage"]["z_mm"] == 0.0, "거부됐으니 Z 는 그대로 0")
 
     c.logs.clear()
-    await c.send(cmd="touch_end", axis="z", mm=43)
+    await c.send(cmd="touch_end", axis="z", mm=45)
     await c.pump(4.0)
-    check(c.state["stage"]["z_mm"] == -43.0,
-          "끝단 이동 z 43 통과 -> Z -43 (%s)" % c.state["stage"]["z_mm"])
+    check(c.state["stage"]["z_mm"] == -45.0,
+          "끝단 이동 z 45 통과 -> Z -45 (%s)" % c.state["stage"]["z_mm"])
+
+
+async def limits_flow(c):
+    """설정의 limits 가 곧바로 조그 자르기·범위 검사에 반영되는지.
+
+    settings.json 은 케이스가 끝나면 _restore_settings 가 원래대로 돌린다.
+    """
+    lim = c.state["limits"]
+    check(lim == {"x_max_mm": 247.6, "y_max_mm": 247.8, "z_max_mm": 45.0},
+          "기본 limits (%s)" % lim)
+    mk = c.state.get("marker_mm") or {}
+    check(sorted(mk.keys()) == ["0", "1", "2", "3"],
+          "state.marker_mm 에 id 0~3 (%s)" % sorted(mk.keys()))
+
+    # Z 측정 깊이가 가동범위보다 크면 저장을 거절한다.
+    c.logs.clear()
+    await c.send(cmd="settings_save",
+                 limits={"x_max_mm": 200, "y_max_mm": 150, "z_max_mm": 40},
+                 z_measure_mm=41)
+    await c.pump(1.5)
+    check(any("Z 측정 깊이가 가동범위보다" in l["msg"] for l in c.logs),
+          "z_measure_mm > z_max_mm 저장 거절 (%s)" % [l["msg"] for l in c.logs][:2])
+    check(c.state["limits"]["x_max_mm"] == 247.6, "거절됐으니 limits 그대로")
+
+    await c.send(cmd="settings_save",
+                 limits={"x_max_mm": 200, "y_max_mm": 150, "z_max_mm": 40},
+                 z_measure_mm=39)
+    await c.pump(1.5)
+    lim = c.state["limits"]
+    check(lim == {"x_max_mm": 200.0, "y_max_mm": 150.0, "z_max_mm": 40.0},
+          "저장 뒤 limits 반영 (%s)" % lim)
+    check(c.state["settings"]["z_measure_mm"] == 39, "z_measure_mm 저장")
+
+    # 새 상한으로 잘린다: 조그(절대)는 상한에서 멈추고, goto 는 범위 밖을 거절한다.
+    await c.send(cmd="set_origin", axis="z")
+    await c.pump(3.0)
+    await c.send(cmd="jog", axis="z", delta_mm=100)
+    await c.pump(4.0)
+    check(c.state["stage"]["z_mm"] == 40.0, "Z 조그 100 -> 40 에서 잘림 (%s)"
+          % c.state["stage"]["z_mm"])
+    await c.send(cmd="goto", x=30, y=30)
+    await c.pump(3.0)
+    await c.send(cmd="jog", axis="x", delta_mm=300)
+    await c.pump(6.0)
+    check(c.state["stage"]["x_mm"] == 200.0, "X 조그 300 -> 200 에서 잘림 (%s)"
+          % c.state["stage"]["x_mm"])
+    c.logs.clear()
+    await c.send(cmd="goto", x=10, y=160)
+    await c.pump(2.0)
+    check(any("가동범위" in l["msg"] and "밖" in l["msg"] for l in c.logs),
+          "goto Y160 > 150 거절 (%s)" % [l["msg"] for l in c.logs][:2])
+    check(c.state["stage"]["y_mm"] == 30.0, "거절됐으니 Y 그대로 30")
+
+    # 1~1000 mm 밖의 값은 무시되고 지금 값이 유지된다.
+    await c.send(cmd="settings_save",
+                 limits={"x_max_mm": 5000, "y_max_mm": 0, "z_max_mm": 45},
+                 z_measure_mm=44)
+    await c.pump(1.5)
+    lim = c.state["limits"]
+    check(lim == {"x_max_mm": 200.0, "y_max_mm": 150.0, "z_max_mm": 45.0},
+          "범위 밖 값은 무시 (%s)" % lim)
+
+    # 끝단 이동 상한도 새 값을 따른다.
+    c.logs.clear()
+    await c.send(cmd="touch_end", axis="y", mm=160)
+    await c.pump(1.5)
+    check(any("1~150 mm" in l["msg"] for l in c.logs),
+          "끝단 이동 y 160 거부 (%s)" % [l["msg"] for l in c.logs][:2])
 
 
 async def z_alone_flow(c):
@@ -654,14 +722,14 @@ async def jog_flow(c):
 
     await c.send(cmd="jog", axis="x", delta_mm=300)
     await c.pump(4.0)
-    check(c.state["stage"]["x_mm"] == 247.0,
-          "jog x +300 -> 상한 247.0 (%s)" % c.state["stage"]["x_mm"])
+    check(c.state["stage"]["x_mm"] == 247.6,
+          "jog x +300 -> 상한 247.6 (%s)" % c.state["stage"]["x_mm"])
 
     # 현재 위치를 파킹으로
     await c.send(cmd="park_here")
     await c.pump(2.0)
     got = c.state["settings"]["park_xy"]
-    check(got == [247.0, 0.0], "park_here -> park_xy %s" % got)
+    check(got == [247.6, 0.0], "park_here -> park_xy %s" % got)
 
     # 순회 중에는 거절한다
     await c.send(cmd="capture")
@@ -792,6 +860,7 @@ def main():
                  {"WAFER_STAGE_DRY_MOVE_S": "1"}),
                 ("Z 축", good, z_flow, None),
                 ("Z 단독 등록", good, z_alone_flow, {"WAFER_STAGE_DRY_NO_HOME": "1"}),
+                ("가동범위 설정", good, limits_flow, None),
                 ("Z 원점 없이 파킹·복귀", good, no_z_origin_flow,
                  {"WAFER_STAGE_DRY_NO_HOME": "1"}),
                 ("펌웨어 V8", good, fw_v8_flow, {"WAFER_STAGE_DRY_FW": "V8"}),
