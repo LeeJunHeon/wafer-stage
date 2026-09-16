@@ -61,6 +61,9 @@ def run_one(d, params):
         return None, None, "읽기 실패"
     buf = _io.StringIO()
     with redirect_stdout(buf):                  # sense 가 찍는 진행 문구는 감춘다
+        # 앱(vision)과 같은 순서: 마커로 감지영역 -> 종이 기준 평탄화 -> 검출.
+        # settings 의 flat_field 가 꺼져 있으면 원본 그대로다.
+        bgr, _pre = calib.preprocess(bgr, params)
         mk = calib.fit_from_image(bgr, params)
         if mk is not None:                      # 마커 3개 이상 = calib 과 같은 경로
             res = calib.sense(bgr, params, save=False)

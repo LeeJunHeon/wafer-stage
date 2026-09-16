@@ -136,6 +136,8 @@
   <div class="settings">
     <div class="f"><span class="k">시리얼 포트</span><input class="v" id="setPort" list="portList" placeholder="COM7"><datalist id="portList"></datalist><span class="hint">비우면 자동 선택</span></div>
     <div class="f"><span class="k">카메라 번호</span><input class="v" id="setCam" type="number" min="0" step="1"></div>
+    <div class="f"><span class="k">화이트밸런스 (K)</span><input class="v" id="setWb" type="number" min="0" step="100" placeholder="0 = 카메라 기본" data-tip="카메라 화이트밸런스 색온도입니다. 0 이면 카메라 기본값을 그대로 씁니다."><span class="hint">0 = 기본</span></div>
+    <div class="f"><span class="k">노출</span><input class="v" id="setExp" type="number" step="1" placeholder="0 = 자동" data-tip="카메라 노출값입니다. 0 이면 자동 노출이고, 값을 주면 그 노출로 고정합니다."><span class="hint">0 = 자동</span></div>
     <div class="f"><span class="k">파킹 X (mm)</span><input class="v" id="setParkX" type="number" step="0.1"></div>
     <div class="f"><span class="k">파킹 Y (mm)</span><input class="v" id="setParkY" type="number" step="0.1"></div>
     <div class="f"><span class="k">샘플당 대기 (s)</span><input class="v" id="setDwell" type="number" min="0" step="1"></div>

@@ -33,6 +33,7 @@ import numpy as np
 
 from . import camera
 from . import detect
+from . import flat
 from . import imgio
 from . import paths
 
@@ -652,6 +653,32 @@ def sensing_rect(marker_pixels, image_shape):
     if u1 - u0 < 8 or v1 - v0 < 8:
         return None
     return (u0, v0, u1, v1)
+
+
+def preprocess(bgr, params):
+    """검출 전 전처리: 마커 -> 감지영역 -> 종이 기준 평탄화(flat.flatten).
+
+    (전처리된 이미지, info). info: rect, n_markers, flat(flat.flatten 의 info).
+    settings "flat_field" 가 꺼져 있거나 마커가 3개 미만이면 원본을 그대로 돌려준다.
+    마커 재계산과 검출은 이 결과로 한다 - vision(촬영)·regress·flat_check 가 같은
+    경로를 쓴다.
+    """
+    info = {"rect": None, "n_markers": 0, "flat": {"applied": False, "warning": ""}}
+    if bgr is None:
+        return bgr, info
+    mk = detect_markers(bgr, params)
+    info["n_markers"] = len(mk)
+    rect = sensing_rect([mk[k]["center_px"] for k in mk], bgr.shape)
+    info["rect"] = rect
+    if not bool(params.get("flat_field", True)):
+        info["flat"]["warning"] = "flat_field 꺼짐"
+        return bgr, info
+    if rect is None:
+        info["flat"]["warning"] = "마커 3개 미만 · 평탄화 건너뜀"
+        return bgr, info
+    out, finfo = flat.flatten(bgr, rect, params)
+    info["flat"] = finfo
+    return out, info
 
 
 def sense(bgr, params, allow_fallback=True, save=True):

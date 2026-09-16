@@ -484,10 +484,16 @@ async def _settings_save(data):
                        % (z_meas, z_max), "warn")
         await push_ack("settings_save", False, "z_measure_over")
         return
-    old_index = state.camera["index"]
+    if "exposure" in patch:
+        # 노출값이 있으면 고정 노출, 0 이면 자동. 끄기만 하고 값을 안 주는 조합은
+        # 마지막 노출에 얼어붙으므로 화면에서는 두 값을 따로 고르지 못하게 한다.
+        patch["auto_exposure"] = _num(patch["exposure"], 0) == 0
+    cam_before = {k: state.settings.get(k)
+                  for k in ("camera_index", "wb_temperature", "exposure", "auto_exposure")}
     state.save_settings(patch)          # 안에서 마커·가동범위를 core 에 반영한다
-    if state.camera["index"] != old_index and state.camera.get("preview"):
-        vision.holder.reopen(state.params)   # 카메라 번호가 바뀌었다
+    cam_after = {k: state.settings.get(k) for k in cam_before}
+    if cam_after != cam_before and state.camera.get("preview"):
+        vision.holder.reopen(state.params)   # 카메라 번호·화이트밸런스·노출이 바뀌었다
     await push_log("설정을 저장했습니다 (다음 촬영부터 적용)", "ok")
     await push_state()
 

@@ -29,10 +29,21 @@
   카메라 패널은 미리보기/촬영본 토글. 미리보기는 GET /preview.jpg 를 250ms 마다 받는다.
 - tools/: 개발·검증용. 프로그램 실행에는 필요 없다.
   `python tools/regress.py`(검출 개수 회귀) · `python tools/e2e_smoke.py`(전 흐름)
+  · `python tools/flat_check.py DIR...`(평탄화 전·후 검출 비교)
   e2e_smoke 는 임시 폴더를 만들어 WAFER_STAGE_DATA 로 넘긴다 — 실제 data/ 에 쓰지 않는다.
 - firmware/stage_v6/, assets/
 - 미리보기: backend/vision.py 의 CameraHolder 가 카메라 객체 하나를 lock 으로 공유한다.
   미리보기 스레드가 4fps 로 읽고 촬영도 같은 객체를 쓴다 - 촬영 때 닫았다 다시 열지 않는다.
+- 촬영 순서(vision._capture_sync): [노출 브라케팅 → Mertens 융합](camera.capture_bracket,
+  설정 bracket/bracket_exposure/bracket_settle_s) → 마커로 감지영역 → [종이 기준 조명
+  평탄화](core/flat.py, 설정 flat_field) → 마커 재계산·검출은 평탄화본으로.
+  raw.png 는 가운데 노출 원본, fused.png·flat.png 를 같은 폴더에 남긴다. --image 는
+  브라케팅 없이 그 사진(평탄화는 한다). 카메라가 노출을 무시하면(장별 밝기 차 <10)
+  단일 촬영으로. 포화 진단은 평탄화 '전' 사진에서 잰다. regress.py 도 같은 전처리.
+  한쪽에서 강한 빛이 들어와 자동 노출이 요동(웨이퍼 평균 36~162, 한 장은 31% 포화)한
+  것에 대한 대응이다. 검출 임계값은 사진이 일정해진 뒤 따로 맞춘다.
+- 카메라 설정: wb_temperature(0 = 기본. AUTO_WB 끄고 값 안 주면 초록끼) · exposure(0 = 자동,
+  값 주면 auto_exposure 꺼짐 - 화면은 둘을 따로 못 고른다). 바뀌면 holder.reopen.
 - 시리얼 원문은 core/stage.py 의 on_line 콜백 → connection.push_log_threadsafe 로 화면에
   간다(level tx/rx). 폴링(st/ST)은 표시만 달아 보내고 숨길지는 화면이 정한다.
 - 수동 이동(조그) 팝업은 show() 로 연다 - showModal 이면 뒤 화면이 inert 가 되어

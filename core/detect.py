@@ -40,6 +40,17 @@ DEFAULTS = {
     "focus_settle_s": 0.35,
     "exposure": 0,
     "capture_frames": 15,
+    # 화이트밸런스 색온도(CAP_PROP_WB_TEMPERATURE). AUTO_WB 는 끄는데 값을 안 주면
+    # 카메라 기본값으로 돌아 종이가 초록끼를 띤다. null/0 = 건드리지 않음.
+    "wb_temperature": None,
+    # 노출 브라케팅(core/camera.py capture_bracket). 자동 노출을 끄고 이 노출값마다
+    # 한 장씩 받아 Mertens 융합한다. 카메라가 노출을 무시하면 단일 촬영으로 돌아간다.
+    "bracket": True,
+    "bracket_exposure": [-4, -6, -8],
+    "bracket_settle_s": 0.4,
+    # 종이 기준 조명 평탄화(core/flat.py). 감지영역 안 종이를 흰색 기준으로 삼아
+    # 채널별 2차 조명면으로 나눈다. 검출은 평탄화한 사진으로 한다.
+    "flat_field": True,
     "wafer_diameter_mm": 100.0,
     "seed_pct": 15,
     "grow_pct": 80,

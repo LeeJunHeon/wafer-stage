@@ -16,7 +16,7 @@ from storage import atomic_write_json, safe_read_json
 # 앱이 편집하는 설정 키만 여기에 기본값을 둔다. 검출 파라미터(detect.DEFAULTS)는
 # settings.json 에 그대로 있고 화면에서 건드리지 않는다.
 APP_KEYS = ("serial_port", "camera_index", "park_xy", "dwell_s", "marker_mm_xy", "measure",
-            "limits", "z_measure_mm")
+            "limits", "z_measure_mm", "wb_temperature", "exposure", "auto_exposure")
 
 DEFAULT_APP = {
     "serial_port": None,
@@ -31,6 +31,11 @@ DEFAULT_APP = {
     # 순회 중 측정할 때 Z 를 내릴 깊이(mm). 지금은 저장·표시·검증(z_max_mm 이하)만
     # 하고 순회에서는 아직 쓰지 않는다 - 순회에 Z 하강·상승을 넣는 다음 단계에서 쓴다.
     "z_measure_mm": 44.0,
+    # 카메라 화이트밸런스 색온도(null/0 = 카메라 기본값) · 노출(0 = 자동 노출).
+    # 노출을 주면 auto_exposure 를 끈다(끄기만 하고 값이 없으면 마지막 노출에 얼어붙는다).
+    "wb_temperature": None,
+    "exposure": 0,
+    "auto_exposure": True,
 }
 
 

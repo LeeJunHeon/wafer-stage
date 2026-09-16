@@ -12,7 +12,7 @@ import csv
 import os
 import time
 
-from core import calib, paths
+from core import calib, flat, imgio, paths
 
 import logger
 import measure as measure_mod
@@ -116,6 +116,7 @@ async def capture():
             await push_log("촬영 완료 · %d프레임 중 선명도 %.0f"
                            % (stats.get("frames_grabbed", 0),
                               stats.get("chosen_focus_score", 0)))
+        await _log_capture_diag(stats.get("diag") if isinstance(stats, dict) else None)
         if res is None:
             state.samples = []
             state.calib = state.sensing = state.wafer = None
@@ -124,7 +125,8 @@ async def capture():
             await push_log("마커 3개 미만 · 좌표를 만들지 않습니다", "err")
             return False
         _apply_sense(res)
-        d = await vision.run_blocking(_save_seq, bgr, res)
+        d = await vision.run_blocking(_save_seq, stats.get("raw", bgr), res,
+                                      stats.get("images") or {})
         state.sequence["out_dir"] = d
         _phase("ready", "검출 %d · 대기" % len(state.samples),
                done=0, total=len(state.samples), cur_no=None, elapsed_s=0)
@@ -142,6 +144,35 @@ async def capture():
     finally:
         state.camera["capturing"] = False
         await push_state()
+
+
+async def _log_capture_diag(diag):
+    """촬영마다 남기는 진단: 브라케팅·종이 RGB·포화 비율. 사진이 왜 그렇게
+    나왔는지 나중에 로그만 보고 알 수 있어야 한다."""
+    if not diag:
+        return
+    if diag.get("bracket_warning"):
+        await push_log(diag["bracket_warning"], "warn")
+    if diag.get("bracketed"):
+        await push_log("브라케팅 융합 · 장별 평균 밝기 %s"
+                       % " / ".join("%.0f" % m for m in (diag.get("bracket_means") or [])))
+    else:
+        await push_log("단일 촬영(브라케팅 없음)")
+    if diag.get("flat_applied"):
+        await push_log("평탄화 · 종이 RGB %s -> %s (종이 %.0f%%)"
+                       % (diag.get("paper_rgb_before"), diag.get("paper_rgb_after"),
+                          (diag.get("paper_frac") or 0) * 100.0))
+    elif diag.get("flat_warning"):
+        await push_log("평탄화 없음 · " + diag["flat_warning"], "warn")
+    if diag.get("rect_sat_pct") is not None:
+        await push_log("감지영역 포화(254 이상) %.1f%%" % diag["rect_sat_pct"])
+    ws = diag.get("wafer_sat_pct")
+    if ws is not None:
+        if ws > flat.WAFER_SAT_WARN:
+            await push_log("반사광으로 정보가 사라진 영역 %.0f%% · 노출을 더 낮추거나 "
+                           "편광 필터가 필요합니다" % ws, "warn")
+        else:
+            await push_log("웨이퍼 포화 %.1f%%" % ws)
 
 
 def _apply_sense(res):
@@ -196,14 +227,20 @@ def _apply_sense(res):
     state.set_warnings(det.warnings)
 
 
-def _save_seq(bgr, res):
-    """이번 촬영의 근거를 한 폴더에 남긴다."""
+def _save_seq(bgr, res, images=None):
+    """이번 촬영의 근거를 한 폴더에 남긴다.
+
+    bgr 은 raw.png 로 남길 원본(브라케팅이면 가운데 노출), images 는 그 밖에 남길
+    그림 {"fused.png": .., "flat.png": ..}. 검출은 flat(없으면 fused) 로 했다.
+    """
     d = os.path.join(paths.OUT_DIR, "seq_" + time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(d, exist_ok=True)
     # save_samples_image 가 raw_name 으로 원본도 함께 쓴다(따로 imwrite 하면 2MB
     # 짜리 PNG 를 두 번 인코딩하게 된다).
     calib.save_samples_image(bgr, res, state.params, outdir=d,
                              ann_name="annotated.jpg", raw_name="raw.png")
+    for name, img in (images or {}).items():
+        imgio.imwrite_u(os.path.join(d, name), img)
     storage.atomic_write_json(
         os.path.join(d, "samples.json"),
         [{"no": no, "u": round(u, 1), "v": round(v, 1), "X": round(x, 2), "Y": round(y, 2)}

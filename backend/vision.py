@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 
-from core import calib, camera, imgio
+from core import calib, camera, flat, imgio
 
 import logger
 
@@ -220,6 +220,17 @@ class CameraHolder:
                 self._close_locked()       # 촬영이 깨진 장치는 다음에 다시 연다
                 raise
 
+    def capture_bracket(self, params):
+        """노출 브라케팅 촬영(camera.capture_bracket). 미리보기와 같은 객체·lock."""
+        self.params = dict(params or {})
+        with self.lock:
+            cam = self._open_locked()
+            try:
+                return cam.capture_bracket()
+            except Exception:
+                self._close_locked()
+                raise
+
 
 holder = CameraHolder()
 
@@ -236,28 +247,72 @@ def _store(bgr):
 
 
 def _grab(params):
-    """프레임 한 장. --image 면 그 파일, 아니면 카메라(가장 선명한 장)."""
+    """검출에 쓸 이미지 한 장. --image 면 그 파일(브라케팅 없음), 아니면 카메라.
+
+    stats["raw"] 가 raw.png 로 남길 원본이다(브라케팅이면 가운데 노출의 원본,
+    아니면 검출 이미지와 같다).
+    """
     if IMAGE_OVERRIDE:
         bgr = imgio.imread_u(IMAGE_OVERRIDE)
         if bgr is None:
             raise IOError("이미지를 열 수 없습니다: %s" % IMAGE_OVERRIDE)
-        return bgr, {"source": IMAGE_OVERRIDE}
-    return holder.capture_best(params)
+        return bgr, {"source": IMAGE_OVERRIDE, "bracketed": False, "raw": bgr}
+    return holder.capture_bracket(params)
 
 
 def _capture_sync(params):
+    """촬영 -> 평탄화 -> 보정·검출. (검출 이미지, frame_meta, sense 결과|None, stats).
+
+    촬영 순서: [브라케팅·융합] -> 마커로 감지영역 -> [종이 기준 평탄화] -> 마커
+    재계산·검출. stats["images"] 에 raw.png 외에 남길 그림(fused.png, flat.png)을
+    담고, stats["diag"] 에 진단(종이 RGB·포화 비율·브라케팅)을 담는다.
+    """
     bgr, stats = _grab(params)
-    meta = _store(bgr)
+    raw = stats.pop("raw", bgr)
+    images = {}
+    if stats.get("bracketed"):
+        images["fused.png"] = bgr
+    diag = {"bracketed": bool(stats.get("bracketed")),
+            "bracket_means": stats.get("bracket_means"),
+            "bracket_warning": stats.get("bracket_warning", "")}
+
+    # 종이 기준 평탄화. 포화는 평탄화 '전' 이미지에서 잰다 - 나눗셈은 값을 줄일 뿐
+    # 잃은 정보를 되살리지 못한다.
+    flat_img, pre = calib.preprocess(bgr, params)
+    finfo = pre["flat"]
+    rect = pre["rect"]
+    diag.update({"flat_applied": bool(finfo.get("applied")),
+                 "flat_warning": finfo.get("warning", ""),
+                 "paper_frac": finfo.get("paper_frac"),
+                 "paper_rgb_before": finfo.get("paper_rgb_before"),
+                 "paper_rgb_after": finfo.get("paper_rgb_after"),
+                 "rect_sat_pct": (round(flat.saturation_frac(bgr, rect) * 100.0, 1)
+                                  if rect is not None else None)})
+    if finfo.get("applied"):
+        images["flat.png"] = flat_img
+    det_img = flat_img if finfo.get("applied") else bgr
+    meta = _store(det_img)
     # 마커 재보정 실패(3개 미만)면 좌표를 만들지 않는다. 틀린 좌표로 스테이지를
     # 움직이는 것보다 멈추는 것이 낫다.
     buf = io.StringIO()
     import contextlib
     with contextlib.redirect_stdout(buf):
-        res = calib.sense(bgr, params, allow_fallback=False, save=True)
+        res = calib.sense(det_img, params, allow_fallback=False, save=True)
     for line in buf.getvalue().splitlines():
         if line.strip():
             logger.write("info", line.rstrip())
-    return bgr, meta, res, stats
+    # 웨이퍼 안 포화 비율(평탄화 전 이미지). 검출이 찾은 타원을 쓴다.
+    diag["wafer_sat_pct"] = None
+    if res is not None and res["det"].wafer.found:
+        w = res["det"].wafer
+        u0, v0 = res["rect"][:2]
+        diag["wafer_sat_pct"] = round(flat.wafer_saturation_frac(
+            bgr, (w.center_px[0] + u0, w.center_px[1] + v0),
+            w.major_px, w.minor_px, w.theta_deg) * 100.0, 1)
+    stats["images"] = images
+    stats["diag"] = diag
+    stats["raw"] = raw
+    return det_img, meta, res, stats
 
 
 async def capture(params):

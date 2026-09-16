@@ -20,6 +20,14 @@ except Exception:                          # noqa: BLE001
 
 BACKENDS = [("DSHOW", cv2.CAP_DSHOW), ("MSMF", cv2.CAP_MSMF), ("ANY", cv2.CAP_ANY)]
 
+# 노출 브라케팅 기본값. 한쪽에서 강한 빛이 들어오는 환경에서 자동 노출은 반사광에
+# 반응해 장마다 밝기가 요동하고(웨이퍼 안 평균 36~162), 한 장은 포화로 정보가
+# 사라진다. 노출을 고정한 여러 장을 Mertens 융합하면 노출시간을 몰라도 된다.
+BRACKET_EXPOSURE = [-4, -6, -8]
+BRACKET_SETTLE_S = 0.4
+BRACKET_DISCARD = 3          # 노출을 바꾼 뒤 버리는 프레임 수(드라이버 큐에 남은 옛 장)
+BRACKET_MIN_DIFF = 10.0      # 장별 평균 밝기 차이가 이보다 작으면 카메라가 노출을 무시한 것
+
 
 def focus_score(bgr_or_gray):
     """라플라시안 분산. 클수록 선명. 절대값은 의미 없고 상대 비교용."""
@@ -58,6 +66,7 @@ class Camera:
             "autofocus_off": False,
             "focus": params.get("focus", -1),
             "exposure": params.get("exposure", 0),
+            "wb_temperature": params.get("wb_temperature"),
         }
 
     # ------------------------------------------------------------------
@@ -159,6 +168,15 @@ class Camera:
         exp = self.p.get("exposure", 0)
         if exp not in (None, "", 0) and not use_ae:
             cap.set(cv2.CAP_PROP_EXPOSURE, float(exp))
+        # 화이트밸런스: AUTO_WB 는 끄지만 값을 주지 않으면 카메라 기본값으로 돌아
+        # 종이가 초록끼를 띤다. null/0 이면 건드리지 않는다.
+        wb = self.p.get("wb_temperature")
+        try:
+            wb = int(wb or 0)
+        except (TypeError, ValueError):
+            wb = 0
+        if wb > 0:
+            cap.set(cv2.CAP_PROP_WB_TEMPERATURE, wb)
 
         self.info["actual_fourcc"] = _fourcc_str(cap.get(cv2.CAP_PROP_FOURCC))
 
@@ -187,13 +205,13 @@ class Camera:
         ok, f = self.cap.retrieve()
         return f if ok and f is not None and f.size else None
 
-    def capture_best(self, n=None, retry=True):
+    def capture_best(self, n=None, retry=True, wait_af=True):
         """연속 n 프레임을 받아 가장 선명한 한 장을 고른다.
 
         AF 를 껐어도 흔들림/노출 변동이 남아 있으므로 단발 촬영에서도 필요하다.
         """
         n = int(n or self.p.get("capture_frames", 15))
-        if self.p.get("autofocus", True):
+        if wait_af and self.p.get("autofocus", True):
             self.wait_autofocus()
         frames, scores = [], []
         for _ in range(n):
@@ -209,7 +227,7 @@ class Camera:
         if (retry and len(scores) >= 6
                 and int(np.argmax(scores)) >= len(scores) - 3
                 and max(scores) / max(min(scores), 1e-6) >= 3.0):
-            return self.capture_best(n, retry=False)
+            return self.capture_best(n, retry=False, wait_af=False)
         i = int(np.argmax(scores))
         stats = {
             "frames_grabbed": len(frames),
@@ -219,6 +237,85 @@ class Camera:
             "focus_median": round(float(np.median(scores)), 1),
         }
         return frames[i], stats
+
+    # ------------------------------------------------------------------
+    def _set_auto_exposure(self, on):
+        be = self.info.get("backend")
+        if on:
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75 if be == "DSHOW" else 1)
+        else:
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25 if be == "DSHOW" else 0)
+
+    def _restore_exposure(self):
+        """브라케팅 뒤 설정대로 되돌린다(자동 노출이면 다시 켜고, 고정이면 그 값)."""
+        use_ae = bool(self.p.get("auto_exposure", True))
+        self._set_auto_exposure(use_ae)
+        exp = self.p.get("exposure", 0)
+        if exp not in (None, "", 0) and not use_ae:
+            self.cap.set(cv2.CAP_PROP_EXPOSURE, float(exp))
+
+    def capture_bracket(self):
+        """노출 브라케팅 촬영. (검출에 쓸 이미지, stats).
+
+        settings "bracket" 이 켜져 있으면 자동 노출을 끄고 "bracket_exposure" 의
+        값마다 CAP_PROP_EXPOSURE 를 넣고 "bracket_settle_s" 만큼 기다린 뒤, 앞의 몇
+        장은 버리고 capture_frames 만큼 받아 가장 선명한 한 장을 고른다. 모인 장을
+        cv2.createMergeMertens() 로 융합한다(노출시간을 몰라도 되는 방식).
+
+        stats["raw"] 는 가운데 노출의 원본(raw.png 로 남길 것), stats["bracketed"]
+        는 실제로 융합했는지, stats["bracket_means"] 는 장별 평균 밝기다.
+        카메라가 노출 지시를 무시하면(장별 밝기 차 < 10) 경고를 남기고 단일
+        촬영으로 되돌아간다.
+        """
+        if not bool(self.p.get("bracket", True)):
+            f, st = self.capture_best()
+            st.update({"bracketed": False, "raw": f})
+            return f, st
+        exposures = self.p.get("bracket_exposure") or BRACKET_EXPOSURE
+        try:
+            exposures = [float(v) for v in exposures]
+        except (TypeError, ValueError):
+            exposures = list(BRACKET_EXPOSURE)
+        settle = float(self.p.get("bracket_settle_s", BRACKET_SETTLE_S) or 0)
+        if len(exposures) < 2:
+            f, st = self.capture_best()
+            st.update({"bracketed": False, "raw": f,
+                       "bracket_warning": "브라케팅 노출값이 2개 미만 · 단일 촬영"})
+            return f, st
+
+        if self.p.get("autofocus", True):
+            self.wait_autofocus()
+        frames, means, shots = [], [], []
+        self._set_auto_exposure(False)
+        try:
+            for e in exposures:
+                self.cap.set(cv2.CAP_PROP_EXPOSURE, e)
+                time.sleep(settle)
+                for _ in range(BRACKET_DISCARD):
+                    self.read()
+                f, st = self.capture_best(retry=False, wait_af=False)
+                frames.append(f)
+                means.append(float(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY).mean()))
+                shots.append({"exposure": e, "mean": round(means[-1], 1),
+                              "focus": st.get("chosen_focus_score")})
+        finally:
+            self._restore_exposure()
+
+        mid = len(frames) // 2
+        stats = {"bracketed": False, "bracket_exposure": exposures,
+                 "bracket_means": [round(m, 1) for m in means], "bracket_shots": shots,
+                 "raw": frames[mid], "frames_grabbed": len(frames)}
+        if max(means) - min(means) < BRACKET_MIN_DIFF:
+            stats["bracket_warning"] = "노출이 바뀌지 않음 · 브라케팅을 건너뜁니다"
+            f, st = self.capture_best()
+            st.update(stats, raw=f)
+            return f, st
+        merge = cv2.createMergeMertens()
+        fused = merge.process([f for f in frames])
+        fused = np.clip(fused * 255.0 + 0.5, 0, 255).astype(np.uint8)
+        stats["bracketed"] = True
+        stats["chosen_focus_score"] = focus_score(fused)
+        return fused, stats
 
     def wait_autofocus(self, progress=None):
         """AF 가 수렴할 때까지 기다린다.

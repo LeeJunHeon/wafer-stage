@@ -99,6 +99,8 @@
     $('setData').textContent = dataDir || UI.EMPTY;
     $('setPort').value = cfg.serial_port || '';
     $('setCam').value = cfg.camera_index != null ? cfg.camera_index : 1;
+    $('setWb').value = cfg.wb_temperature != null ? cfg.wb_temperature : 0;
+    $('setExp').value = cfg.exposure != null ? cfg.exposure : 0;
     const p = cfg.park_xy || [0, 90];
     $('setParkX').value = p[0]; $('setParkY').value = p[1];
     $('setDwell').value = cfg.dwell_s != null ? cfg.dwell_s : 5;
@@ -146,6 +148,8 @@
       cmd: 'settings_save',
       serial_port: $('setPort').value.trim() || null,
       camera_index: +$('setCam').value,
+      wb_temperature: +$('setWb').value || 0,
+      exposure: +$('setExp').value || 0,
       park_xy: [+$('setParkX').value, +$('setParkY').value],
       dwell_s: +$('setDwell').value,
       marker_mm_xy: mk,
