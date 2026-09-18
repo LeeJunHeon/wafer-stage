@@ -96,6 +96,8 @@ class Camera:
                     break
             if ok:
                 self.info["actual_fourcc"] = _fourcc_str(cap.get(cv2.CAP_PROP_FOURCC))
+                self.info["actual_size"] = [int(f.shape[1]), int(f.shape[0])]
+                self.info["actual_fps"] = float(cap.get(cv2.CAP_PROP_FPS) or 0)
                 return self
             cap.release()
             self.cap = None
@@ -181,6 +183,24 @@ class Camera:
         self.info["actual_fourcc"] = _fourcc_str(cap.get(cv2.CAP_PROP_FOURCC))
 
     # ------------------------------------------------------------------
+    def format_text(self):
+        """실제로 열린 포맷 한 줄: "MJPG 1280x720 30fps"."""
+        sz = self.info.get("actual_size") or [0, 0]
+        return "%s %dx%d %.0ffps" % (self.info.get("actual_fourcc") or "?",
+                                     sz[0], sz[1], self.info.get("actual_fps") or 0)
+
+    def format_mismatch(self):
+        """요청과 실제가 다르면 경고 문구, 같으면 "". 카메라는 못 하는 요청을 조용히
+        가까운 값으로 바꾸므로 여기서 잡아 로그로 알린다."""
+        want_fcc = self.info["requested_fourcc"]
+        want_sz = self.info["requested_size"]
+        got_fcc = self.info.get("actual_fourcc")
+        got_sz = self.info.get("actual_size") or [0, 0]
+        if want_fcc == got_fcc and list(want_sz) == list(got_sz):
+            return ""
+        return ("%s %dx%d 요청 · %s %dx%d 으로 열림"
+                % (want_fcc, want_sz[0], want_sz[1], got_fcc, got_sz[0], got_sz[1]))
+
     def read(self):
         if self.cap is None:
             return None

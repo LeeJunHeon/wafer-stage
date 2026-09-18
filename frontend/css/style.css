@@ -302,7 +302,7 @@
   .jogz { display: flex; flex-direction: column; gap: 6px; width: 56px; }
   .jogz .jogb { flex: 1; }
   .jogb { height: 38px; font-size: 14px; touch-action: none; user-select: none; }
-  .settings input.v { width: 100%; }
+  .settings input.v, .settings select.v { width: 100%; }
   .settings input.mkin { width: 84px; text-align: right; font-family: var(--mono);
     border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); padding: 3px 6px; }
   .settings table { width: 100%; border-collapse: collapse; }

@@ -99,6 +99,9 @@
     $('setData').textContent = dataDir || UI.EMPTY;
     $('setPort').value = cfg.serial_port || '';
     $('setCam').value = cfg.camera_index != null ? cfg.camera_index : 1;
+    $('setW').value = cfg.width != null ? cfg.width : 1280;
+    $('setH').value = cfg.height != null ? cfg.height : 720;
+    $('setFourcc').value = (cfg.fourcc || 'MJPG').toUpperCase() === 'YUY2' ? 'YUY2' : 'MJPG';
     $('setWb').value = cfg.wb_temperature != null ? cfg.wb_temperature : 0;
     $('setExp').value = cfg.exposure != null ? cfg.exposure : 0;
     const p = cfg.park_xy || [0, 90];
@@ -148,6 +151,9 @@
       cmd: 'settings_save',
       serial_port: $('setPort').value.trim() || null,
       camera_index: +$('setCam').value,
+      width: +$('setW').value || 1280,
+      height: +$('setH').value || 720,
+      fourcc: $('setFourcc').value,
       wb_temperature: +$('setWb').value || 0,
       exposure: +$('setExp').value || 0,
       park_xy: [+$('setParkX').value, +$('setParkY').value],

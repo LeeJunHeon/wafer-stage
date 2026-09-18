@@ -92,6 +92,13 @@ class CameraHolder:
         if self.cam is not None:
             return self.cam
         self.cam = camera.Camera(self.params).open()
+        # 실제로 무엇으로 열렸는지 남긴다. 요청과 다르면 경고 - 카메라는 못 하는
+        # 요청을 조용히 가까운 값으로 바꾼다(MJPG 를 달라는데 YUY2 로 여는 식).
+        logger.write("info", "카메라 열림 · %s (%s)"
+                     % (self.cam.format_text(), self.cam.info.get("backend")))
+        mm = self.cam.format_mismatch()
+        if mm:
+            logger.write("warn", "카메라 포맷 · " + mm)
         return self.cam
 
     def _close_locked(self):

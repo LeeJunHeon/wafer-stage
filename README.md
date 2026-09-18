@@ -35,6 +35,7 @@
 │   ├── tools/              # 개발·검증용. 프로그램 실행에는 필요 없다
 │   │   ├── regress.py      #   지금까지 찍은 사진 전부로 검출 회귀
 │   │   ├── flat_check.py   #   평탄화 전·후 검출 비교 (raw.png 들로)
+│   │   ├── cam_probe.py    #   카메라 포맷·해상도 실측 (카메라 필요)
 │   │   └── e2e_smoke.py    #   하드웨어 없이 전 흐름 검증
 │   ├── firmware/stage_v6/  # 아두이노 스케치
 │   └── assets/             # aruco_markers_30mm.pdf (실제 크기 100% 로 인쇄)
@@ -78,6 +79,7 @@ python -m core.calib check --save   # 저장된 보정과 지금 사진 비교
 python tools/regress.py             # data/out 의 사진 전부로 검출 회귀 (개수 줄면 exit 1)
 python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 흐름 검증
 python tools/flat_check.py DIR ...  # raw.png 에 평탄화만 적용해 전·후 검출 개수·경고 비교
+python tools/cam_probe.py           # 카메라가 실제로 내보내는 포맷·해상도 실측 (앱을 끄고)
 ```
 
 ## 통신 계약 (WebSocket `/ws`, JSON)
@@ -172,10 +174,32 @@ _capture_sync`). 검출 임계값(seed_pct·sat_delta·val_min 등)은 건드리
 잰다 — 나눗셈은 잃은 정보를 되살리지 못한다). 웨이퍼 포화가 10% 를 넘으면
 "반사광으로 정보가 사라진 영역 N% · 노출을 더 낮추거나 편광 필터가 필요합니다" 경고.
 
-카메라 설정(설정 창): `wb_temperature`(화이트밸런스 색온도, 0 = 카메라 기본. AUTO_WB
-는 끄는데 값을 안 주면 종이가 초록끼를 띤다) · `exposure`(0 = 자동, 값을 주면
-`auto_exposure` 가 꺼지고 그 노출로 고정). `bracket*`·`flat_field` 는 settings.json
-에서 직접 고친다.
+카메라 설정(설정 창): `width`·`height`·`fourcc`(MJPG/YUY2 — 요청값. 해상도를 올리면
+촬영과 검출이 느려진다) · `wb_temperature`(화이트밸런스 색온도, 0 = 카메라 기본.
+AUTO_WB 는 끄는데 값을 안 주면 종이가 초록끼를 띤다) · `exposure`(0 = 자동, 값을 주면
+`auto_exposure` 가 꺼지고 그 노출로 고정). 저장하면 카메라를 다시 연다.
+`bracket*`·`flat_field` 는 settings.json 에서 직접 고친다.
+
+### 카메라 포맷·해상도는 실측한다 (`tools/cam_probe.py`)
+
+카메라는 못 하는 요청을 조용히 가까운 값으로 바꾼다(MJPG 를 달라는데 YUY2 로 열리는
+식). 그래서 카메라를 열 때마다 실제 포맷을 로그에 남기고(`카메라 열림 · MJPG 1280x720
+30fps`), 요청과 다르면 경고한다(`카메라 포맷 · MJPG 1280x720 요청 · YUY2 1280x720 으로
+열림`). YUY2 는 무압축이라 USB 대역폭에 바로 걸려 고해상도가 되지 않는다.
+
+**표기 화소 수(5000만 등)는 믿지 않는다.** USB 카메라의 그런 표기는 대개 보간이라
+실제 정보가 늘지 않고 촬영·검출만 느려진다. 앱을 끄고(장치 점유) 다음을 돌린다:
+
+```
+python tools/cam_probe.py                              # MJPG·YUY2 x 1280x720 ~ 8000x6000
+python tools/cam_probe.py --fourcc MJPG --size 1280x720 --size 1920x1080 --frames 5
+```
+
+조합마다 실제로 협상된 폭·높이·fourcc·fps(요청과 다르면 표시), 한 장당 시간(초),
+focus_score, 그리고 실질 해상도 지표 `detail`(프레임을 1/2 로 줄였다 다시 키운 뒤
+원본과의 RMS 차 — 보간 사진은 0 근처, 진짜 해상도면 뚜렷하게 크다)을 표로 찍는다.
+같은 장면을 연속으로 찍으므로 나란히 비교할 수 있다. 해상도를 올렸는데 `detail` 이
+오르지 않으면 그 해상도는 보간이다. 카메라를 못 열면 이유를 적고 종료코드 2.
 
 2026-09-16 네 장으로 `tools/flat_check.py` 를 돌린 결과(평탄화 전→후 검출 개수):
 153305 14→14 · 153512 18→14 · 153617 13→15 · 153716 14→14. 153512 는 포화 31% 인

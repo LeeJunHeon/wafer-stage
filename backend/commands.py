@@ -488,8 +488,16 @@ async def _settings_save(data):
         # 노출값이 있으면 고정 노출, 0 이면 자동. 끄기만 하고 값을 안 주는 조합은
         # 마지막 노출에 얼어붙으므로 화면에서는 두 값을 따로 고르지 못하게 한다.
         patch["auto_exposure"] = _num(patch["exposure"], 0) == 0
+    for k in ("width", "height"):
+        if k in patch:
+            patch[k] = int(_num(patch[k], state_mod.DEFAULT_APP[k]))
+            if patch[k] < 16:
+                patch[k] = state_mod.DEFAULT_APP[k]
+    if "fourcc" in patch:
+        patch["fourcc"] = str(patch["fourcc"] or "MJPG").upper()[:4]
     cam_before = {k: state.settings.get(k)
-                  for k in ("camera_index", "wb_temperature", "exposure", "auto_exposure")}
+                  for k in ("camera_index", "wb_temperature", "exposure", "auto_exposure",
+                            "width", "height", "fourcc")}
     state.save_settings(patch)          # 안에서 마커·가동범위를 core 에 반영한다
     cam_after = {k: state.settings.get(k) for k in cam_before}
     if cam_after != cam_before and state.camera.get("preview"):

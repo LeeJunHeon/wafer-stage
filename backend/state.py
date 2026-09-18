@@ -16,7 +16,8 @@ from storage import atomic_write_json, safe_read_json
 # 앱이 편집하는 설정 키만 여기에 기본값을 둔다. 검출 파라미터(detect.DEFAULTS)는
 # settings.json 에 그대로 있고 화면에서 건드리지 않는다.
 APP_KEYS = ("serial_port", "camera_index", "park_xy", "dwell_s", "marker_mm_xy", "measure",
-            "limits", "z_measure_mm", "wb_temperature", "exposure", "auto_exposure")
+            "limits", "z_measure_mm", "wb_temperature", "exposure", "auto_exposure",
+            "width", "height", "fourcc")
 
 DEFAULT_APP = {
     "serial_port": None,
@@ -36,6 +37,11 @@ DEFAULT_APP = {
     "wb_temperature": None,
     "exposure": 0,
     "auto_exposure": True,
+    # 요청 해상도·포맷. 카메라는 못 하는 요청을 가까운 값으로 바꾸므로 실제 값은
+    # 열 때 로그로 남는다(tools/cam_probe.py 로 실측해 고른다).
+    "width": 1280,
+    "height": 720,
+    "fourcc": "MJPG",
 }
 
 

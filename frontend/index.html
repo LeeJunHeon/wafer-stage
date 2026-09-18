@@ -136,6 +136,9 @@
   <div class="settings">
     <div class="f"><span class="k">시리얼 포트</span><input class="v" id="setPort" list="portList" placeholder="COM7"><datalist id="portList"></datalist><span class="hint">비우면 자동 선택</span></div>
     <div class="f"><span class="k">카메라 번호</span><input class="v" id="setCam" type="number" min="0" step="1"></div>
+    <div class="f"><span class="k">가로 (px)</span><input class="v" id="setW" type="number" min="16" step="1" data-tip="카메라에 요청할 가로 해상도입니다. 해상도를 올리면 촬영과 검출이 느려집니다."></div>
+    <div class="f"><span class="k">세로 (px)</span><input class="v" id="setH" type="number" min="16" step="1" data-tip="카메라에 요청할 세로 해상도입니다. 해상도를 올리면 촬영과 검출이 느려집니다."></div>
+    <div class="f"><span class="k">영상 포맷</span><select class="v" id="setFourcc" data-tip="카메라에 요청할 영상 포맷입니다. 실제로 열린 포맷은 로그에 남습니다."><option value="MJPG">MJPG</option><option value="YUY2">YUY2</option></select><span class="hint">실제값은 로그</span></div>
     <div class="f"><span class="k">화이트밸런스 (K)</span><input class="v" id="setWb" type="number" min="0" step="100" placeholder="0 = 카메라 기본" data-tip="카메라 화이트밸런스 색온도입니다. 0 이면 카메라 기본값을 그대로 씁니다."><span class="hint">0 = 기본</span></div>
     <div class="f"><span class="k">노출</span><input class="v" id="setExp" type="number" step="1" placeholder="0 = 자동" data-tip="카메라 노출값입니다. 0 이면 자동 노출이고, 값을 주면 그 노출로 고정합니다."><span class="hint">0 = 자동</span></div>
     <div class="f"><span class="k">파킹 X (mm)</span><input class="v" id="setParkX" type="number" step="0.1"></div>

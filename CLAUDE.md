@@ -30,6 +30,7 @@
 - tools/: 개발·검증용. 프로그램 실행에는 필요 없다.
   `python tools/regress.py`(검출 개수 회귀) · `python tools/e2e_smoke.py`(전 흐름)
   · `python tools/flat_check.py DIR...`(평탄화 전·후 검출 비교)
+  · `python tools/cam_probe.py`(카메라 포맷·해상도 실측. 앱 끄고. 못 열면 exit 2)
   e2e_smoke 는 임시 폴더를 만들어 WAFER_STAGE_DATA 로 넘긴다 — 실제 data/ 에 쓰지 않는다.
 - firmware/stage_v6/, assets/
 - 미리보기: backend/vision.py 의 CameraHolder 가 카메라 객체 하나를 lock 으로 공유한다.
@@ -42,8 +43,9 @@
   단일 촬영으로. 포화 진단은 평탄화 '전' 사진에서 잰다. regress.py 도 같은 전처리.
   한쪽에서 강한 빛이 들어와 자동 노출이 요동(웨이퍼 평균 36~162, 한 장은 31% 포화)한
   것에 대한 대응이다. 검출 임계값은 사진이 일정해진 뒤 따로 맞춘다.
-- 카메라 설정: wb_temperature(0 = 기본. AUTO_WB 끄고 값 안 주면 초록끼) · exposure(0 = 자동,
-  값 주면 auto_exposure 꺼짐 - 화면은 둘을 따로 못 고른다). 바뀌면 holder.reopen.
+- 카메라 설정: width/height/fourcc(MJPG|YUY2) · wb_temperature(0 = 기본. AUTO_WB 끄고 값
+  안 주면 초록끼) · exposure(0 = 자동, 값 주면 auto_exposure 꺼짐 - 화면은 둘을 따로 못
+  고른다). 카메라 키가 바뀌면 holder.reopen.
 - 시리얼 원문은 core/stage.py 의 on_line 콜백 → connection.push_log_threadsafe 로 화면에
   간다(level tx/rx). 폴링(st/ST)은 표시만 달아 보내고 숨길지는 화면이 정한다.
 - 수동 이동(조그) 팝업은 show() 로 연다 - showModal 이면 뒤 화면이 inert 가 되어
@@ -82,6 +84,10 @@
   Z 는 아직 X·Y 와 인터록이 없는 독립 축이다(서로 잠그지 않는다).
 - 리밋 스위치 없음 → 소프트 리밋 + EEPROM 위치 기억
 - 카메라: USB index 1, 1280×720 YUY2(MJPG 협상 실패), 작업영역 전체(약 52×29cm)를 위에서 본다. 약 0.41 mm/px
+  해상도·포맷(width/height/fourcc)은 설정 창에서 고른다. 카메라는 못 하는 요청을 조용히
+  가까운 값으로 바꾸므로 열 때마다 실제 포맷을 로그에 남기고 다르면 경고한다
+  (camera.format_text/format_mismatch). 표기 화소 수(5000만)는 보간이라 믿지 말고
+  tools/cam_probe.py 의 detail 지표(1/2 축소→복원 RMS)로 실측해서 정한다.
 - 기준 마커: ArUco DICT_4X4_50 30mm, id0~id3 을 베이스에 부착. 중심 기계좌표(mm, 실측)
   id3 (15,20) / id2 (15,160) / id1 (201,19) / id0 (201,160) — settings.json 의 marker_mm_xy 가 단일 출처
 - 캐리지 앞 드라이버 포인터(육안 확인용)
