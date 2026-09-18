@@ -54,18 +54,16 @@ DEFAULTS = {
     # 채널별 2차 조명면으로 나눈다. 검출은 평탄화한 사진으로 한다.
     "flat_field": True,
     "wafer_diameter_mm": 100.0,
-    # 통계 판정(본 경로). 판정 전에 σ=stat_blur 블러(잡음은 화소마다 독립이고 칩은
-    # 26px 이상이라 칩을 해치지 않는다) -> Lab 세 채널 각각 국소 배경(_local_bg)을
-    # 뺀 잔차 -> 채널별 잡음(ROI 안 잔차의 MAD x 1.4826, 하한 0.5)으로 나눠
-    # d² = Σ(r/σ)². 사진의 밝기·잡음 수준이 바뀌어도 기준이 같이 따라간다.
-    # 예전 '배경으로 나눈 편차 %'(seed_pct·grow_pct)는 평탄화 뒤 웨이퍼 밝기가 45 인
-    # 사진에서 잡음을 증폭해 본 경로가 0개를 냈다(dev 중앙값 10%, 임계 15%).
-    # χ²(3): 25 ≈ p 1e-5, 12 ≈ p 7e-3.
+    # 통계 씨앗(기존 seed/grow 에 OR 로 '추가'. stat_path 로 끈다). σ=stat_blur 블러
+    # -> Lab 세 채널 각각 국소 배경(_local_bg)을 뺀 잔차 -> 채널별 잡음(ROI 안 잔차의
+    # MAD x 1.4826, 하한 1.0)으로 나눈 d² = Σ(r/σ)². 어두운 사진(142900: 평탄화 뒤
+    # 웨이퍼 밝기 45)에서 '배경으로 나눈 편차 %' 가 잡음을 증폭해 기존 경로가 0개를
+    # 낼 때 이 씨앗이 살린다. 밝은 사진(143334)에서는 기존 경로가 더 낫다 - 그래서
+    # 대체가 아니라 추가다(2026-09-18). χ²(3): 25 ≈ p 1e-5, 12 ≈ p 7e-3.
+    "stat_path": True,
     "stat_blur": 1.0,
     "stat_seed": 25.0,
     "stat_grow": 12.0,
-    # 아래 다섯 키는 더 이상 쓰지 않는다(설정 파일에 남아 있어도 무시). 통계 판정이
-    # 밝기 편차·채도·색거리(dE)를 한 척도로 흡수했다.
     "seed_pct": 15,
     "grow_pct": 80,
     "open_pct": 0.6,      # 잡티 제거 커널 = 이 % x 웨이퍼 반지름
@@ -73,7 +71,7 @@ DEFAULTS = {
     "hull_fit": True,     # 실루엣 볼록껍질 피팅을 후보에 넣는다 (IoU 높은 쪽 채택)
     "merge_mm": 6.0,      # 이보다 가까운 덩어리는 한 샘플의 조각인지 검사한다
     "merge_solidity": 0.5,  # 합친 결과가 이만큼 볼록해야 실제로 합친다
-    "sat_delta": 15,      # (미사용) 통계 판정으로 흡수
+    "sat_delta": 15,      # 18 -> 15: 비스듬한 촬영에서 샘플 하나를 더 건짐 (회귀 없음)
     "min_area_mm2": 3,
     "max_area_mm2": 150,
     # 가장자리 마진. 6/3 은 웨이퍼 반지름의 9% 를 죽여서, 가장자리 가까이 놓인
@@ -88,8 +86,19 @@ DEFAULTS = {
     "split_depth_mm": 1.0,   # 맞닿은 두 샘플을 가를 때 요구하는 홈 깊이
     "split_solidity": 0.85,  # 가른 조각/테두리 샘플에 요구하는 볼록도 (파편 0.74)
     "shape_fill": 0.8,       # 삼각형/사각형 채움비 판정 문턱
-    "de_floor": 8.0,         # (미사용) 색거리 보조 경로는 통계 판정에 흡수됐다
-    "de_k": 4.0,             # (미사용)
+    # 색거리(dE) 보조 경로. 밝기도 채도도 웨이퍼와 비슷한데 '색조' 만 다른 조각을
+    # 잡는다 (실측 113853: 밝기 편차 6~10%(임계 15), 채도차 +1~+3(임계 15) 인데
+    # Lab 색거리는 10~35, 웨이퍼 배경은 2~3).
+    "de_floor": 8.0,         # 색거리 임계의 절대 하한
+    "de_k": 4.0,             # 배경 색잡음(ROI 안 dE 중앙값) 대비 배수. 0 = 끔
+    # 얼룩·림 오검출 관문(모든 경로 공통). '웨이퍼보다 어두운' 후보는 직선성
+    # (approxPolyDP 5% 둘레 / 컨투어 둘레)과 꼭짓점 3~6 을 요구한다 - 얼룩은 곡선이다.
+    # 원판 경계에서 반지름의 dark_rim_pct 안에 중심이 있는 후보는 림 반사다(143454).
+    # 직선성 문턱 0.85 는 143334 의 진짜 칩 셋(마스크 윤곽 0.72·0.82·0.85)을 떨어뜨려
+    # 0.70 으로 완화했다 - 임계 마스크의 윤곽은 Canny 윤곽보다 울퉁불퉁하다.
+    "dark_straight_min": 0.70,
+    "dark_vertices_max": 6,
+    "dark_rim_pct": 3.0,
     # 엣지 보완. 밝은 회색 칩은 색 마스크로 조각의 일부(실측 60%, 39%)만 잡혀
     # 중심이 0.9~2.1mm 밀렸다. 같은 칩이 Canny 엣지에서는 닫힌 다각형으로
     # 온전히 나오므로, 이미 확정된 샘플에 한해 그 다각형으로 윤곽을 갈아끼운다.
@@ -107,7 +116,8 @@ DEFAULTS = {
     # 명시적으로 푼 별도 단계다. 얼룩은 곡선이라 직선성 관문에서 떨어진다.
     "edge_propose": True,
     "edge_support_min": 0.6,     # 껍질 둘레 중 2px 안에 엣지 화소가 있는 비율
-    "edge_straight_min": 0.85,   # approxPolyDP(5%) 둘레 / 컨투어 둘레
+    "edge_straight_min": 0.85,   # approxPolyDP(5%) 둘레 / 컨투어 둘레 (첫 Canny 단계)
+    "edge_straight_loose": 0.90, # 느슨한 Canny 단계에서 요구하는 직선성
     "edge_overlap_max": 0.3,     # 이미 찾은 샘플과 이만큼 넘게 겹치면 버린다
     "edge_inner_max": 0.05,      # 껍질 안쪽(2px 침식)의 엣지 화소 비율 상한 - 안은 비어야 칩
     "edge_min_area_mm2": 25.0,   # 엣지 제안의 면적 하한(본 경로 min_area_mm2 와 별개)
@@ -993,6 +1003,44 @@ def _local_bg(ch, roi, r_px):
     return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
 
 
+def _flatten(gray, roi, r_px):
+    """중앙값 배경으로 나눠 편차(%) 맵을 만든다.
+
+    함정 5: top-hat/black-hat 은 무광 질감 노이즈를 그대로 집어내 더 나빴다.
+    """
+    g = gray.astype(np.float32)
+    bg = np.maximum(_local_bg(gray, roi, r_px), 1.0)
+    flat = g / bg
+    return np.abs(flat - 1.0) * 100.0
+
+
+def _color_distance(bgr, roi, r_px):
+    """Lab 세 채널 각각 '국소 배경과의 차' 를 재서 색거리(dE) 맵을 만든다.
+
+    밝기(_flatten)와 채도(sat_delta)로는 안 갈라지는, '색조만 다른' 조각을
+    잡기 위한 축이다. 배경 추정이 같은 방식이라 조명 얼룩에는 둔감하다.
+    """
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    acc = np.zeros(lab.shape[:2], np.float32)
+    for i in range(3):
+        d = lab[:, :, i].astype(np.float32) - _local_bg(lab[:, :, i], roi, r_px)
+        acc += d * d
+    return np.sqrt(acc)
+
+
+def _straightness(mask):
+    """마스크 윤곽의 직선성: approxPolyDP(5%) 다각형 둘레 / 컨투어 둘레, 꼭짓점 수."""
+    cs, _hh = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not cs:
+        return 0.0, 0
+    cnt = max(cs, key=cv2.contourArea)
+    peri = cv2.arcLength(cnt, True)
+    if peri <= 0:
+        return 0.0, 0
+    approx = cv2.approxPolyDP(cnt, 0.05 * peri, True)
+    return float(cv2.arcLength(approx, True) / peri), int(len(approx))
+
+
 def _stat_distance(lab, roi, r_px):
     """Lab 세 채널의 '국소 배경 잔차' 를 그 사진의 잡음으로 정규화한 통계 거리 d².
 
@@ -1221,28 +1269,51 @@ def detect(bgr, params=None):
     # 잡을 것이 없어 헌팅한다. 실측: 51% 인 사진에서 샘플 14개 중 4개를 놓쳤다.
     wafer.blown_pct = float((V[roib] >= BLOWN_LEVEL).mean() * 100.0)
 
+    dev_pct = _flatten(gray, roi, r_px)
+    res.dev_img = np.clip(dev_pct * 4.0, 0, 255).astype(np.uint8)
+
+    # 금색·갈색 샘플은 밝기가 웨이퍼와 비슷해도 채도가 확실히 높다.
+    # 반대 방향도 봐야 한다: 검은 판을 비춘 거울면 웨이퍼는 살짝 유채색이고
+    # (실측 S 중앙값 42) 그 위의 회색 칩은 오히려 채도가 낮다 (S 27~35).
+    # 저채도 쪽에는 V < 240 가드가 필수다. 안 그러면 날아간 하이라이트
+    # (V>=250, S~0)가 통째로 '저채도 샘플' 로 걸린다.
+    s_med = float(np.median(S[roib]))
+    sdiff = S.astype(np.int16) - s_med
+    sat_delta = float(p["sat_delta"])
+    sat_mask = (sdiff > sat_delta) | ((-sdiff > sat_delta) & (V < 240))
+
     # ---- 7-4. 통계 거리 d² (잡음으로 정규화한 Lab 잔차) -------------------
     # 판정 전 σ=stat_blur 블러. 잡음은 화소마다 독립이고 칩은 26px 이상이라
     # 칩은 그대로이고 잡음만 준다. 엣지 제안 경로도 같은 블러본을 쓴다.
+    # 신뢰도(strength)·부호 분리·엣지 제안의 안쪽 검사에도 쓰므로 stat_path 가
+    # 꺼져 있어도 계산은 한다 - 씨앗에만 안 넣는다.
     stat_blur = float(p.get("stat_blur", 1.0) or 0)
     src = cv2.GaussianBlur(bgr, (0, 0), stat_blur) if stat_blur > 0 else bgr
     lab3 = cv2.cvtColor(src, cv2.COLOR_BGR2LAB)
     dev, sigmas, r_l = _stat_distance(lab3, roi, r_px)
     res.info.append("noise sigma L/a/b = %.1f/%.1f/%.1f" % tuple(sigmas))
-    res.dev_img = np.clip(np.sqrt(dev) * 16.0, 0, 255).astype(np.uint8)
+    stat_seed_t = float(p.get("stat_seed", 25.0))
+    stat_grow_t = float(p.get("stat_grow", 12.0))
+    use_stat = bool(p.get("stat_path", True))
 
     # ---- 7-5. 히스테리시스 임계화 -----------------------------------------
     # 함정 4: Otsu 는 클래스가 하나여도 반드시 둘로 쪼개 샘플을 반토막 낸다.
-    seed_t = float(p.get("stat_seed", 25.0))
-    grow_t = float(p.get("stat_grow", 12.0))
+    seed_t = float(p["seed_pct"])
+    grow_t = seed_t * float(p["grow_pct"]) / 100.0
     # 날아간 하이라이트(V>=250)는 대비 정보가 0 이라 샘플일 수 없는 곳이다.
     # 철판이 천장 조명을 정반사하면 폭 30~80px 포화 줄무늬가 편차 맵을 뒤덮어
     # 칩들이 그 덩어리에 흡수됐다 (실측 172657: 이 제외로 칩 검출 14 -> 25,
     # 중앙 무더기 전부 회수). 일부만 포화된 샘플은 나머지 부분으로 잡히고
     # 구멍은 뒤의 _fill_holes 가 메운다.
     notblown = V < 250
-    seed = (dev > seed_t) & roib & notblown
-    grow = ((dev > grow_t) & roib & notblown).astype(np.uint8) * 255
+    seed = ((dev_pct > seed_t) | sat_mask) & roib & notblown
+    grow_b = ((dev_pct > grow_t) | sat_mask) & roib & notblown
+    if use_stat:
+        # 통계 씨앗은 OR 로 더한다. 기존 경로를 대체했더니 밝은 사진에서 12/16 으로
+        # 떨어졌다(143334) - 어두운 사진에서만 이득이라 '추가' 로 둔다.
+        seed |= (dev > stat_seed_t) & roib & notblown
+        grow_b |= (dev > stat_grow_t) & roib & notblown
+    grow = grow_b.astype(np.uint8) * 255
 
     # 반지름 200px 근처에서 0.006*r 은 1px 이라 사실상 아무것도 안 한다.
     # 그 결과 무늬가 있는 샘플이 파편으로 쪼개져, 작은 조각은 면적 필터에
@@ -1345,7 +1416,12 @@ def detect(bgr, params=None):
                 rejects.append(g)         # 두꺼운 몸통은 아래 rescue 에서 건진다
             continue
         if g["edge_frac"] > 0 and g["sol"] < split_sol:
-            continue                      # 테두리 반사광 파편 (실측 0.74)
+            # 테두리 반사광 파편 (실측 0.74). 다만 밝은 칩이 반사광 자락과 한 덩어리로
+            # 묶여 띠에 닿은 경우가 있어(143454: 칩 + 자락 114mm² 볼록도 0.58) 버리기
+            # 전에 부호로만 갈라 본다(OPEN 사다리는 안 탄다 - 둥근 자락 조각을 살린다).
+            g["band_frag"] = True
+            rejects.append(g)
+            continue
         g["edge"] = g["edge_frac"] > 0
         parts = _sign_split(g)
         if len(parts) >= 2:
@@ -1453,11 +1529,13 @@ def detect(bgr, params=None):
         # 면적 상한을 넘어 탈락한 덩어리가 '맞닿은 칩들' 이면 홈을 따라 가르는 것이
         # 먼저다. OPEN 사다리는 띠·halo 를 떼는 도구라 두툼하게 맞닿은 칩은 못 가르고,
         # 마지막 단계에서 갈라진 조각은 '다음 단계' 가 없어 받지 못한다.
-        if g0["area"] > max_a or g0["sol"] < 0.55:
+        if g0.get("band_frag") or g0["area"] > max_a or g0["sol"] < 0.55:
             parts = _sign_split(g0)
             if parts:
                 raw.extend(parts)
                 continue
+        if g0.get("band_frag"):
+            continue                          # 부호 분리만 허용
         if g0["area"] > max_a and g0["sol"] >= 0.55:
             parts = _split(g0, depth=2)
             if parts and all(_ok(gp, split_sol) for gp in parts):
@@ -1538,6 +1616,19 @@ def detect(bgr, params=None):
     final = np.zeros((H, W), np.uint8)
     cands = []
     shape_fill = float(p["shape_fill"])
+    dark_str_min = float(p.get("dark_straight_min", 0.85))
+    dark_vmax = int(p.get("dark_vertices_max", 6))
+    rim_pct = float(p.get("dark_rim_pct", 3.0))
+
+    def _rim_dist(px, py):
+        """원판 경계까지의 거리(반지름 대비, 0 = 경계). 타원 좌표계로 옮겨 잰다."""
+        if not wafer.found or wafer.major_px <= 0:
+            return 1.0
+        th = math.radians(wafer.theta_deg)
+        dx, dy = px - wafer.center_px[0], py - wafer.center_px[1]
+        u = (dx * math.cos(th) + dy * math.sin(th)) / (wafer.major_px / 2.0)
+        v = (-dx * math.sin(th) + dy * math.cos(th)) / max(wafer.minor_px / 2.0, 1.0)
+        return 1.0 - math.hypot(u, v)
 
     def _emit(g, approx_eps=0.02):
         """덩어리 하나를 결과 dict 로 만든다 (본 경로와 엣지 제안 경로 공용).
@@ -1552,6 +1643,19 @@ def detect(bgr, params=None):
         pts = g["pts"]
         hull = cv2.convexHull(pts)
         px, py = g["cx"], g["cy"]          # 무게중심 = 픽셀 이하 정밀도
+        # 얼룩·림 관문(어느 경로에서 왔든). 림: 원판 경계에서 반지름의 rim_pct 안에
+        # 중심이 있으면 림 반사다. 얼룩: 웨이퍼보다 어두운 후보는 직선성과 꼭짓점 수를
+        # 요구한다(얼룩은 곡선, 칩은 다각형). 밝은 후보는 그대로 둔다 - 밝은 칩이
+        # 반사광 속에서 둥글게 잡히는 일이 있다.
+        if not plate:
+            if _rim_dist(px, py) < rim_pct / 100.0:
+                return None
+            mb = g["mask"] > 0
+            if float(np.median(r_l[mb])) < 0 and not g.get("edge_only"):
+                st_, nv_ = _straightness(g["mask"])
+                if st_ < dark_str_min or not (3 <= nv_ <= dark_vmax):
+                    return None
+                g["straight"] = st_
         v = M @ np.array([px - cx0, py - cy0])
         (_c, (rw, rh), rang) = cv2.minAreaRect(pts)
         # 모양은 approxPolyDP 꼭짓점 수로 정하지 않는다. 20x44px 샘플은 모서리가
@@ -1587,8 +1691,11 @@ def detect(bgr, params=None):
             "_cnt": pts,
             "_sid": g.get("sid"),
             "_straight": g.get("straight"),
+            "_inner_d2": g.get("inner_d2"),
+            "_dark": bool(float(np.median(r_l[g["mask"] > 0])) < 0),
+            "_rim": round(_rim_dist(px, py), 3),
         }
-        for k in ("edge", "rescued", "split", "merged", "edge_only"):
+        for k in ("edge", "rescued", "split", "merged", "edge_only", "color_only"):
             if g.get(k):
                 c[k] = True
         return c
@@ -1602,7 +1709,43 @@ def detect(bgr, params=None):
         citems.append([c, g])
         final[g["mask"] > 0] = 255
 
-    # (예전 3.5단계 색거리(dE) 보조 경로는 통계 판정에 흡수되어 없앴다.)
+    # ---- 3.5단계: 색거리(dE) 보조 경로 -----------------------------------
+    # 기존 히스테리시스에 OR 로 섞으면 테두리 반사 얼룩까지 부풀어 이웃 칩과 한
+    # 덩어리가 되면서 '있던 검출이 사라졌다' (실측 151630: 14 -> 12). 그래서
+    # 완전히 분리된 경로로 두고, 이미 검출된 영역 위는 지운다. 이 경로는
+    # 검출을 줄일 수 없다.
+    # 철판 모드에서는 반드시 끈다. 그쪽 ROI 는 화면 전체(책상·케이스·철판이
+    # 뒤섞임)라 '배경이 한 재질' 이라는 전제가 깨져 잡티가 쏟아졌다
+    # (실측 161958 11 -> 24, 162101 12 -> 26).
+    if float(p.get("de_k", 0) or 0) > 0 and wafer.surface == "wafer":
+        de = _color_distance(bgr, roi, r_px)
+        de_med = float(np.median(de[roib]))   # 샘플은 소수라 사실상 '표면 색잡음'
+        de_t = max(float(p["de_floor"]), float(p["de_k"]) * de_med)
+        cm = ((de > de_t) & roib & notblown).astype(np.uint8) * 255
+        cm = cv2.morphologyEx(cm, cv2.MORPH_OPEN, _disk(ko))
+        cm = cv2.morphologyEx(cm, cv2.MORPH_CLOSE, _disk(kc))
+        cm = _fill_holes(cm)
+        cm = cv2.bitwise_and(cm, cv2.bitwise_not(final))
+        nn, ll, st, _s = cv2.connectedComponentsWithStats((cm > 0).astype(np.uint8), 8)
+        for i in range(1, nn):
+            g = _mk((ll == i).astype(np.uint8) * 255)
+            if g is None:
+                continue
+            # 본 경로보다 엄하게 본다 (얼룩 배제): 볼록도는 split_solidity 요구.
+            if (g["edge_frac"] > edge_max or g["sol"] < split_sol
+                    or not (min_a <= g["area"] <= max_a)):
+                continue
+            near = 0.5 * math.sqrt(g["area"]) / mm if mm > 0 else 0.0
+            if any(math.hypot(g["cx"] - c["x_px"], g["cy"] - c["y_px"]) < near
+                   for c in cands):
+                continue                      # 이미 잡은 샘플과 같은 것
+            g["color_only"] = True
+            c = _emit(g)
+            if c is None:
+                continue
+            cands.append(c)
+            citems.append([c, g])
+            final[g["mask"] > 0] = 255
 
     # ---- 3.7단계: 엣지 보완 -----------------------------------------------
     # 색 마스크가 조각의 일부만 잡은 샘플을, Canny 엣지의 닫힌 다각형으로
@@ -1670,7 +1813,7 @@ def detect(bgr, params=None):
                 if g2 is None:
                     still.append(i)
                     continue
-                for k in ("edge", "rescued", "split", "merged", "edge_only"):
+                for k in ("edge", "rescued", "split", "merged", "edge_only", "color_only"):
                     g2[k] = citems[i][1].get(k, False)
                 c2 = _emit(g2, approx_eps=0.04)  # 중심/모양/치수 계산은 그대로 재사용
                 if c2 is None:
@@ -1709,14 +1852,15 @@ def detect(bgr, params=None):
         vmax = int(p["edge_vertices_max"])
         chans = [lab3[:, :, i] for i in range(3)]     # σ=stat_blur 블러한 L·a·b
         proposed = []
-        # Canny 사다리는 폴백이다: 엄한 문턱에서 제안이 나오면 거기서 멈추고, 하나도
-        # 없을 때만 느슨한 문턱으로 내려간다. 느슨한 문턱은 얼룩 둘레도 닫힌 윤곽으로
-        # 만들어 낸다(실측 142900: 12/40 에서 얼룩 14mm² 가 볼록도 0.89·직선성 0.87 로
-        # 관문을 다 통과했다). 닫기 3x3 -> 5x5 는 민감도가 아니라 끊김 잇기라 한 문턱
-        # 안에서 둘 다 돈다(실측 153512: 같은 칩이 3x3 에선 직선성 0.81, 5x5 에선 0.90).
-        for lo, hi in p.get("edge_canny", [[20, 60], [12, 40]]):
-            if proposed:
-                break
+        # Canny 사다리를 전부 돈다. 다만 느슨한 문턱은 얼룩 둘레도 닫힌 윤곽으로
+        # 만들어 내므로(실측 142900: 12/40 에서 얼룩 14mm² 가 볼록도 0.89·직선성 0.87)
+        # 둘째 단계부터는 직선성을 edge_straight_loose(0.90) 로 올려 받는다. '엄한
+        # 단계에서 나오면 멈춤' 으로 했더니 사진의 한쪽 칩이 엄한 단계에서 잡히면
+        # 다른 쪽 칩(느슨한 단계에서만 닫힘)을 못 봤다(153512). 닫기 3x3 -> 5x5 는
+        # 민감도가 아니라 끊김 잇기라 둘 다 돈다(같은 칩이 3x3 에선 0.81, 5x5 에선 0.90).
+        str_loose = max(str_min, float(p.get("edge_straight_loose", 0.90)))
+        for li, (lo, hi) in enumerate(p.get("edge_canny", [[20, 60], [12, 40]])):
+            need_str = str_min if li == 0 else str_loose
             for ksz in (3, 5):
                 k = np.ones((ksz, ksz), np.uint8)
                 e = np.zeros((H, W), np.uint8)
@@ -1739,7 +1883,7 @@ def detect(bgr, params=None):
                     if not (3 <= nv <= vmax):
                         continue
                     straight = (cv2.arcLength(approx, True) / peri) if peri > 0 else 0.0
-                    if straight < str_min:
+                    if straight < need_str:
                         continue                     # 곡선 = 얼룩
                     sup = _hull_support(edge_dt, hull, (H, W))
                     if sup < sup_min:
@@ -1764,8 +1908,20 @@ def detect(bgr, params=None):
                     # 있으면 반사광·질감이지 칩이 아니다(실측 151131: 케이스 반사광
                     # 안에서 닫힌 윤곽 6개가 관문을 전부 통과했다).
                     inner = cv2.erode(nm, np.ones((5, 5), np.uint8)) > 0
+                    inner_d2 = -1.0
                     if inner.any():
                         if float((e[inner] > 0).mean()) > inner_max:
+                            continue
+                        # 같은 재질 칩은 웨이퍼보다 밝지 않다. 밝은 쪽(L 잔차 > 0)의 닫힌
+                        # 윤곽은 얼룩이다(실측 143334·143454 웨이퍼 가운데 밝은 얼룩 32mm²,
+                        # 직선성 0.95·지지율 1.0 으로 다른 관문은 다 통과했다).
+                        if float(np.median(r_l[inner])) > 0:
+                            continue
+                        # 안쪽에 면 대비가 있으면(d² 중앙값이 grow 이상) 본 경로가 이미
+                        # 봤고 모양·띠·면적으로 버린 것이다. 여기서 되살리지 않는다 -
+                        # 이 경로는 '면 대비가 없는' 칩만 제안한다.
+                        inner_d2 = float(np.median(dev[inner]))
+                        if inner_d2 >= stat_grow_t:
                             continue
                     # 포화(반사광) 경계는 가장 강한 엣지라 그 언저리에 닫힌 윤곽이 줄줄이
                     # 생긴다(실측 155302: 반사광 테두리를 따라 12~32mm² 제안 8개). 껍질
@@ -1773,18 +1929,17 @@ def detect(bgr, params=None):
                     near = cv2.dilate(nm, np.ones((7, 7), np.uint8)) > 0
                     if not bool(notblown[near].all()):
                         continue
-                        # 안쪽에 면 대비가 있으면(d² 중앙값이 grow 이상) 통계 경로가 이미
-                        # 봤고 모양·띠·면적으로 버린 것이다. 여기서 되살리지 않는다 -
-                        # 이 경로는 '면 대비가 없는' 칩만 제안한다.
-                        if float(np.median(dev[inner])) >= grow_t:
-                            continue
                     g = _mk(nm)
-                    if g is None or g["edge_frac"] > edge_max:
-                        continue                     # 테두리 띠 규칙도 같이 적용
+                    if g is None or g["edge_frac"] > 0:
+                        # 테두리 띠에 닿으면 버린다(본 경로의 '띠 안 비율' 보다 엄하게).
+                        # 원판 가장자리·플랫은 그 자체가 곧고 강한 엣지라 닫힌 윤곽을
+                        # 만들기 쉽다(실측 142900: 플랫 옆 62mm² 오각형, 지지율 1.0).
+                        continue
                     g["edge_only"] = True
                     g["edge"] = g["edge_frac"] > 0
                     g["strength"] = sup              # 엣지 지지율이 신뢰도
                     g["straight"] = straight
+                    g["inner_d2"] = inner_d2
                     c = _emit(g, approx_eps=0.04)
                     if c is None:
                         continue
@@ -1815,8 +1970,9 @@ def detect(bgr, params=None):
     res.mask = final
     for c in cands:
         if c.get("edge_only"):
-            res.info.append("edge-proposed: #%d support %.2f straight %.2f"
-                            % (c["no"], c["strength"], c.get("_straight", 0.0)))
+            res.info.append("edge-proposed: #%d support %.2f straight %.2f inner d2 %.1f"
+                            % (c["no"], c["strength"], c.get("_straight", 0.0),
+                               c.get("_inner_d2", -1.0)))
     if edge_done:
         res.info.append("edge-completed: "
                         + " ".join("#%d" % c["no"] for c in sorted(
@@ -1829,6 +1985,9 @@ def detect(bgr, params=None):
                                 "position may be off" % c["no"])
         if c.get("rescued"):
             res.warnings.append("sample #%d separated from edge glare; "
+                                "check outline" % c["no"])
+        if c.get("color_only"):
+            res.warnings.append("sample #%d found by color only; "
                                 "check outline" % c["no"])
         if c.get("edge_only"):
             res.warnings.append("sample #%d found by edge only; verify" % c["no"])
@@ -1934,12 +2093,12 @@ def _label_box(img, text, org, fs, th, bg, fg, taken=None, anchor=None):
 
 
 def _sample_color(s):
-    """신뢰도 하위 = 자홍, 테두리 = 주황, 엣지 제안 = 하늘색, 그 외 = 초록."""
+    """신뢰도 하위 = 자홍, 테두리 = 주황, 엣지 제안·색거리 보조 = 하늘색, 그 외 = 초록."""
     if s.get("weak"):
         return (255, 0, 255)
     if s.get("edge"):
         return (0, 165, 255)
-    if s.get("edge_only"):
+    if s.get("edge_only") or s.get("color_only"):
         return (255, 191, 0)
     return (0, 255, 0)
 

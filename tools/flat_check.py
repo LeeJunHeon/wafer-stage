@@ -12,6 +12,8 @@
 
 import argparse
 import io as _io
+import json
+import math
 import os
 import sys
 from contextlib import redirect_stdout
@@ -48,6 +50,9 @@ def _summary(bgr, params, orig=None):
             orig if orig is not None else bgr, (w.center_px[0] + u0, w.center_px[1] + v0),
             w.major_px, w.minor_px, w.theta_deg) * 100.0
     return {"n": len(det.samples),
+            "rows": [(no, x, y) for no, _u, _v, x, y in res["rows"]],
+            "rows_px": [(no, u, v) for no, u, v, _x, _y in res["rows"]],
+            "mm_per_px": float(det.wafer.mm_per_px or 0.0),
             "rms": float(cal.get("corner_rms_mm", cal.get("rms_mm", 0.0))),
             "max": float(cal.get("corner_max_mm", cal.get("max_mm", 0.0))),
             "wafer_sat": wsat,
@@ -65,7 +70,42 @@ def _mode_params(params, mode):
     return q
 
 
-def check_one(path, params, save_dir=None, modes=("both",)):
+TRUTH_MM = 2.5          # 정답 좌표에서 이 안이면 적중
+
+
+def load_truth(path):
+    """samples.json -> {"mm": [(no, X, Y)], "px": [(no, u, v)] 또는 None}."""
+    with open(path, "r", encoding="utf-8") as f:
+        arr = json.load(f)
+    mm = [(s["no"], float(s["X"]), float(s["Y"])) for s in arr]
+    px = ([(s["no"], float(s["u"]), float(s["v"])) for s in arr]
+          if all("u" in s and "v" in s for s in arr) else None)
+    return {"mm": mm, "px": px}
+
+
+def score(rows, truth, tol=TRUTH_MM):
+    """(적중 목록, 오검출 목록, 놓친 정답 목록). 가까운 것부터 짝짓는다.
+
+    같은 사진의 정답이면 픽셀로 비교한다(tol 은 2.5mm 를 px 로 환산) - 촬영마다
+    마커 재보정이 달라 기계좌표는 같은 칩도 몇 mm 씩 어긋난다.
+    """
+    pairs = sorted((math.hypot(x - tx, y - ty), i, j)
+                   for i, (_n, x, y) in enumerate(rows)
+                   for j, (_tn, tx, ty) in enumerate(truth))
+    used_d, used_t, hits = set(), set(), []
+    for d, i, j in pairs:
+        if d > tol:
+            break
+        if i in used_d or j in used_t:
+            continue
+        used_d.add(i); used_t.add(j)
+        hits.append((rows[i][0], truth[j][0], d))
+    false = [rows[i] for i in range(len(rows)) if i not in used_d]
+    missed = [truth[j] for j in range(len(truth)) if j not in used_t]
+    return hits, false, missed
+
+
+def check_one(path, params, save_dir=None, modes=("both",), truth=None):
     bgr = imgio.imread_u(path)
     if bgr is None:
         print("%s: 읽기 실패" % path)
@@ -104,6 +144,21 @@ def check_one(path, params, save_dir=None, modes=("both",)):
     if by_mode:
         print("  경로별(평탄화 후): " + " · ".join("%s %s" % ({"stat": "통계만", "edge": "엣지만"}[m], n)
                                            for m, n in by_mode.items()))
+    if truth is not None:
+        for tag, s in (("전", before), ("후", after)):
+            if s is None:
+                continue
+            if truth.get("px") and s.get("mm_per_px"):
+                hits, false, missed = score(s["rows_px"], truth["px"],
+                                            tol=TRUTH_MM / s["mm_per_px"])
+                unit = "px"
+            else:
+                hits, false, missed = score(s["rows"], truth["mm"])
+                unit = "mm"
+            print("  [%s] 정답 %d(%s): 적중 %d · 오검출 %d %s · 놓침 %d %s"
+                  % (tag, len(truth["mm"]), unit, len(hits), len(false),
+                     [("#%d" % n, round(x, 1), round(y, 1)) for n, x, y in false],
+                     len(missed), [("#%d" % n, round(x, 1), round(y, 1)) for n, x, y in missed]))
     if save_dir and info1["flat"]["applied"]:
         os.makedirs(save_dir, exist_ok=True)
         imgio.imwrite_u(os.path.join(save_dir, "flat_%s.png" % name), img1)
@@ -115,6 +170,7 @@ def main(argv=None):
     ap.add_argument("paths", nargs="*", help="raw.png 또는 그 폴더")
     ap.add_argument("--all", action="store_true", help="data/out 아래 전부")
     ap.add_argument("--save", help="평탄화 결과 PNG 를 이 폴더에 남긴다")
+    ap.add_argument("--truth", help="정답 samples.json. 'self' 면 그 사진 폴더의 samples.json")
     ap.add_argument("--mode", default="both",
                     help="both(기본) · stat(통계 경로만) · edge(엣지 제안만) · all(셋 다 나란히)")
     a = ap.parse_args(argv)
@@ -139,7 +195,11 @@ def main(argv=None):
     worse = 0
     rows = []
     for f in files:
-        r = check_one(f, params, a.save, modes)
+        truth = None
+        if a.truth:
+            tp = os.path.join(os.path.dirname(f), "samples.json") if a.truth == "self" else a.truth
+            truth = load_truth(tp) if os.path.exists(tp) else None
+        r = check_one(f, params, a.save, modes, truth)
         if r is None:
             continue
         before, after = r

@@ -58,6 +58,58 @@ def _paper_mean(bgr):
     return float(sel.mean()) if sel.size else float(g.mean())
 
 
+FUSE_SAT_LEVEL = 245         # 가장 밝은 장에서 이 이상인 화소는 융합 가중치 0 (어두운 장을 쓴다)
+FUSE_LEVELS = 6              # 라플라시안 피라미드 단계
+
+
+def _pyr_down_n(img, n):
+    out = [img]
+    for _ in range(n - 1):
+        out.append(cv2.pyrDown(out[-1]))
+    return out
+
+
+def fuse_exposures(frames, sat_level=FUSE_SAT_LEVEL):
+    """노출 융합(Mertens). cv2.createMergeMertens 와 같은 가중치(대비·채도·적정 노출)에
+    한 가지를 더한다: 가장 밝은 장에서 sat_level 이상인 화소는 그 장의 가중치를 0 으로
+    두고 어두운 장을 쓴다. 포화 화소는 정보가 없는데 '적정 노출' 가중치가 그 자리를
+    밝은 장에서 가져와 결과도 날아갔다(143454: 웨이퍼가 가장 하얗게 빛나는 자리의
+    밝은 칩 둘). 돌려주는 것: uint8 BGR.
+    """
+    fs = [f.astype(np.float32) / 255.0 for f in frames]
+    h, w = fs[0].shape[:2]
+    brightest = int(np.argmax([float(f.mean()) for f in fs]))
+    weights = []
+    for i, f in enumerate(fs):
+        gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+        contrast = np.abs(cv2.Laplacian(gray, cv2.CV_32F)) + 1e-6
+        saturation = f.std(axis=2) + 1e-6
+        wellexp = np.exp(-((f - 0.5) ** 2) / (2 * 0.2 ** 2)).prod(axis=2) + 1e-6
+        wt = contrast * saturation * wellexp
+        if i == brightest:
+            wt[frames[i].max(axis=2) >= sat_level] = 0.0
+        weights.append(wt)
+    tot = np.sum(weights, axis=0) + 1e-12
+    weights = [wt / tot for wt in weights]
+    # 라플라시안 피라미드 블렌딩(경계 없이 섞는다). 크기가 안 맞는 단계는 맞춘다.
+    n = max(1, min(FUSE_LEVELS, int(np.floor(np.log2(min(h, w)))) - 2))
+    acc = None
+    for f, wt in zip(fs, weights):
+        gp = _pyr_down_n(f, n)
+        wp = _pyr_down_n(wt, n)
+        lp = []
+        for k in range(n - 1):
+            up = cv2.pyrUp(gp[k + 1], dstsize=(gp[k].shape[1], gp[k].shape[0]))
+            lp.append(gp[k] - up)
+        lp.append(gp[-1])
+        cur = [lp[k] * wp[k][:, :, None] for k in range(n)]
+        acc = cur if acc is None else [a + c for a, c in zip(acc, cur)]
+    out = acc[-1]
+    for k in range(n - 2, -1, -1):
+        out = cv2.pyrUp(out, dstsize=(acc[k].shape[1], acc[k].shape[0])) + acc[k]
+    return np.clip(out * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+
 def _fourcc_str(v):
     v = int(v)
     if v <= 0:
@@ -306,7 +358,8 @@ class Camera:
         """노출 브라케팅 촬영. (검출에 쓸 이미지, stats).
 
         settings "bracket" 이 켜져 있으면 자동 노출을 끄고 노출을 바꿔 가며 여러 장을
-        받아 cv2.createMergeMertens() 로 융합한다(노출시간을 몰라도 되는 방식).
+        받아 Mertens 방식으로 융합한다(fuse_exposures - 노출시간을 몰라도 되는 방식.
+        가장 밝은 장의 포화 화소는 가중치 0).
 
         노출 목록은 밝기를 보며 정한다("bracket_exposure" 가 비어 있을 때 - 기본):
           1) 첫 장: 자동 노출을 끄고 한 장 받아 종이(밝은 상위 20% 화소) 평균이
@@ -393,10 +446,9 @@ class Camera:
             f, st = self.capture_best()
             st.update(stats, raw=f)
             return f, st
-        merge = cv2.createMergeMertens()
-        fused = merge.process([f for f in frames])
-        fused = np.clip(fused * 255.0 + 0.5, 0, 255).astype(np.uint8)
+        fused = fuse_exposures(frames)
         stats["bracketed"] = True
+        stats["bracket_frames"] = list(frames)     # 장별 원본(진단용 저장)
         stats["chosen_focus_score"] = focus_score(fused)
         return fused, stats
 

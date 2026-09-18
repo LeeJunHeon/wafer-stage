@@ -279,6 +279,9 @@ def _capture_sync(params):
     images = {}
     if stats.get("bracketed"):
         images["fused.png"] = bgr
+        # 장별 원본도 남긴다 - 융합 가중치나 놓친 칩의 장별 밝기를 나중에 확인할 수 있게.
+        for i, f in enumerate(stats.pop("bracket_frames", []) or []):
+            images["bracket_%d.png" % i] = f
     diag = {"bracketed": bool(stats.get("bracketed")),
             "bracket_means": stats.get("bracket_means"),
             "bracket_exposure": stats.get("bracket_exposure"),
