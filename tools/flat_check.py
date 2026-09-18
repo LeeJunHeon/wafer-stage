@@ -54,7 +54,18 @@ def _summary(bgr, params, orig=None):
             "warnings": list(det.warnings)}
 
 
-def check_one(path, params, save_dir=None):
+def _mode_params(params, mode):
+    """검출 경로 스위치. both = 통계+엣지 제안, stat = 통계만, edge = 엣지 제안만."""
+    q = dict(params)
+    if mode == "stat":
+        q["edge_propose"] = False
+    elif mode == "edge":
+        q["stat_seed"] = 1e12          # 씨앗이 없으면 통계 경로는 아무것도 내지 않는다
+        q["stat_grow"] = 1e12
+    return q
+
+
+def check_one(path, params, save_dir=None, modes=("both",)):
     bgr = imgio.imread_u(path)
     if bgr is None:
         print("%s: 읽기 실패" % path)
@@ -67,6 +78,13 @@ def check_one(path, params, save_dir=None):
     before = _summary(bgr, p_off)
     after = _summary(img1, p_on, orig=bgr) if info1["flat"]["applied"] else None
     fi = info1["flat"]
+    # 경로별 기여: 평탄화본에서 통계만 / 엣지 제안만 돌려 개수를 나란히 본다.
+    by_mode = {}
+    for m in modes:
+        if m == "both":
+            continue
+        r = _summary(img1 if fi["applied"] else bgr, _mode_params(p_on, m), orig=bgr)
+        by_mode[m] = None if r is None else r["n"]
 
     print("=" * 78)
     print("%s   마커 %d개   감지영역 %s" % (name, info1["n_markers"], rect))
@@ -83,6 +101,9 @@ def check_one(path, params, save_dir=None):
               % (tag, s["n"], s["rms"], s["max"], s["wafer_sat"]))
         for wmsg in s["warnings"]:
             print("       경고: %s" % wmsg)
+    if by_mode:
+        print("  경로별(평탄화 후): " + " · ".join("%s %s" % ({"stat": "통계만", "edge": "엣지만"}[m], n)
+                                           for m, n in by_mode.items()))
     if save_dir and info1["flat"]["applied"]:
         os.makedirs(save_dir, exist_ok=True)
         imgio.imwrite_u(os.path.join(save_dir, "flat_%s.png" % name), img1)
@@ -94,6 +115,8 @@ def main(argv=None):
     ap.add_argument("paths", nargs="*", help="raw.png 또는 그 폴더")
     ap.add_argument("--all", action="store_true", help="data/out 아래 전부")
     ap.add_argument("--save", help="평탄화 결과 PNG 를 이 폴더에 남긴다")
+    ap.add_argument("--mode", default="both",
+                    help="both(기본) · stat(통계 경로만) · edge(엣지 제안만) · all(셋 다 나란히)")
     a = ap.parse_args(argv)
 
     files = []
@@ -109,10 +132,14 @@ def main(argv=None):
         return 2
 
     params = calib.load_params()
+    modes = {"both": ("both",), "stat": ("stat",), "edge": ("edge",),
+             "all": ("both", "stat", "edge")}.get(a.mode, ("both",))
+    if a.mode in ("stat", "edge"):
+        params = _mode_params(params, a.mode)
     worse = 0
     rows = []
     for f in files:
-        r = check_one(f, params, a.save)
+        r = check_one(f, params, a.save, modes)
         if r is None:
             continue
         before, after = r

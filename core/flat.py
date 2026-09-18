@@ -114,6 +114,10 @@ def flatten(bgr, rect, params=None):
     surf = np.maximum(surf, 8.0)                     # 0 나눗셈·극단 증폭 방지
     out = bgr.astype(np.float32) * (PAPER_TARGET / surf.astype(np.float32))
     out = np.clip(out + 0.5, 0, 255).astype(np.uint8)
+    # 포화 화소는 정보가 없는 자리다. 나눗셈으로 값이 내려가면 검출이 그곳을
+    # '대비 있는 면' 으로 착각한다(포화 제외 규칙 V<250 이 무력화된다). 255 로 남겨
+    # 검출의 포화 제외가 그대로 먹게 한다.
+    out[bgr.max(axis=2) >= SAT_LEVEL] = 255
 
     after = out[v0:v1, u0:u1][sub][kept].reshape(-1, 3).mean(axis=0)
     info["paper_rgb_after"] = [round(float(v), 1) for v in after[::-1]]

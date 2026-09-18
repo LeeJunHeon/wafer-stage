@@ -135,7 +135,7 @@
       const pts = (sm.verts || []).map(p => p.join(',')).join(' ');
       if (pts) gs.appendChild(el('polygon', { class: cls.join(' '), points: pts }));
       const t = el('text', { class: 'ov-num', x: sm.u + 8, y: sm.v - 6 });
-      t.textContent = sm.no + (sm.edge_completed ? 'E' : '');
+      t.textContent = sm.no + (sm.edge_completed ? 'E' : '') + (sm.edge_only ? 'G' : '') + (sm.weak ? '?' : '');
       gs.appendChild(t);
       // 클릭 판정용(다각형이 얇아도 집히도록 원을 덮는다)
       const hit = el('circle', { class: 'ov-hit', cx: sm.u, cy: sm.v, r: 16 });

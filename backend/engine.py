@@ -153,9 +153,12 @@ async def _log_capture_diag(diag):
         return
     if diag.get("bracket_warning"):
         await push_log(diag["bracket_warning"], "warn")
+    for note in diag.get("bracket_notes") or []:
+        await push_log("브라케팅 · " + note)
     if diag.get("bracketed"):
-        await push_log("브라케팅 융합 · 장별 평균 밝기 %s"
-                       % " / ".join("%.0f" % m for m in (diag.get("bracket_means") or [])))
+        await push_log("브라케팅 융합 · 노출 %s · 장별 평균 밝기 %s"
+                       % (" / ".join("%g" % e for e in (diag.get("bracket_exposure") or [])),
+                          " / ".join("%.0f" % m for m in (diag.get("bracket_means") or []))))
     else:
         await push_log("단일 촬영(브라케팅 없음)")
     if diag.get("flat_applied"):
@@ -222,6 +225,9 @@ def _apply_sense(res):
             "status": "wait" if calib.in_range(X, Y) else "skip",
             "value": None, "unit": None,
             "edge_completed": bool(s.get("edge_completed")),
+            "edge_only": bool(s.get("edge_only")),
+            "weak": bool(s.get("weak")),
+            "strength": s.get("strength"),
             "area_mm2": s.get("area_mm2"),
         })
     state.set_warnings(det.warnings)
@@ -230,7 +236,7 @@ def _apply_sense(res):
 def _save_seq(bgr, res, images=None):
     """이번 촬영의 근거를 한 폴더에 남긴다.
 
-    bgr 은 raw.png 로 남길 원본(브라케팅이면 가운데 노출), images 는 그 밖에 남길
+    bgr 은 raw.png 로 남길 원본(브라케팅이면 첫 장), images 는 그 밖에 남길
     그림 {"fused.png": .., "flat.png": ..}. 검출은 flat(없으면 fused) 로 했다.
     """
     d = os.path.join(paths.OUT_DIR, "seq_" + time.strftime("%Y%m%d_%H%M%S"))

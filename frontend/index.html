@@ -149,6 +149,8 @@
     <div class="f"><span class="k">Y 가동범위 (mm)</span><input class="v" id="setLimY" type="number" min="1" max="1000" step="0.1" data-tip="Y 축이 0 에서 갈 수 있는 최대 거리입니다. 펌웨어 한계 안에서 정합니다."></div>
     <div class="f"><span class="k">Z 가동범위 (mm)</span><input class="v" id="setLimZ" type="number" min="1" max="1000" step="0.1" data-tip="Z 축이 맨 위(0)에서 내려갈 수 있는 최대 거리입니다. 펌웨어 한계 안에서 정합니다."></div>
     <div class="f"><span class="k">Z 측정 깊이 (mm)</span><input class="v" id="setZMeas" type="number" min="0" max="1000" step="0.1" data-tip="순회 중 측정할 때 Z 를 내리는 깊이입니다. Z 가동범위보다 작아야 합니다."><span class="hint">Z 가동범위 미만</span></div>
+    <div class="f"><span class="k">검출 씨앗 임계 (d²)</span><input class="v" id="setStatSeed" type="number" min="1" step="1" data-tip="잡음으로 정규화한 Lab 잔차의 통계 거리 d² 가 이 값을 넘는 곳이 샘플의 씨앗입니다. χ²(3) 기준 25 ≈ 1e-5 입니다."></div>
+    <div class="f"><span class="k">검출 확장 임계 (d²)</span><input class="v" id="setStatGrow" type="number" min="1" step="1" data-tip="씨앗에서 이어 붙이는 화소의 d² 하한입니다. 씨앗 임계보다 작아야 합니다."></div>
     <div class="f full"><span class="k">기준 마커 중심 (30 mm) · 기계좌표 mm</span>
       <table><thead><tr><th>id</th><th class="r">X</th><th class="r">Y</th></tr></thead><tbody id="setMarkers"></tbody></table></div>
     <div class="f full"><span class="k">데이터 폴더</span><span class="v mono" id="setData">—</span></div>

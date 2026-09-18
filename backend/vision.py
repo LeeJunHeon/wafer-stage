@@ -256,8 +256,8 @@ def _store(bgr):
 def _grab(params):
     """검출에 쓸 이미지 한 장. --image 면 그 파일(브라케팅 없음), 아니면 카메라.
 
-    stats["raw"] 가 raw.png 로 남길 원본이다(브라케팅이면 가운데 노출의 원본,
-    아니면 검출 이미지와 같다).
+    stats["raw"] 가 raw.png 로 남길 원본이다(브라케팅이면 첫 장 = 가장 밝으면서
+    포화되지 않은 장, 아니면 검출 이미지와 같다).
     """
     if IMAGE_OVERRIDE:
         bgr = imgio.imread_u(IMAGE_OVERRIDE)
@@ -281,6 +281,8 @@ def _capture_sync(params):
         images["fused.png"] = bgr
     diag = {"bracketed": bool(stats.get("bracketed")),
             "bracket_means": stats.get("bracket_means"),
+            "bracket_exposure": stats.get("bracket_exposure"),
+            "bracket_notes": stats.get("bracket_notes"),
             "bracket_warning": stats.get("bracket_warning", "")}
 
     # 종이 기준 평탄화. 포화는 평탄화 '전' 이미지에서 잰다 - 나눗셈은 값을 줄일 뿐

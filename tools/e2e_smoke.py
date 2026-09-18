@@ -633,13 +633,20 @@ def start_server(port, image, env_extra=None):
     env["PYTHONIOENCODING"] = "utf-8"
     env[paths.ENV_DATA_DIR] = DATA_DIR     # 실제 data 폴더 대신 임시 폴더에 쓴다
     env.update(env_extra or {})
+    # 서버 출력은 파일로 받는다. PIPE 로 두고 읽지 않으면 검출 로그가 파이프 버퍼를
+    # 채우는 순간 서버가 print 에서 멈춘다(실측: 순회가 '파킹' 에서 영영 안 끝났다).
+    log_path = os.path.join(DATA_DIR, "server_%d.log" % port)
+    log_f = open(log_path, "wb")
     p = subprocess.Popen(
         [sys.executable, os.path.join(ROOT, "run.py"),
          "--dry", "--no-window", "--port", str(port), "--image", image],
-        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        cwd=ROOT, env=env, stdout=log_f, stderr=subprocess.STDOUT)
+    p._smoke_log = log_f                   # 프로세스와 함께 닫는다
     if not wait_port(port):
-        out = p.stdout.read(4000).decode("utf-8", "replace") if p.stdout else ""
         p.kill()
+        log_f.close()
+        with open(log_path, "rb") as f:
+            out = f.read(4000).decode("utf-8", "replace")
         raise SystemExit("서버가 뜨지 않았습니다:\n" + out)
     return p
 
@@ -884,6 +891,8 @@ def main():
                     p.kill()
                 with contextlib.suppress(Exception):
                     p.wait(timeout=10)
+                with contextlib.suppress(Exception):
+                    p._smoke_log.close()
             time.sleep(0.5)
     finally:
         _restore_settings()

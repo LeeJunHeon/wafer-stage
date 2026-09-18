@@ -48,6 +48,22 @@
         badge.title = '윤곽 보완(엣지)';
         tdn.appendChild(badge);
       }
+      // 엣지 제안(면 대비 없이 가장자리로만 찾음) · 신뢰도 하위 - 사람이 확인할 것
+      if (sm.edge_only) {
+        const badge = document.createElement('span');
+        badge.className = 'edgebadge only';
+        badge.textContent = 'G';
+        badge.title = '가장자리로만 찾음 · 확인 필요';
+        tdn.appendChild(badge);
+      }
+      if (sm.weak) {
+        const badge = document.createElement('span');
+        badge.className = 'edgebadge weak';
+        badge.textContent = '?';
+        badge.title = '신뢰도 낮음(' + (sm.strength != null ? sm.strength : '') + ') · 확인 필요';
+        tdn.appendChild(badge);
+        tr.classList.add('weak');
+      }
       tr.appendChild(tdn);
 
       const cells = [

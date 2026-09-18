@@ -23,10 +23,17 @@ BACKENDS = [("DSHOW", cv2.CAP_DSHOW), ("MSMF", cv2.CAP_MSMF), ("ANY", cv2.CAP_AN
 # 노출 브라케팅 기본값. 한쪽에서 강한 빛이 들어오는 환경에서 자동 노출은 반사광에
 # 반응해 장마다 밝기가 요동하고(웨이퍼 안 평균 36~162), 한 장은 포화로 정보가
 # 사라진다. 노출을 고정한 여러 장을 Mertens 융합하면 노출시간을 몰라도 된다.
-BRACKET_EXPOSURE = [-4, -6, -8]
 BRACKET_SETTLE_S = 0.4
 BRACKET_DISCARD = 3          # 노출을 바꾼 뒤 버리는 프레임 수(드라이버 큐에 남은 옛 장)
 BRACKET_MIN_DIFF = 10.0      # 장별 평균 밝기 차이가 이보다 작으면 카메라가 노출을 무시한 것
+# 자동 노출 목록(bracket_exposure 가 비어 있을 때). CAP_PROP_EXPOSURE 는 DSHOW 에서
+# log2(초) 단위라 한 단계 = 두 배다. 첫 장은 종이가 PAPER_LO~PAPER_HI 가 되게 맞춘다.
+BRACKET_START = -5.0         # 탐색 시작 노출
+BRACKET_STEP = 1.0           # 한 단계
+BRACKET_SEEK_MAX = 5         # 첫 장을 맞추는 최대 시도 횟수
+BRACKET_MAX_SHOTS = 3        # 융합할 최대 장 수
+BRACKET_DARK_MEAN = 25.0     # 장 전체 평균이 이보다 어두우면 검은 사진 - 버리고 멈춘다
+PAPER_LO, PAPER_HI = 200.0, 235.0   # 첫 장에서 종이(밝은 상위 20%) 평균의 목표 범위
 
 
 def focus_score(bgr_or_gray):
@@ -37,6 +44,18 @@ def focus_score(bgr_or_gray):
     if g.ndim == 3:
         g = cv2.cvtColor(g, cv2.COLOR_BGR2GRAY)
     return float(cv2.Laplacian(g, cv2.CV_64F).var())
+
+
+def _mean_gray(bgr):
+    return float(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).mean())
+
+
+def _paper_mean(bgr):
+    """종이 밝기 추정: 밝은 상위 20% 화소의 평균(감지영역을 아직 모르므로 전체 프레임)."""
+    g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    thr = float(np.percentile(g, 80))
+    sel = g[g >= thr]
+    return float(sel.mean()) if sel.size else float(g.mean())
 
 
 def _fourcc_str(v):
@@ -274,57 +293,101 @@ class Camera:
         if exp not in (None, "", 0) and not use_ae:
             self.cap.set(cv2.CAP_PROP_EXPOSURE, float(exp))
 
+    def _shoot_at(self, exposure, settle):
+        """노출을 넣고 settle 만큼 기다린 뒤 큐에 남은 옛 장을 버리고 한 장(가장 선명한 장)."""
+        self.cap.set(cv2.CAP_PROP_EXPOSURE, float(exposure))
+        time.sleep(settle)
+        for _ in range(BRACKET_DISCARD):
+            self.read()
+        f, st = self.capture_best(retry=False, wait_af=False)
+        return f, st
+
     def capture_bracket(self):
         """노출 브라케팅 촬영. (검출에 쓸 이미지, stats).
 
-        settings "bracket" 이 켜져 있으면 자동 노출을 끄고 "bracket_exposure" 의
-        값마다 CAP_PROP_EXPOSURE 를 넣고 "bracket_settle_s" 만큼 기다린 뒤, 앞의 몇
-        장은 버리고 capture_frames 만큼 받아 가장 선명한 한 장을 고른다. 모인 장을
-        cv2.createMergeMertens() 로 융합한다(노출시간을 몰라도 되는 방식).
+        settings "bracket" 이 켜져 있으면 자동 노출을 끄고 노출을 바꿔 가며 여러 장을
+        받아 cv2.createMergeMertens() 로 융합한다(노출시간을 몰라도 되는 방식).
 
-        stats["raw"] 는 가운데 노출의 원본(raw.png 로 남길 것), stats["bracketed"]
-        는 실제로 융합했는지, stats["bracket_means"] 는 장별 평균 밝기다.
+        노출 목록은 밝기를 보며 정한다("bracket_exposure" 가 비어 있을 때 - 기본):
+          1) 첫 장: 자동 노출을 끄고 한 장 받아 종이(밝은 상위 20% 화소) 평균이
+             200~235 가 되도록 노출을 한 단계씩 올리거나 내린다(최대 5회).
+             고정 목록 -4/-6/-8 은 이 카메라에서 194/44/1 이 나와 셋째 장이 검은
+             사진이었고 raw.png 로 남긴 가운데 장도 어두웠다.
+          2) 거기서 한 단계씩 내리며 장을 더 받는다. 장 전체 평균이 25 미만이면
+             버리고 멈춘다. 최대 BRACKET_MAX_SHOTS 장.
+        "bracket_exposure" 에 값을 적어 두면 그 목록을 그대로 쓴다(수동 지정).
+
+        stats["raw"] 는 첫 장(가장 밝으면서 포화되지 않은 장 - raw.png 로 남길 것),
+        stats["bracketed"] 는 실제로 융합했는지, stats["bracket_exposure"] 와
+        stats["bracket_means"] 는 실제로 쓴 노출값과 장별 평균 밝기다.
         카메라가 노출 지시를 무시하면(장별 밝기 차 < 10) 경고를 남기고 단일
-        촬영으로 되돌아간다.
+        촬영으로 되돌아간다. 장이 2장 미만이어도 마찬가지다.
         """
         if not bool(self.p.get("bracket", True)):
             f, st = self.capture_best()
             st.update({"bracketed": False, "raw": f})
             return f, st
-        exposures = self.p.get("bracket_exposure") or BRACKET_EXPOSURE
+        manual = self.p.get("bracket_exposure") or []
         try:
-            exposures = [float(v) for v in exposures]
+            manual = [float(v) for v in manual]
         except (TypeError, ValueError):
-            exposures = list(BRACKET_EXPOSURE)
+            manual = []
         settle = float(self.p.get("bracket_settle_s", BRACKET_SETTLE_S) or 0)
-        if len(exposures) < 2:
-            f, st = self.capture_best()
-            st.update({"bracketed": False, "raw": f,
-                       "bracket_warning": "브라케팅 노출값이 2개 미만 · 단일 촬영"})
-            return f, st
 
         if self.p.get("autofocus", True):
             self.wait_autofocus()
-        frames, means, shots = [], [], []
+        frames, means, exposures, shots, notes = [], [], [], [], []
         self._set_auto_exposure(False)
         try:
-            for e in exposures:
-                self.cap.set(cv2.CAP_PROP_EXPOSURE, e)
-                time.sleep(settle)
-                for _ in range(BRACKET_DISCARD):
-                    self.read()
-                f, st = self.capture_best(retry=False, wait_af=False)
+            if manual:
+                for e in manual:
+                    f, st = self._shoot_at(e, settle)
+                    frames.append(f)
+                    means.append(_mean_gray(f))
+                    exposures.append(e)
+                    shots.append({"exposure": e, "mean": round(means[-1], 1),
+                                  "focus": st.get("chosen_focus_score")})
+            else:
+                # 1) 첫 장: 종이가 200~235 가 되는 노출을 찾는다.
+                e = float(self.p.get("bracket_start", BRACKET_START))
+                f, st = self._shoot_at(e, settle)
+                for _ in range(BRACKET_SEEK_MAX):
+                    paper = _paper_mean(f)
+                    if PAPER_LO <= paper <= PAPER_HI:
+                        break
+                    e += BRACKET_STEP if paper < PAPER_LO else -BRACKET_STEP
+                    f, st = self._shoot_at(e, settle)
+                notes.append("첫 장 노출 %g (종이 %.0f)" % (e, _paper_mean(f)))
                 frames.append(f)
-                means.append(float(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY).mean()))
+                means.append(_mean_gray(f))
+                exposures.append(e)
                 shots.append({"exposure": e, "mean": round(means[-1], 1),
                               "focus": st.get("chosen_focus_score")})
+                # 2) 한 단계씩 내리며 더 받는다. 검은 장(평균 < 25)은 버리고 멈춘다.
+                while len(frames) < BRACKET_MAX_SHOTS:
+                    e -= BRACKET_STEP
+                    f, st = self._shoot_at(e, settle)
+                    m = _mean_gray(f)
+                    if m < BRACKET_DARK_MEAN:
+                        notes.append("노출 %g 는 평균 %.0f · 버림" % (e, m))
+                        break
+                    frames.append(f)
+                    means.append(m)
+                    exposures.append(e)
+                    shots.append({"exposure": e, "mean": round(m, 1),
+                                  "focus": st.get("chosen_focus_score")})
         finally:
             self._restore_exposure()
 
-        mid = len(frames) // 2
         stats = {"bracketed": False, "bracket_exposure": exposures,
                  "bracket_means": [round(m, 1) for m in means], "bracket_shots": shots,
-                 "raw": frames[mid], "frames_grabbed": len(frames)}
+                 "bracket_notes": notes, "raw": frames[0] if frames else None,
+                 "frames_grabbed": len(frames)}
+        if len(frames) < 2:
+            stats["bracket_warning"] = "브라케팅 장이 2장 미만 · 단일 촬영"
+            f, st = self.capture_best()
+            st.update(stats, raw=f)
+            return f, st
         if max(means) - min(means) < BRACKET_MIN_DIFF:
             stats["bracket_warning"] = "노출이 바뀌지 않음 · 브라케팅을 건너뜁니다"
             f, st = self.capture_best()

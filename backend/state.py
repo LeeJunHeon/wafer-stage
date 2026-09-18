@@ -17,7 +17,7 @@ from storage import atomic_write_json, safe_read_json
 # settings.json 에 그대로 있고 화면에서 건드리지 않는다.
 APP_KEYS = ("serial_port", "camera_index", "park_xy", "dwell_s", "marker_mm_xy", "measure",
             "limits", "z_measure_mm", "wb_temperature", "exposure", "auto_exposure",
-            "width", "height", "fourcc")
+            "width", "height", "fourcc", "stat_seed", "stat_grow")
 
 DEFAULT_APP = {
     "serial_port": None,
@@ -42,6 +42,9 @@ DEFAULT_APP = {
     "width": 1280,
     "height": 720,
     "fourcc": "MJPG",
+    # 검출 통계 판정 임계(d², χ²(3)). 예전 seed_pct·grow_pct·sat_delta·de_* 는 안 쓴다.
+    "stat_seed": 25.0,
+    "stat_grow": 12.0,
 }
 
 

@@ -114,6 +114,8 @@
     $('setLimY').value = lim.y_max_mm != null ? lim.y_max_mm : '';
     $('setLimZ').value = lim.z_max_mm != null ? lim.z_max_mm : '';
     $('setZMeas').value = cfg.z_measure_mm != null ? cfg.z_measure_mm : '';
+    $('setStatSeed').value = cfg.stat_seed != null ? cfg.stat_seed : 25;
+    $('setStatGrow').value = cfg.stat_grow != null ? cfg.stat_grow : 12;
     const tb = $('setMarkers');
     tb.textContent = '';
     // 설정에 marker_mm_xy 가 없으면 표가 비어 값을 넣을 수 없었다. 서버가 지금
@@ -163,6 +165,8 @@
       limits: { x_max_mm: +$('setLimX').value, y_max_mm: +$('setLimY').value,
                 z_max_mm: +$('setLimZ').value },
       z_measure_mm: +$('setZMeas').value,
+      stat_seed: +$('setStatSeed').value || 25,
+      stat_grow: +$('setStatGrow').value || 12,
     });
     settingsOpen = false;
     dlg.close();

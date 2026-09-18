@@ -56,7 +56,12 @@ def load_saved(d):
 
 def run_one(d, params):
     """다시 검출한다. (rows[(no,x,y)], 단위, 경로설명)"""
-    bgr = imgio.imread_u(os.path.join(d, "raw.png"))
+    # 브라케팅한 촬영은 fused.png(융합본)로 검출했다. raw.png 는 그중 한 장의 원본이라
+    # 있으면 융합본을 쓴다 - 앱이 실제로 검출한 원천과 같아야 비교가 뜻이 있다.
+    src = os.path.join(d, "fused.png")
+    if not os.path.exists(src):
+        src = os.path.join(d, "raw.png")
+    bgr = imgio.imread_u(src)
     if bgr is None:
         return None, None, "읽기 실패"
     buf = _io.StringIO()

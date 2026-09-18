@@ -185,6 +185,9 @@
   tbody tr.unchecked td:not(:first-child) { color: var(--faint); }
   /* 번호 옆 윤곽 보완 표시. 번호와 붙여 쓰면 '1E' 가 한 번호로 읽힌다. */
   .edgebadge { display: inline-block; margin-left: 5px; padding: 0 4px; border-radius: 3px; background: #e2e8f0; color: var(--dim); font-size: 10px; font-weight: 700; line-height: 15px; cursor: help; }
+  .edgebadge.only { background: #cfe8ff; color: #1d4e89; }
+  .edgebadge.weak { background: #f3d6f0; color: #8a2b7a; }
+  tr.weak td { color: #8a2b7a; }
   .st { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: 999px; font-size: 11.5px; font-weight: 600; background: #e6eaef; color: var(--dim); }
   .st::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .st.moving { background: #fbefd8; color: #8a5300; } .st.measuring { background: #dfe8fa; color: #24479a; }
