@@ -54,24 +54,32 @@ DEFAULTS = {
     # 채널별 2차 조명면으로 나눈다. 검출은 평탄화한 사진으로 한다.
     "flat_field": True,
     "wafer_diameter_mm": 100.0,
-    # 통계 씨앗(기존 seed/grow 에 OR 로 '추가'. stat_path 로 끈다). σ=stat_blur 블러
-    # -> Lab 세 채널 각각 국소 배경(_local_bg)을 뺀 잔차 -> 채널별 잡음(ROI 안 잔차의
-    # MAD x 1.4826, 하한 1.0)으로 나눈 d² = Σ(r/σ)². 어두운 사진(142900: 평탄화 뒤
-    # 웨이퍼 밝기 45)에서 '배경으로 나눈 편차 %' 가 잡음을 증폭해 기존 경로가 0개를
-    # 낼 때 이 씨앗이 살린다. 밝은 사진(143334)에서는 기존 경로가 더 낫다 - 그래서
-    # 대체가 아니라 추가다(2026-09-18). χ²(3): 25 ≈ p 1e-5, 12 ≈ p 7e-3.
-    "stat_path": True,
+    # 통계 씨앗(기본). σ=stat_blur 블러 -> Lab 세 채널 각각 국소 배경(_local_bg)을 뺀
+    # 잔차 -> 채널별 잡음(ROI 안 잔차의 MAD x 1.4826, 하한 1.0)으로 나눈 d² = Σ(r/σ)²
+    # 로 seed/grow 를 만든다. χ²(3): 25 ≈ p 1e-5, 12 ≈ p 7e-3.
+    # 2026-09-21 실제 앱 경로(fused.png, 143334 의 16개 정답)로 씨앗 구성을 채점했다
+    # (143334 / 143454 / 142900 적중·오검출):
+    #   통계 씨앗만        16·0 / 15·0 / 15·0   <- 세 장 모두 최고
+    #   기존 OR 통계       16·0 / 15·1 / 13·0
+    #   기존 씨앗만        15·0 / 14·1 / 13·0
+    # 기존 경로(배경으로 나눈 편차 % · 채도 차)의 잡음 씨앗이 어두운 사진에서 칩 둘을
+    # 덩어리에 묻고(142900), 밝은 띠로 이어진 어두운 칩 셋을 가르다 유령 조각을 만들었다
+    # (143454). 그래서 기존 씨앗은 legacy_seed 로만 켠다(개발용. 설정 창에 없다).
     "stat_blur": 1.0,
     "stat_seed": 25.0,
     "stat_grow": 12.0,
-    "seed_pct": 15,
-    "grow_pct": 80,
+    "legacy_seed": False,   # True 면 예전 dev_pct(seed_pct/grow_pct)·sat_delta 씨앗을 OR
+    "seed_pct": 15,         # (legacy_seed 일 때만)
+    "grow_pct": 80,         # (legacy_seed 일 때만)
+    # 본 경로 후보의 볼록도 하한. 0.55 였는데 통계 씨앗이 옛 사진(9/9)에서 볼록도
+    # 0.51~0.54 · 13mm² 파편을 잡아 0.70 으로 올렸다(143334 16개의 최저 0.82).
+    "min_solidity": 0.70,
     "open_pct": 0.6,      # 잡티 제거 커널 = 이 % x 웨이퍼 반지름
     "close_pct": 0.6,     # 조각 잇기 커널. 키우면 이웃한 샘플끼리 붙어버린다
     "hull_fit": True,     # 실루엣 볼록껍질 피팅을 후보에 넣는다 (IoU 높은 쪽 채택)
     "merge_mm": 6.0,      # 이보다 가까운 덩어리는 한 샘플의 조각인지 검사한다
     "merge_solidity": 0.5,  # 합친 결과가 이만큼 볼록해야 실제로 합친다
-    "sat_delta": 15,      # 18 -> 15: 비스듬한 촬영에서 샘플 하나를 더 건짐 (회귀 없음)
+    "sat_delta": 15,      # (legacy_seed 일 때만) 18 -> 15: 비스듬한 촬영에서 샘플 하나 더
     "min_area_mm2": 3,
     "max_area_mm2": 150,
     # 가장자리 마진. 6/3 은 웨이퍼 반지름의 9% 를 죽여서, 가장자리 가까이 놓인
@@ -121,8 +129,18 @@ DEFAULTS = {
     "edge_overlap_max": 0.3,     # 이미 찾은 샘플과 이만큼 넘게 겹치면 버린다
     "edge_inner_max": 0.05,      # 껍질 안쪽(2px 침식)의 엣지 화소 비율 상한 - 안은 비어야 칩
     "edge_min_area_mm2": 25.0,   # 엣지 제안의 면적 하한(본 경로 min_area_mm2 와 별개)
-    # 신뢰도 하위 이 비율은 annotated·샘플 목록에서 눈에 띄게 표시한다(confirm 용)
-    "weak_frac": 0.2,
+    # '빌린 엣지' 관문. 확정된 샘플 경계에서 이 거리(mm) 안에 들어오는 제안은 버린다 -
+    # 칩은 자기 변을 가진다(143334·143454: 황갈색 칩의 오른쪽 변 + 얼룩 경계가 닫힌
+    # 다각형을 만들었고 안은 빈 웨이퍼. 직선성 0.96·볼록도 0.98 이라 모양으로는 못 거른다).
+    # 또 제안 둘레를 받치는 엣지의 연결 성분이 다각형(3px 팽창) 밖에 edge_borrow_max 넘게
+    # 걸쳐 있으면 그 화소는 다른 물체의 가장자리다 - 지지에서 뺀다.
+    "edge_min_gap_mm": 1.5,
+    "edge_borrow_max": 0.3,
+    # weak(확인 필요) 절대 기준: 본 경로 strength(d² 중앙값) < stat_seed x weak_strength_k,
+    # 엣지 제안은 지지율 < weak_support. 상대 기준(하위 20%)은 16개가 다 확실해도 셋에
+    # '?' 를 붙여서 없앴다.
+    "weak_strength_k": 2.0,
+    "weak_support": 0.75,
     "sat_max": 35,        # 원판 판정 채도 상한. 배경이 원판에 붙으면 낮춘다
     "val_min": 60,
     "val_max": 256,       # 원판 판정 밝기 상한. 256 = 끔 (11절 설명 참고)
@@ -1076,8 +1094,13 @@ def _stat_distance(lab, roi, r_px):
     return acc, sigmas, r_l
 
 
-def _hull_support(edge_dt, hull, shape):
-    """볼록껍질 둘레 화소 중 엣지 화소가 2px 안에 있는 비율(엣지 지지율)."""
+def _hull_support(edge_dt, hull, shape, edge_lab=None, edge_out_frac=None, borrow_max=None):
+    """볼록껍질 둘레 화소 중 엣지 화소가 2px 안에 있는 비율(엣지 지지율).
+
+    edge_lab(엣지 연결 성분 라벨)·edge_out_frac(성분마다 '다각형 3px 팽창 밖' 비율)이
+    있으면, 밖에 borrow_max 넘게 걸친 성분에 기댄 둘레 화소는 지지에서 뺀다 - 그 엣지는
+    다른 물체(옆 칩·얼룩)의 가장자리를 빌린 것이다.
+    """
     x, y, bw, bh = cv2.boundingRect(hull)
     x0, y0 = max(0, x - 3), max(0, y - 3)
     x1, y1 = min(shape[1], x + bw + 3), min(shape[0], y + bh + 3)
@@ -1086,7 +1109,18 @@ def _hull_support(edge_dt, hull, shape):
     on = ring > 0
     if not on.any():
         return 0.0
-    return float((edge_dt[y0:y1, x0:x1][on] <= 2.0).mean())
+    near = edge_dt[y0:y1, x0:x1][on] <= 2.0
+    if edge_lab is None:
+        return float(near.mean())
+    # 둘레 화소마다 '가장 가까운 엣지 성분' = 3x3 안에서 본 라벨(2px 안이면 거의 붙어 있다)
+    sub = edge_lab[y0:y1, x0:x1]
+    lab_d = cv2.dilate(sub.astype(np.float32), np.ones((5, 5), np.uint8)).astype(np.int32)
+    labs = lab_d[on]
+    borrowed = np.zeros(len(labs), bool)
+    for k in np.unique(labs[near]):
+        if k > 0 and edge_out_frac.get(int(k), 0.0) > borrow_max:
+            borrowed |= (labs == k)
+    return float((near & ~borrowed).mean())
 
 
 # --------------------------------------------------------------------------
@@ -1294,7 +1328,7 @@ def detect(bgr, params=None):
     res.info.append("noise sigma L/a/b = %.1f/%.1f/%.1f" % tuple(sigmas))
     stat_seed_t = float(p.get("stat_seed", 25.0))
     stat_grow_t = float(p.get("stat_grow", 12.0))
-    use_stat = bool(p.get("stat_path", True))
+    legacy = bool(p.get("legacy_seed", False))
 
     # ---- 7-5. 히스테리시스 임계화 -----------------------------------------
     # 함정 4: Otsu 는 클래스가 하나여도 반드시 둘로 쪼개 샘플을 반토막 낸다.
@@ -1306,13 +1340,13 @@ def detect(bgr, params=None):
     # 중앙 무더기 전부 회수). 일부만 포화된 샘플은 나머지 부분으로 잡히고
     # 구멍은 뒤의 _fill_holes 가 메운다.
     notblown = V < 250
-    seed = ((dev_pct > seed_t) | sat_mask) & roib & notblown
-    grow_b = ((dev_pct > grow_t) | sat_mask) & roib & notblown
-    if use_stat:
-        # 통계 씨앗은 OR 로 더한다. 기존 경로를 대체했더니 밝은 사진에서 12/16 으로
-        # 떨어졌다(143334) - 어두운 사진에서만 이득이라 '추가' 로 둔다.
-        seed |= (dev > stat_seed_t) & roib & notblown
-        grow_b |= (dev > stat_grow_t) & roib & notblown
+    seed = (dev > stat_seed_t) & roib & notblown
+    grow_b = (dev > stat_grow_t) & roib & notblown
+    if legacy:
+        # 개발용. 기존 편차 %·채도 씨앗을 OR 하면 어두운 사진에서 잡음 씨앗이 칩을
+        # 덩어리에 묻는다(DEFAULTS 의 채점표).
+        seed |= ((dev_pct > seed_t) | sat_mask) & roib & notblown
+        grow_b |= ((dev_pct > grow_t) | sat_mask) & roib & notblown
     grow = grow_b.astype(np.uint8) * 255
 
     # 반지름 200px 근처에서 0.006*r 은 1px 이라 사실상 아무것도 안 한다.
@@ -1331,6 +1365,7 @@ def detect(bgr, params=None):
 
     min_a = float(p["min_area_mm2"])
     max_a = float(p["max_area_mm2"])
+    min_sol = float(p.get("min_solidity", 0.70))
     edge_max = float(p["edge_touch_max"])
     split_sol = float(p["split_solidity"])
 
@@ -1411,7 +1446,7 @@ def detect(bgr, params=None):
         # 합친 결과(사이가 벌어져 있어 볼록도가 낮다)가 통째로 걸러져 버린다.
         # 테두리는 '닿으면 폐기' 가 아니라 '띠 안에 잠긴 비율' 로 판정한다.
         # 닿으면 폐기로 하면 띠를 모서리로 스친 멀쩡한 샘플까지 사라졌다.
-        if g["edge_frac"] > edge_max or g["sol"] < 0.55 or g["area"] > max_a:
+        if g["edge_frac"] > edge_max or g["sol"] < min_sol or g["area"] > max_a:
             if g["area"] >= min_a:
                 rejects.append(g)         # 두꺼운 몸통은 아래 rescue 에서 건진다
             continue
@@ -1529,14 +1564,14 @@ def detect(bgr, params=None):
         # 면적 상한을 넘어 탈락한 덩어리가 '맞닿은 칩들' 이면 홈을 따라 가르는 것이
         # 먼저다. OPEN 사다리는 띠·halo 를 떼는 도구라 두툼하게 맞닿은 칩은 못 가르고,
         # 마지막 단계에서 갈라진 조각은 '다음 단계' 가 없어 받지 못한다.
-        if g0.get("band_frag") or g0["area"] > max_a or g0["sol"] < 0.55:
+        if g0.get("band_frag") or g0["area"] > max_a or g0["sol"] < min_sol:
             parts = _sign_split(g0)
             if parts:
                 raw.extend(parts)
                 continue
         if g0.get("band_frag"):
             continue                          # 부호 분리만 허용
-        if g0["area"] > max_a and g0["sol"] >= 0.55:
+        if g0["area"] > max_a and g0["sol"] >= min_sol:
             parts = _split(g0, depth=2)
             if parts and all(_ok(gp, split_sol) for gp in parts):
                 for gp in parts:
@@ -1845,6 +1880,8 @@ def detect(bgr, params=None):
         str_min = float(p.get("edge_straight_min", 0.85))
         ov_max = float(p.get("edge_overlap_max", 0.3))
         inner_max = float(p.get("edge_inner_max", 0.05))
+        borrow_max = float(p.get("edge_borrow_max", 0.3))
+        gap_px = (float(p.get("edge_min_gap_mm", 1.5)) / mm) if mm > 0 else 0.0
         # 이 경로의 면적 하한은 본 경로보다 높다. 얼룩·반사광 자락은 닫힌 윤곽이 되어도
         # 작다(실측 142900 얼룩 14~17mm², 155302 반사광 자락 12~32mm²; 칩은 30mm² 이상).
         edge_min_a = max(min_a, float(p.get("edge_min_area_mm2", 25.0)))
@@ -1868,6 +1905,7 @@ def detect(bgr, params=None):
                     e = cv2.bitwise_or(e, cv2.Canny(ch, int(lo), int(hi)))
                 e = cv2.bitwise_and(e, roi)
                 edge_dt = cv2.distanceTransform(cv2.bitwise_not(e), cv2.DIST_L2, 3)
+                _ne, edge_lab, _es, _ec = cv2.connectedComponentsWithStats((e > 0).astype(np.uint8), 8)
                 ec = cv2.morphologyEx(e, cv2.MORPH_CLOSE, k)
                 cs, _hh = cv2.findContours(ec, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
                 for cnt in cs:
@@ -1885,8 +1923,26 @@ def detect(bgr, params=None):
                     straight = (cv2.arcLength(approx, True) / peri) if peri > 0 else 0.0
                     if straight < need_str:
                         continue                     # 곡선 = 얼룩
-                    sup = _hull_support(edge_dt, hull, (H, W))
+                    # 빌린 엣지: 둘레를 받치는 엣지 성분마다 '다각형 3px 팽창 밖' 비율을
+                    # 재서, 밖에 borrow_max 넘게 걸친 성분은 지지에서 뺀다.
+                    hm = np.zeros((H, W), np.uint8)
+                    cv2.fillConvexPoly(hm, np.int32(hull), 255)
+                    hm_d = cv2.dilate(hm, np.ones((7, 7), np.uint8)) > 0
+                    x_, y_, bw_, bh_ = cv2.boundingRect(hull)
+                    sl_ = (slice(max(0, y_ - 4), min(H, y_ + bh_ + 4)),
+                           slice(max(0, x_ - 4), min(W, x_ + bw_ + 4)))
+                    out_frac = {}
+                    for k in np.unique(edge_lab[sl_]):
+                        if k == 0:
+                            continue
+                        comp = edge_lab == k
+                        tot_k = int(comp.sum())
+                        out_frac[int(k)] = 1.0 - float((comp & hm_d).sum()) / max(tot_k, 1)
+                    sup = _hull_support(edge_dt, hull, (H, W), edge_lab, out_frac, borrow_max)
                     if sup < sup_min:
+                        continue
+                    # 확정된 샘플 경계에서 gap 안에 들어오면 버린다(칩은 자기 변을 가진다).
+                    if gap_px > 0 and (cv2.dilate(hm, _disk(gap_px)) > 0)[final > 0].any():
                         continue
                     # 볼록도는 3.7단계와 같은 검사다. 다만 한 변이 끊긴 ㄷ자 엣지는
                     # 컨투어 면적이 0 에 가까워 볼록도가 무의미하다(실측 170421: 같은
@@ -1948,17 +2004,17 @@ def detect(bgr, params=None):
                     final[nb] = 255
                     proposed.append(c)
 
-    # 신뢰도: 본 경로는 덩어리 안 d² 중앙값, 엣지 제안은 지지율(0~1). 척도가 달라
-    # 하위 weak_frac 는 경로별로 따로 고른다. confirm 모드에서 사람이 볼 표시.
-    wf = float(p.get("weak_frac", 0.2) or 0)
-    for grp in (True, False):
-        vals = sorted(c["strength"] for c in cands if bool(c.get("edge_only")) == grp)
-        if wf <= 0 or len(vals) < 3:
-            continue
-        cut = vals[max(0, int(math.ceil(len(vals) * wf)) - 1)]
-        for c in cands:
-            if bool(c.get("edge_only")) == grp and c["strength"] <= cut:
-                c["weak"] = True
+    # 신뢰도(절대 기준): 본 경로는 덩어리 안 d² 중앙값 < stat_seed x k, 엣지 제안은
+    # 지지율 < weak_support 일 때만 weak. confirm 모드에서 사람이 볼 표시.
+    weak_main = stat_seed_t * float(p.get("weak_strength_k", 2.0))
+    weak_sup = float(p.get("weak_support", 0.75))
+    for c in cands:
+        if c.get("edge_only"):
+            c["weak"] = c["strength"] < weak_sup
+        else:
+            c["weak"] = c["strength"] < weak_main
+        if not c["weak"]:
+            del c["weak"]
 
     # 번호: 왼쪽 위 -> 오른쪽 아래 읽는 순서 (행으로 묶고 그 안에서 x 순)
     row_h = max(1.0, 0.16 * r_px)

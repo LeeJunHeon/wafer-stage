@@ -105,6 +105,18 @@ def score(rows, truth, tol=TRUTH_MM):
     return hits, false, missed
 
 
+def _source_of(p):
+    """폴더(또는 그 안의 어떤 파일)를 주면 앱이 실제로 검출한 원천을 고른다:
+    fused.png(브라케팅 융합본)가 있으면 그것, 없으면 raw.png. flat.png 는 입력으로 쓰지
+    않는다 - 앱이 다시 평탄화해서(이중 평탄화) 결과가 달라진다(143454: 14/16 vs 15/16)."""
+    d = p if os.path.isdir(p) else os.path.dirname(p)
+    for name in ("fused.png", "raw.png"):
+        q = os.path.join(d, name)
+        if os.path.exists(q):
+            return q
+    return p
+
+
 def check_one(path, params, save_dir=None, modes=("both",), truth=None):
     bgr = imgio.imread_u(path)
     if bgr is None:
@@ -148,7 +160,7 @@ def check_one(path, params, save_dir=None, modes=("both",), truth=None):
         for tag, s in (("전", before), ("후", after)):
             if s is None:
                 continue
-            if truth.get("px") and s.get("mm_per_px"):
+            if truth.get("px") and truth.get("same") and s.get("mm_per_px"):
                 hits, false, missed = score(s["rows_px"], truth["px"],
                                             tol=TRUTH_MM / s["mm_per_px"])
                 unit = "px"
@@ -178,11 +190,11 @@ def main(argv=None):
     files = []
     if a.all:
         for n in sorted(os.listdir(paths.OUT_DIR)):
-            p = os.path.join(paths.OUT_DIR, n, "raw.png")
-            if os.path.exists(p):
+            p = _source_of(os.path.join(paths.OUT_DIR, n))
+            if p and os.path.exists(p):
                 files.append(p)
     for p in a.paths:
-        files.append(os.path.join(p, "raw.png") if os.path.isdir(p) else p)
+        files.append(_source_of(p))
     if not files:
         ap.print_help()
         return 2
@@ -199,6 +211,11 @@ def main(argv=None):
         if a.truth:
             tp = os.path.join(os.path.dirname(f), "samples.json") if a.truth == "self" else a.truth
             truth = load_truth(tp) if os.path.exists(tp) else None
+            if truth is not None:
+                # 같은 사진 폴더의 정답이면 px 로, 다른 촬영의 정답이면 기계좌표(mm)로 비교
+                # (촬영 사이에 카메라·웨이퍼 픽셀 위치는 바뀌어도 기계좌표는 같다).
+                truth["same"] = (os.path.dirname(os.path.abspath(tp))
+                                 == os.path.dirname(os.path.abspath(f)))
         r = check_one(f, params, a.save, modes, truth)
         if r is None:
             continue
