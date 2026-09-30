@@ -170,6 +170,13 @@
       const t = el('text', { class: 'ov-num', x: sm.u + 8, y: sm.v - 6 });
       t.textContent = sm.no + (sm.manual ? 'M' : '') + (sm.edge_completed ? 'E' : '')
         + (sm.edge_only ? 'G' : '') + (sm.weak ? '?' : '');
+      // 추가 모드에서는 번호 라벨도 그 샘플 선택이다(hit 원이 꺼져 있어 라벨 클릭이
+      // 사진으로 빠지면 작은 칩 옆에 수동 샘플이 생긴다). 평소에는 CSS 가 막는다.
+      t.addEventListener('click', (e) => {
+        if (!addMode) return;
+        e.stopPropagation();
+        UI.select(sm.no);
+      });
       gs.appendChild(t);
       // 클릭 판정용(다각형이 얇아도 집히도록 원을 덮는다)
       const hit = el('circle', { class: 'ov-hit', cx: sm.u, cy: sm.v, r: 16 });

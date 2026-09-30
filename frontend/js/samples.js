@@ -115,15 +115,17 @@
       tr.appendChild(td);
       tb.appendChild(tr);
     }
-    // 검출 n · 수동 m · 삭제 d · 대상 k (0 인 항목은 뺀다)
+    // 검출 n · 수동 m · 삭제 d · 대상 k. 검출·대상은 늘 보이고 수동·삭제만 0 이면 뺀다
+    // (전체 해제한 '대상 0' 이 사라지면 안 된다).
     const ed = (s && s.edit) || {};
+    const del = ed.deleted || 0;
     const parts = [
-      ['검출', list.filter(x => !x.manual).length],
-      ['수동', list.filter(x => x.manual).length],
-      ['삭제', ed.deleted || 0],
-      ['대상', list.filter(x => x.on).length],
-    ].filter(p => p[1] > 0).map(p => p[0] + ' ' + p[1]);
-    const cnt = parts.length ? parts.join(' · ') : UI.EMPTY;
+      ['검출', list.filter(x => !x.manual).length, true],
+      ['수동', list.filter(x => x.manual).length, false],
+      ['삭제', del, false],
+      ['대상', list.filter(x => x.on).length, true],
+    ].filter(p => p[2] || p[1] > 0).map(p => p[0] + ' ' + p[1]);
+    const cnt = (list.length || del) ? parts.join(' · ') : UI.EMPTY;
     $('countInfo').textContent = cnt;
     $('countInfo').title = cnt;
   };

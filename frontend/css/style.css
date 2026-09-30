@@ -149,6 +149,7 @@
   #cam.addmode { cursor: crosshair; }
   #cam.addmode .ov-hit { display: none; }
   #cam.addmode .ov-sample { pointer-events: all; cursor: pointer; }
+  #cam.addmode .ov-num { pointer-events: auto; cursor: pointer; }
   .ov-pointer { stroke: #ff3b3b; stroke-width: 2; } .ov-pointer-ring { fill: none; stroke: #ff3b3b; stroke-width: 1.5; }
   .ov-pointer-label { font: 600 12px var(--mono); fill: #fff; paint-order: stroke; stroke: #0e1418; stroke-width: 3px; }
 
