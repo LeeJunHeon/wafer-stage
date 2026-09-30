@@ -49,6 +49,15 @@
       if (msg.reason === 'needs_confirm') UI.confirmRun(msg.needs_confirm || []);
       else if ((msg.needs_confirm || []).length) UI.alert(msg.needs_confirm.join('\n'), '시작 불가');
     }
+    if (msg.of === 'capture' && !msg.ok && msg.reason === 'needs_confirm') {
+      // 편집(수동 추가·삭제)은 그 촬영에만 속한다. 새로 찍으면 사라지므로 묻는다.
+      UI.confirm('수동 추가·삭제 ' + (msg.edits || 0) + '건이 사라집니다. '
+        + '새로 촬영하려면 [확인]을 누르십시오.', '촬영 · 검출').then(ok => {
+        if (ok) UI.send({ cmd: 'capture', confirm: true });
+      });
+    }
+    // 추가한 샘플을 바로 선택한다 - [선택 샘플 이동]으로 자리를 확인하는 흐름.
+    if (msg.of === 'sample_add' && msg.ok && msg.no != null) UI.selectNo(msg.no);
     if (msg.of === 'list_ports') fillPorts(msg.ports || []);
     if (msg.of === 'jog' && UI.onJogAck) UI.onJogAck(msg);
     if (msg.of === 'exit' && msg.ok === false) {

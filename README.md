@@ -40,7 +40,8 @@
 │   ├── firmware/stage_v6/  # 아두이노 스케치
 │   └── assets/             # aruco_markers_30mm.pdf (실제 크기 100% 로 인쇄)
 └── data/                   # 저장소 밖. 코드와 무관한 산출물
-    ├── out/                #   seq_<시각>/ (raw.png · annotated.jpg · samples.json · results.csv)
+    ├── out/                #   seq_<시각>/ (raw.png · annotated.jpg · samples.json · results.csv
+    │                       #     · samples_edit.json - 샘플 편집이 있었을 때)
     │                       #   sequence_log.jsonl · serial.log
     ├── logs/               #   날짜별 파일 로그
     └── calib_matrix.json   #   마지막 보정
@@ -102,7 +103,8 @@ python tools/cam_probe.py           # 카메라가 실제로 내보내는 포맷
 | `sensing` | `{rect:[u0,v0,u1,v1]}` 또는 `null` |
 | `wafer` | `{found, cx, cy, r_px, center_mm:[X,Y]}` 또는 `null` |
 | `markers` | `{id: [[u,v] x4]}` |
-| `samples` | `[{no, shape, u, v, X, Y, verts, on, status, value, unit, edge_completed, area_mm2}]` |
+| `samples` | `[{no, shape, u, v, X, Y, verts, on, status, value, unit, edge_completed, edge_only, weak, strength, area_mm2, manual}]` — 늘 번호순. `manual:true` 는 수동 추가(`shape:""`, `verts:[]`) |
+| `edit` | `{undo, manual, deleted}` — 되돌릴 수 있는 편집 수 · 목록의 수동 샘플 수 · 지운 검출 샘플 수 |
 | `sequence` | `{phase, mode, dwell_s, cur_no, done, total, elapsed_s, out_dir, message}` |
 | `warnings` | 검출 경고 문자열 목록 |
 | `settings` | `{serial_port, camera_index, park_xy, dwell_s, marker_mm_xy, measure, limits, z_measure_mm}` |
@@ -123,6 +125,14 @@ python tools/cam_probe.py           # 카메라가 실제로 내보내는 포맷
 `ack{of:"jog", ok, reason, x_mm, y_mm}` — 수동 이동은 한 번에 하나만 보낸다.
 화면은 이 ack 를 받고서야 다음 스텝을 보낸다(타이머로 밀어 넣으면 손을 뗀 뒤에도
 큐에 남은 명령이 실행된다). `reason`: `locked`·`busy`·`moving`·`at_limit`·`error`.
+
+`ack{of:"sample_add", ok, reason, no}` — `sample_add`·`sample_add_here` 의 결과. 성공이면
+`no` 가 새 번호(화면이 그 샘플을 선택한다). `reason`: `busy`(순회 중) · `capturing` ·
+`no_capture`(촬영 결과 없음) · `bad_args` · `outside`(감지영역 밖) · `out_of_range`(가동범위 밖) ·
+`overlap`(기존 샘플 중심 2.5 mm 안 또는 검출 윤곽 안) · `locked`·`moving`(현재 위치 추가의 원점·이동 조건).
+
+`ack{of:"capture", ok:false, reason:"needs_confirm", needs_confirm:[사유], edits}` — 편집이 남은
+채 촬영하면 찍지 않고 이것만 돌려준다. 화면이 묻고 `confirm:true` 로 다시 보낸다.
 
 `log.level`: `info | ok | warn | err` 에 시리얼 원문용 `tx`(-> 보냄) · `rx`(<- 받음)
 가 더 있다. `serial:true` 는 시리얼 원문, `poll:true` 는 2초 상태 폴링(`st` / `ST …`)
@@ -433,7 +443,11 @@ V9 에서 Z 축이 붙었다. EEPROM 기록 형식이 바뀌어(매직 `POS9`) V
 | `jog` | `axis:"x"\|"y"\|"z"`, `delta_mm` — 원점이 있으면 절대(가동범위로 자름), 없으면 상대 |
 | `return_origin` | Z 를 맨 위(0)로 올린 뒤 X·Y 를 (0, 0) 으로 |
 | `park_here` | 현재 위치를 `settings.park_xy` 로 저장 |
-| `capture` | |
+| `capture` | `confirm?` — 샘플 편집이 남아 있으면 `confirm:true` 가 있어야 찍는다(편집은 사라진다) |
+| `sample_add` | `u, v`(프레임 px) — 촬영본의 그 점을 샘플로 추가 → `ack{of:"sample_add"}` |
+| `sample_add_here` | 지금 스테이지 위치를 샘플로 추가(원점·연결 필요, 이동 중 거절) → `ack{of:"sample_add"}` |
+| `sample_delete` | `no` — 목록에서 뺀다 |
+| `sample_undo` | 마지막 추가·삭제를 취소 |
 | `run` | `mode:"auto"\|"confirm"\|"pick"`, `dwell_s`, `only?:[no]`, `confirm?` |
 | `pause` `resume` `next` `stop` `estop` | |
 | `set_on` | `no, on` |
@@ -450,6 +464,39 @@ V9 에서 Z 축이 붙었다. EEPROM 기록 형식이 바뀌어(매직 `POS9`) V
 `run` 은 검출 경고에 "wafer is cut off" 또는 반사광 50% 이상이 있거나 마커가 3개뿐이면
 `ack{of:"run", ok:false, reason:"needs_confirm", needs_confirm:[사유]}` 를 돌려준다.
 화면이 확인 모달을 띄우고 `confirm:true` 로 다시 보내야 시작한다.
+
+`sample_*` 넷은 순회 중(일시정지·확인 대기·파킹 포함)·촬영 중·촬영 결과 없음이면 거절한다.
+
+`results.csv` 열: `no, shape, X_mm, Y_mm, value, unit, status, time, source`
+(`source` = `detect` | `manual`).
+
+### 샘플 편집
+
+검출이 놓친 칩을 넣고 오검출을 뺀다. 편집은 **그 촬영에만** 속한다.
+
+- **[샘플 추가]**(카메라 머리줄, 켜고 끄는 버튼): 켜면 촬영본으로 바뀌고, 빈 곳 클릭 = 그
+  점을 샘플(프로브 목표점)로 추가. 칩 가운데를 클릭한다. 연속 추가 가능. 켜진 동안은
+  윤곽·마름모 안 클릭만 선택이다. 미리보기로 바꾸거나 버튼이 잠기면 저절로 꺼진다.
+- **[현재 위치를 샘플로]**(수동 이동 팝업): 조그로 포인터를 칩 가운데에 맞춘 뒤 누른다.
+  사진에 거의 안 보이는 같은 재질·반투명 칩용 — 보정 오차가 끼지 않는다.
+- **[선택 샘플 삭제]**: 사진·목록·맵에서 선택한 샘플을 뺀다(확인 없음).
+- **[되돌리기]**: 마지막 추가·삭제를 한 단계씩 취소. 지운 샘플은 번호·윤곽·상태 그대로 돌아온다.
+
+번호는 다시 매기지 않는다(annotated.jpg · results.csv · 로그의 번호가 어긋나지 않게).
+지운 번호는 빈 번호로 남고, 추가는 이번 촬영에서 한 번도 안 쓴 다음 번호를 받는다
+(검출 N개면 N+1 부터, 되돌린 추가의 번호도 다시 쓰지 않는다). 목록·순회는 번호순이라
+수동 샘플이 마지막이다. 좌표 변환은 이번 촬영의 보정만 쓴다. 편집이 남은 채
+[촬영 · 검출]을 누르면 확인 후 찍고 편집은 사라진다.
+
+편집할 때마다 결과 폴더에 `samples_edit.json`(지금 목록 전체, `no · u · v · X · Y · source`)을
+다시 쓴다. `samples.json` 은 검출 원본이라 건드리지 않는다. 사람이 고친 목록은 그대로
+정답으로 쓸 수 있다:
+
+```bat
+python tools/flat_check.py ..\data\out\seq_XXXX --truth ..\data\out\seq_XXXX\samples_edit.json
+```
+
+편집마다 `sequence_log.jsonl` 에 `{time, edit:add|delete|undo, via?:click|here, undo_of?:add|delete, no, u, v, X, Y}` 한 줄.
 
 ## 화면
 

@@ -73,6 +73,8 @@
   .btn.estop { background: var(--alarm); border-color: #9c2328; color: #fff; letter-spacing: .5px; }
   .btn.estop:hover { background: #b12d33; }
   .btn.block { width: 100%; }
+  /* 켜고 끄는 버튼(샘플 추가)의 켜짐 - .seg 선택 표시와 같은 배색 */
+  .btn.toggle.on { background: #2a3340; border-color: #2a3340; color: #fff; }
   .appver { font-family: var(--mono); font-size: 10px; color: var(--faint); }
 
   /* ---------- notice strip (경보 배너: 있을 때만) ---------- */
@@ -111,12 +113,13 @@
   .camview .noframe { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; padding: 0 24px; background: rgba(14,20,24,.72); color: #c8d4dd; font-size: 13px; letter-spacing: .3px; }
   .camview .noframe span { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .camview svg { position: relative; z-index: 1; display: block; width: 100%; height: 100%; }
-  .caminfo { display: grid; grid-template-columns: 1.5fr 1.15fr 1fr .85fr; border-top: 1px solid var(--line); }
+  .caminfo { display: grid; grid-template-columns: 1.54fr 1.02fr .9fr 1.04fr; border-top: 1px solid var(--line); }
   .caminfo > div { padding: 6px 10px; border-right: 1px solid var(--line); min-width: 0; }
   .caminfo > div:last-child { border-right: 0; }
   .caminfo .k, .caminfo .v { display: block; }
   .caminfo .k { font-size: 10px; color: var(--faint); letter-spacing: .6px; text-transform: uppercase; }
-  /* 4칸이 1086px 를 나눠 쓴다. 보정 문구(잔차 RMS/최대까지)가 가장 길어
+  /* 4칸이 1086px 를 나눠 쓴다. 보정 문구(잔차 RMS/최대까지)가 가장 길고 샘플 칸은
+     수동 수까지 들어간다. 감지영역·웨이퍼 칸에서 폭을 덜어 두 칸에 준다.
      12px 로 맞춘다 - 잘려서 '...' 이 되면 숫자를 못 읽는다. */
   .caminfo .v { font-family: var(--mono); font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .seg.segsm label { padding: 3px 10px; font-size: 11.5px; }
@@ -140,6 +143,12 @@
   .ov-sample.selected { stroke: #7fc8ff; stroke-width: 2.4; }
   .ov-num { font: 600 12.5px var(--mono); fill: #fff; paint-order: stroke; stroke: #0e1418; stroke-width: 3px; pointer-events: none; }
   .ov-hit { fill: transparent; cursor: pointer; }
+  /* 수동 샘플: 중심의 작은 마름모. 상태 클래스(done·skip·target·selected)는 공통. */
+  .ov-sample.manual { stroke-width: 2; }
+  /* 추가 모드: 십자 커서 · hit 원 끔 · 윤곽/마름모 안(채움 없어도)만 선택 */
+  #cam.addmode { cursor: crosshair; }
+  #cam.addmode .ov-hit { display: none; }
+  #cam.addmode .ov-sample { pointer-events: all; cursor: pointer; }
   .ov-pointer { stroke: #ff3b3b; stroke-width: 2; } .ov-pointer-ring { fill: none; stroke: #ff3b3b; stroke-width: 1.5; }
   .ov-pointer-label { font: 600 12px var(--mono); fill: #fff; paint-order: stroke; stroke: #0e1418; stroke-width: 3px; }
 
@@ -187,6 +196,7 @@
   .edgebadge { display: inline-block; margin-left: 5px; padding: 0 4px; border-radius: 3px; background: #e2e8f0; color: var(--dim); font-size: 10px; font-weight: 700; line-height: 15px; cursor: help; }
   .edgebadge.only { background: #cfe8ff; color: #1d4e89; }
   .edgebadge.weak { background: #f3d6f0; color: #8a2b7a; }
+  .edgebadge.man { background: #2a3340; color: #fff; }
   tr.weak td { color: #8a2b7a; }
   .st { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: 999px; font-size: 11.5px; font-weight: 600; background: #e6eaef; color: var(--dim); }
   .st::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
@@ -194,7 +204,7 @@
   .st.done { background: #dff3e7; color: #176b35; } .st.skip { color: var(--faint); } .st.error { background: #f9e0e1; color: #9c2328; }
   .emptyrow td { color: var(--faint); text-align: center; padding: 10px; }
   .tfoot { display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-top: 1px solid var(--line); font-size: 12px; }
-  .tfoot .cnt { margin-left: auto; color: var(--dim); }
+  .tfoot .cnt { margin-left: auto; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
   .panel.mapbox { height: 392px; }
   .panel .pb.stack { display: flex; flex-direction: column; }
@@ -260,6 +270,14 @@
      눌린다. 화면을 가리지 않게 오른쪽 아래에 붙인다. */
   dialog.jog { width: 340px; max-width: 92vw; margin: 0; position: fixed; right: 18px; bottom: 18px; left: auto; top: auto; box-shadow: 0 8px 28px rgba(10,14,18,.28); }
   dialog.jog header h2 { font-size: 13px; }
+  /* 팝업은 fit() 축소를 받지 않는다. 작은 창(1366×768)에서는 창 높이에 맞춰 본문이
+     스크롤하고, 비상정지는 아래에 붙여 늘 보이게 한다(뒤의 헤더 비상정지를 가린다). */
+  dialog.jog { max-height: calc(100vh - 36px); }
+  dialog.jog[open] { display: flex; flex-direction: column; }
+  dialog.jog .jogbody { overflow-y: auto; min-height: 0; }
+  dialog.jog .jogbody > * { flex: none; }     /* 줄어들지 말고 스크롤한다 */
+  /* 아래 여백(12px)으로 스크롤된 줄이 비쳐 보이지 않게 바탕색 그림자로 덮는다 */
+  .jogbody > .btn.estop { position: sticky; bottom: 0; box-shadow: 0 12px 0 var(--panel); }
   .jogbody { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
   .jogbody .t { font-size: 10.5px; font-weight: 700; color: var(--faint); letter-spacing: .8px; text-transform: uppercase; }
   .jogbody .row { display: flex; gap: 6px; align-items: center; }

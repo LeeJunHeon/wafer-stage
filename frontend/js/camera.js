@@ -13,8 +13,26 @@
   let lastPhase = null;
   let firstState = true;
 
+  // 추가 모드: 촬영본의 빈 곳 클릭 = 샘플 추가. 켜져 있는 동안은 hit 원을 끄고
+  // 윤곽 다각형 · 수동 마름모 안 클릭만 선택으로 받는다 - 붙어 있는 칩 옆 빈 자리가
+  // 반지름 16 px 원에 막히지 않게.
+  let addMode = false;
+  UI.isAddMode = () => addMode;
+  UI.setAddMode = function (on) {
+    on = !!on;
+    if (on && live) setLive(false);        // 추가는 촬영본 위에서만
+    if (on === addMode) return;
+    addMode = on;
+    const b = $('btnAddSample');
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.classList.toggle('on', on);
+    $('cam').classList.toggle('addmode', on);
+    $('camHint').textContent = on ? '빈 곳 클릭: 추가 · 샘플 클릭: 선택' : '샘플 클릭: 선택';
+  };
+
   function setLive(on) {
     live = !!on;
+    if (live) UI.setAddMode(false);
     $(live ? 'viewLive' : 'viewSnap').checked = true;
     $('cam').classList.toggle('livemode', live);
     $('live').hidden = !live;
@@ -132,10 +150,26 @@
       if (sm.status === 'skip' || !sm.on) cls.push('skip');
       if (sm.status === 'moving' || sm.status === 'measuring') cls.push('target');
       if (UI.selected === sm.no) cls.push('selected');
-      const pts = (sm.verts || []).map(p => p.join(',')).join(' ');
-      if (pts) gs.appendChild(el('polygon', { class: cls.join(' '), points: pts }));
+      // 수동 샘플은 윤곽이 없다 - 중심에 작은 마름모(포인터 십자와 다른 모양).
+      const D = 7;
+      const pts = sm.manual
+        ? [[sm.u, sm.v - D], [sm.u + D, sm.v], [sm.u, sm.v + D], [sm.u - D, sm.v]]
+            .map(p => p.join(',')).join(' ')
+        : (sm.verts || []).map(p => p.join(',')).join(' ');
+      if (sm.manual) cls.push('manual');
+      if (pts) {
+        const pg = el('polygon', { class: cls.join(' '), points: pts });
+        // 추가 모드에서만 선택을 받는다(평소에는 위의 hit 원이 받는다).
+        pg.addEventListener('click', (e) => {
+          if (!addMode) return;
+          e.stopPropagation();
+          UI.select(sm.no);
+        });
+        gs.appendChild(pg);
+      }
       const t = el('text', { class: 'ov-num', x: sm.u + 8, y: sm.v - 6 });
-      t.textContent = sm.no + (sm.edge_completed ? 'E' : '') + (sm.edge_only ? 'G' : '') + (sm.weak ? '?' : '');
+      t.textContent = sm.no + (sm.manual ? 'M' : '') + (sm.edge_completed ? 'E' : '')
+        + (sm.edge_only ? 'G' : '') + (sm.weak ? '?' : '');
       gs.appendChild(t);
       // 클릭 판정용(다각형이 얇아도 집히도록 원을 덮는다)
       const hit = el('circle', { class: 'ov-hit', cx: sm.u, cy: sm.v, r: 16 });
@@ -181,13 +215,35 @@
     const list = s.samples || [];
     const tri = list.filter(x => x.shape === 'triangle').length;
     const on = list.filter(x => x.on).length;
+    const man = list.filter(x => x.manual).length;
     $('infoSamples').textContent = list.length
-      ? (list.length + ' (삼각 ' + tri + ') · 대상 ' + on) : UI.EMPTY;
+      ? (list.length + ' (삼각 ' + tri + ')' + (man ? ' · 수동 ' + man : '')
+         + ' · 대상 ' + on) : UI.EMPTY;
   };
+
+  // 추가 모드의 사진 클릭 → 프레임 px. SVG 는 viewBox(frame.w×frame.h)를 meet 로
+  // 그리므로 map.js 와 같은 방식으로 실제 배치된 사각형을 되짚는다.
+  // getBoundingClientRect 는 fit() 의 축소까지 반영한 값이라 창 크기와 무관하다.
+  $('cam').addEventListener('click', (ev) => {
+    if (!addMode || live) return;
+    const f = UI.state && UI.state.frame;
+    if (!f || !f.w || !f.h) return;
+    const r = $('cam').getBoundingClientRect();
+    const k = Math.min(r.width / f.w, r.height / f.h);
+    const u = (ev.clientX - r.left - (r.width - f.w * k) / 2) / k;
+    const v = (ev.clientY - r.top - (r.height - f.h * k) / 2) / k;
+    if (!(u >= 0 && v >= 0 && u <= f.w && v <= f.h)) return;   // 레터박스
+    UI.send({ cmd: 'sample_add', u: Math.round(u * 10) / 10, v: Math.round(v * 10) / 10 });
+  });
 
   // 카메라 도구 버튼
   $('btnCapture').onclick = () => UI.send({ cmd: 'capture' });
   $('btnPark').onclick = () => UI.send({ cmd: 'park' });
+  $('btnAddSample').onclick = () => UI.setAddMode(!addMode);
+  $('btnDelSample').onclick = () => {
+    if (UI.selected != null) UI.send({ cmd: 'sample_delete', no: UI.selected });
+  };
+  $('btnUndo').onclick = () => UI.send({ cmd: 'sample_undo' });
   $('viewLive').onchange = () => setLive(true);
   $('viewSnap').onchange = () => setLive(false);
   // 처음에는 미리보기로 시작한다 - 촬영본이 없는 상태에서 검은 화면을 보여 줄

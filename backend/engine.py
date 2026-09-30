@@ -9,6 +9,7 @@
 
 import asyncio
 import csv
+import math
 import os
 import time
 
@@ -119,6 +120,7 @@ async def capture():
         await _log_capture_diag(stats.get("diag") if isinstance(stats, dict) else None)
         if res is None:
             state.samples = []
+            _clear_edits()
             state.calib = state.sensing = state.wafer = None
             state.markers = {}
             _phase("error", "마커 부족(3개 미만) · 좌표 생성 불가")
@@ -128,6 +130,7 @@ async def capture():
         d = await vision.run_blocking(_save_seq, stats.get("raw", bgr), res,
                                       stats.get("images") or {})
         state.sequence["out_dir"] = d
+        _edit_ctx["dir"] = d                # 이번 촬영의 편집본(samples_edit.json) 자리
         _phase("ready", "검출 %d · 대기" % len(state.samples),
                done=0, total=len(state.samples), cur_no=None, elapsed_s=0)
         await push_log("검출 %d개 · 저장 %s" % (len(state.samples), os.path.basename(d)), "ok")
@@ -212,7 +215,10 @@ def _apply_sense(res):
             continue
         state.markers[int(i)] = [[round(float(x), 1), round(float(y), 1)] for x, y in q]
     mm_by_no = {r[0]: (r[3], r[4]) for r in res["rows"]}
-    old_on = {s["no"]: s.get("on", True) for s in state.samples}
+    # 체크 상태는 검출 샘플끼리만 넘긴다. 수동 번호(N+1…)가 다음 촬영에서 같은
+    # 번호를 받은 검출 샘플에 체크 해제를 물려주면 안 된다.
+    old_on = {s["no"]: s.get("on", True) for s in state.samples if not s.get("manual")}
+    _clear_edits()
     state.samples = []
     for s in det.samples:
         X, Y = mm_by_no.get(s["no"], (0.0, 0.0))
@@ -229,7 +235,9 @@ def _apply_sense(res):
             "weak": bool(s.get("weak")),
             "strength": s.get("strength"),
             "area_mm2": s.get("area_mm2"),
+            "manual": False,
         })
+    state.next_no = max([s["no"] for s in state.samples], default=0) + 1
     state.set_warnings(det.warnings)
 
 
@@ -468,6 +476,223 @@ async def return_origin():
 
 
 # --------------------------------------------------------------------------
+# 샘플 편집(수동 추가 · 삭제 · 되돌리기)
+# --------------------------------------------------------------------------
+# 번호는 다시 매기지 않는다 - annotated.jpg · results.csv · 로그의 번호가 서로
+# 어긋나지 않게. 지운 번호는 빈 번호로 남고, 추가는 이번 촬영에서 한 번도 안 쓴
+# 다음 번호(state.next_no)를 받는다. 좌표 변환은 이번 촬영의 보정(_CAL_CACHE)만
+# 쓴다 - _last_cal() 은 저장된 옛 보정으로 떨어질 수 있어 편집에는 쓰지 않는다.
+
+# 기존 샘플 중심에서 이 안이면 같은 칩으로 본다(tools/flat_check.py 의 적중 기준
+# TRUTH_MM 과 같은 값).
+EDIT_OVERLAP_MM = 2.5
+_edit_ctx = {"dir": None}          # 이번 촬영의 결과 폴더(편집본을 쓰는 곳)
+
+
+def _clear_edits():
+    state.edits = []
+    _edit_ctx["dir"] = None
+
+
+def _source(s):
+    return "manual" if s.get("manual") else "detect"
+
+
+def _edit_refusal(verb):
+    """편집을 받을 수 없는 사유 (reason, 화면 문구) 또는 None."""
+    if busy():
+        return "busy", "순회 중 · %s 안 함" % verb
+    if state.camera.get("capturing"):
+        return "capturing", "촬영 중 · %s 안 함" % verb
+    if state.calib is None or state.sensing is None or _CAL_CACHE["d"] is None:
+        return "no_capture", "촬영 결과 없음 · 촬영 후 %s" % verb
+    return None
+
+
+def _in_rect(u, v):
+    u0, v0, u1, v1 = state.sensing["rect"]
+    return u0 <= u <= u1 and v0 <= v <= v1
+
+
+def _in_poly(u, v, verts):
+    """점이 다각형 안인가(광선 교차). verts = [[u, v], ...] 프레임 px."""
+    inside = False
+    n = len(verts)
+    for i in range(n):
+        (a, b), (c, d) = verts[i], verts[(i + 1) % n]
+        if (b > v) != (d > v) and u < (c - a) * (v - b) / (d - b) + a:
+            inside = not inside
+    return inside
+
+
+def _overlap(u, v, X, Y):
+    """겹치는 기존 샘플 번호 또는 None. 중심 2.5 mm 안이거나 검출 윤곽 안."""
+    for s in state.samples:
+        if math.hypot(s["X"] - X, s["Y"] - Y) <= EDIT_OVERLAP_MM:
+            return s["no"]
+        verts = s.get("verts") or []
+        if len(verts) >= 3 and _in_poly(u, v, verts):
+            return s["no"]
+    return None
+
+
+def _add_now(u, v, X, Y):
+    """번호 → 목록 → 스택을 await 없이 한 번에. 명령마다 태스크라 사이에 await 가
+    끼면 빠른 두 번 클릭이 같은 번호를 받는다."""
+    no = state.next_no
+    state.next_no += 1
+    s = {
+        "no": no, "shape": "",
+        "u": round(float(u), 1), "v": round(float(v), 1),
+        "X": round(float(X), 2), "Y": round(float(Y), 2),
+        "verts": [],
+        "on": True,
+        "status": "wait" if calib.in_range(X, Y) else "skip",
+        "value": None, "unit": None,
+        "edge_completed": False, "edge_only": False, "weak": False,
+        "strength": None, "area_mm2": None,
+        "manual": True,
+    }
+    state.samples.append(s)
+    state.samples.sort(key=lambda x: x["no"])
+    state.edits.append({"op": "add", "no": no})
+    return s
+
+
+def _check_new(u, v, X, Y):
+    """추가 전 검사. 거절이면 (reason, 화면 문구), 통과면 None."""
+    if not _in_rect(u, v):
+        return "outside", "감지영역 밖 · 추가 안 함"
+    if not calib.in_range(X, Y):
+        return "out_of_range", "가동범위 밖 · 추가 안 함"
+    hit = _overlap(u, v, X, Y)
+    if hit is not None:
+        return "overlap", "#%s 과 겹침 · 추가 안 함" % hit
+    return None
+
+
+async def _add_refused(reason, msg):
+    await push_log(msg, "warn")
+    await push_ack("sample_add", False, reason, no=None)
+    return False
+
+
+def _after_edit(kind, s, **extra):
+    """편집마다: 편집본 파일 · 순회 기록 한 줄 · 준비 상태의 개수."""
+    d = _edit_ctx["dir"]
+    if d:
+        try:
+            storage.atomic_write_json(
+                os.path.join(d, "samples_edit.json"),
+                [{"no": x["no"], "u": round(x["u"], 1), "v": round(x["v"], 1),
+                  "X": round(x["X"], 2), "Y": round(x["Y"], 2), "source": _source(x)}
+                 for x in state.samples])
+        except OSError as e:
+            logger.write("warn", "samples_edit.json 저장 실패: %s" % e)
+    rec = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "edit": kind, "no": s["no"],
+           "u": s["u"], "v": s["v"], "X": s["X"], "Y": s["Y"]}
+    rec.update(extra)
+    storage.append_jsonl(paths.SEQ_LOG_PATH, rec)
+    if state.sequence.get("phase") == "ready":
+        _phase("ready", "샘플 %d · 대기" % len(state.samples), total=len(state.samples))
+
+
+async def _added(s, via):
+    _after_edit("add", s, via=via)
+    await push_log("수동 샘플 #%d 추가 · X%.1f Y%.1f" % (s["no"], s["X"], s["Y"]), "ok")
+    await push_state()                     # 샘플이 목록에 있는 state 가 ack 보다 먼저
+    await push_ack("sample_add", True, no=s["no"])
+    return True
+
+
+async def add_sample_px(u, v):
+    """촬영본 클릭 자리(프레임 px)를 샘플(프로브 목표점)로 추가한다."""
+    why = _edit_refusal("추가")
+    if why:
+        return await _add_refused(*why)
+    try:
+        u, v = float(u), float(v)
+    except (TypeError, ValueError):
+        return await _add_refused("bad_args", "좌표 오류 · 추가 안 함")
+    if not (math.isfinite(u) and math.isfinite(v)):
+        return await _add_refused("bad_args", "좌표 오류 · 추가 안 함")
+    if not _in_rect(u, v):
+        return await _add_refused("outside", "감지영역 밖 · 추가 안 함")
+    X, Y = calib.px_to_mm(_CAL_CACHE["d"], u, v)
+    why = _check_new(u, v, X, Y)
+    if why:
+        return await _add_refused(*why)
+    return await _added(_add_now(u, v, X, Y), "click")
+
+
+async def add_sample_here():
+    """지금 스테이지 위치를 샘플로 추가한다. 포인터를 칩에 맞춘 뒤라 보정 오차가
+    끼지 않는다(사진에 거의 안 보이는 칩용). 원점·연결은 commands 가 막는다."""
+    why = _edit_refusal("추가")
+    if why:
+        return await _add_refused(*why)
+    X, Y = state.stage["x_mm"], state.stage["y_mm"]
+    if X is None or Y is None:
+        return await _add_refused("bad_args", "현재 위치 모름 · 추가 안 함")
+    X, Y = float(X), float(Y)
+    u, v = calib.mm_to_px(_CAL_CACHE["d"], X, Y)
+    why = _check_new(u, v, X, Y)
+    if why:
+        return await _add_refused(*why)
+    return await _added(_add_now(u, v, X, Y), "here")
+
+
+async def delete_sample(no):
+    """샘플을 목록에서 뺀다. 지운 dict 는 스택에 그대로 둔다(되돌리면 복원)."""
+    why = _edit_refusal("삭제")
+    if why:
+        await push_log(why[1], "warn")
+        return False
+    try:
+        no = int(no)
+    except (TypeError, ValueError):
+        await push_log("샘플 번호 오류 · 삭제 안 함", "warn")
+        return False
+    s = state.sample(no)
+    if s is None:
+        await push_log("#%s 없음 · 삭제 안 함" % no, "warn")
+        return False
+    state.samples.remove(s)
+    state.edits.append({"op": "del", "sample": s})
+    _after_edit("delete", s)
+    await push_log("샘플 #%d 삭제" % no, "ok")
+    await push_state()
+    return True
+
+
+async def undo_edit():
+    """마지막 편집 하나를 취소한다."""
+    why = _edit_refusal("되돌리기")
+    if why:
+        await push_log(why[1], "warn")
+        return False
+    if not state.edits:
+        await push_log("되돌릴 편집 없음")
+        return False
+    e = state.edits.pop()
+    if e["op"] == "add":
+        s = state.sample(e["no"])
+        if s is not None:
+            state.samples.remove(s)
+        s = s or {"no": e["no"], "u": None, "v": None, "X": None, "Y": None}
+        _after_edit("undo", s, undo_of="add")
+        await push_log("되돌리기 · #%d 추가 취소" % e["no"], "ok")
+    else:
+        s = e["sample"]
+        state.samples.append(s)
+        state.samples.sort(key=lambda x: x["no"])
+        _after_edit("undo", s, undo_of="delete")
+        await push_log("되돌리기 · #%d 복원" % s["no"], "ok")
+    await push_state()
+    return True
+
+
+# --------------------------------------------------------------------------
 # 순회
 # --------------------------------------------------------------------------
 def needs_confirm():
@@ -661,12 +886,13 @@ def _write_results():
     p = os.path.join(d, "results.csv")
     with open(p, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["no", "shape", "X_mm", "Y_mm", "value", "unit", "status", "time"])
+        w.writerow(["no", "shape", "X_mm", "Y_mm", "value", "unit", "status", "time",
+                    "source"])
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         for s in state.samples:
             w.writerow([s["no"], s.get("shape", ""), s["X"], s["Y"],
                         "" if s.get("value") is None else s["value"],
-                        s.get("unit") or "", s["status"], ts])
+                        s.get("unit") or "", s["status"], ts, _source(s)])
 
 
 async def pause():

@@ -25,16 +25,20 @@ _shutdown_handler = None
 # can_move(연결·원점·비상정지) 를 요구하는 명령. jog 는 여기 넣지 않는다 -
 # 원점이 없을 때 상대 이동으로 끝단까지 몰고 가는 것이 원점을 잡는 절차라서,
 # 여기서 막으면 원점을 영영 못 잡는다(_jog 가 모드별로 따로 검사한다).
+# sample_add_here 는 지금 위치를 샘플로 삼으므로 위치를 믿을 수 있을 때만 받는다.
 MOVE_CMDS = ("park", "goto", "return_origin", "run", "resume", "next",
-             "measure_here")
+             "measure_here", "sample_add_here")
 # 스테이지가 이미 움직이고 있으면 받지 않는다. 명령이 동시에 실행될 수 있게 된
 # 뒤로는(ws_endpoint 가 태스크로 띄운다) 이 검사가 없으면 두 이동이 겹친다.
 MOVING_BLOCKED = ("park", "goto", "return_origin", "jog", "touch_end",
-                  "set_origin", "capture", "run", "measure_here")
+                  "set_origin", "capture", "run", "measure_here", "sample_add_here")
 # 순회 중에 받으면 안 되는 명령. 스테이지·카메라·설정을 순회 도중에 건드리면
 # 진행 중인 이동과 충돌한다(정지 뒤에 하면 된다).
 BUSY_BLOCKED = ("park", "goto", "return_origin", "jog", "park_here", "touch_end",
-                "set_origin", "stage_disconnect", "capture", "settings_save")
+                "set_origin", "stage_disconnect", "capture", "settings_save",
+                "sample_add", "sample_add_here", "sample_delete", "sample_undo")
+# 샘플 추가 둘은 결과를 ack{of:"sample_add"} 로 돌려준다(화면이 새 번호를 선택한다).
+SAMPLE_ADD_CMDS = ("sample_add", "sample_add_here")
 
 
 def set_shutdown_handler(fn):
@@ -55,6 +59,8 @@ async def handle_command(data):
             await push_log("이동 중 · 명령 무시 (%s)" % cmd, "warn")
             if cmd == "jog":
                 await push_ack("jog", False, "moving")
+            if cmd in SAMPLE_ADD_CMDS:
+                await push_ack("sample_add", False, "moving", no=None)
             return
         if cmd in BUSY_BLOCKED and engine.busy():
             await push_log("순회 중 · 명령 무시 (%s)" % cmd, "warn")
@@ -62,12 +68,16 @@ async def handle_command(data):
             # 화면이 '보낸 채로' 멈추지 않는다.
             if cmd == "jog":
                 await push_ack("jog", False, "busy")
+            if cmd in SAMPLE_ADD_CMDS:
+                await push_ack("sample_add", False, "busy", no=None)
             return
         if cmd in MOVE_CMDS:
             why = state.can_move()
             if why:
                 if cmd == "run":
                     await push_ack("run", False, "locked", [why])
+                if cmd in SAMPLE_ADD_CMDS:
+                    await push_ack("sample_add", False, "locked", no=None)
                 await push_log(why, "warn")
                 return
 
@@ -353,8 +363,30 @@ async def _park_here(_data):
     await push_state()
 
 
-async def _capture(_data):
+async def _capture(data):
+    # 편집은 그 촬영에만 속한다. 새로 찍으면 사라지므로 남아 있으면 먼저 묻는다.
+    n = len(state.edits)
+    if n and not data.get("confirm"):
+        await push_ack("capture", False, "needs_confirm", ["수동 추가·삭제 %d건" % n],
+                       edits=n)
+        return
     await engine.capture()
+
+
+async def _sample_add(data):
+    await engine.add_sample_px(data.get("u"), data.get("v"))
+
+
+async def _sample_add_here(_data):
+    await engine.add_sample_here()
+
+
+async def _sample_delete(data):
+    await engine.delete_sample(data.get("no"))
+
+
+async def _sample_undo(_data):
+    await engine.undo_edit()
 
 
 async def _run(data):
@@ -556,6 +588,10 @@ _TABLE = {
     "park_here": _park_here,
     "return_origin": _return_origin,
     "capture": _capture,
+    "sample_add": _sample_add,
+    "sample_add_here": _sample_add_here,
+    "sample_delete": _sample_delete,
+    "sample_undo": _sample_undo,
     "run": _run,
     "pause": _pause,
     "resume": _resume,

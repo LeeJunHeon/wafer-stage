@@ -66,6 +66,12 @@
   비상정지 때 forget 을 보내 EEPROM 의 원점 기록도 지운다.
   끝단 이동(touch_end)과 원점 등록(set_origin)은 따로다. 축마다 따로 잡는다.
 - 메시지 계약(state/명령)은 README.md 에 표로 있다. 화면은 요청만 보내고 서버 state 가 와야 바뀐다.
+- 샘플 편집(engine add_sample_px·add_sample_here·delete_sample·undo_edit, 스택 state.edits):
+  번호는 다시 매기지 않는다(지운 번호는 빈 번호, 추가는 state.next_no - 되돌려도 줄지 않음).
+  변환은 이번 촬영 보정(_CAL_CACHE)으로만 - _last_cal() 은 옛 보정으로 떨어지므로 쓰지 않는다.
+  samples.json 은 검출 원본(regress --update 가 고친다), 편집본은 samples_edit.json(source 열).
+  순회 중(파킹 포함)·촬영 중·촬영 결과 없음이면 거절. 새 촬영이 편집을 비운다(남아 있으면
+  capture 가 needs_confirm).
 
 ## 하드웨어 (실측 확정값)
 - 컨트롤러: Arduino Mega 2560 + 자작 펌웨어 V9(firmware/stage_v9). USB 시리얼 115200, 줄끝 \n. COM7.

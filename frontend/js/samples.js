@@ -10,7 +10,12 @@
   };
 
   UI.select = function (no) {
-    UI.selected = (UI.selected === no) ? null : no;
+    UI.selectNo((UI.selected === no) ? null : no);
+  };
+
+  // 지정 선택(토글 아님). 수동 추가 직후 새 번호를 선택할 때 쓴다.
+  UI.selectNo = function (no) {
+    UI.selected = no;
     UI.applySamples(UI.state);
     UI.applyCamera(UI.state);
     UI.applyMap(UI.state);
@@ -21,6 +26,8 @@
     const tb = $('tbody');
     tb.textContent = '';
     const list = (s && s.samples) || [];
+    // 지운 번호를 선택한 채로 두면 [선택 샘플 이동]이 없는 번호를 보낸다.
+    if (UI.selected != null && !list.some(x => x.no === UI.selected)) UI.selected = null;
     list.forEach(sm => {
       const tr = document.createElement('tr');
       if (UI.selected === sm.no) tr.classList.add('selected');
@@ -41,6 +48,13 @@
       // No 칸: 번호 + 윤곽 보완 배지. 'E' 를 번호에 붙여 쓰면 번호의 일부로 읽힌다.
       const tdn = document.createElement('td');
       tdn.appendChild(document.createTextNode(String(sm.no)));
+      if (sm.manual) {
+        const badge = document.createElement('span');
+        badge.className = 'edgebadge man';
+        badge.textContent = 'M';
+        badge.title = '수동 추가';
+        tdn.appendChild(badge);
+      }
       if (sm.edge_completed) {
         const badge = document.createElement('span');
         badge.className = 'edgebadge';
@@ -67,7 +81,7 @@
       tr.appendChild(tdn);
 
       const cells = [
-        SHAPE[sm.shape] || sm.shape || '',
+        sm.manual ? UI.EMPTY : (SHAPE[sm.shape] || sm.shape || ''),
         sm.X.toFixed(1), sm.Y.toFixed(1),
       ];
       cells.forEach((t, i) => {
@@ -101,10 +115,17 @@
       tr.appendChild(td);
       tb.appendChild(tr);
     }
-    const on = list.filter(x => x.on).length;
-    $('countInfo').textContent = list.length
-      ? ('검출 ' + list.length + ' · 대상 ' + on)
-      : UI.EMPTY;
+    // 검출 n · 수동 m · 삭제 d · 대상 k (0 인 항목은 뺀다)
+    const ed = (s && s.edit) || {};
+    const parts = [
+      ['검출', list.filter(x => !x.manual).length],
+      ['수동', list.filter(x => x.manual).length],
+      ['삭제', ed.deleted || 0],
+      ['대상', list.filter(x => x.on).length],
+    ].filter(p => p[1] > 0).map(p => p[0] + ' ' + p[1]);
+    const cnt = parts.length ? parts.join(' · ') : UI.EMPTY;
+    $('countInfo').textContent = cnt;
+    $('countInfo').title = cnt;
   };
 
   $('btnAll').onclick = () => UI.send({ cmd: 'set_all', on: true });

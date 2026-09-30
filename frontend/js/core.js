@@ -319,6 +319,7 @@
       ['posX', 'posY', 'posZ', 'infoCal', 'infoRect', 'infoWafer', 'infoSamples',
        'mapPos', 'progText', 'curSample', 'curTarget', 'curStatus', 'countInfo',
        'outDir'].forEach(id => { if ($(id)) $(id).textContent = EMPTY; });
+      $('countInfo').title = '';
       $('frameTime').textContent = '촬영 없음';
       $('measureVal').textContent = '미연결';
       const n = $('notice');
@@ -355,6 +356,14 @@
     dis('btnNone', !on);
     dis('btnGoto', !canMove || running || UI.selected == null);
     dis('btnMeasureHere', !canMove || running);
+    // 샘플 편집: 이번 촬영 결과가 있고 순회·촬영 중이 아닐 때만(서버도 같은 조건).
+    const list = (s && s.samples) || [];
+    const canEdit = on && !running && !!(s && s.calib);
+    dis('btnAddSample', !canEdit);
+    dis('btnDelSample', !canEdit || UI.selected == null
+        || !list.some(x => x.no === UI.selected));
+    dis('btnUndo', !on || running || !((s && s.edit && s.edit.undo) > 0));
+    if (!canEdit && UI.setAddMode) UI.setAddMode(false);   // 잠기면 추가 모드도 끈다
     dis('viewLive', !on);
     dis('viewSnap', !on);
     dis('btnOpenDir', !on || !q.out_dir);

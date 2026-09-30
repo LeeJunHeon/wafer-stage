@@ -67,7 +67,12 @@ class State:
         self.sensing = None                # {"rect":[u0,v0,u1,v1]}
         self.wafer = None                  # {"found","cx","cy","r_px","center_mm"}
         self.markers = {}                  # {id: [[u,v] x4]}
-        self.samples = []                  # 화면용 샘플 목록
+        self.samples = []                  # 화면용 샘플 목록(늘 번호순)
+        # 샘플 편집(수동 추가·삭제). 스택에 있는 것 = 지금 효력이 있는 편집이고
+        # 되돌리기는 끝에서부터 뺀다. 항목 {"op":"add","no"} / {"op":"del","sample":dict}.
+        # 편집은 그 촬영에만 속한다 - 새 촬영이 스택을 비운다(engine._apply_sense).
+        self.edits = []
+        self.next_no = 1                   # 수동 추가가 받을 번호(되돌려도 줄지 않는다)
         self.sequence = {"phase": "idle", "mode": "auto",
                          "dwell_s": float(self.settings.get("dwell_s", 5)),
                          "cur_no": None, "done": 0, "total": 0, "elapsed_s": 0,
@@ -155,6 +160,15 @@ class State:
             return "비상정지 · 원점 등록 필요"
         return None
 
+    def edit_summary(self):
+        """화면용 편집 요약: 되돌릴 수 있는 단계 · 목록의 수동 샘플 · 지운 검출 샘플."""
+        return {
+            "undo": len(self.edits),
+            "manual": sum(1 for s in self.samples if s.get("manual")),
+            "deleted": sum(1 for e in self.edits
+                           if e["op"] == "del" and not e["sample"].get("manual")),
+        }
+
     def set_warnings(self, ws):
         self.warnings = list(ws or [])
 
@@ -179,6 +193,7 @@ class State:
             # 설정 창이 이 값으로 표를 채운다.
             "marker_mm": {str(k): [v[0], v[1]] for k, v in calib.MARKER_MM.items()},
             "samples": [dict(s) for s in self.samples],
+            "edit": self.edit_summary(),
             "sequence": dict(self.sequence, estopped=_estopped()),
             "warnings": list(self.warnings),
             "settings": dict(self.settings),

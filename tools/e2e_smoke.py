@@ -7,6 +7,7 @@
   run(auto, dwell 0.2) -> running -> done, done==총 개수, results.csv 생성
   pause/resume/stop 경로
   needs_confirm 경로(마커 3개 + 반사광 사진)
+  샘플 편집(클릭·현재 위치 추가 · 삭제 · 되돌리기 · 새 촬영 확인 · 순회 중 거절)
 를 차례로 본다. 하드웨어가 없어도 도는 검증이라 커밋 전에 이걸 돌린다.
 
 실제 data 폴더에는 아무것도 쓰지 않는다. 임시 폴더를 만들어 검증용 사진 두 장만
@@ -15,6 +16,7 @@
 
 import asyncio
 import contextlib
+import csv
 import json
 import os
 import shutil
@@ -848,6 +850,204 @@ async def confirm_flow(c):
     await c.wait_phase(("stopped", "done", "error"), 60)
 
 
+async def wait_ack(c, of, timeout=10.0):
+    """그 명령의 ack 를 기다린다(c.acks 에서 꺼낸다). 없으면 None."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        for a in c.acks:
+            if a.get("of") == of:
+                c.acks.remove(a)
+                return a
+        await c.pump(0.1)
+    return None
+
+
+def _free_px(st, gap_px=40.0):
+    """감지영역 안에서 모든 샘플 (u,v) 와 gap_px 이상 떨어진 점. 가운데부터 찾는다."""
+    u0, v0, u1, v1 = st["sensing"]["rect"]
+    cu, cv = (u0 + u1) / 2.0, (v0 + v1) / 2.0
+    pts = [(u, v) for u in range(int(u0) + 20, int(u1) - 20, 8)
+           for v in range(int(v0) + 20, int(v1) - 20, 8)]
+    pts.sort(key=lambda p: (p[0] - cu) ** 2 + (p[1] - cv) ** 2)
+    for u, v in pts:
+        if all(((u - s["u"]) ** 2 + (v - s["v"]) ** 2) ** 0.5 >= gap_px
+               for s in st["samples"]):
+            return float(u), float(v)
+    return None
+
+
+def _free_mm(st, edge_mm=10.0, gap_mm=10.0):
+    """마커 중심 사각형 안쪽(가장자리에서 edge_mm)에서 모든 샘플과 gap_mm 떨어진 점."""
+    mk = list(st["marker_mm"].values())
+    x0, x1 = min(p[0] for p in mk) + edge_mm, max(p[0] for p in mk) - edge_mm
+    y0, y1 = min(p[1] for p in mk) + edge_mm, max(p[1] for p in mk) - edge_mm
+    x = x0
+    while x <= x1:
+        y = y0
+        while y <= y1:
+            if all(((x - s["X"]) ** 2 + (y - s["Y"]) ** 2) ** 0.5 >= gap_mm
+                   for s in st["samples"]):
+                return round(x, 1), round(y, 1)
+            y += 2.0
+        x += 2.0
+    return None
+
+
+def _nos(c):
+    return [s["no"] for s in c.state["samples"]]
+
+
+async def edit_flow(c):
+    """샘플 편집: 클릭 추가 · 현재 위치 추가 · 삭제 · 되돌리기 · 새 촬영 확인 · 순회 중 거절."""
+    # 1) 촬영
+    await c.send(cmd="capture")
+    ph = await c.wait_phase(("ready", "error"), 90)
+    check(ph == "ready" and len(c.state["samples"]) == 16,
+          "편집 전 촬영 16개 (%s, %d)" % (ph, len(c.state["samples"])))
+    check(c.state["edit"]["undo"] == 0, "촬영 직후 edit.undo 0 (%s)" % c.state["edit"])
+    out_dir = c.state["sequence"]["out_dir"]
+    rect = c.state["sensing"]["rect"]
+
+    # 2) 빈 곳 클릭 추가
+    pt = _free_px(c.state)
+    check(pt is not None, "감지영역 안 빈 점 (%s)" % (pt,))
+    c.acks.clear()
+    await c.send(cmd="sample_add", u=pt[0], v=pt[1])
+    a = await wait_ack(c, "sample_add")
+    await c.pump(0.5)
+    check(bool(a) and a["ok"] and a.get("no") == 17, "sample_add ack ok · no 17 (%s)" % a)
+    s17 = next((s for s in c.state["samples"] if s["no"] == 17), None)
+    check(bool(s17) and s17["manual"] and s17["status"] == "wait" and s17["on"],
+          "#17 manual · wait · on (%s)" % s17)
+    ed = c.state["edit"]
+    check(ed["undo"] == 1 and ed["manual"] == 1, "edit undo 1 · manual 1 (%s)" % ed)
+    with open(os.path.join(out_dir, "samples_edit.json"), encoding="utf-8") as f:
+        je = json.load(f)
+    check(len(je) == 17 and sum(1 for x in je if x["source"] == "manual") == 1
+          and set(je[0]) == {"no", "u", "v", "X", "Y", "source"},
+          "samples_edit.json 17개 · manual 1 (%d)" % len(je))
+    with open(os.path.join(out_dir, "samples.json"), encoding="utf-8") as f:
+        check(len(json.load(f)) == 16, "samples.json 은 검출 16개 그대로")
+
+    # 3) 겹침 · 감지영역 밖 · 잘못된 좌표
+    s1 = c.state["samples"][0]
+    await c.send(cmd="sample_add", u=s1["u"], v=s1["v"])
+    a = await wait_ack(c, "sample_add")
+    check(bool(a) and not a["ok"] and a["reason"] == "overlap",
+          "기존 샘플 자리 -> overlap (%s)" % a)
+    await c.send(cmd="sample_add", u=max(0, rect[0] - 15), v=max(0, rect[1] - 15))
+    a = await wait_ack(c, "sample_add")
+    check(bool(a) and not a["ok"] and a["reason"] == "outside",
+          "감지영역 밖 -> outside (%s)" % a)
+    await c.send(cmd="sample_add", u="nan", v=10)
+    a = await wait_ack(c, "sample_add")
+    check(bool(a) and not a["ok"] and a["reason"] == "bad_args", "NaN 좌표 -> bad_args (%s)" % a)
+    await c.pump(0.3)
+    check(len(c.state["samples"]) == 17, "거절 뒤 개수 그대로 17 (%d)" % len(c.state["samples"]))
+
+    # 4) 삭제 · 되돌리기
+    one = dict(next(s for s in c.state["samples"] if s["no"] == 1))
+    await c.send(cmd="sample_delete", no=1)
+    await c.pump(0.8)
+    check(1 not in _nos(c) and c.state["edit"]["deleted"] == 1,
+          "sample_delete 1 -> 빠짐 · deleted 1 (%s)" % c.state["edit"])
+    await c.send(cmd="sample_undo")
+    await c.pump(0.8)
+    back = next((s for s in c.state["samples"] if s["no"] == 1), None)
+    check(bool(back) and back == one and _nos(c) == sorted(_nos(c)) and _nos(c)[0] == 1,
+          "되돌리기 -> #1 같은 X·Y·윤곽으로 번호순 제자리 (%s)" % _nos(c)[:3])
+    await c.send(cmd="sample_undo")
+    await c.pump(0.8)
+    check(17 not in _nos(c) and c.state["edit"]["undo"] == 0,
+          "되돌리기 -> #17 빠짐 · undo 0 (%s)" % c.state["edit"])
+    c.logs.clear()
+    await c.send(cmd="sample_undo")
+    await c.pump(0.8)
+    check(any("되돌릴 편집 없음" in l["msg"] for l in c.logs)
+          and not any(l["level"] == "err" for l in c.logs),
+          "빈 스택 되돌리기 -> 로그만 (%s)" % [l["msg"] for l in c.logs])
+
+    # 5) 현재 위치를 샘플로
+    xy = _free_mm(c.state)
+    check(xy is not None, "마커 사각형 안 빈 자리 (%s)" % (xy,))
+    c.logs.clear()
+    await c.send(cmd="goto", x=xy[0], y=xy[1])
+    await wait_log(c, "이동 완료", 20)
+    await c.pump(0.5)
+    await c.send(cmd="sample_add_here")
+    a = await wait_ack(c, "sample_add")
+    await c.pump(0.5)
+    check(bool(a) and a["ok"] and a.get("no") == 18,
+          "sample_add_here -> no 18 (되돌린 17 재사용 안 함) (%s)" % a)
+    s18 = next((s for s in c.state["samples"] if s["no"] == 18), None)
+    inside = bool(s18) and rect[0] <= s18["u"] <= rect[2] and rect[1] <= s18["v"] <= rect[3]
+    check(inside and s18["X"] == xy[0] and s18["Y"] == xy[1],
+          "#18 = 현재 위치 X·Y · (u,v) 감지영역 안 (%s)" % s18)
+    if s18:
+        await c.send(cmd="sample_add", u=s18["u"], v=s18["v"])
+        a = await wait_ack(c, "sample_add")
+        check(bool(a) and not a["ok"] and a["reason"] == "overlap",
+              "#18 의 (u,v) 클릭 -> overlap (px↔mm 왕복) (%s)" % a)
+
+    # 6) 감지영역 밖 위치
+    c.logs.clear()
+    await c.send(cmd="goto", x=5, y=5)
+    await wait_log(c, "이동 완료", 20)
+    await c.pump(0.5)
+    await c.send(cmd="sample_add_here")
+    a = await wait_ack(c, "sample_add")
+    check(bool(a) and not a["ok"] and a["reason"] == "outside",
+          "(5,5) 에서 추가 -> outside (%s)" % a)
+
+    # 7) 편집이 남은 채 새 촬영 -> 확인 요구
+    n_before = len(c.state["samples"])
+    await c.send(cmd="capture")
+    a = await wait_ack(c, "capture")
+    await c.pump(0.5)
+    check(bool(a) and not a["ok"] and a["reason"] == "needs_confirm" and a["needs_confirm"],
+          "편집 남은 capture -> needs_confirm (%s)" % a)
+    check(len(c.state["samples"]) == n_before and c.state["sequence"]["phase"] == "ready",
+          "확인 전에는 찍지 않음 (%d)" % len(c.state["samples"]))
+    await c.send(cmd="capture", confirm=True)
+    await c.wait_phase(("capturing",), 10)
+    ph = await c.wait_phase(("ready", "error"), 90)
+    ed = c.state["edit"]
+    check(ph == "ready" and len(c.state["samples"]) == 16
+          and ed == {"undo": 0, "manual": 0, "deleted": 0},
+          "confirm 촬영 -> 16개 · 편집 0 (%s)" % ed)
+
+    # 8) 순회 중 편집 거절 · results.csv source 열
+    pt = _free_px(c.state)
+    await c.send(cmd="sample_add", u=pt[0], v=pt[1])
+    a = await wait_ack(c, "sample_add")
+    check(bool(a) and a["ok"] and a.get("no") == 17, "새 촬영 뒤 번호 다시 17 (%s)" % a)
+    await c.send(cmd="run", mode="auto", dwell_s=1.0, confirm=True)
+    ph = await c.wait_phase(("running",), 20)
+    check(ph == "running", "편집 샘플로 run -> running (%s)" % ph)
+    c.logs.clear()
+    c.acks.clear()
+    n_run = len(c.state["samples"])
+    await c.send(cmd="sample_add", u=pt[0] + 60, v=pt[1])
+    await c.send(cmd="sample_delete", no=1)
+    await c.send(cmd="sample_undo")
+    await c.pump(1.5)
+    blocked = [l for l in c.logs if "순회 중" in l["msg"]]
+    a = [x for x in c.acks if x.get("of") == "sample_add"]
+    check(len(blocked) >= 3 and bool(a) and a[0]["reason"] == "busy"
+          and len(c.state["samples"]) == n_run and c.state["edit"]["undo"] == 1,
+          "순회 중 추가·삭제·되돌리기 거절 (로그 %d건 · ack %s)"
+          % (len(blocked), a[0]["reason"] if a else "없음"))
+    await c.send(cmd="stop")
+    await c.wait_phase(("stopped", "done", "error"), 60)
+    with open(os.path.join(c.state["sequence"]["out_dir"], "results.csv"),
+              encoding="utf-8-sig") as f:
+        rows = list(csv.reader(f))
+    check(rows[0] == ["no", "shape", "X_mm", "Y_mm", "value", "unit", "status", "time",
+                      "source"], "results.csv 기존 열 순서 + source (%s)" % rows[0])
+    man = [r for r in rows[1:] if r[-1] == "manual"]
+    check(len(man) == 1 and man[0][0] == "17", "results.csv manual 행 #17 (%s)" % man)
+
+
 def main():
     for f in SRC.values():
         if not os.path.exists(f):
@@ -858,6 +1058,7 @@ def main():
         SLOW = {"WAFER_STAGE_DRY_MOVE_S": "3"}    # dry 이동을 3초로 늘린다
         for name, image, flow, env_extra in (
                 ("정상 흐름", good, main_flow, None),
+                ("샘플 편집", good, edit_flow, None),
                 ("수동 이동", good, jog_flow, None),
                 ("비상정지 지연(원점)", good, estop_delay_home_flow, SLOW),
                 ("비상정지 지연(이동)", good, estop_delay_move_flow, SLOW),
