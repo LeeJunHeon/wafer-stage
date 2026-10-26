@@ -22,10 +22,10 @@
 // Arduino Mega 2560 + MotorBank MSD-224 x4
 //
 //   드라이버 (아두이노는 ENA+/DIR+/PUL+ 만 제어, − 쪽은 GND 공통. ENA LOW = 동작)
-//     드라이버1 : ENA=D39  DIR=D41  PUL=D5
-//     드라이버2 : ENA=D43  DIR=D45  PUL=D4
-//     드라이버3 : ENA=D47  DIR=D49  PUL=D3
-//     드라이버4 : ENA=D51  DIR=D53  PUL=D2
+//     드라이버1 = X1 : ENA=D39  DIR=D41  PUL=D5 (PE3)
+//     드라이버2 = X2 : ENA=D43  DIR=D45  PUL=D4 (PG5)
+//     드라이버3 = Y  : ENA=D47  DIR=D49  PUL=D3 (PE5)
+//     드라이버4 = Z  : ENA=D51  DIR=D53  PUL=D2 (PE4)
 //   릴레이 (출력, 전원·리셋 시 전부 꺼짐)
 //     R1 D22(노) R2 D24(주) R3 D26(보) R4 D28(갈) R5 D30(파)
 //     R6 D32(녹) R7 D34(노) R8 D36(주) R9 D38(빨) R10 D40(검)
@@ -70,12 +70,12 @@
 
 // ==================================================================
 //  배정 블록 — 축 ↔ 드라이버 번호(1~4), 릴레이 극성
-//  임시 배정 — 확정 후 이 4줄만 수정
+//  확정 배정 (2026-10-26)
 // ==================================================================
-const uint8_t AXIS_X1_DRV = 4;   // PUL 2
-const uint8_t AXIS_X2_DRV = 3;   // PUL 3
-const uint8_t AXIS_Y_DRV  = 2;   // PUL 4
-const uint8_t AXIS_Z_DRV  = 1;   // PUL 5
+const uint8_t AXIS_X1_DRV = 1;   // PUL 5 (PE3)
+const uint8_t AXIS_X2_DRV = 2;   // PUL 4 (PG5)
+const uint8_t AXIS_Y_DRV  = 3;   // PUL 3 (PE5)
+const uint8_t AXIS_Z_DRV  = 4;   // PUL 2 (PE4)
 
 // true = 릴레이 입력이 LOW 일 때 켜짐(흔한 릴레이 모듈). HIGH 에서 켜지면 false.
 const bool RELAY_ACTIVE_LOW = true;
@@ -232,7 +232,7 @@ void cacheMotorPins() {
   }
 }
 
-// 부팅 로그용: "X1=드라이버4(D2 PE 0x10)"
+// 부팅 로그용: "X1=D5(PE 0x08)"
 void printMotorPul(uint8_t m) {
   const DrvPins &d = DRV[AXIS_DRV[m] - 1];
   Serial.print(motorName(m)); Serial.print(F("=D")); Serial.print(d.pul);
@@ -561,6 +561,10 @@ void moveAxis(Axis ax, unsigned long steps, bool pos) {
 
     // 포트 레지스터를 포인터로 읽고-고쳐-쓰므로 그 사이 인터럽트를 막는다.
     // 묶음이 둘(다른 포트)이어도 연속 쓰기라 같은 펄스 폭 안에 함께 나간다.
+    // 확정 배정에서는 X1(PE3)·X2(PG5) 가 다른 포트라 X 이동이 늘 두 묶음이다:
+    // 올림 두 번이 한 cli 구간, 내림 두 번이 다른 한 cli 구간 안에서 연속으로 일어나
+    // 두 PUL 의 시차는 몇 클럭(1µs 미만)이고, 둘 다 HIGH 폭은 PULSE_HIGH_US 이상이다.
+    // 인터럽트가 끼어들 수 없으므로 X1·X2 의 펄스 수와 주기는 항상 같다.
     uint8_t sreg = SREG; cli();
     for (uint8_t k = 0; k < nGrp; k++) *grp[k].reg |= grp[k].mask;
     SREG = sreg;

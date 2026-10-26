@@ -77,9 +77,10 @@
 - 컨트롤러: Arduino Mega 2560 + 자작 펌웨어 V10(firmware/stage_v10). USB 시리얼 115200, 줄끝 \n. COM7.
 - 드라이버: 모터뱅크 MSD-224 ×4(2상, 1/8분주 = 1600펄스/회전). ENA LOW = 동작
 - 축: X = 모터 2개 동기(갠트리 양측, 논리축 하나) / Y = 빔 위 캐리지 / Z = 모터만 장착(프로브 미장착)
-- 핀(V10, 드라이버 번호 기준): 드라이버1 ENA39 DIR41 PUL5 / 2 ENA43 DIR45 PUL4 / 3 ENA47 DIR49 PUL3 / 4 ENA51 DIR53 PUL2.
-  축↔드라이버는 .ino 맨 위 배정 블록 AXIS_*_DRV 4줄(임시 X1=4 X2=3 Y=2 Z=1 — 확정 전).
+- 핀(V10, 드라이버 번호 기준): 드라이버1=X1 ENA39 DIR41 PUL5(PE3) / 2=X2 ENA43 DIR45 PUL4(PG5) / 3=Y ENA47 DIR49 PUL3(PE5) / 4=Z ENA51 DIR53 PUL2(PE4).
+  축↔드라이버는 .ino 맨 위 배정 블록 AXIS_*_DRV 4줄(확정 2026-10-26: X1=1 X2=2 Y=3 Z=4).
   PUL 포트·비트는 setup 에서 digitalPinToPort 로 계산·캐시, 같은 포트 축은 한 번의 쓰기로 동시 출력.
+  X1·X2 는 다른 포트(PE·PG)라 한 cli 구간 안 연속 쓰기 두 번으로 나간다(시차 1µs 미만).
 - 릴레이 R1~R10 D22~D40 짝수(RELAY_ACTIVE_LOW 기본 true, 부팅 시 전부 꺼짐, !·forget 은 안 건드림).
   호밍 센서 H1~H8 D23~D37 홀수(INPUT_PULLUP, LOW=닿음, 5회 연속 같은 값으로 확정). 센서↔위치 미정 — 읽기만.
 - 스케일: 160 펄스 = 1mm. 스트로크 X 0~39620(247.6mm), Y 0~39640(247.8mm). 속도 v6000/a40000/b300 ≈ 37.5 mm/s
