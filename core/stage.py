@@ -35,7 +35,7 @@ from . import paths
 DRY_MOVE_S = float(os.environ.get("WAFER_STAGE_DRY_MOVE_S", "0") or 0)
 DRY_TICK_S = 0.05                  # 자는 동안 이만큼마다 중단을 확인한다
 # --dry 가 흉내 낼 펌웨어 버전(검증용). 실제 연결에서는 배너에서 읽는다.
-DRY_FW = os.environ.get("WAFER_STAGE_DRY_FW", "V9").upper()
+DRY_FW = os.environ.get("WAFER_STAGE_DRY_FW", "V10").upper()
 # --dry 는 늘 "원점 있음" 으로 답해 왔다. 원점이 없는 상태의 동작(수동 이동만
 # 허용, goto 거절)을 검증하려면 그것도 흉내 낼 수 있어야 한다.
 DRY_NO_HOME = os.environ.get("WAFER_STAGE_DRY_NO_HOME", "") not in ("", "0")
@@ -55,7 +55,7 @@ JOG_SLOW_PPS = 1500           # 원점 없이 수동으로 몰 때 - 끝단에 �
 # 복사해 두지 말고 매번 stage_mod.X 로 읽어야 바뀐 값을 본다.
 X_MAX_PULSE = 39620           # 247.6mm
 Y_MAX_PULSE = 39640           # 247.8mm
-# 펌웨어 V9 의 Z_PPMM · Z_MAX 와 같은 값이어야 한다.
+# 펌웨어 V10(V9 와 같은 값)의 Z_PPMM · Z_MAX 와 같은 값이어야 한다.
 # 실측: 위 끝단에서 2mm 이격한 0 에서 아래 끝단까지 45mm (2026-09-16 재실측).
 Z_PPMM      = 160.0           # 실측 확인 2026-09-14 (1mm 명령 = 1mm 이동)
 Z_MAX_PULSE = 7200            # 45mm - 실측값
@@ -121,6 +121,8 @@ POLL_S = 0.2                  # 한 번 읽기에 기다리는 시간 (포트 �
 DONE_MARK = " | X="           # 이동 보고 줄
 ALREADY_MARK = "이미 그 위치"
 REJECT_MARK = "[거부]"
+N_RELAY = 10                  # 펌웨어 V10 의 릴레이 R1~R10
+N_HOME = 8                    # 펌웨어 V10 의 호밍 센서 H1~H8
 WARN_MARK = "[!]"
 
 
@@ -161,7 +163,7 @@ def pick_port(want=None):
 
 
 def _major_of(fw):
-    """"V9" -> 9. 읽을 수 없으면 0(검사하지 않는다)."""
+    """"V10" -> 10. 읽을 수 없으면 0(검사하지 않는다)."""
     m = re.match(r"V(\d+)$", (fw or "").strip(), re.I)
     return int(m.group(1)) if m else 0
 
@@ -189,7 +191,7 @@ class Stage:
         self.dry = bool(dry)
         self.ser = None
         self.banner = ""
-        self.fw_version = ""           # 배너에서 읽은 "V8" / "V9"
+        self.fw_version = ""           # 배너에서 읽은 "V8" / "V9" / "V10"
         self.needs_home = False        # 배너에 "원점없음" 이 있었나
         self.log_path = log_path or os.path.join(paths.OUT_DIR, "serial.log")
         # 주고받은 줄을 그대로 넘겨받을 곳(서버가 화면 로그로 보낸다). 파일 로그는
@@ -207,6 +209,9 @@ class Stage:
         self._dry_homed = {"x": not DRY_NO_HOME, "y": not DRY_NO_HOME,
                            "z": not DRY_NO_HOME}
         self.speed_pps = None          # 아직 펌웨어에 속도를 보낸 적이 없다
+        # dry 의 릴레이·호밍 센서(V10). 전원 투입 때 릴레이는 전부 꺼짐, 센서는 안 닿음.
+        self._dry_relay = [False] * N_RELAY
+        self._dry_home = [False] * N_HOME
 
     # ---- 로그 ----------------------------------------------------------
     def _log(self, arrow, text):
@@ -457,7 +462,7 @@ class Stage:
         """
         self._write("forget")
         if self.dry:
-            # 펌웨어 V9 의 forget 은 세 축을 모두 지운다. 키를 빠뜨리면 다음
+            # 펌웨어 V9·V10 의 forget 은 세 축을 모두 지운다. 키를 빠뜨리면 다음
             # status() 가 KeyError 로 죽어 위치가 통째로 사라진다.
             self._dry_homed = {k: False for k in self._dry_homed}
         else:
@@ -562,6 +567,56 @@ class Stage:
     def reset_abort(self):
         """원점을 다시 잡았으므로 잠금을 푼다."""
         self._aborted = False
+
+    # ---- 릴레이 · 호밍 센서(V10) ----------------------------------------
+    def _read_bits(self, cmd, head, key, n, what):
+        """"RS R1=0 ..." / "HS H1=0 ..." 한 줄을 [bool]*n 으로."""
+        ln = self._collect(LINE_TIMEOUT_S, lambda s: s.startswith(head + " "), what)
+        d = dict(t.split("=", 1) for t in ln.split()[1:] if "=" in t)
+        try:
+            return [d["%s%d" % (key, i + 1)] == "1" for i in range(n)]
+        except KeyError:
+            raise StageError("%s 줄을 해석할 수 없습니다: %s" % (head, ln))
+
+    def relay_set(self, n, on):
+        """릴레이 n(1~10)을 켜거나 끈다. 펌웨어가 돌려주는 RS 상태를 돌려준다.
+
+        비상정지·forget 은 릴레이를 건드리지 않는다(펌웨어 정책과 같다).
+        """
+        self._need_fw(10, "릴레이")
+        n = int(n)
+        if not 1 <= n <= N_RELAY:
+            raise StageError("릴레이 번호는 1~%d: %s" % (N_RELAY, n))
+        cmd = "r %d %d" % (n, 1 if on else 0)
+        self._write(cmd)
+        if self.dry:
+            self._dry_relay[n - 1] = bool(on)
+            return list(self._dry_relay)
+        return self._read_bits(cmd, "RS", "R", N_RELAY, "릴레이")
+
+    def relay_all_off(self):
+        self._need_fw(10, "릴레이")
+        self._write("r all 0")
+        if self.dry:
+            self._dry_relay = [False] * N_RELAY
+            return list(self._dry_relay)
+        return self._read_bits("r all 0", "RS", "R", N_RELAY, "릴레이")
+
+    def relay_status(self):
+        """'rs' -> [bool]*10 (True = 켜짐, 극성과 무관한 논리 상태)."""
+        self._need_fw(10, "릴레이")
+        self._write("rs")
+        if self.dry:
+            return list(self._dry_relay)
+        return self._read_bits("rs", "RS", "R", N_RELAY, "릴레이 상태")
+
+    def homing_status(self):
+        """'hs' -> [bool]*8 (True = 닿음). 이동·원점에는 아직 쓰지 않는다."""
+        self._need_fw(10, "호밍 센서")
+        self._write("hs")
+        if self.dry:
+            return list(self._dry_home)
+        return self._read_bits("hs", "HS", "H", N_HOME, "호밍 센서")
 
     def save(self):
         if self._aborted:

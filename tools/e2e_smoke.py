@@ -199,7 +199,7 @@ async def origin_flow(c):
     """수동 원점 등록(V8). 원점이 없는 상태에서 시작한다."""
     st = c.state["stage"]
     check(not (st["homed_x"] and st["homed_y"]), "원점 없이 시작")
-    check(st["fw"] == "V9", "펌웨어 V9 인식 (%s)" % st["fw"])
+    check(st["fw"] == "V10", "펌웨어 V10 인식 (%s)" % st["fw"])
 
     c.acks.clear()
     await c.send(cmd="jog", axis="x", delta_mm=5)
@@ -1048,11 +1048,34 @@ async def edit_flow(c):
     check(len(man) == 1 and man[0][0] == "17", "results.csv manual 행 #17 (%s)" % man)
 
 
+def dry_io_check():
+    """dry 드라이버의 릴레이·호밍 센서(V10) 흉내. 서버 없이 직접 부른다."""
+    from core import stage as stage_mod
+    print("[릴레이·호밍 (dry)]", flush=True)
+    st = stage_mod.Stage(dry=True, log_path=os.path.join(DATA_DIR, "dry_io.log"))
+    st.open()
+    check(st.fw_version == "V10", "dry 펌웨어 V10 (%s)" % st.fw_version)
+    check(st.relay_status() == [False] * 10, "릴레이 전원 투입 때 전부 꺼짐")
+    r = st.relay_set(3, True)
+    check(r[2] and sum(r) == 1, "r 3 1 → R3 만 켜짐 (%s)" % r)
+    st.abort()
+    st.forget()
+    check(st.relay_status()[2], "비상정지·forget 뒤에도 릴레이 유지")
+    check(st.relay_all_off() == [False] * 10, "r all 0 → 전부 꺼짐")
+    try:
+        st.relay_set(11, True)
+        check(False, "릴레이 11 거부")
+    except stage_mod.StageError:
+        check(True, "릴레이 11 거부")
+    check(st.homing_status() == [False] * 8, "hs → 8개 모두 안 닿음")
+
+
 def main():
     for f in SRC.values():
         if not os.path.exists(f):
             raise SystemExit("검증용 사진이 없습니다: %s" % f)
     img = setup_data()
+    dry_io_check()
     good, glare = img["seq_20260909_150413"], img["seq_20260909_150621"]
     try:
         SLOW = {"WAFER_STAGE_DRY_MOVE_S": "3"}    # dry 이동을 3초로 늘린다

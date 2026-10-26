@@ -173,8 +173,8 @@ async def _stage_connect(data):
     except stagectl.StageError as e:
         await push_log("상태 조회 실패 · " + logger.short(e), "warn")
     state.stage["fw"] = stagectl.ctl.fw_version
-    if stagectl.ctl.fw_version and stagectl.ctl.fw_version != "V9":
-        await push_log("펌웨어 %s · 이 앱은 V9 이 필요합니다"
+    if stagectl.ctl.fw_version and stagectl.ctl.fw_version != "V10":
+        await push_log("펌웨어 %s · 이 앱은 V10 이 필요합니다"
                        % stagectl.ctl.fw_version, "warn")
     _warn_fw_limits(banner)
     if not (state.stage["homed_x"] and state.stage["homed_y"]):

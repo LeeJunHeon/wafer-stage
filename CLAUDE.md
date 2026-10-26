@@ -74,11 +74,14 @@
   capture 가 needs_confirm).
 
 ## 하드웨어 (실측 확정값)
-- 컨트롤러: Arduino Mega 2560 + 자작 펌웨어 V9(firmware/stage_v9). USB 시리얼 115200, 줄끝 \n. COM7.
+- 컨트롤러: Arduino Mega 2560 + 자작 펌웨어 V10(firmware/stage_v10). USB 시리얼 115200, 줄끝 \n. COM7.
 - 드라이버: 모터뱅크 MSD-224 ×4(2상, 1/8분주 = 1600펄스/회전). ENA LOW = 동작
 - 축: X = 모터 2개 동기(갠트리 양측, 논리축 하나) / Y = 빔 위 캐리지 / Z = 모터만 장착(프로브 미장착)
-- 핀: X1 PUL2 DIR31 ENA30 / X2 PUL3 DIR49 ENA48 / Y PUL4 DIR53 ENA52 / Z PUL5 DIR45 ENA44
-  (D5 = PORTE 비트3 → M_Z 0x08)
+- 핀(V10, 드라이버 번호 기준): 드라이버1 ENA39 DIR41 PUL5 / 2 ENA43 DIR45 PUL4 / 3 ENA47 DIR49 PUL3 / 4 ENA51 DIR53 PUL2.
+  축↔드라이버는 .ino 맨 위 배정 블록 AXIS_*_DRV 4줄(임시 X1=4 X2=3 Y=2 Z=1 — 확정 전).
+  PUL 포트·비트는 setup 에서 digitalPinToPort 로 계산·캐시, 같은 포트 축은 한 번의 쓰기로 동시 출력.
+- 릴레이 R1~R10 D22~D40 짝수(RELAY_ACTIVE_LOW 기본 true, 부팅 시 전부 꺼짐, !·forget 은 안 건드림).
+  호밍 센서 H1~H8 D23~D37 홀수(INPUT_PULLUP, LOW=닿음, 5회 연속 같은 값으로 확정). 센서↔위치 미정 — 읽기만.
 - 스케일: 160 펄스 = 1mm. 스트로크 X 0~39620(247.6mm), Y 0~39640(247.8mm). 속도 v6000/a40000/b300 ≈ 37.5 mm/s
 - 가동범위는 두 겹: 펌웨어 X_MAX/Y_MAX/Z_MAX 는 기계 한계, 앱은 settings.json "limits"
   (x_max_mm·y_max_mm·z_max_mm, 기본 247.6·247.8·45)로 실사용 범위를 정한다.
@@ -104,17 +107,18 @@
   id3 (15,20) / id2 (15,160) / id1 (201,19) / id0 (201,160) — settings.json 의 marker_mm_xy 가 단일 출처
 - 캐리지 앞 드라이버 포인터(육안 확인용)
 
-## 아두이노 프로토콜 (V9)
+## 아두이노 프로토콜 (V10 — V9 명령·출력 그대로 + 릴레이·호밍)
 - 원점: `fz x <탐색펄스>` / `fz y` / `z zx zy`(현재 위치=0) / `sp <x> <y>` / `home`
   · 수동: `jx <±펄스>` `jy` `jz` (원점 없어도 움직인다 - 사람이 끝단까지 몰 때)
   · Z: `fz z` / `zz`(현재 위치=0) / `mz <mm>` / `gz <펄스>`
 - 절대 이동: `gx <펄스>` `gy` `gz` `g <x> <y>` / `mx <mm>` `my` `mz`
 - 상태: `p`(사람용) / `st` → `ST X= Y= X2= Z= HX=0|1 HY=0|1 HZ=0|1 DIRTY=0|1`
 - 저장 `save` / 비상정지 `!` / 기타 `v a b w`, `e 0|1`, `forget`
+- 릴레이 `r <1~10> <1|0>` · `r all 0` · `rs` → `RS R1=0 … R10=0` / 호밍 `hs` → `HS H1=0 … H8=0` · `hw`(감시, 아무 입력이면 끝)
 - 이동 완료 보고: `  X  + cmd=16000 out=16000 t=2783.53ms | X=16000 Y=8000 Z=0` → `" | X="` 가 완료 신호
 - 이미 목표면 `  이미 그 위치`(보고 줄 없음) / 거부 `  [거부] ...` / 경고 `[!]`
 - 원점 없으면(HX·HY·HZ=0) fz·j* 외 모든 이동 거부. 이동은 블로킹. save 없이 껐으면 부팅 시 원점없음.
-- EEPROM 매직 POS9. V8 이하로 저장한 기록은 '기록 없음' 으로 읽힌다(형식이 다르다).
+- EEPROM 매직 POSA(V10, 배선 변경으로 새로 잡음 · 형식은 V9 와 같음). V9 이하 기록은 '기록 없음' 으로 읽힌다.
 - 주의: pyserial 의 `timeout` 에 값을 대입할 때마다 포트가 재설정된다 — 매 읽기마다 대입하면 들어오던 응답이 사라진다(core/stage.py `_readline` 주석).
 
 ## 검출 파이프라인 (검증 완료·고정. 순서 바꾸지 말 것)
