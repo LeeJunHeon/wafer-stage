@@ -168,7 +168,15 @@
   // ---------------- 열기/닫기 ----------------
   // show() 다 - showModal() 로 열면 뒤 화면이 inert 가 되어 헤더의 비상정지를
   // 누를 수 없다. 비상정지는 어떤 상황에서도 눌려야 한다.
-  $('btnJog').onclick = () => { if (!dlg.open) dlg.show(); UI.applyJog(UI.state); };
+  $('btnJog').onclick = () => {
+    if (!dlg.open) {
+      dlg.show();
+      // 끝단 이동 거리는 열 때마다 설정의 기본값으로 시작한다.
+      const td = (((UI.state || {}).settings || {}).touch || {}).default_mm;
+      if (td) $('jogPushMm').value = td;
+    }
+    UI.applyJog(UI.state);
+  };
   $('jogClose').onclick = () => dlg.close();
 
   // ---------------- 나머지 버튼 ----------------
@@ -184,6 +192,14 @@
   $('jogPark').onclick = () => UI.send({ cmd: 'park' });
   // 지금 자리를 파킹으로 저장한다(설정에 남는다). fc964d4 에서 이 핸들러가
   // 딸려 나가 버튼이 눌리지 않는 채로 있었다.
+  $('jogSaveCapture').onclick = async () => {
+    const st = (UI.state && UI.state.stage) || {};
+    if (st.x_mm == null || st.y_mm == null) return;
+    const ok = await UI.confirm(
+      '촬영 위치를 X' + UI.fmt(st.x_mm) + ' Y' + UI.fmt(st.y_mm) + ' 로 저장합니다. '
+      + '히트건 · 공구가 웨이퍼를 가리지 않는 자리인지 확인하십시오.', '촬영 위치 저장');
+    if (ok) UI.send({ cmd: 'capture_here' });
+  };
   $('jogSavePark').onclick = async () => {
     const st = (UI.state && UI.state.stage) || {};
     if (st.x_mm == null || st.y_mm == null) return;
@@ -198,7 +214,9 @@
   // 상한은 그 축의 가동범위다(Z 는 훨씬 짧다). 범위는 서버가 state 로 준다.
   const touchMm = (axis) => {
     const lim = (UI.state && UI.state.limits) || {};
-    const top = Math.floor(lim[axis + '_max_mm'] || (axis === 'z' ? 45 : 248));
+    let top = Math.floor(lim[axis + '_max_mm'] || (axis === 'z' ? 45 : 248));
+    const cap = +((((UI.state || {}).settings || {}).touch || {}).max_mm || 0);
+    if (cap > 0) top = Math.min(top, Math.floor(cap));
     const mm = Math.max(1, Math.min(top, Math.round(+$('jogPushMm').value || 10)));
     $('jogPushMm').value = mm;
     return mm;
@@ -209,9 +227,13 @@
 
   // 물러나는 거리(2 mm)는 서버가 정한다 - 마커 좌표가 그 원점 기준으로 실측되어
   // 있어서 화면에서 고를 수 있는 값이 아니다.
+  function gap() {
+    const g = (((UI.state || {}).settings || {}).origin_gap_mm);
+    return g == null ? 2 : g;
+  }
   async function setOrigin(axis) {
     const body = (axis === 'z' ? '위 끝단' : '끝단')
-      + '에서 2 mm 물러난 자리를 ' + axis.toUpperCase()
+      + '에서 ' + gap() + ' mm 물러난 자리를 ' + axis.toUpperCase()
       + ' 의 0' + (axis === 'z' ? '(맨 위)' : '')
       + ' 으로 등록·저장합니다. '
       + (axis === 'z' ? 'Z 가 위 끝단에' : '캐리지가 끝단에')
@@ -235,14 +257,39 @@
     return true;
   };
 
+  // 스텝 선택지는 설정(jog.steps)에서 온다. 바뀌었을 때만 다시 만든다(선택 유지).
+  let stepSig = '';
+  function buildSteps(s) {
+    const steps = ((((s || {}).settings || {}).jog || {}).steps) || [0.1, 1, 10, 50];
+    const sig = JSON.stringify(steps);
+    if (sig === stepSig) return;
+    stepSig = sig;
+    const box = $('jogStep');
+    const cur = step();
+    box.textContent = '';
+    steps.forEach(v => {
+      const inp = document.createElement('input');
+      inp.type = 'radio'; inp.name = 'jogstep'; inp.value = String(v);
+      const lab = document.createElement('label');
+      lab.appendChild(inp);
+      lab.appendChild(document.createTextNode(String(v)));
+      box.appendChild(lab);
+    });
+    const pick = box.querySelector('input[value="' + cur + '"]')
+      || box.querySelector('input[value="1"]') || box.querySelector('input');
+    if (pick) pick.checked = true;
+  }
+
   // ---------------- 상태 ----------------
   UI.applyJog = function (s) {
     const on = UI.online;
     if (!on) UI.jogReset();                // 끊긴 동안 오지 않을 ack 를 기다리지 않는다
     if (!dlg.open) return;
-    const st = (s && s.stage) || {}, q = (s && s.sequence) || {};
-    const running = ['running', 'paused', 'waiting_confirm', 'parking', 'capturing']
-      .indexOf(q.phase) >= 0;
+    const st = (s && s.stage) || {};
+    const running = UI.isRunning(s);
+    buildSteps(s);
+    $('jogOriginNote').textContent = '축마다 ① 끝단으로 밀기 → ② 등록. 0 은 끝단에서 ' + gap()
+      + ' mm 물러난 자리. Z 는 위 끝단이 0';
     // usable = 절대 좌표를 말할 수 있는 상태(원점 있음). 패드는 그보다 넓다.
     const homed = !!(st.homed_x && st.homed_y && !st.needs_home);
     const usable = !!(on && st.connected && homed && !running);
@@ -275,6 +322,7 @@
     ['jogGo', 'jogHome', 'jogPark'].forEach(id => dis(id, !usable));
     dis('jogGx', !usable); dis('jogGy', !usable);
     dis('jogSavePark', !usable);
+    dis('jogSaveCapture', !usable);
     // 지금 위치를 샘플로: 위치를 믿을 수 있고(원점) 이번 촬영 결과가 있고 멈춰 있을 때.
     dis('jogAddHere', !usable || !(s && s.calib) || !!st.moving);
     // 끝단 이동·원점 등록은 원점 유무와 무관하다(그것을 만드는 절차다).

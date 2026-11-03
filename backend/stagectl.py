@@ -21,11 +21,12 @@ from connection import push_log_threadsafe
 def _serial_line(arrow, text):
     """시리얼 원문 한 줄. 워커 스레드에서 불린다.
 
-    2초 폴링(st / ST …)은 양이 많아 화면에서 기본으로 숨긴다. 어떤 줄이 폴링인지는
+    주기 폴링(st / ST … · rs / RS …)은 양이 많아 화면에서 기본으로 숨긴다. 어떤 줄이 폴링인지는
     서버가 판단해 표시만 넘기고, 숨길지 말지는 화면이 정한다(파일에는 전부 남는다).
     """
     t = (text or "").strip()
-    poll = t == "st" or t.startswith("ST ")
+    # rs(릴레이 하트비트)도 폴링이다 - 감시 시간의 1/3 주기로 나간다.
+    poll = t in ("st", "rs") or t.startswith("ST ") or t.startswith("RS ")
     level = "tx" if arrow == "->" else ("rx" if arrow == "<-" else "info")
     push_log_threadsafe("%s %s" % (arrow, t), level, serial=True, poll=poll)
 

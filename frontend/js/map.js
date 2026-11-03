@@ -102,9 +102,11 @@
                                    cy: my(w.center_mm[0]), r: 50 * M.k }));
     }
 
-    // 파킹 위치
+    // 파킹(P) · 촬영(C) 위치
     const p = (s.settings || {}).park_xy || [0, 90];
     g.appendChild(txt('m-park', mx(p[1]) - 4, my(p[0]) - 4, 'P'));
+    const cxy = (s.settings || {}).capture_xy;
+    if (cxy) g.appendChild(txt('m-park', mx(cxy[1]) + 2, my(cxy[0]) + 9, 'C'));
 
     // 샘플
     const q = s.sequence || {};
@@ -131,7 +133,17 @@
       g.appendChild(el('circle', { class: 'm-pointer-ring', cx: x, cy: y, r: 7 }));
       g.appendChild(el('line', { class: 'm-pointer', x1: x - 11, y1: y, x2: x + 11, y2: y }));
       g.appendChild(el('line', { class: 'm-pointer', x1: x, y1: y - 11, x2: x, y2: y + 11 }));
+      // 공구 지점 = 스테이지 좌표(기준 포인터) + 오프셋. 오프셋이 있을 때만 따로 그린다.
+      const t = s.tool || {};
+      const dx = +t.dx_mm || 0, dy = +t.dy_mm || 0;
+      if (dx || dy) {
+        const tx = mx(st.y_mm + dy), ty = my(st.x_mm + dx);
+        g.appendChild(el('line', { class: 'm-tool-link', x1: x, y1: y, x2: tx, y2: ty }));
+        g.appendChild(el('circle', { class: 'm-tool', cx: tx, cy: ty, r: 4.5 }));
+        g.appendChild(el('circle', { class: 'm-tool-c', cx: tx, cy: ty, r: 1.4 }));
+      }
       $('mapPos').textContent = 'X ' + UI.fmt(st.x_mm) + ' Y ' + UI.fmt(st.y_mm)
+        + ((dx || dy) ? ' · ' + (t.name || '공구') + ' X ' + UI.fmt(st.x_mm + dx) + ' Y ' + UI.fmt(st.y_mm + dy) : '')
         + (st.moving ? ' 이동중' : '');
     } else {
       $('mapPos').textContent = UI.EMPTY;

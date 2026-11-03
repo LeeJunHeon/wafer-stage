@@ -6,7 +6,7 @@
    - 다른 js 다음에 로드된다. */
 (function () {
   'use strict';
-  const UI = window.UI, $ = UI.$;
+  const UI = window.UI, $ = UI.$, h = UI.h;
 
   let ws = null, connected = false, reconnectTimer = null;
 
@@ -44,6 +44,11 @@
     }
   }
 
+  const SETTINGS_ACKS = ['settings_schema', 'settings_validate', 'settings_save',
+                         'settings_export', 'settings_import'];
+  const CALIB_ACKS = ['head_calib', 'head_calib_apply', 'calib_marker', 'calib_marker_apply',
+                      'calib_tool', 'calib_tool_heat', 'calib_tool_mark', 'calib_tool_apply'];
+
   function handleAck(msg) {
     if (msg.of === 'run' && !msg.ok) {
       if (msg.reason === 'needs_confirm') UI.confirmRun(msg.needs_confirm || []);
@@ -60,6 +65,12 @@
     if (msg.of === 'sample_add' && msg.ok && msg.no != null) UI.selectNo(msg.no);
     if (msg.of === 'list_ports') fillPorts(msg.ports || []);
     if (msg.of === 'jog' && UI.onJogAck) UI.onJogAck(msg);
+    if (SETTINGS_ACKS.indexOf(msg.of) >= 0 && UI.onSettingsAck) UI.onSettingsAck(msg);
+    if (CALIB_ACKS.indexOf(msg.of) >= 0 && UI.onCalibAck) UI.onCalibAck(msg);
+    if (msg.of === 'photo_home') onPhotoHome(msg);
+    if (msg.of === 'tool_select' && !msg.ok && msg.reason !== 'busy') {
+      UI.alert('공구를 바꾸지 못했습니다.\n' + Object.values(msg.errors || {}).join('\n'), '공구');
+    }
     if (msg.of === 'exit' && msg.ok === false) {
       // 창 X 로 온 종료 요청이 거절됐다. 창은 그대로 두고 이유를 알린다.
       UI.alert(msg.reason === 'busy'
@@ -68,9 +79,28 @@
     }
   }
 
-  // 설정창의 시리얼 포트 목록. 직접 입력도 되므로 <datalist> 로만 붙인다.
+  // 사진 호밍: 확인이 필요하면(차이가 경고보다 크거나 원점 없음) 묻고 적용한다.
+  function onPhotoHome(msg) {
+    if (msg.ok || msg.reason !== 'needs_confirm') return;
+    const m = msg.measured || [], r = msg.recorded;
+    const lines = ['헤드 마커로 잰 위치  X ' + (+m[0]).toFixed(2) + '  Y ' + (+m[1]).toFixed(2) + ' mm'];
+    if (r) {
+      lines.push('기록된 위치        X ' + (+r[0]).toFixed(2) + '  Y ' + (+r[1]).toFixed(2) + ' mm');
+      lines.push('차이 ' + (+msg.d_mm).toFixed(2) + ' mm (경고 오차보다 큼)');
+    } else {
+      lines.push('기록된 원점 없음(원점 복구)');
+    }
+    lines.push('잰 위치로 스테이지 좌표를 맞추고 저장하시겠습니까?');
+    UI.confirm(lines.join('\n'), '사진 호밍', '맞추기').then(ok => {
+      if (ok) UI.send({ cmd: 'photo_home_apply' });
+    });
+  }
+  $('btnPhotoHome').onclick = () => UI.send({ cmd: 'photo_home' });
+
+  // 시리얼 포트 목록(설정의 포트 칸). 직접 입력도 되므로 <datalist> 로만 붙인다.
   function fillPorts(ports) {
     const dl = $('portList');
+    if (!dl) return;
     dl.textContent = '';
     ports.forEach(p => {
       const o = document.createElement('option');
@@ -79,6 +109,27 @@
       dl.appendChild(o);
     });
   }
+
+  // ---------------- 공구 선택 ----------------
+  function openToolPick() {
+    const s = UI.state || {};
+    if (!UI.online || UI.isRunning(s)) return;
+    const box = $('toolPick');
+    box.textContent = '';
+    const tools = (((s.settings || {}).tool || {}).items) || [];
+    const act = (s.tool || {}).name;
+    tools.forEach(t => {
+      box.appendChild(h('button', { cls: 'btn block toolbtn' + (t.name === act ? ' on' : ''),
+        onclick: () => { UI.send({ cmd: 'tool_select', name: t.name }); UI.closeWin($('dlgTool')); } }, [
+        h('b', { text: t.name }),
+        h('span', { cls: 'note', text: 'dX ' + (+t.dx_mm).toFixed(2) + ' · dY ' + (+t.dy_mm).toFixed(2)
+          + ' · 작업 높이 ' + (+t.z_work_mm).toFixed(1) + ' mm' })]));
+    });
+    UI.openWin($('dlgTool'));
+  }
+  $('chipTool').onclick = openToolPick;
+  $('toolClose').onclick = () => UI.closeWin($('dlgTool'));
+  $('toolEdit').onclick = () => { UI.closeWin($('dlgTool')); UI.openSettings('tool'); };
 
   function applyState(s) {
     UI.state = s;
@@ -90,95 +141,15 @@
     UI.applySamples(s);
     UI.applySequence(s);
     UI.applyJog(s);
+    UI.applyRelays(s);
     UI.lock();
-    fillSettings(s.settings || {}, s.data_dir, s);
+    if (UI.applyCalib) UI.applyCalib(s);
   }
 
-  // ---------------- 연결 / 설정 ----------------
+  // ---------------- 연결 ----------------
   $('btnConnect').onclick = () => {
     const st = (UI.state && UI.state.stage) || {};
     UI.send({ cmd: st.connected ? 'stage_disconnect' : 'stage_connect' });
-  };
-
-  const dlg = $('dlgSettings');
-  let settingsOpen = false;
-  function fillSettings(cfg, dataDir, live) {
-    if (settingsOpen) return;             // 편집 중에는 덮어쓰지 않는다
-    live = live || {};
-    $('setData').textContent = dataDir || UI.EMPTY;
-    $('setPort').value = cfg.serial_port || '';
-    $('setCam').value = cfg.camera_index != null ? cfg.camera_index : 1;
-    $('setW').value = cfg.width != null ? cfg.width : 1280;
-    $('setH').value = cfg.height != null ? cfg.height : 720;
-    $('setFourcc').value = (cfg.fourcc || 'MJPG').toUpperCase() === 'YUY2' ? 'YUY2' : 'MJPG';
-    $('setWb').value = cfg.wb_temperature != null ? cfg.wb_temperature : 0;
-    $('setExp').value = cfg.exposure != null ? cfg.exposure : 0;
-    const p = cfg.park_xy || [0, 90];
-    $('setParkX').value = p[0]; $('setParkY').value = p[1];
-    $('setDwell').value = cfg.dwell_s != null ? cfg.dwell_s : 5;
-    $('setDriver').value = (cfg.measure || {}).driver || 'dummy';
-    // 가동범위·Z 측정 깊이. 설정에 없으면 서버가 지금 쓰는 값(state.limits)을 보여 준다.
-    const lim = Object.assign({}, live.limits || {}, cfg.limits || {});
-    $('setLimX').value = lim.x_max_mm != null ? lim.x_max_mm : '';
-    $('setLimY').value = lim.y_max_mm != null ? lim.y_max_mm : '';
-    $('setLimZ').value = lim.z_max_mm != null ? lim.z_max_mm : '';
-    $('setZMeas').value = cfg.z_measure_mm != null ? cfg.z_measure_mm : '';
-    $('setStatSeed').value = cfg.stat_seed != null ? cfg.stat_seed : 25;
-    $('setStatGrow').value = cfg.stat_grow != null ? cfg.stat_grow : 12;
-    const tb = $('setMarkers');
-    tb.textContent = '';
-    // 설정에 marker_mm_xy 가 없으면 표가 비어 값을 넣을 수 없었다. 서버가 지금
-    // 쓰는 기준값(state.marker_mm)으로 채운다 - id 0~3 네 줄이 항상 보인다.
-    const mk = Object.assign({}, live.marker_mm || {}, cfg.marker_mm_xy || {});
-    ['0', '1', '2', '3'].forEach(id => { if (!mk[id]) mk[id] = [0, 0]; });
-    Object.keys(mk).sort().forEach(id => {
-      const tr = document.createElement('tr');
-      const td0 = document.createElement('td'); td0.textContent = id; tr.appendChild(td0);
-      ['0', '1'].forEach(i => {
-        const td = document.createElement('td'); td.className = 'r';
-        const inp = document.createElement('input');
-        inp.type = 'number'; inp.step = '0.1'; inp.value = mk[id][+i];
-        inp.dataset.id = id; inp.dataset.axis = i;
-        inp.className = 'mkin';
-        td.appendChild(inp); tr.appendChild(td);
-      });
-      tb.appendChild(tr);
-    });
-  }
-  $('btnSettings').onclick = () => {
-    settingsOpen = true;
-    UI.send({ cmd: 'list_ports' });      // 열 때마다 최신 목록으로
-    dlg.showModal();
-  };
-  $('btnCloseSettings').onclick = () => { settingsOpen = false; dlg.close(); fillSettings((UI.state || {}).settings || {}, (UI.state || {}).data_dir, UI.state || {}); };
-  $('btnSaveSettings').onclick = () => {
-    const mk = {};
-    document.querySelectorAll('.mkin').forEach(inp => {
-      const id = inp.dataset.id;
-      mk[id] = mk[id] || [0, 0];
-      mk[id][+inp.dataset.axis] = +inp.value;
-    });
-    UI.send({
-      cmd: 'settings_save',
-      serial_port: $('setPort').value.trim() || null,
-      camera_index: +$('setCam').value,
-      width: +$('setW').value || 1280,
-      height: +$('setH').value || 720,
-      fourcc: $('setFourcc').value,
-      wb_temperature: +$('setWb').value || 0,
-      exposure: +$('setExp').value || 0,
-      park_xy: [+$('setParkX').value, +$('setParkY').value],
-      dwell_s: +$('setDwell').value,
-      marker_mm_xy: mk,
-      measure: { driver: $('setDriver').value.trim() || 'dummy' },
-      limits: { x_max_mm: +$('setLimX').value, y_max_mm: +$('setLimY').value,
-                z_max_mm: +$('setLimZ').value },
-      z_measure_mm: +$('setZMeas').value,
-      stat_seed: +$('setStatSeed').value || 25,
-      stat_grow: +$('setStatGrow').value || 12,
-    });
-    settingsOpen = false;
-    dlg.close();
   };
 
   UI.setOnline(false);

@@ -37,13 +37,29 @@
     $('cam').classList.toggle('livemode', live);
     $('live').hidden = !live;
     if (live) {
-      if (!liveTimer) liveTimer = setInterval(tick, 250);
+      if (!liveTimer) liveTimer = setInterval(tick, livePeriod());
       tick();
     } else if (liveTimer) {
       clearInterval(liveTimer);
       liveTimer = null;
     }
     UI.applyCamera(UI.state);
+  }
+
+  // 미리보기 주기는 설정(preview_fps)을 따른다. 바뀌면 타이머를 다시 건다.
+  let curPeriod = 0;
+  function livePeriod() {
+    const fps = +((((UI.state || {}).settings) || {}).preview_fps || 4);
+    curPeriod = Math.round(1000 / Math.max(0.5, Math.min(15, fps)));
+    return curPeriod;
+  }
+  function retime() {
+    if (!liveTimer) return;
+    const want = Math.round(1000 / Math.max(0.5, Math.min(15,
+      +((((UI.state || {}).settings) || {}).preview_fps || 4))));
+    if (want === curPeriod) return;
+    clearInterval(liveTimer);
+    liveTimer = setInterval(tick, livePeriod());
   }
 
   function tick() {
@@ -66,6 +82,7 @@
 
   UI.applyCamera = function (s) {
     if (!s) return;
+    retime();
     // ---- 사진 ----
     const img = $('frame');
     if (s.frame && s.frame.url) {
