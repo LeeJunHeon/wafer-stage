@@ -1170,7 +1170,9 @@ async def _finish(result):
                                   "순회 오류" if result == "error" else "순회 종료")
     except Exception as e:                 # noqa: BLE001
         await push_log("릴레이 정책 적용 실패: %s" % e, "warn")
-    keep_phase = state.sequence.get("phase") if result == "error" else None
+    # 오류 문구는 정리 동안 '순회 후 정리' 로 덮이므로 먼저 받아 둔다.
+    err_msg = state.sequence.get("message") if (result == "error"
+                                                and state.sequence.get("phase") == "error") else None
     _phase("parking", "순회 후 정리")
     await push_state()
     for name, fn, key, only_done in POST_RUN_FLOW:
@@ -1191,7 +1193,7 @@ async def _finish(result):
     if _estopped:
         _phase("stopped", "비상정지 · 원점 설정 필요")
     elif result == "error":
-        _phase("error", state.sequence.get("message") if keep_phase == "error" else "오류 중단")
+        _phase("error", err_msg or "오류 중단")
     elif result == "stopped":
         _phase("stopped", "정지")
         await push_log("순회 정지 (완료 %d개)" % state.sequence["done"], "warn")

@@ -1710,6 +1710,9 @@ def main():
         SLOW = {"WAFER_STAGE_DRY_MOVE_S": "3"}    # dry 이동을 3초로 늘린다
         SYNTH = {"WAFER_STAGE_DRY_CAMERA": "synth"}   # 사진 호밍: 합성 카메라
         BIG_JOG = {"jog": {"max_mm": 1000}}       # 예전 검증의 큰 조그(300 mm)
+        # 순회 중 거절을 보는 케이스: 순회가 검사 도중 끝나지 않게 샘플당 1 s(예전 dwell 1.0)
+        SLOW_RUN = {"recipe": {"items": [dict(FAST_RECIPE, steps=[
+            dict(st, s=1.0) if st["type"] == "wait" else st for st in FAST_RECIPE["steps"]])]}}
         HEAT = {"name": "히트건", "dx_mm": 5.0, "dy_mm": -3.0, "z_work_mm": 10.0, "note": ""}
         POINTER = {"name": "기준 포인터", "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 0.0, "note": ""}
         RELAY_P = {"relay": {"items": relays_patch((1, 2, 3), max_on={1: 1.5}),
@@ -1738,7 +1741,7 @@ def main():
         cases = [
             ("정상 흐름", good, main_flow, None, None),
             ("샘플 편집", good, edit_flow, None, None),
-            ("수동 이동", good, jog_flow, None, BIG_JOG),
+            ("수동 이동", good, jog_flow, None, deep_merge(BIG_JOG, SLOW_RUN)),
             ("비상정지 지연(원점)", good, estop_delay_home_flow, SLOW, None),
             ("비상정지 지연(이동)", good, estop_delay_move_flow, SLOW, None),
             ("수동 원점 등록", good, origin_flow, {"WAFER_STAGE_DRY_NO_HOME": "1"}, None),

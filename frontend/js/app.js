@@ -68,6 +68,8 @@
     if (SETTINGS_ACKS.indexOf(msg.of) >= 0 && UI.onSettingsAck) UI.onSettingsAck(msg);
     if (CALIB_ACKS.indexOf(msg.of) >= 0 && UI.onCalibAck) UI.onCalibAck(msg);
     if (msg.of === 'photo_home') onPhotoHome(msg);
+    // 거절된 릴레이 명령은 state 가 오지 않는다 - 잠가 둔 버튼을 다시 그린다.
+    if (msg.of === 'relay_set' && !msg.ok && UI.state) { UI.applyRelays(UI.state); UI.lock(); }
     if (msg.of === 'tool_select' && !msg.ok && msg.reason !== 'busy') {
       UI.alert('공구를 바꾸지 못했습니다.\n' + Object.values(msg.errors || {}).join('\n'), '공구');
     }

@@ -80,6 +80,8 @@ async def handle_command(data):
                 await push_ack("jog", False, "moving")
             if cmd in SAMPLE_ADD_CMDS:
                 await push_ack("sample_add", False, "moving", no=None)
+            if cmd in ("relay_set", "photo_home"):
+                await push_ack(cmd, False, "moving")
             return
         if cmd in BUSY_BLOCKED and engine.busy():
             await push_log("순회 중 · 명령 무시 (%s)" % cmd, "warn")
