@@ -9,16 +9,25 @@
 
 import asyncio
 import os
+import time
 
 from core import paths
 
 import engine
 import logger
+import photohome
+import recipe as recipe_mod
+import relays
+import settings_schema as schema
 import stagectl
+import storage
 import vision
 from connection import push_ack, push_log, push_state, run_on_loop
 import state as state_mod
 from state import state
+
+# 이 앱이 쓰는 펌웨어. 연결 때 다르면 경고한다(기능별 최소 버전은 드라이버가 따로 본다).
+FW_REQUIRED = "V11"
 
 _shutdown_handler = None
 
@@ -27,18 +36,28 @@ _shutdown_handler = None
 # 여기서 막으면 원점을 영영 못 잡는다(_jog 가 모드별로 따로 검사한다).
 # sample_add_here 는 지금 위치를 샘플로 삼으므로 위치를 믿을 수 있을 때만 받는다.
 MOVE_CMDS = ("park", "goto", "return_origin", "run", "resume", "next",
-             "measure_here", "sample_add_here")
+             "measure_here", "sample_add_here", "head_calib_start")
 # 스테이지가 이미 움직이고 있으면 받지 않는다. 명령이 동시에 실행될 수 있게 된
 # 뒤로는(ws_endpoint 가 태스크로 띄운다) 이 검사가 없으면 두 이동이 겹친다.
 MOVING_BLOCKED = ("park", "goto", "return_origin", "jog", "touch_end",
-                  "set_origin", "capture", "run", "measure_here", "sample_add_here")
+                  "set_origin", "capture", "run", "measure_here", "sample_add_here",
+                  "photo_home", "photo_home_apply", "head_calib_start", "calib_tool_heat",
+                  "relay_set")
 # 순회 중에 받으면 안 되는 명령. 스테이지·카메라·설정을 순회 도중에 건드리면
 # 진행 중인 이동과 충돌한다(정지 뒤에 하면 된다).
-BUSY_BLOCKED = ("park", "goto", "return_origin", "jog", "park_here", "touch_end",
-                "set_origin", "stage_disconnect", "capture", "settings_save",
-                "sample_add", "sample_add_here", "sample_delete", "sample_undo")
+BUSY_BLOCKED = ("park", "goto", "return_origin", "jog", "park_here", "capture_here",
+                "touch_end", "set_origin", "stage_disconnect", "capture", "settings_save",
+                "settings_import", "sample_add", "sample_add_here", "sample_delete",
+                "sample_undo", "tool_select", "recipe_select", "photo_home",
+                "photo_home_apply", "head_calib_start", "head_calib_apply",
+                "calib_marker_record", "calib_marker_apply", "calib_tool_record",
+                "calib_tool_heat", "calib_tool_mark", "calib_tool_apply")
 # 샘플 추가 둘은 결과를 ack{of:"sample_add"} 로 돌려준다(화면이 새 번호를 선택한다).
 SAMPLE_ADD_CMDS = ("sample_add", "sample_add_here")
+# 순회 중 거절을 ack 로도 알려야 하는 명령(화면이 결과를 기다린다)
+ACK_ON_BUSY = {"settings_save": "settings_save", "settings_import": "settings_import",
+               "tool_select": "tool_select", "recipe_select": "recipe_select",
+               "photo_home": "photo_home", "head_calib_start": "head_calib"}
 
 
 def set_shutdown_handler(fn):
@@ -64,6 +83,8 @@ async def handle_command(data):
             return
         if cmd in BUSY_BLOCKED and engine.busy():
             await push_log("순회 중 · 명령 무시 (%s)" % cmd, "warn")
+            if cmd in ACK_ON_BUSY:
+                await push_ack(ACK_ON_BUSY[cmd], False, "busy")
             # 조그는 ack 를 기다렸다 다음 스텝을 보낸다. 거절도 알려 줘야
             # 화면이 '보낸 채로' 멈추지 않는다.
             if cmd == "jog":
@@ -121,8 +142,10 @@ def _on_camera_status(ok, err):
 def start_preview():
     """서버 기동과 함께 미리보기를 켠다(server.lifespan 이 부른다)."""
     vision.holder.on_status = _on_camera_status
+    vision.set_synth_provider(stagectl.ctl.dry_true_xy)
     vision.holder.start(state.params)
     state.camera["preview"] = True
+    photohome.refresh_state()
 
 
 async def _preview_start(_data):
@@ -173,10 +196,12 @@ async def _stage_connect(data):
     except stagectl.StageError as e:
         await push_log("상태 조회 실패 · " + logger.short(e), "warn")
     state.stage["fw"] = stagectl.ctl.fw_version
-    if stagectl.ctl.fw_version and stagectl.ctl.fw_version != "V10":
-        await push_log("펌웨어 %s · 이 앱은 V10 이 필요합니다"
-                       % stagectl.ctl.fw_version, "warn")
+    if stagectl.ctl.fw_version and stagectl.ctl.fw_version != FW_REQUIRED:
+        await push_log("펌웨어 %s · 이 앱은 %s 이 필요합니다"
+                       % (stagectl.ctl.fw_version, FW_REQUIRED), "warn")
     _warn_fw_limits(banner)
+    await _send_profile()
+    await relays.on_connect()
     if not (state.stage["homed_x"] and state.stage["homed_y"]):
         await push_log("원점 없음 · 수동 이동에서 끝단까지 민 뒤 원점 등록", "warn")
     elif not state.stage["dirty"]:
@@ -204,7 +229,19 @@ def _warn_fw_limits(banner):
                          % (ax.upper(), app_mm, fw_mm))
 
 
+async def _send_profile():
+    """가속도·시작 속도를 펌웨어로(연결 직후와 설정 저장 때). 실패는 경고만."""
+    if not stagectl.ctl.connected or state.stage.get("moving"):
+        return
+    try:
+        await stagectl.ctl.set_profile(state.get("motion.accel"), state.get("motion.start_pps"))
+    except stagectl.StageError as e:
+        await push_log("속도 설정 전송 실패 · " + logger.short(e), "warn")
+
+
 async def _stage_disconnect(_data):
+    await relays.apply_policy("exit", "연결 해제")
+    relays.on_disconnect()
     await stagectl.ctl.disconnect()
     # 끊긴 뒤의 위치는 아는 값이 아니다. 마지막 값을 그대로 두면 화면이 '지금
     # 거기 있다' 고 거짓말한다 - 전부 None 으로 내리고 화면은 '—' 를 그린다.
@@ -243,6 +280,10 @@ async def _jog(data):
     except (TypeError, ValueError):
         await push_ack("jog", False, "bad_delta")
         return
+    if abs(delta) > float(state.get("jog.max_mm") or 50.0) + 1e-9:
+        await push_log("조그 한 번 한도 %g mm 초과 (%g)" % (state.get("jog.max_mm"), delta), "warn")
+        await push_ack("jog", False, "over_limit")
+        return
 
     if state.jog_mode(axis) == "rel":
         await engine.jog(axis, delta_mm=delta)
@@ -266,7 +307,7 @@ async def _jog(data):
 async def _set_origin(data):
     """지금 자리를 그 축의 원점으로 등록한다(사람이 끝단까지 몰고 온 뒤).
 
-    0 은 언제나 끝단에서 stagectl.ORIGIN_GAP_MM(2mm) 물러난 자리다. 화면에서
+    0 은 언제나 끝단에서 origin_gap_mm(설정, 고급 · 기본 2mm) 물러난 자리다. 화면에서
     이 거리를 고를 수 없게 한 이유: settings.json 의 마커 좌표가 이 원점을
     기준으로 실측되어 있다. 이격을 빼고 등록하면 하드스톱에 붙은 자리가 0 이
     되어 모든 샘플이 X·Y 로 2mm 씩 모자라게 간다(2026-09-11 실장).
@@ -278,7 +319,7 @@ async def _set_origin(data):
     if axis not in ("x", "y", "z", "xy"):
         await push_log("원점 등록 축이 잘못되었습니다: %s" % axis, "warn")
         return
-    gap = stagectl.ORIGIN_GAP_MM
+    gap = stagectl.origin_gap_mm()
     axes = ["x", "y"] if axis == "xy" else [axis]
     state.stage["moving"] = True
     await push_state()
@@ -323,12 +364,16 @@ async def _touch_end(data):
     if axis not in ("x", "y", "z"):
         await push_log("끝단 이동 축이 잘못되었습니다: %s" % axis, "warn")
         return
+    dflt = float(state.get("touch.default_mm") or 5.0)
     try:
-        mm = float(data.get("mm", 5.0))
+        mm = float(data.get("mm", dflt))
     except (TypeError, ValueError):
-        mm = 5.0
+        mm = dflt
     # Z 는 스트로크가 훨씬 짧다. 0 쪽(Z 는 위)으로 미는 것은 축마다 같다.
     top = stagectl.limits_mm()[axis + "_max_mm"]
+    cap = float(state.get("touch.max_mm") or 0.0)
+    if cap > 0:
+        top = min(top, cap)
     if not (1.0 <= mm <= top):
         await push_log("끝단 이동 거리는 1~%g mm 입니다 (%g)" % (top, mm), "warn")
         return
@@ -358,8 +403,26 @@ async def _park_here(_data):
         await push_log("현재 위치를 모릅니다 · 원점 설정 후 사용하세요", "warn")
         return
     xy = [round(float(x), 1), round(float(y), 1)]
-    state.save_settings({"park_xy": xy})
+    errs = state.save_settings({"park_xy": xy})
+    if errs:
+        await push_log("파킹 위치 저장 안 함 · " + "; ".join(errs.values()), "warn")
+        return
     await push_log("파킹 위치 저장 · X%.1f Y%.1f" % (xy[0], xy[1]), "ok")
+    await push_state()
+
+
+async def _capture_here(_data):
+    """지금 서 있는 자리를 촬영 위치로 저장한다."""
+    x, y = state.stage["x_mm"], state.stage["y_mm"]
+    if x is None or y is None:
+        await push_log("현재 위치를 모릅니다 · 원점 설정 후 사용하세요", "warn")
+        return
+    xy = [round(float(x), 1), round(float(y), 1)]
+    errs = state.save_settings({"capture_xy": xy})
+    if errs:
+        await push_log("촬영 위치 저장 안 함 · " + "; ".join(errs.values()), "warn")
+        return
+    await push_log("촬영 위치 저장 · X%.1f Y%.1f" % (xy[0], xy[1]), "ok")
     await push_state()
 
 
@@ -396,10 +459,8 @@ async def _run(data):
         return
     only = data.get("only")
     only = set(int(n) for n in only) if only else None
-    ok = await engine.start_run(str(data.get("mode") or "auto"),
-                                data.get("dwell_s", state.settings.get("dwell_s", 5)),
-                                only)
-    await push_ack("run", ok, "" if ok else "start_failed")
+    ok, why = await engine.start_run(str(data.get("mode") or "auto"), only)
+    await push_ack("run", ok, "" if ok else "start_failed", why)
 
 
 async def _pause(_data):
@@ -491,51 +552,220 @@ async def _open_results(_data):
         await push_log("열지 못했습니다: %s (%s)" % (target, e), "warn")
 
 
-def _num(v, default):
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return float(default)
+# --------------------------------------------------------------------------
+# 설정 - 스키마 기반(settings_schema). 전부 통과해야 저장한다(부분 저장 없음).
+# --------------------------------------------------------------------------
+# 바뀌면 카메라를 다시 여는 키
+CAMERA_KEYS = ("camera_index", "width", "height", "fourcc", "wb_temperature", "exposure",
+               "auto_exposure", "focus_mode", "autofocus", "focus", "focus_sweep",
+               "focus_step", "focus_settle_s")
+
+
+def _legacy_patch(data):
+    """예전 화면이 보내던 최상위 키(settings_save serial_port=... z_measure_mm=...)."""
+    values = {k: data[k] for k in state_mod.APP_KEYS if k in data}
+    patch = {}
+    if "z_measure_mm" in data:
+        items = [dict(t) for t in state.get("tool.items") or []]
+        for t in items:
+            if t.get("name") == schema.TOOL_HEATGUN:
+                t["z_work_mm"] = data["z_measure_mm"]
+        patch["tool.items"] = items
+    if "dwell_s" in data:
+        rcs = [dict(r, steps=[dict(x) for x in r.get("steps") or []])
+               for r in state.get("recipe.items") or []]
+        for r in rcs:
+            if r.get("name") == recipe_mod.DEFAULT_NAME:
+                for st in r["steps"]:
+                    if st.get("type") == "wait":
+                        st["s"] = data["dwell_s"]
+                        break
+        patch["recipe.items"] = rcs
+    return values, patch
+
+
+def _candidate_from(data):
+    if isinstance(data.get("values"), dict) or isinstance(data.get("patch"), dict):
+        return state.candidate(values=data.get("values"), patch=data.get("patch"))
+    values, patch = _legacy_patch(data)
+    return state.candidate(values=values, patch=patch)
+
+
+async def _settings_schema(_data):
+    await push_ack("settings_schema", True, schema=schema.public_schema(),
+                   values=state.settings, defaults=state_mod.DEFAULT_APP,
+                   data_dir=paths.DATA_DIR, settings_path=paths.SETTINGS_PATH)
+
+
+async def _settings_validate(data):
+    _v, errs, warns = state.check(_candidate_from(data))
+    await push_ack("settings_validate", not errs, "" if not errs else "invalid",
+                   errors=errs, warnings=warns, seq=data.get("seq"))
+
+
+async def _commit_with_effects(v, warns, of):
+    """저장 + 바뀐 값의 즉시 반영(카메라 재개방 · 속도 · 통신 감시 · 로그)."""
+    before = {k: state.settings.get(k) for k in state_mod.APP_KEYS}
+    state.commit(v)
+    after = state.settings
+    changed = [k for k in state_mod.APP_KEYS if before.get(k) != after.get(k)]
+    logger.configure(state.settings)
+    if any(k in changed for k in CAMERA_KEYS) and state.camera.get("preview"):
+        vision.holder.reopen(state.params)
+    else:
+        vision.holder.update_params(state.params)
+    if "motion" in changed:
+        await _send_profile()
+    if "relay" in changed and stagectl.ctl.connected and stagectl.ctl.fw_major() >= 11:
+        await relays.send_watchdog()
+    if "tool" in changed or "limits" in changed:
+        engine.refresh_sample_status()
+    photohome.refresh_state()
+    for w in warns:
+        await push_log("설정 · " + w, "warn")
+    await push_log("설정을 저장했습니다%s" % (" (%d 항목)" % len(changed) if changed else ""),
+                   "ok")
+    await push_ack(of, True, "", errors={}, warnings=warns, changed=changed)
+    await push_state()
 
 
 async def _settings_save(data):
-    patch = {k: data[k] for k in state_mod.APP_KEYS if k in data}
-    # Z 측정 깊이는 Z 가동범위 안이어야 한다(순회 때 그만큼 내린다). 저장하기 전에
-    # 거른다 - 저장 뒤에 걸러 봐야 settings.json 에는 이미 잘못 남는다.
-    lim = patch.get("limits")
-    if not isinstance(lim, dict):
-        lim = {}
-    # 저장 뒤 실제로 쓰일 Z 상한과 비교한다(1~1000 mm 밖의 값은 무시되고 지금 값이 남는다).
-    z_max = _num(lim.get("z_max_mm"), stagectl.z_max_mm())
-    if not (stagectl.stage_mod.LIMIT_MIN_MM <= z_max <= stagectl.stage_mod.LIMIT_MAX_MM):
-        z_max = stagectl.z_max_mm()
-    z_meas = _num(patch.get("z_measure_mm", state.settings.get("z_measure_mm")),
-                  state_mod.DEFAULT_APP["z_measure_mm"])
-    if z_meas > z_max:
-        await push_log("Z 측정 깊이가 가동범위보다 큽니다 (%g > %g mm)"
-                       % (z_meas, z_max), "warn")
-        await push_ack("settings_save", False, "z_measure_over")
+    v, errs, warns = state.check(_candidate_from(data))
+    if errs:
+        first = next(iter(errs.items()))
+        await push_log("설정 저장 안 함 · %s %s" % (first[0], first[1]), "warn")
+        await push_ack("settings_save", False, "invalid", errors=errs, warnings=warns)
         return
-    if "exposure" in patch:
-        # 노출값이 있으면 고정 노출, 0 이면 자동. 끄기만 하고 값을 안 주는 조합은
-        # 마지막 노출에 얼어붙으므로 화면에서는 두 값을 따로 고르지 못하게 한다.
-        patch["auto_exposure"] = _num(patch["exposure"], 0) == 0
-    for k in ("width", "height"):
-        if k in patch:
-            patch[k] = int(_num(patch[k], state_mod.DEFAULT_APP[k]))
-            if patch[k] < 16:
-                patch[k] = state_mod.DEFAULT_APP[k]
-    if "fourcc" in patch:
-        patch["fourcc"] = str(patch["fourcc"] or "MJPG").upper()[:4]
-    cam_before = {k: state.settings.get(k)
-                  for k in ("camera_index", "wb_temperature", "exposure", "auto_exposure",
-                            "width", "height", "fourcc")}
-    state.save_settings(patch)          # 안에서 마커·가동범위를 core 에 반영한다
-    cam_after = {k: state.settings.get(k) for k in cam_before}
-    if cam_after != cam_before and state.camera.get("preview"):
-        vision.holder.reopen(state.params)   # 카메라 번호·화이트밸런스·노출이 바뀌었다
-    await push_log("설정을 저장했습니다 (다음 촬영부터 적용)", "ok")
+    await _commit_with_effects(v, warns, "settings_save")
+
+
+async def _settings_export(_data):
+    out = state.export_settings()
+    path = None
+    try:
+        os.makedirs(paths.SETTINGS_EXPORT_DIR, exist_ok=True)
+        path = os.path.join(paths.SETTINGS_EXPORT_DIR,
+                            "settings_%s.json" % time.strftime("%Y%m%d_%H%M%S"))
+        storage.atomic_write_json(path, out)
+        await push_log("설정 내보내기 · %s" % path, "ok")
+    except OSError as e:
+        await push_log("설정 내보내기 파일 실패 · %s" % e, "warn")
+    await push_ack("settings_export", True, data=out, path=path)
+
+
+async def _settings_import(data):
+    cand = state.import_candidate(data.get("data"))
+    if cand is None:
+        await push_ack("settings_import", False, "bad_format", errors={"": "설정 파일 형식 아님"})
+        return
+    v, errs, warns = state.check(cand)
+    if errs:
+        await push_log("설정 가져오기 안 함 · 검증 오류 %d건" % len(errs), "warn")
+        await push_ack("settings_import", False, "invalid", errors=errs, warnings=warns)
+        return
+    await _commit_with_effects(v, warns, "settings_import")
+
+
+# --------------------------------------------------------------------------
+# 릴레이 · 공구 · 레시피 선택
+# --------------------------------------------------------------------------
+async def _relay_set(data):
+    ok, reason = await relays.set_relay(data.get("n"), bool(data.get("on")),
+                                        busy=engine.busy())
+    await push_ack("relay_set", ok, reason, n=data.get("n"))
+
+
+async def _relay_all_off(_data):
+    # 순회 중에도 받는다(전체 끄기는 언제나 안전한 쪽이다).
+    ok = await relays.all_off("수동")
+    await push_ack("relay_all_off", ok, "" if ok else "not_connected")
+
+
+async def _tool_select(data):
+    name = str(data.get("name") or "")
+    errs = state.save_settings({"tool.active": name})
+    if errs:
+        await push_ack("tool_select", False, "invalid", errors=errs)
+        return
+    engine.refresh_sample_status()
+    t = state.tool()
+    await push_log("공구 '%s' · 오프셋 dX %g dY %g · 작업 높이 %g mm"
+                   % (t["name"], t.get("dx_mm", 0), t.get("dy_mm", 0), t.get("z_work_mm", 0)), "ok")
+    await push_ack("tool_select", True, name=name)
     await push_state()
+
+
+async def _recipe_select(data):
+    name = str(data.get("name") or "")
+    errs = state.save_settings({"recipe.active": name})
+    if errs:
+        await push_ack("recipe_select", False, "invalid", errors=errs)
+        return
+    await push_log("레시피 '%s'" % name, "ok")
+    await push_ack("recipe_select", True, name=name)
+    await push_state()
+
+
+# --------------------------------------------------------------------------
+# 사진 호밍 · 보정
+# --------------------------------------------------------------------------
+async def _photo_home(_data):
+    if not stagectl.ctl.connected:
+        await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
+        await push_ack("photo_home", False, "not_connected")
+        return
+    await photohome.photo_home()
+
+
+async def _photo_home_apply(_data):
+    await photohome.photo_home_apply()
+
+
+async def _head_calib_start(_data):
+    await photohome.head_calib_start()
+
+
+async def _head_calib_apply(_data):
+    await photohome.head_calib_apply()
+
+
+async def _calib_marker_record(data):
+    await photohome.marker_record(data.get("id"))
+
+
+async def _calib_marker_apply(data):
+    await photohome.marker_apply(data.get("id"))
+
+
+async def _calib_tool_record(data):
+    await photohome.tool_record(data.get("which"))
+
+
+async def _calib_tool_heat(data):
+    await photohome.tool_heat_start(data.get("n"), data.get("s"), data.get("z_mm"))
+
+
+async def _calib_tool_mark(data):
+    await photohome.tool_mark(data.get("u"), data.get("v"))
+
+
+async def _calib_tool_apply(data):
+    await photohome.tool_apply(data.get("method"), data.get("tool"))
+
+
+# ---- 검증용(--dry 에서만): 탈조 · 통신 끊김 흉내 ----
+async def _dry_slip(data):
+    if not stagectl.ctl.dry:
+        return
+    stagectl.ctl.dry_slip(float(data.get("dx", 0)), float(data.get("dy", 0)))
+    await push_log("(dry) 탈조 흉내 dX %s dY %s" % (data.get("dx"), data.get("dy")))
+
+
+async def _dry_stall(data):
+    if not stagectl.ctl.dry:
+        return
+    stagectl.ctl.dry_stall(float(data.get("s", 1)))
+    await push_log("(dry) 통신 끊김 흉내 %s s" % data.get("s"))
 
 
 async def _exit(_data):
@@ -558,6 +788,10 @@ async def _exit(_data):
         return
 
     await push_log("종료 · 위치 저장 (스테이지는 움직이지 않음)", "warn")
+    try:
+        await relays.apply_policy("exit", "종료")
+    except Exception as e:                 # noqa: BLE001
+        await push_log("릴레이 끄기 실패 · " + logger.short(e), "warn")
     # 비상정지 상태에서는 저장하지 않는다. 믿을 수 없는 위치를 EEPROM 에 굳히면
     # 다음 전원에서 그 값이 복원된다(원점 기록은 비상정지 때 forget 으로 지웠다).
     if state.stage["connected"] and not engine.estopped():
@@ -586,6 +820,7 @@ _TABLE = {
     "goto": _goto,
     "jog": _jog,
     "park_here": _park_here,
+    "capture_here": _capture_here,
     "return_origin": _return_origin,
     "capture": _capture,
     "sample_add": _sample_add,
@@ -607,5 +842,25 @@ _TABLE = {
     "preview_stop": _preview_stop,
     "list_ports": _list_ports,
     "settings_save": _settings_save,
+    "settings_schema": _settings_schema,
+    "settings_validate": _settings_validate,
+    "settings_export": _settings_export,
+    "settings_import": _settings_import,
+    "relay_set": _relay_set,
+    "relay_all_off": _relay_all_off,
+    "tool_select": _tool_select,
+    "recipe_select": _recipe_select,
+    "photo_home": _photo_home,
+    "photo_home_apply": _photo_home_apply,
+    "head_calib_start": _head_calib_start,
+    "head_calib_apply": _head_calib_apply,
+    "calib_marker_record": _calib_marker_record,
+    "calib_marker_apply": _calib_marker_apply,
+    "calib_tool_record": _calib_tool_record,
+    "calib_tool_heat": _calib_tool_heat,
+    "calib_tool_mark": _calib_tool_mark,
+    "calib_tool_apply": _calib_tool_apply,
+    "dry_slip": _dry_slip,
+    "dry_stall": _dry_stall,
     "exit": _exit,
 }

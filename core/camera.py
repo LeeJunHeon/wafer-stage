@@ -122,6 +122,14 @@ class CameraError(Exception):
     pass
 
 
+def use_autofocus(params):
+    """초점 모드. 설정 focus_mode("auto"|"fixed")가 있으면 그것, 없으면 예전 autofocus."""
+    fm = (params or {}).get("focus_mode")
+    if fm in ("auto", "fixed"):
+        return fm == "auto"
+    return bool((params or {}).get("autofocus", True))
+
+
 class Camera:
     def __init__(self, params):
         self.p = params
@@ -132,7 +140,7 @@ class Camera:
             "requested_fourcc": str(params.get("fourcc", "MJPG")),
             "actual_fourcc": None,
             "requested_size": [int(params.get("width", 1280)), int(params.get("height", 720))],
-            "autofocus": bool(params.get("autofocus", True)),
+            "autofocus": use_autofocus(params),
             "auto_exposure": bool(params.get("auto_exposure", True)),
             "autofocus_off": False,
             "focus": params.get("focus", -1),
@@ -169,6 +177,8 @@ class Camera:
                 self.info["actual_fourcc"] = _fourcc_str(cap.get(cv2.CAP_PROP_FOURCC))
                 self.info["actual_size"] = [int(f.shape[1]), int(f.shape[0])]
                 self.info["actual_fps"] = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+                if not use_autofocus(self.p) and bool(self.p.get("focus_sweep", False)):
+                    self.sweep_focus()
                 return self
             cap.release()
             self.cap = None
@@ -218,7 +228,7 @@ class Camera:
         # 기본은 켜기. AF 를 끄면 렌즈가 '마지막에 있던 자리' 에 그대로 멈춰
         # 모든 프레임이 고르게 흐려지는 사고가 실제로 났다. AF 헌팅은 촬영 때
         # 15프레임 중 가장 선명한 한 장을 고르는 것으로 흡수한다.
-        use_af = bool(self.p.get("autofocus", True))
+        use_af = use_autofocus(self.p)
         cap.set(cv2.CAP_PROP_AUTOFOCUS, 1 if use_af else 0)
         cap.set(cv2.CAP_PROP_AUTO_WB, 0)
         # 자동노출: 끄기만 하고 값을 안 주면 마지막 노출에 얼어붙는다 (초점과 같은 함정).
@@ -302,7 +312,7 @@ class Camera:
         AF 를 껐어도 흔들림/노출 변동이 남아 있으므로 단발 촬영에서도 필요하다.
         """
         n = int(n or self.p.get("capture_frames", 15))
-        if wait_af and self.p.get("autofocus", True):
+        if wait_af and use_autofocus(self.p):
             self.wait_autofocus()
         frames, scores = [], []
         for _ in range(n):
@@ -387,7 +397,7 @@ class Camera:
             manual = []
         settle = float(self.p.get("bracket_settle_s", BRACKET_SETTLE_S) or 0)
 
-        if self.p.get("autofocus", True):
+        if use_autofocus(self.p):
             self.wait_autofocus()
         frames, means, exposures, shots, notes = [], [], [], [], []
         self._set_auto_exposure(False)
@@ -451,6 +461,30 @@ class Camera:
         stats["bracket_frames"] = list(frames)     # 장별 원본(진단용 저장)
         stats["chosen_focus_score"] = focus_score(fused)
         return fused, stats
+
+    def sweep_focus(self):
+        """고정 초점 모드의 스윕: 굵은 간격으로 훑고, 최고점 주변을 1/4 간격으로 다시
+        훑어 가장 선명한 초점값으로 고정한다(focus_step · focus_settle_s)."""
+        step = max(1, int(self.p.get("focus_step", 15)))
+        settle = float(self.p.get("focus_settle_s", 0.35))
+
+        def score_at(f):
+            self.cap.set(cv2.CAP_PROP_FOCUS, f)
+            time.sleep(settle)
+            for _ in range(2):
+                self.read()                # 렌즈가 움직이는 동안의 옛 장
+            return focus_score(self.read())
+
+        coarse = {f: score_at(f) for f in range(0, 256, step)}
+        best = max(coarse, key=coarse.get)
+        fine_step = max(1, step // 4)
+        fine = {f: score_at(f) for f in range(max(0, best - step),
+                                              min(255, best + step) + 1, fine_step)}
+        fine[best] = coarse[best]
+        best = max(fine, key=fine.get)
+        self.cap.set(cv2.CAP_PROP_FOCUS, best)
+        self.info["focus_swept"] = int(best)
+        return best
 
     def wait_autofocus(self, progress=None):
         """AF 가 수렴할 때까지 기다린다.

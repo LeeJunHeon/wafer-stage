@@ -1,10 +1,21 @@
-"""engine.py - 촬영·검출과 샘플 순회 (run_sequence.py 의 흐름을 asyncio 로).
+"""engine.py - 촬영·검출과 샘플 순회(레시피 실행).
 
 원칙
   - 좌표는 '그 프레임' 의 마커로 다시 보정해서 낸다(calib.sense). 마커가 모자라면
     좌표를 만들지 않고 멈춘다 - 틀린 좌표로 움직이는 것보다 낫다.
   - 펌웨어 [거부]·타임아웃·시리얼 오류는 즉시 중단한다(다음 샘플로 넘어가지 않는다).
-  - 어떻게 끝나든(완료·정지·오류) 파킹 → save 를 시도한다.
+  - 흐름은 설정이 조합한다(CAPTURE_FLOW · POST_RUN_FLOW). 순서를 코드에 박지 않는다.
+  - 샘플마다 할 일은 레시피(recipe.py)가 정한다. 엔진은 단계를 차례로 실행만 한다.
+
+안전 불변식(레시피와 무관하게 엔진이 강제한다)
+  - X·Y 를 움직이기 전에는 항상 Z 를 맨 위(0)로 올린다(Z 원점이 있을 때).
+  - Z 원점이 없으면 z 단계를 실행하지 않는다(그런 레시피는 순회 시작부터 거절).
+  - 비상정지는 아무것도 움직이지 않고 save 도 하지 않는다. 릴레이 정책만 적용한다.
+
+좌표 정의
+  스테이지 좌표 P 는 '기준 포인터가 가리키는 점' 이다. 공구 끝(히트건은 가열 중심)은
+  P + (dx, dy) 를 가리킨다. 샘플 S 를 공구로 겨냥하려면 P = S − (dx, dy) 로 보낸다.
+  가동범위 검사는 P 로 한다(state.stage_target).
 """
 
 import asyncio
@@ -17,6 +28,8 @@ from core import calib, flat, imgio, paths
 
 import logger
 import measure as measure_mod
+import recipe as recipe_mod
+import relays
 import stagectl
 import storage
 import vision
@@ -24,22 +37,28 @@ from connection import push_ack, push_log, push_state
 from state import state
 
 _task = None                      # 진행 중인 순회 태스크
-_next_evt = None                  # confirm 모드에서 '다음' 을 기다리는 이벤트
+_job = None                       # 순회 밖의 긴 작업(헤드 보정 · 공구 가열) 태스크
+_next_evt = None                  # confirm 단계에서 '다음' 을 기다리는 이벤트
 _pause_evt = None                 # 일시정지 해제 이벤트(set = 진행)
 _stop = False                     # 정지 요청
-_stop_evt = None                  # 정지·비상정지 시 set (대기(dwell)를 즉시 끊는다)
+_stop_evt = None                  # 정지·비상정지 시 set (대기·확인을 즉시 끊는다)
 _estopped = False                 # 비상정지 상태(원점을 다시 잡을 때까지 유지)
 _measurer = None
 
-# 이동이 끝나고 이만큼 조용하면 위치를 EEPROM 에 굳힌다. USB 가 빠져 보드가
-# 리셋되면(DTR) 마지막 save 이후의 위치는 사라진다 - 실제로 원점을 잃었다.
-SAVE_DEBOUNCE_S = 3.0
 _last_move_at = 0.0
 _save_done = True
 
 
+class StepError(Exception):
+    """단계를 실행할 수 없다(Z 원점 없음 · 릴레이 거절 · 위치 재확인 실패 등)."""
+
+
+class Stopped(Exception):
+    """정지 요청으로 단계가 끊겼다."""
+
+
 def mark_moved():
-    """이동이 하나 끝났다. 조용해지면 저장한다(디바운스)."""
+    """이동이 하나 끝났다. 조용해지면 저장한다(디바운스, 설정 autosave_s)."""
     global _last_move_at, _save_done
     _last_move_at = time.monotonic()
     _save_done = False
@@ -48,14 +67,14 @@ def mark_moved():
 async def autosave_tick():
     """loops 가 1초마다 부른다. 조건이 맞을 때 한 번만 save 를 보낸다.
 
-    비상정지 상태에서는 보내지 않는다(믿을 수 없는 위치를 굳히면 다음 전원에서
-    그 틀린 값을 '복원' 한다). 결과는 파일 로그에만 남긴다 - 화면 로그를
-    자동 저장으로 채우지 않는다.
+    USB 가 빠져 보드가 리셋되면(DTR) 마지막 save 이후의 위치는 사라진다 - 실제로
+    원점을 잃었다. 비상정지 상태에서는 보내지 않는다(믿을 수 없는 위치를 굳히면 다음
+    전원에서 그 틀린 값을 '복원' 한다). 결과는 파일 로그에만 남긴다.
     """
     global _save_done
     if _save_done or not _last_move_at:
         return
-    if time.monotonic() - _last_move_at < SAVE_DEBOUNCE_S:
+    if time.monotonic() - _last_move_at < float(state.get("autosave_s") or 3.0):
         return
     if _estopped or state.stage.get("moving") or not stagectl.ctl.connected:
         return
@@ -71,12 +90,35 @@ async def autosave_tick():
 
 
 def busy():
-    return _task is not None and not _task.done()
+    """순회 또는 긴 작업(보정·가열)이 도는 중인가."""
+    return ((_task is not None and not _task.done())
+            or (_job is not None and not _job.done()))
+
+
+def run_job(kind, coro):
+    """순회 밖의 긴 작업을 태스크로 띄운다(헤드 보정 · 공구 가열). 하나만."""
+    global _job, _stop, _stop_evt
+    _stop = False
+    _stop_evt = asyncio.Event()
+    state.job.update({"kind": kind, "running": True, "i": 0, "n": 0, "message": ""})
+
+    async def _wrap():
+        try:
+            await coro
+        finally:
+            state.job["running"] = False
+            await push_state()
+    _job = asyncio.create_task(_wrap())
+    return _job
+
+
+def stopping():
+    return _stop or _estopped
 
 
 def _progress(message):
     """순회 중 진행 문구. 일시정지 요청이 들어와 있으면 phase 를 running 으로
-    되돌리지 않는다 - 진행 중인 샘플을 마치는 동안 화면이 '순회 중' 으로 보이면
+    되돌리지 않는다 - 진행 중인 단계를 마치는 동안 화면이 '순회 중' 으로 보이면
     사용자는 일시정지가 먹지 않은 줄 안다."""
     paused = _pause_evt is not None and not _pause_evt.is_set()
     _phase("paused" if paused else "running", message)
@@ -90,8 +132,47 @@ def _phase(phase, message=None, **kw):
 
 
 # --------------------------------------------------------------------------
-# 촬영 + 검출
+# 촬영 + 검출 - 흐름은 설정이 조합한다
 # --------------------------------------------------------------------------
+async def _cap_lift_z():
+    if stagectl.ctl.connected and state.stage["homed_z"]:
+        await lift_z()
+    return True
+
+
+async def _cap_goto():
+    # 캐리지·히트건이 시야에 있으면 웨이퍼를 가린다. 원점이 있으면 촬영 위치로.
+    if not stagectl.ctl.connected or state.can_move() is not None:
+        return True
+    px, py = state.capture_xy()
+    if (state.stage["x_mm"] is None or abs(state.stage["x_mm"] - px) > 0.05
+            or abs(state.stage["y_mm"] - py) > 0.05):
+        await push_log("촬영 위치로 X%.1f Y%.1f" % (px, py))
+        await _goto(px, py, no="capture")
+    return True
+
+
+async def _cap_photo_check():
+    if not stagectl.ctl.connected:
+        return True
+    import photohome
+    await photohome.check(auto=True)
+    return True                            # 확인 결과와 무관하게 촬영은 한다(검출 좌표는 판 마커 기준)
+
+
+async def _cap_shoot():
+    return await _shoot_detect()
+
+
+# (이름, 켜고 끄는 설정 키 | None=항상)
+CAPTURE_FLOW = [
+    ("lift_z", _cap_lift_z, "flow.capture_lift_z"),
+    ("goto_capture", _cap_goto, "flow.capture_goto"),
+    ("photo_check", _cap_photo_check, "photohome.before_capture"),
+    ("shoot", _cap_shoot, None),
+]
+
+
 async def capture():
     if busy():
         await push_log("순회 중에는 촬영할 수 없습니다", "warn")
@@ -100,15 +181,28 @@ async def capture():
     _phase("capturing", "촬영")
     await push_state()
     try:
-        # 캐리지가 시야에 있으면 웨이퍼를 가린다. 연결돼 있으면 파킹부터.
-        if stagectl.ctl.connected and state.can_move() is None:
-            px, py = state.park_xy()
-            if (state.stage["x_mm"] is None
-                    or abs(state.stage["x_mm"] - px) > 0.05
-                    or abs(state.stage["y_mm"] - py) > 0.05):
-                await push_log("촬영 전 파킹 X%.1f Y%.1f" % (px, py))
-                await _goto(px, py, no="park")
+        ok = True
+        for _name, fn, key in CAPTURE_FLOW:
+            if key and not state.get(key):
+                continue
+            ok = await fn()
+            if ok is False:
+                break
+        return ok
+    except stagectl.StageError as e:
+        one = logger.short(e)
+        state.stage["last_error"] = one
+        _phase("error", "촬영 전 이동 실패 · " + one)
+        logger.write("err", "촬영 전 이동 실패 상세: %s" % e)
+        await push_log("촬영 전 이동 실패 · " + one, "err")
+        return False
+    finally:
+        state.camera["capturing"] = False
+        await push_state()
 
+
+async def _shoot_detect():
+    try:
         bgr, meta, res, stats = await vision.capture(state.params)
         state.camera["ok"] = True
         state.camera["last_error"] = ""
@@ -117,19 +211,23 @@ async def capture():
             await push_log("촬영 완료 · %d프레임 중 선명도 %.0f"
                            % (stats.get("frames_grabbed", 0),
                               stats.get("chosen_focus_score", 0)))
+        if isinstance(stats, dict) and stats.get("retries"):
+            await push_log("촬영 재시도 %d회 · 프레임 끊김 복구" % stats["retries"], "warn")
         await _log_capture_diag(stats.get("diag") if isinstance(stats, dict) else None)
         if res is None:
             state.samples = []
             _clear_edits()
             state.calib = state.sensing = state.wafer = None
             state.markers = {}
-            _phase("error", "마커 부족(3개 미만) · 좌표 생성 불가")
-            await push_log("마커 3개 미만 · 좌표를 만들지 않습니다", "err")
+            need = int(state.get("calib.min_markers") or 3)
+            _phase("error", "판 마커 부족(%d개 미만) · 좌표 생성 불가" % need)
+            await push_log("판 마커 %d개 미만 · 좌표를 만들지 않습니다" % need, "err")
             return False
         _apply_sense(res)
         d = await vision.run_blocking(_save_seq, stats.get("raw", bgr), res,
                                       stats.get("images") or {})
         state.sequence["out_dir"] = d
+        state.sequence["used"] = False      # 새 촬영 - 아직 순회에 쓰지 않았다
         _edit_ctx["dir"] = d                # 이번 촬영의 편집본(samples_edit.json) 자리
         _phase("ready", "검출 %d · 대기" % len(state.samples),
                done=0, total=len(state.samples), cur_no=None, elapsed_s=0)
@@ -144,9 +242,6 @@ async def capture():
         logger.write("err", "촬영 실패 상세: %s: %s" % (type(e).__name__, e))
         await push_log("촬영 실패 · " + one, "err")
         return False
-    finally:
-        state.camera["capturing"] = False
-        await push_state()
 
 
 async def _log_capture_diag(diag):
@@ -179,6 +274,19 @@ async def _log_capture_diag(diag):
                            "편광 필터가 필요합니다" % ws, "warn")
         else:
             await push_log("웨이퍼 포화 %.1f%%" % ws)
+
+
+def target_in_range(sx, sy):
+    """샘플 S 를 활성 공구로 겨냥할 때 스테이지 자리 P 가 가동범위 안인가."""
+    px, py = state.stage_target(sx, sy)
+    return calib.in_range(px, py)
+
+
+def refresh_sample_status():
+    """공구(오프셋)가 바뀌면 가동범위 밖(skip) 판정을 다시 한다. 대기·제외만 바꾼다."""
+    for s in state.samples:
+        if s["status"] in ("wait", "skip"):
+            s["status"] = "wait" if target_in_range(s["X"], s["Y"]) else "skip"
 
 
 def _apply_sense(res):
@@ -228,7 +336,7 @@ def _apply_sense(res):
             "X": round(float(X), 2), "Y": round(float(Y), 2),
             "verts": [[int(a), int(b)] for a, b in (s.get("vertices_px") or [])],
             "on": bool(old_on.get(s["no"], True)),
-            "status": "wait" if calib.in_range(X, Y) else "skip",
+            "status": "wait" if target_in_range(X, Y) else "skip",
             "value": None, "unit": None,
             "edge_completed": bool(s.get("edge_completed")),
             "edge_only": bool(s.get("edge_only")),
@@ -266,6 +374,7 @@ def _save_seq(bgr, res, images=None):
 # 이동
 # --------------------------------------------------------------------------
 async def _goto(x_mm, y_mm, no=None):
+    """X·Y 이동 한 번(검사 없음). Z 상승은 부르는 쪽(goto_xy · 단계)이 먼저 한다."""
     # 성공한 이동은 옛 오류 문구를 지운다(배너에 지난 오류가 남지 않게).
     state.stage["last_error"] = ""
     state.stage["moving"] = True
@@ -321,15 +430,26 @@ def _last_cal():
     return calib.load_matrix()
 
 
+def current_cal():
+    """이번 촬영의 보정(없으면 None). 촬영본 클릭 → mm 변환에 쓴다."""
+    return _CAL_CACHE["d"]
+
+
 async def goto_sample(no):
+    """선택 샘플 이동. 활성 공구 오프셋을 적용한다(P = S − d)."""
     s = state.sample(no)
     if s is None:
         await push_log("#%s 는 이번 검출에 없습니다" % no, "warn")
         return False
-    return await goto_xy(s["X"], s["Y"], no=no)
+    px, py = state.stage_target(s["X"], s["Y"])
+    t = state.tool()
+    if t.get("dx_mm") or t.get("dy_mm"):
+        await push_log("#%s · %s 오프셋 → 스테이지 X%.1f Y%.1f" % (no, t["name"], px, py))
+    return await goto_xy(px, py, no=no)
 
 
 async def goto_xy(x_mm, y_mm, no=None):
+    """X·Y 절대 이동. 불변식대로 Z 를 먼저 맨 위로 올린다."""
     why = state.can_move()
     if why:
         await push_log(why, "warn")
@@ -339,6 +459,7 @@ async def goto_xy(x_mm, y_mm, no=None):
                        % (x_mm, y_mm, calib.range_text()), "warn")
         return False
     try:
+        await lift_z()
         await _goto(x_mm, y_mm, no=no)
         await push_log("이동 완료 X%.1f Y%.1f%s"
                        % (x_mm, y_mm, "" if no is None else " (#%s)" % no), "ok")
@@ -361,14 +482,14 @@ async def jog(axis, target_mm=None, delta_mm=None):
     못 움직이게 하면 사람이 캐리지를 끝단까지 몰고 갈 방법이 없다.
 
     이미 이동 중이면 거절한다 - 조그를 큐에 쌓으면 손을 뗀 뒤에도 계속 움직인다.
+    조그는 Z 를 올리지 않는다 - 공구 끝을 표시점에 맞출 때 Z 를 내린 채 조금씩 민다.
     """
     rel = delta_mm is not None
     ax = str(axis).lower()
     if ax not in ("x", "y", "z"):
         await push_ack("jog", False, "bad_axis")
         return False
-    # Z 는 X·Y 원점 잠금과 무관하다 - 아직 X·Y 와 인터록이 없는 독립 축이다
-    # (인터록은 프로브를 단 뒤에 넣는다). 연결만 있으면 움직인다.
+    # Z 는 X·Y 원점 잠금과 무관하다 - 연결만 있으면 움직인다.
     if rel or ax == "z":
         if not stagectl.ctl.connected:
             await push_log("스테이지 미연결 · 연결 후 사용하세요", "warn")
@@ -389,12 +510,12 @@ async def jog(axis, target_mm=None, delta_mm=None):
     await push_state()
     try:
         if rel:
-            # 속도는 드라이버가 맞춘다(jog_rel 은 JOG_SLOW_PPS, 절대 이동은 기본값).
+            # 속도는 드라이버가 맞춘다(jog_rel 은 원점 없을 때 조그 속도).
             report = await stagectl.ctl.jog_rel(ax, amount)
         else:
             mover = {"x": stagectl.ctl.move_x, "y": stagectl.ctl.move_y,
                      "z": stagectl.ctl.move_z}[ax]
-            report = await mover(amount)
+            report = await mover(amount, stagectl.stage_mod.JOG_PPS)
         storage.append_jsonl(paths.SEQ_LOG_PATH, {
             "time": time.strftime("%Y-%m-%d %H:%M:%S"), "sample_no": "jog",
             "mode": "rel" if rel else "abs", "axis": ax, "amount_mm": round(amount, 2),
@@ -416,14 +537,11 @@ async def jog(axis, target_mm=None, delta_mm=None):
 
 
 async def lift_z():
-    """X·Y 를 움직이기 전에 Z 를 맨 위(0)로 올린다.
+    """X·Y 를 움직이기 전에 Z 를 맨 위(0)로 올린다(안전 불변식).
 
-    Z 가 내려가 있는 채로 X·Y 가 움직이면 프로브가 시료를 긁는다. 지금은 Z 에
-    아무것도 달려 있지 않지만, 올리는 것은 어느 상황에서도 안전한 쪽이라 미리
-    이 순서를 고정해 둔다.
-
-    Z 원점이 없으면 0 이 어디인지 모르므로 경고만 남기고 X·Y 는 그대로 간다.
-    프로브를 단 뒤에는 이 경우를 거절(인터록)로 바꾼다.
+    Z 가 내려가 있는 채로 X·Y 가 움직이면 히트건·프로브가 시료를 긁는다.
+    Z 원점이 없으면 0 이 어디인지 모르므로 경고만 남기고 X·Y 는 그대로 간다
+    (z 단계가 있는 레시피는 순회 시작에서 이미 거절한다).
     이동 실패(비상정지 포함)는 그대로 던진다 - 호출자가 X·Y 를 보내면 안 된다.
     """
     if not state.stage["homed_z"]:
@@ -431,29 +549,26 @@ async def lift_z():
         return False
     if state.stage["z_mm"] in (0, 0.0):
         return True                        # 이미 맨 위다
+    await move_z(0.0)
+    await push_log("Z 맨 위로", "ok")
+    return True
+
+
+async def move_z(z_mm):
+    """Z 절대 이동(원점·범위 검사는 부르는 쪽)."""
     state.stage["moving"] = True
     await push_state()
     try:
-        await stagectl.ctl.move_z(0)
+        await stagectl.ctl.move_z(z_mm)
         _apply_status(await stagectl.ctl.status())
         mark_moved()
     finally:
         state.stage["moving"] = False
         await push_state()
-    await push_log("Z 맨 위로", "ok")
-    return True
 
 
 async def park():
     px, py = state.park_xy()
-    try:
-        await lift_z()
-    except stagectl.StageError as e:
-        state.stage["last_error"] = logger.short(e)
-        logger.write("err", "파킹 전 Z 상승 실패 상세: %s" % e)
-        await push_log("Z 상승 실패 · " + logger.short(e), "err")
-        await push_state()
-        return False
     return await goto_xy(px, py, no="park")
 
 
@@ -462,14 +577,6 @@ async def return_origin():
     why = state.can_move()
     if why:
         await push_log(why, "warn")
-        return False
-    try:
-        await lift_z()
-    except stagectl.StageError as e:
-        state.stage["last_error"] = logger.short(e)
-        logger.write("err", "원점 복귀 중 Z 상승 실패 상세: %s" % e)
-        await push_log("Z 상승 실패 · " + logger.short(e), "err")
-        await push_state()
         return False
     await push_log("원점 복귀 · Z0 → X0 Y0")
     return await goto_xy(0.0, 0.0, no="home")
@@ -547,7 +654,7 @@ def _add_now(u, v, X, Y):
         "X": round(float(X), 2), "Y": round(float(Y), 2),
         "verts": [],
         "on": True,
-        "status": "wait" if calib.in_range(X, Y) else "skip",
+        "status": "wait" if target_in_range(X, Y) else "skip",
         "value": None, "unit": None,
         "edge_completed": False, "edge_only": False, "weak": False,
         "strength": None, "area_mm2": None,
@@ -563,7 +670,7 @@ def _check_new(u, v, X, Y):
     """추가 전 검사. 거절이면 (reason, 화면 문구), 통과면 None."""
     if not _in_rect(u, v):
         return "outside", "감지영역 밖 · 추가 안 함"
-    if not calib.in_range(X, Y):
+    if not target_in_range(X, Y):
         return "out_of_range", "가동범위 밖 · 추가 안 함"
     hit = _overlap(u, v, X, Y)
     if hit is not None:
@@ -709,21 +816,47 @@ def needs_confirm():
             if pct >= 50.0:
                 out.append("반사광 %.0f%% · 조명 확산 필요" % pct)
     c = state.calib or {}
-    if c.get("missing_ids"):
+    if c.get("missing_ids") and state.get("calib.confirm_3markers", True):
         out.append("마커 id%s 미검출 · %d점 보정(오차 ≈1 mm)"
                    % (",".join(str(i) for i in c["missing_ids"]), c.get("corners", 0)))
     return out
 
 
-async def start_run(mode="auto", dwell_s=None, only=None):
+def run_refusal(rc=None):
+    """순회를 시작할 수 없는 사유 목록(레시피·Z 원점·새 촬영)."""
+    rc = rc or state.recipe()
+    out = []
+    v, errs, _w = state.check(state.candidate())
+    prefix = None
+    for i, r in enumerate(state.get("recipe.items") or []):
+        if r is rc:
+            prefix = "recipe.items[%d]" % i
+    bad = [m for k, m in errs.items() if prefix and k.startswith(prefix)]
+    if bad:
+        out.append("레시피 '%s' 오류 · %s" % (rc.get("name"), bad[0]))
+    if recipe_mod.uses_z(rc) and not state.stage.get("homed_z"):
+        out.append("Z 원점 없음 · Z 단계가 있는 레시피는 시작 안 함")
+    if state.get("flow.require_fresh_capture") and state.sequence.get("used"):
+        out.append("새 촬영 필요 · 이 촬영으로 이미 순회함")
+    return out
+
+
+async def start_run(mode="auto", only=None):
+    """(ok, 사유 목록)."""
     global _task, _next_evt, _pause_evt, _stop, _stop_evt, _measurer
     if busy():
         await push_log("이미 순회 중입니다", "warn")
-        return False
+        return False, ["이미 순회 중"]
     why = state.can_move()
     if why:
         await push_log(why, "warn")
-        return False
+        return False, [why]
+    rc = state.recipe()
+    bad = run_refusal(rc)
+    if bad:
+        for b in bad:
+            await push_log(b, "warn")
+        return False, bad
     if state.sequence.get("phase") == "done":
         # 같은 검출로 한 바퀴 더 돈다. 가동범위 밖(skip)은 그대로 두고 나머지만
         # 되돌린다(다시 촬영하지 않았으므로 좌표는 그대로다).
@@ -732,116 +865,298 @@ async def start_run(mode="auto", dwell_s=None, only=None):
                 s["status"] = "wait"
                 s["value"] = None
                 s["unit"] = None
+    refresh_sample_status()
     todo = [s for s in state.samples
             if s.get("on") and s["status"] not in ("done", "skip")
             and (not only or s["no"] in only)]
     if not todo:
         await push_log("순회할 샘플이 없습니다 (측정 대상 체크를 확인하세요)", "warn")
-        return False
+        return False, ["순회할 샘플 없음"]
     _stop = False
     _next_evt = asyncio.Event()
     _stop_evt = asyncio.Event()
     _pause_evt = asyncio.Event()
     _pause_evt.set()
     _measurer = measure_mod.make(state.settings)
-    state.sequence.update({"mode": mode, "dwell_s": float(dwell_s or 0), "done": 0,
-                           "total": len(todo), "elapsed_s": 0})
-    _task = asyncio.create_task(_run_loop(todo))
-    return True
+    steps = [dict(st) for st in rc.get("steps") or []]
+    if mode == "confirm":
+        steps.append({"type": "confirm"})    # 확인 모드 = 샘플마다 끝에 확인 대기
+    tool = state.tool()
+    state.sequence.update({
+        "mode": mode, "done": 0, "total": len(todo), "elapsed_s": 0,
+        "recipe": rc.get("name"), "tool": tool.get("name"),
+        "steps": [recipe_mod.describe(st, state.settings) for st in steps],
+        "step_total": len(steps), "step_index": None, "step_desc": "", "step_left_s": None,
+        "used": True})
+    _task = asyncio.create_task(_run_loop(todo, steps, rc.get("name"), tool))
+    return True, []
 
 
-async def _run_loop(todo):
+def _steps_log(rec):
+    d = state.sequence.get("out_dir")
+    if d:
+        storage.append_jsonl(os.path.join(d, "steps.jsonl"), rec)
+
+
+def _ts():
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def _pause_point():
+    """단계 사이에서 일시정지를 받는다."""
+    if _pause_evt is not None and not _pause_evt.is_set():
+        _phase("paused", "일시정지")
+        await push_state()
+        await _pause_evt.wait()
+    if _stop:
+        raise Stopped()
+
+
+# ---- 단계 실행기 (recipe.STEP_TYPES 와 짝) --------------------------------
+async def _run_move_sample(step, s, ctx):
+    px, py = state.stage_target(s["X"], s["Y"])
+    if not calib.in_range(px, py):
+        raise StepError("#%s 스테이지 자리 X%.1f Y%.1f 가 가동범위 밖" % (s["no"], px, py))
+    s["status"] = "moving"
+    await push_state()
+    await lift_z()                         # 불변식: X·Y 이동 전에 Z 를 맨 위로
+    await _goto(px, py, no=s["no"])
+    if state.get("photohome.after_move"):
+        import photohome
+        ok, msg = await photohome.verify_at(px, py)
+        if not ok:
+            if state.get("photohome.after_move_fail") == "continue":
+                await push_log("#%s 위치 재확인 실패 · 계속 (%s)" % (s["no"], msg), "warn")
+            else:
+                raise StepError("#%s 위치 재확인 실패 · %s" % (s["no"], msg))
+    return {"stage_xy": [round(px, 2), round(py, 2)], "sample_xy": [s["X"], s["Y"]]}
+
+
+async def _run_z(step, s, ctx):
+    if not state.stage.get("homed_z"):
+        raise StepError("Z 원점 없음 · Z 단계 실행 안 함")
+    z = recipe_mod.z_target_mm(step, ctx["values"])
+    zmax = stagectl.z_max_mm()
+    if z is None or z < 0 or z > zmax + 1e-9:
+        raise StepError("Z %s mm · 가동범위 0~%g 밖" % (z, zmax))
+    if state.stage.get("z_mm") is not None and abs(state.stage["z_mm"] - z) < 0.005:
+        return {"z_mm": z}
+    await move_z(z)
+    return {"z_mm": z}
+
+
+async def _run_relay(step, s, ctx):
+    ok, reason = await relays.set_relay(step.get("n"), bool(step.get("on")), by_engine=True)
+    if not ok:
+        raise StepError("R%s %s 실패 (%s)" % (step.get("n"), "켜기" if step.get("on") else "끄기",
+                                            reason))
+    return {"n": step.get("n"), "on": bool(step.get("on"))}
+
+
+async def _run_wait(step, s, ctx):
+    """대기. 정지는 즉시 끊고, 일시정지는 남은 시간을 멈춘다."""
+    left = float(step.get("s") or 0)
+    last_push = 0.0
+    while left > 0:
+        if _stop:
+            raise Stopped()
+        if _pause_evt is not None and not _pause_evt.is_set():
+            state.sequence["step_left_s"] = round(left, 1)
+            _phase("paused", "일시정지 · 대기 남은 %.0f s" % left)
+            await push_state()
+            await _pause_evt.wait()        # 시간은 흐르지 않는다
+            if _stop:
+                raise Stopped()
+            _progress(ctx["desc"])
+        dt = min(0.1, left)
+        try:
+            await asyncio.wait_for(_stop_evt.wait(), timeout=dt)
+        except asyncio.TimeoutError:
+            pass
+        left -= dt
+        state.sequence["step_left_s"] = round(max(0.0, left), 1)
+        if time.monotonic() - last_push >= 0.5:
+            last_push = time.monotonic()
+            await push_state()
+    if _stop:
+        raise Stopped()
+    return {}
+
+
+async def _run_measure(step, s, ctx):
+    s["status"] = "measuring"
+    await push_state()
+    try:
+        r = await _measurer.measure(dict(s), {"out_dir": state.sequence["out_dir"],
+                                              "params": state.params})
+    except Exception as e:                 # noqa: BLE001
+        r = None
+        await push_log("측정 오류(#%s): %s" % (s["no"], e), "warn")
+    if r:
+        s["value"] = r.get("value")
+        s["unit"] = r.get("unit")
+    return {"value": s.get("value"), "unit": s.get("unit")}
+
+
+async def _run_confirm(step, s, ctx):
+    _phase("waiting_confirm", "#%s 확인 대기" % s["no"])
+    await push_state()
+    _next_evt.clear()
+    await _next_evt.wait()
+    if _stop:
+        raise Stopped()
+    _progress("#%s 확인 완료" % s["no"])
+    return {}
+
+
+RUNNERS = {
+    "move_sample": _run_move_sample,
+    "z": _run_z,
+    "relay": _run_relay,
+    "wait": _run_wait,
+    "measure": _run_measure,
+    "confirm": _run_confirm,
+}
+
+
+async def _run_loop(todo, steps, recipe_name, tool):
     global _stop
     t0 = time.monotonic()
     mode = state.sequence["mode"]
-    dwell = float(state.sequence["dwell_s"])
     _phase("running", "순회 시작 · %d" % len(todo))
-    await push_log("순회 시작: %d개 · 모드 %s · 대기 %.1f초" % (len(todo), mode, dwell), "ok")
+    await push_log("순회 시작: %d개 · 레시피 '%s' · 공구 '%s' · 모드 %s"
+                   % (len(todo), recipe_name, tool.get("name"), mode), "ok")
+    _steps_log({"time": _ts(), "event": "run_start", "recipe": recipe_name,
+                "tool": tool.get("name"), "tool_offset": [tool.get("dx_mm"), tool.get("dy_mm")],
+                "mode": mode, "samples": [s["no"] for s in todo],
+                "steps": [dict(x) for x in steps]})
+    storage.append_jsonl(paths.SEQ_LOG_PATH, {
+        "time": _ts(), "event": "run_start", "recipe": recipe_name,
+        "tool": tool.get("name"), "samples": len(todo)})
     await push_state()
-    ok = True
+    result = "done"
+    values = state.settings
     try:
         for s in todo:
             if _stop:
+                result = "stopped"
                 break
-            await _pause_evt.wait()
-            if _stop:
-                break
+            await _pause_point()
             state.sequence["elapsed_s"] = int(time.monotonic() - t0)
-            if not calib.in_range(s["X"], s["Y"]):
-                s["status"] = "skip"
-                await push_log("#%s 건너뜀 · 가동범위 밖" % s["no"], "warn")
-                await push_state()
-                continue
             state.sequence["cur_no"] = s["no"]
-            s["status"] = "moving"
-            _progress("#%s 이동" % s["no"])
-            await push_state()
-            try:
-                await _goto(s["X"], s["Y"], no=s["no"])
-            except stagectl.StageError as e:
-                s["status"] = "error"
-                state.stage["last_error"] = logger.short(e)
-                logger.write("err", "이동 실패 상세(#%s): %s" % (s["no"], e))
-                if _estopped:
-                    # 비상정지가 만든 오류다. phase 는 estop() 이 세운 stopped 를
-                    # 유지한다 - 사용자가 누른 정지를 '오류' 로 바꾸지 않는다.
-                    await push_log("비상정지로 이동 중단 (#%s)" % s["no"], "warn")
-                else:
-                    _phase("error", "이동 실패 · " + logger.short(e))
-                    await push_log("이동 실패로 순회 중단 · " + logger.short(e), "err")
-                ok = False
-                break
-            await push_log("#%s 도착 X%.1f Y%.1f" % (s["no"], s["X"], s["Y"]))
-
-            s["status"] = "measuring"
-            _progress("#%s 측정" % s["no"])
-            await push_state()
-            try:
-                r = await _measurer.measure(dict(s), {"out_dir": state.sequence["out_dir"],
-                                                      "params": state.params})
-            except Exception as e:         # noqa: BLE001
-                r = None
-                await push_log("측정 오류(#%s): %s" % (s["no"], e), "warn")
-            if r:
-                s["value"] = r.get("value")
-                s["unit"] = r.get("unit")
-
-            if mode == "confirm":
-                _phase("waiting_confirm", "#%s 확인 대기" % s["no"])
+            for i, step in enumerate(steps):
+                await _pause_point()
+                desc = recipe_mod.describe(step, values)
+                label = "#%s · %d/%d · %s" % (s["no"], i + 1, len(steps), desc)
+                state.sequence.update({"step_index": i, "step_desc": label,
+                                       "step_left_s": None})
+                _progress(label)
                 await push_state()
-                _next_evt.clear()
-                await _next_evt.wait()
-                if _stop:
-                    s["status"] = "wait"
-                    break
-                _progress("#%s 확인 완료" % s["no"])
-            elif dwell > 0:
-                # 정지·비상정지가 대기를 즉시 끊는다(5초를 기다린 뒤 멈추지 않는다).
+                t_start = _ts()
+                ctx = {"values": values, "desc": label, "index": i}
                 try:
-                    await asyncio.wait_for(_stop_evt.wait(), timeout=dwell)
-                except asyncio.TimeoutError:
-                    pass
-
+                    res = await RUNNERS[step["type"]](step, s, ctx)
+                    _steps_log({"time_start": t_start, "time_end": _ts(), "sample_no": s["no"],
+                                "step": i + 1, "type": step["type"], "desc": desc,
+                                "result": "ok", "detail": res or {}})
+                except Stopped:
+                    _steps_log({"time_start": t_start, "time_end": _ts(), "sample_no": s["no"],
+                                "step": i + 1, "type": step["type"], "desc": desc,
+                                "result": "stopped"})
+                    raise
+                except (StepError, stagectl.StageError) as e:
+                    _steps_log({"time_start": t_start, "time_end": _ts(), "sample_no": s["no"],
+                                "step": i + 1, "type": step["type"], "desc": desc,
+                                "result": "error", "detail": {"error": str(e)}})
+                    raise
             s["status"] = "done"
             state.sequence["done"] += 1
             state.sequence["elapsed_s"] = int(time.monotonic() - t0)
             await push_state()
+    except Stopped:
+        result = "stopped"
+        for s in todo:
+            if s["status"] in ("moving", "measuring"):
+                s["status"] = "wait"
+    except (StepError, stagectl.StageError) as e:
+        result = "error"
+        cur = state.sample(state.sequence.get("cur_no"))
+        if cur is not None:
+            cur["status"] = "error"
+        one = logger.short(e)
+        if _estopped:
+            # 비상정지가 만든 오류다. phase 는 estop() 이 세운 stopped 를 유지한다.
+            await push_log("비상정지로 단계 중단 (#%s)" % state.sequence.get("cur_no"), "warn")
+        else:
+            state.stage["last_error"] = one if isinstance(e, stagectl.StageError) else ""
+            logger.write("err", "순회 단계 실패 상세: %s" % e)
+            _phase("error", "순회 중단 · " + one)
+            await push_log("순회 중단 · " + one, "err")
     except asyncio.CancelledError:
-        ok = False
+        result = "error"
         raise
     finally:
         state.sequence["elapsed_s"] = int(time.monotonic() - t0)
         state.sequence["cur_no"] = None
-        await _finish(ok)
+        state.sequence["step_index"] = None
+        state.sequence["step_left_s"] = None
+        _steps_log({"time": _ts(), "event": "run_end", "result":
+                    "estop" if _estopped else result, "done": state.sequence["done"]})
+        await _finish(result)
 
 
-async def _finish(ok):
-    """정상·정지·오류면 파킹 → save 를 시도한다.
+# ---- 끝난 뒤 흐름 - 설정이 조합한다 ----------------------------------------
+async def _post_lift():
+    if state.stage.get("homed_z"):
+        await lift_z()
 
-    비상정지는 예외다. 파킹은 '또 움직이는 것' 이고 save 는 믿을 수 없는 위치를
-    EEPROM 에 굳히는 것이라, 둘 다 하지 않는다.
+
+async def _post_after_photo():
+    """순회 후 확인 촬영: 촬영 위치로 가서 한 장 더 찍어 같은 폴더에 after.png."""
+    d = state.sequence.get("out_dir")
+    if not d:
+        return
+    px, py = state.capture_xy()
+    await _goto(px, py, no="after_photo")
+    bgr = await vision.single_shot(state.params)
+    await vision.run_blocking(imgio.imwrite_u, os.path.join(d, "after.png"), bgr)
+    await push_log("확인 촬영 · after.png", "ok")
+
+
+async def _post_goto():
+    dest = state.get("after_run") or "park"
+    if dest == "stay":
+        return
+    if dest == "capture":
+        x, y = state.capture_xy()
+    elif dest == "origin":
+        x, y = 0.0, 0.0
+    else:
+        x, y = state.park_xy()
+    await _goto(x, y, no=dest)
+
+
+async def _post_save():
+    for ln in await stagectl.ctl.save():
+        if str(ln).strip():
+            await push_log("펌웨어: %s" % str(ln).strip())
+
+
+# (이름, 함수, 켜는 설정 키 | None, 정상 완료에서만?)
+POST_RUN_FLOW = [
+    ("lift_z", _post_lift, None, False),
+    ("after_photo", _post_after_photo, "flow.after_photo", True),
+    ("after_run", _post_goto, None, False),
+    ("save", _post_save, None, False),
+]
+
+
+async def _finish(result):
+    """정상·정지·오류: 릴레이 정책 → Z 맨 위 → 확인 촬영 → 순회 후 갈 곳 → save.
+
+    비상정지는 예외다. 이동은 '또 움직이는 것' 이고 save 는 믿을 수 없는 위치를
+    EEPROM 에 굳히는 것이라, 둘 다 하지 않는다(릴레이 정책은 estop() 이 이미 적용).
     """
-    stopped = _stop
     if _estopped:
         try:
             _write_results()
@@ -850,26 +1165,34 @@ async def _finish(ok):
         _phase("stopped", "비상정지 · 원점 설정 필요")
         await push_state()
         return
-    _phase("parking", "파킹")
+    try:
+        await relays.apply_policy("error" if result == "error" else "stop",
+                                  "순회 오류" if result == "error" else "순회 종료")
+    except Exception as e:                 # noqa: BLE001
+        await push_log("릴레이 정책 적용 실패: %s" % e, "warn")
+    keep_phase = state.sequence.get("phase") if result == "error" else None
+    _phase("parking", "순회 후 정리")
     await push_state()
-    try:
-        px, py = state.park_xy()
-        await _goto(px, py, no="park")
-    except Exception as e:                 # noqa: BLE001
-        await push_log("파킹 실패: %s" % e, "warn")
-    try:
-        for ln in await stagectl.ctl.save():
-            if ln.strip():
-                await push_log("펌웨어: %s" % ln.strip())
-    except Exception as e:                 # noqa: BLE001
-        await push_log("save 실패: %s" % e, "warn")
+    for name, fn, key, only_done in POST_RUN_FLOW:
+        if key and not state.get(key):
+            continue
+        if only_done and result != "done":
+            continue
+        if _estopped:
+            break
+        try:
+            await fn()
+        except Exception as e:             # noqa: BLE001
+            await push_log("순회 후 %s 실패: %s" % (name, logger.short(e)), "warn")
     try:
         _write_results()
     except Exception as e:                 # noqa: BLE001
         await push_log("results.csv 저장 실패: %s" % e, "warn")
-    if not ok:
-        _phase("error", "오류 중단")
-    elif stopped:
+    if _estopped:
+        _phase("stopped", "비상정지 · 원점 설정 필요")
+    elif result == "error":
+        _phase("error", state.sequence.get("message") if keep_phase == "error" else "오류 중단")
+    elif result == "stopped":
         _phase("stopped", "정지")
         await push_log("순회 정지 (완료 %d개)" % state.sequence["done"], "warn")
     else:
@@ -896,17 +1219,17 @@ def _write_results():
 
 
 async def pause():
-    if _pause_evt is not None:
+    if _pause_evt is not None and busy():
         _pause_evt.clear()
         _phase("paused", "일시정지")
-        await push_log("일시정지", "warn")
+        await push_log("일시정지 · 단계 사이에서 멈춤", "warn")
         await push_state()
 
 
 async def resume():
     if _pause_evt is not None:
         _pause_evt.set()
-        _phase("running", "재개")
+        _phase("running", state.sequence.get("step_desc") or "재개")
         await push_log("재개")
         await push_state()
 
@@ -917,6 +1240,7 @@ async def next_step():
 
 
 async def stop():
+    """정지: 지금 단계를 즉시 끊는다(대기·확인). 진행 중인 이동 한 번은 끝까지 간다."""
     global _stop
     _stop = True
     if _stop_evt is not None:
@@ -925,7 +1249,7 @@ async def stop():
         _pause_evt.set()
     if _next_evt is not None:
         _next_evt.set()
-    await push_log("정지 요청 · 현재 이동 후 파킹", "warn")
+    await push_log("정지 요청 · 지금 단계를 끊고 정리", "warn")
 
 
 _last_estop_at = 0.0
@@ -933,11 +1257,14 @@ ESTOP_DEDUP_S = 2.0                # 이 안에 다시 오면 중단만 하고 �
 
 
 async def estop():
-    """확인 없이 즉시. 파킹도 save 도 하지 않는다.
+    """확인 없이 즉시. 이동도 save 도 하지 않는다. 릴레이 정책만 적용한다.
+
+    "!" 가 맨 먼저 나간다(동기 코드, await 이전). 정책이 '끄기' 면 같은 쓰기에
+    "r all 0" 을 붙인다 - 비상정지 자체는 늦어지지 않는다.
 
     태스크를 cancel 하지 않는다 - 진행 중이던 이동은 펌웨어 보고 줄의 "[!] 중단"
     으로 StageError 가 되어 순회 루프가 스스로 빠져나온다. cancel 하면 finally
-    가 파킹까지 실행해 '비상정지 직후 다시 움직이는' 일이 벌어진다.
+    가 이동까지 실행해 '비상정지 직후 다시 움직이는' 일이 벌어진다.
 
     화면은 WebSocket 과 HTTP 두 경로로 보낸다(둘 중 하나가 막혀도 도착하게).
     그래서 같은 누름이 두 번 들어오는데, 중단은 두 번 해도 무해하지만 로그와
@@ -948,7 +1275,8 @@ async def estop():
     dup = _estopped and (time.monotonic() - _last_estop_at) < ESTOP_DEDUP_S
     _estopped = True
     _last_estop_at = time.monotonic()
-    ok = stagectl.ctl.abort()
+    off = relays.policy_off("estop") and relays.supported()
+    ok = stagectl.ctl.abort(relays_off=off)
     if dup:
         return
     state.stage["needs_home"] = True       # 원점을 다시 잡기 전까지 이동 잠금
@@ -960,9 +1288,10 @@ async def estop():
         _next_evt.set()
     state.stage["moving"] = False
     _phase("stopped", "비상정지 · 원점 설정 필요")
-    await push_log("비상정지 · 펌웨어 중단 명령 전송%s" % ("" if ok else " (실패)"),
+    await push_log("비상정지 · 펌웨어 중단 명령 전송%s%s"
+                   % (" · 릴레이 전부 끄기" if off else "", "" if ok else " (실패)"),
                    "err" if not ok else "warn")
-    await push_log("정지 후 위치 신뢰 불가 · 원점 등록을 다시 하세요", "warn")
+    await push_log("정지 후 위치 신뢰 불가 · 원점 등록 또는 사진 호밍", "warn")
     await push_state()
     # 펌웨어의 원점 기록도 지운다. 그대로 두면 다음 부팅에서 EEPROM 의 '원점OK'
     # 가 복원되어, 믿을 수 없는 좌표를 가진 채 절대 모드로 켜진다(2026-09-11).
@@ -973,6 +1302,7 @@ async def estop():
             await push_log("원점 기록 삭제 · 두 축 원점 등록 필요", "warn")
         except Exception as e:         # noqa: BLE001
             await push_log("원점 기록 삭제 실패 · " + logger.short(e), "warn")
+        await relays.sync()
         await push_state()
 
 
@@ -981,7 +1311,7 @@ def estopped():
 
 
 def reset_estop():
-    """원점을 다시 잡았다 - 잠금을 푼다(commands 의 원점 등록이 부른다).
+    """원점을 다시 잡았다 - 잠금을 푼다(원점 등록 · 사진 호밍이 부른다).
 
     비상정지로 멈춰 있던 화면도 함께 정리한다. 이동이 다시 되는데 phase 가
     stopped/error 로 남아 있으면 사용자는 아직 잠긴 줄 안다.

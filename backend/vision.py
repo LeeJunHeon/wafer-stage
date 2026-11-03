@@ -6,13 +6,23 @@
 
 미리보기:
   카메라 장치는 한 번에 한 곳만 열 수 있다. 그래서 CameraHolder 가 객체 하나를
-  들고 lock 으로 나눠 쓴다 - 미리보기 스레드가 4fps 로 읽고, 촬영은 같은 객체로
+  들고 lock 으로 나눠 쓴다 - 미리보기 스레드가 설정 주기(preview_fps)로 읽고, 촬영은 같은 객체로
   lock 안에서 capture_best() 를 부른다. 촬영 때마다 닫았다 다시 열면 노출·초점이
   매번 처음부터 잡혀 첫 장이 흐리고, 재개방 자체가 1~2초 걸린다.
+
+끊김 복구(카메라 USB 케이블이 불안정하다):
+  미리보기는 연속 실패 cam_fail_limit 번이면 닫고 cam_reopen_s 뒤 다시 연다(실패가
+  이어지면 두 배씩, 최대 cam_reopen_max_s). 촬영은 실패하면 닫고 다시 열어
+  capture_retries 번까지 다시 찍는다.
+
+검증용 합성 카메라(WAFER_STAGE_DRY_CAMERA=synth, --dry 와 함께):
+  single_shot() 이 카메라 대신 tools/synth_cam.py 로 그린 프레임을 준다. dry 스테이지의
+  실제 위치를 가짜 호모그래피로 투영해 헤드 마커를 그린다(사진 호밍 검증).
 """
 
 import asyncio
 import io
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -31,14 +41,29 @@ _frame = {"id": None, "jpg": b"", "w": 0, "h": 0, "ts": 0.0}
 
 IMAGE_OVERRIDE = None          # --image 로 준 파일. 있으면 카메라 대신 이 파일을 쓴다
 
-PREVIEW_FPS = 4.0
+# 미리보기 그림 크기·화질(화면 표시용 고정값 - 운용 값이 아니다).
 PREVIEW_W = 640
 PREVIEW_H = 360
 PREVIEW_Q = 70
-# 카메라를 못 열면 5초 → 10 → 20 → 30초로 늘려 가며 다시 시도한다. 장비 없이
-# 띄워 두는 일이 흔한데(개발·점검) 5초마다 열기를 반복하면 그 자체가 부하다.
-RETRY_STEPS_S = (5.0, 10.0, 20.0, 30.0)
-FAIL_LIMIT = 3                 # 이만큼 연속 실패해야 카메라를 닫는다
+# 주기·실패 허용·재개방 대기는 설정(preview_fps · cam_fail_limit · cam_reopen_s ·
+# cam_reopen_max_s)에서 매 루프 읽는다. 카메라를 못 열면 대기를 두 배씩 늘린다 -
+# 장비 없이 띄워 두는 일이 흔한데 몇 초마다 열기를 반복하면 그 자체가 부하다.
+
+SYNTH = os.environ.get("WAFER_STAGE_DRY_CAMERA", "").lower() == "synth"
+_synth_provider = None         # fn() -> (x, y) dry 스테이지 실제 위치 mm 또는 None
+
+
+def set_synth_provider(fn):
+    global _synth_provider
+    _synth_provider = fn
+
+
+def _p(params, key, default):
+    try:
+        v = (params or {}).get(key, default)
+        return default if v is None else v
+    except AttributeError:
+        return default
 
 
 def set_image_override(path):
@@ -73,6 +98,7 @@ class CameraHolder:
         self._reopen = threading.Event()
         self.on_status = None              # fn(ok: bool|None, error: str)
         self._last_status = None
+        self.last_size = None              # 마지막으로 받은 프레임 (w, h)
 
     # ---- 상태 ----
     def _status(self, ok, err=""):
@@ -114,6 +140,10 @@ class CameraHolder:
         self.params = dict(params or {})
         self._reopen.set()
 
+    def update_params(self, params):
+        """다시 열 필요 없는 값(미리보기 주기·실패 허용 등)만 바뀌었다."""
+        self.params = dict(params or {})
+
     # ---- 미리보기 ----
     @property
     def running(self):
@@ -154,17 +184,17 @@ class CameraHolder:
             self._jpg_ts = time.time()
 
     def _loop(self):
-        """grab() 은 쉬지 않고, 인코딩은 PREVIEW_FPS 로.
+        """grab() 은 쉬지 않고, 인코딩은 설정 주기(preview_fps)로.
 
         grab() 은 카메라가 다음 프레임을 낼 때까지 블록하므로 이 루프의 속도는
         장치 fps 가 정한다(바쁜 대기가 아니다). 드라이버 큐를 계속 비워 두기
         때문에 250ms 마다 꺼내는 그림이 '지금 장면' 이다.
         """
-        period = 1.0 / PREVIEW_FPS
         next_shot = 0.0
         fails = 0
-        retry_i = 0                        # RETRY_STEPS_S 의 어디까지 늘렸나
+        retry_i = 0                        # 재개방 대기를 몇 번 두 배로 늘렸나
         while not self._stop.is_set():
+            period = 1.0 / max(0.1, float(_p(self.params, "preview_fps", 4.0)))
             # --image 모드는 카메라를 열지 않는다. 그 사진을 미리보기로 낸다.
             if IMAGE_OVERRIDE:
                 if not self._jpg:
@@ -195,6 +225,7 @@ class CameraHolder:
                     if bgr is None:
                         raise camera.CameraError("프레임을 읽지 못함")
                     self._encode(bgr)
+                    self.last_size = (int(bgr.shape[1]), int(bgr.shape[0]))
                     next_shot = time.monotonic() + period
                 fails = 0
                 retry_i = 0
@@ -202,7 +233,7 @@ class CameraHolder:
             except Exception as e:         # noqa: BLE001
                 # 한 장 빠지는 것은 흔하다. 연달아 실패할 때만 장치를 다시 연다.
                 fails += 1
-                if fails < FAIL_LIMIT and self.cam is not None:
+                if fails < int(_p(self.params, "cam_fail_limit", 3)) and self.cam is not None:
                     self._stop.wait(period)
                     continue
                 # 실패가 이어지면 장치를 닫고 한동안 쉬었다가 다시 연다.
@@ -211,32 +242,47 @@ class CameraHolder:
                 self._jpg = b""
                 fails = 0
                 self._status(False, str(e).splitlines()[0] if str(e) else type(e).__name__)
-                wait_s = RETRY_STEPS_S[min(retry_i, len(RETRY_STEPS_S) - 1)]
+                base = float(_p(self.params, "cam_reopen_s", 5.0))
+                top = float(_p(self.params, "cam_reopen_max_s", 30.0))
+                wait_s = min(top, base * (2 ** min(retry_i, 10)))
                 retry_i += 1
                 self._stop.wait(wait_s)
 
     # ---- 촬영 ----
+    def _retrying(self, params, fn):
+        """촬영 한 번. 프레임이 끊기면 장치를 닫고 다시 열어 capture_retries 번까지 다시.
+
+        USB 케이블이 불안정해 촬영 도중 프레임이 끊긴다. 깨진 장치를 그대로 두면
+        다음 촬영도 실패하므로 닫고 연다. stats["retries"] 에 다시 찍은 횟수.
+        """
+        self.params = dict(params or {})
+        tries = 1 + max(0, int(_p(self.params, "capture_retries", 2)))
+        wait_s = min(2.0, float(_p(self.params, "cam_reopen_s", 5.0)))
+        last = None
+        for i in range(tries):
+            with self.lock:
+                try:
+                    cam = self._open_locked()
+                    img, st = fn(cam)
+                    self.last_size = (int(img.shape[1]), int(img.shape[0]))
+                    if isinstance(st, dict):
+                        st["retries"] = i
+                    return img, st
+                except Exception as e:     # noqa: BLE001
+                    last = e
+                    self._close_locked()   # 촬영이 깨진 장치는 다시 연다
+                    logger.write("warn", "촬영 실패 %d/%d · %s" % (i + 1, tries, e))
+            if i + 1 < tries:
+                time.sleep(wait_s)
+        raise last
+
     def capture_best(self, params):
         """미리보기와 같은 카메라 객체로 한 장. 미리보기가 꺼져 있으면 여기서 연다."""
-        self.params = dict(params or {})
-        with self.lock:
-            cam = self._open_locked()
-            try:
-                return cam.capture_best()
-            except Exception:
-                self._close_locked()       # 촬영이 깨진 장치는 다음에 다시 연다
-                raise
+        return self._retrying(params, lambda cam: cam.capture_best())
 
     def capture_bracket(self, params):
         """노출 브라케팅 촬영(camera.capture_bracket). 미리보기와 같은 객체·lock."""
-        self.params = dict(params or {})
-        with self.lock:
-            cam = self._open_locked()
-            try:
-                return cam.capture_bracket()
-            except Exception:
-                self._close_locked()
-                raise
+        return self._retrying(params, lambda cam: cam.capture_bracket())
 
 
 holder = CameraHolder()
@@ -325,6 +371,45 @@ def _capture_sync(params):
     stats["diag"] = diag
     stats["raw"] = raw
     return det_img, meta, res, stats
+
+
+def _single_sync(params):
+    """한 장(브라케팅·검출 없음). 사진 호밍·헤드 보정·확인 촬영용.
+
+    합성 카메라가 켜져 있으면 그것, --image 면 그 파일, 아니면 카메라(재시도 포함).
+    """
+    if SYNTH:
+        import importlib
+        import sys as _sys
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        tools = os.path.join(root, "tools")
+        if tools not in _sys.path:
+            _sys.path.insert(0, tools)
+        synth_cam = importlib.import_module("synth_cam")
+        xy = _synth_provider() if _synth_provider else None
+        return synth_cam.render(params, xy)
+    if IMAGE_OVERRIDE:
+        bgr = imgio.imread_u(IMAGE_OVERRIDE)
+        if bgr is None:
+            raise IOError("이미지를 열 수 없습니다: %s" % IMAGE_OVERRIDE)
+        return bgr
+    img, _st = holder.capture_best(dict(params, capture_frames=min(
+        5, int(_p(params, "capture_frames", 15)))))
+    return img
+
+
+async def single_shot(params):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_ex, _single_sync, params)
+
+
+def camera_size(params):
+    """지금 카메라가 내는 크기 (w, h). 받은 적이 없으면 요청값."""
+    if SYNTH:
+        return (int(_p(params, "width", 1280)), int(_p(params, "height", 720)))
+    if holder.last_size:
+        return holder.last_size
+    return (int(_p(params, "width", 1280)), int(_p(params, "height", 720)))
 
 
 async def capture(params):

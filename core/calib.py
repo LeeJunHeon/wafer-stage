@@ -428,7 +428,14 @@ def fit_from_image(bgr, params, verbose=False):
             print("            못 찾은 기준 마커 id: %s" % missing)
         if extra:
             print("            기준표에 없는 마커 id(무시): %s" % extra)
-    if len(used) < 3:
+    # 최소 개수는 설정(calib.min_markers, 3~4)이다. 3 아래로는 내려가지 않는다 -
+    # 어파인 1차 맞춤에 점 3개가 필요하다.
+    need = 3
+    try:
+        need = max(3, int(((params or {}).get("calib") or {}).get("min_markers", 3)))
+    except (TypeError, ValueError, AttributeError):
+        need = 3
+    if len(used) < need:
         return None
     src = [found[i]["center_px"] for i in used]
     dst = [MARKER_MM[i] for i in used]

@@ -108,7 +108,7 @@ app = FastAPI(lifespan=lifespan)
 _ASSET_FILES = [os.path.join(paths.FRONTEND_DIR, "css", "style.css")] + [
     os.path.join(paths.FRONTEND_DIR, "js", f)
     for f in ("core.js", "camera.js", "map.js", "samples.js", "sequence.js",
-              "jog.js", "app.js")]
+              "jog.js", "relays.js", "editors.js", "settings.js", "calib.js", "app.js")]
 
 
 def _asset_version():
@@ -135,6 +135,15 @@ async def root():
 @app.get("/health")
 async def health():
     return JSONResponse({"ok": True, "version": version.APP_VERSION})
+
+
+@app.get("/settings/schema")
+async def settings_schema():
+    """설정 스키마 + 현재값 + 기본값(설정 화면이 이것으로 그려진다)."""
+    import settings_schema as schema
+    import state as state_mod
+    return JSONResponse({"schema": schema.public_schema(), "values": state.settings,
+                         "defaults": state_mod.DEFAULT_APP})
 
 
 @app.get("/preview.jpg")
