@@ -21,10 +21,13 @@ import json
 import os
 
 ENV_DATA_DIR = "WAFER_STAGE_DATA"
+# 검증용: settings.json 대신 이 파일을 쓴다. 스모크가 케이스마다 임시 설정 파일을
+# 넘겨 저장소의 settings.json(사용자 설정)을 건드리지 않게 한다.
+ENV_SETTINGS = "WAFER_STAGE_SETTINGS"
 
 # core 의 부모가 프로젝트 루트다(여기에 run.py·settings.json 이 있다).
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SETTINGS_PATH = os.path.join(PROJECT_ROOT, "settings.json")
+SETTINGS_PATH = os.environ.get(ENV_SETTINGS) or os.path.join(PROJECT_ROOT, "settings.json")
 
 DEFAULT_DATA_DIR = "../data"
 
@@ -50,6 +53,9 @@ OUT_DIR = os.path.join(DATA_DIR, "out")
 LOG_PATH = os.path.join(OUT_DIR, "log.jsonl")
 CALIB_PATH = os.path.join(DATA_DIR, "calib_matrix.json")
 LOGS_DIR = os.path.join(DATA_DIR, "logs")            # 날짜별 파일 로그
+SETTINGS_BACKUP_DIR = os.path.join(DATA_DIR, "settings_backup")   # 저장 직전본(최근 20개)
+SETTINGS_EXPORT_DIR = os.path.join(DATA_DIR, "settings_export")   # 내보내기 사본
+HEAD_CALIB_PATH = os.path.join(DATA_DIR, "head_calib.json")       # 헤드 마커 보정
 SEQ_LOG_PATH = os.path.join(OUT_DIR, "sequence_log.jsonl")
 SERIAL_LOG_PATH = os.path.join(OUT_DIR, "serial.log")
 FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")

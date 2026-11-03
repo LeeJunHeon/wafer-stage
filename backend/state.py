@@ -4,48 +4,24 @@
 화면이 스스로 값을 지어내지 않으므로 "화면은 바뀌었는데 장비는 그대로" 가 없다.
 """
 
+import copy
+import os
 import time
 
 from core import calib, detect, paths
 from core import stage as stage_mod
 
 import logger
+import recipe as recipe_mod
+import settings_schema as schema
 import version
 from storage import atomic_write_json, safe_read_json
 
-# 앱이 편집하는 설정 키만 여기에 기본값을 둔다. 검출 파라미터(detect.DEFAULTS)는
-# settings.json 에 그대로 있고 화면에서 건드리지 않는다.
-APP_KEYS = ("serial_port", "camera_index", "park_xy", "dwell_s", "marker_mm_xy", "measure",
-            "limits", "z_measure_mm", "wb_temperature", "exposure", "auto_exposure",
-            "width", "height", "fourcc", "stat_seed", "stat_grow")
-
-DEFAULT_APP = {
-    "serial_port": None,
-    "camera_index": 1,
-    "park_xy": [0, 90],
-    "dwell_s": 5,
-    "marker_mm_xy": {"3": [15, 20], "2": [15, 160], "1": [201, 19], "0": [201, 160]},
-    "measure": {"driver": "dummy"},
-    # 축 가동범위(mm). 펌웨어의 X_MAX/Y_MAX/Z_MAX 는 기계 한계이고 이 값은 그 안에서
-    # 쓰는 실사용 범위다. 저장하면 stage.set_limits · calib.set_limits 로 곧바로 반영.
-    "limits": {"x_max_mm": 247.6, "y_max_mm": 247.8, "z_max_mm": 45.0},
-    # 순회 중 측정할 때 Z 를 내릴 깊이(mm). 지금은 저장·표시·검증(z_max_mm 이하)만
-    # 하고 순회에서는 아직 쓰지 않는다 - 순회에 Z 하강·상승을 넣는 다음 단계에서 쓴다.
-    "z_measure_mm": 44.0,
-    # 카메라 화이트밸런스 색온도(null/0 = 카메라 기본값) · 노출(0 = 자동 노출).
-    # 노출을 주면 auto_exposure 를 끈다(끄기만 하고 값이 없으면 마지막 노출에 얼어붙는다).
-    "wb_temperature": None,
-    "exposure": 0,
-    "auto_exposure": True,
-    # 요청 해상도·포맷. 카메라는 못 하는 요청을 가까운 값으로 바꾸므로 실제 값은
-    # 열 때 로그로 남는다(tools/cam_probe.py 로 실측해 고른다).
-    "width": 1280,
-    "height": 720,
-    "fourcc": "MJPG",
-    # 검출 통계 판정 임계(d², χ²(3)). 예전 seed_pct·grow_pct·sat_delta·de_* 는 안 쓴다.
-    "stat_seed": 25.0,
-    "stat_grow": 12.0,
-}
+# 앱이 편집하는 설정의 기본값·키는 settings_schema 가 단일 출처다(중복 금지).
+# 검출 파라미터(detect.DEFAULTS)는 settings.json 에 그대로 있고 파일에서 편집한다.
+APP_KEYS = schema.app_keys()
+DEFAULT_APP = schema.defaults()
+BACKUP_KEEP = 20
 
 
 class State:
@@ -74,56 +50,206 @@ class State:
         self.edits = []
         self.next_no = 1                   # 수동 추가가 받을 번호(되돌려도 줄지 않는다)
         self.sequence = {"phase": "idle", "mode": "auto",
-                         "dwell_s": float(self.settings.get("dwell_s", 5)),
                          "cur_no": None, "done": 0, "total": 0, "elapsed_s": 0,
-                         "out_dir": None, "message": ""}
+                         "out_dir": None, "message": "",
+                         # 레시피 실행 상태(engine 이 채운다)
+                         "recipe": None, "tool": None, "step_index": None,
+                         "step_total": 0, "step_desc": "", "step_left_s": None,
+                         "steps": [], "est_sample_s": None, "est_total_s": None,
+                         "used": False}
+        # 릴레이 10개(펌웨어 RS 줄이 진실). since = 켜진 것을 본 시각(epoch)
+        self.relays = [{"n": i + 1, "on": False, "since": None} for i in range(10)]
+        # 사진 호밍(헤드 마커) 상태 - 상단 '위치 확인' 칩
+        self.photohome = {"status": "unknown", "d_mm": None, "time": None,
+                          "x_mm": None, "y_mm": None, "msg": "",
+                          "calib": None, "calib_valid": False, "calib_reason": "보정 없음"}
+        # 경보 배너용 {src, text}. 통신 끊김 · 릴레이 시간 초과 등
+        self.alarms = []
+        # 순회 밖의 긴 작업(헤드 보정 · 공구 가열) 진행 - engine.run_job 이 채운다
+        self.job = {"kind": None, "running": False, "i": 0, "n": 0, "message": "",
+                    "result": None}
         self.warnings = []
         self.startup_notices = []
 
     # ---------------- settings ----------------
     def load_settings(self):
-        """settings.json 하나가 설정의 단일 출처. 없으면 기본값으로 만든다."""
-        p = dict(detect.DEFAULTS)
-        p.update(DEFAULT_APP)
+        """settings.json 하나가 설정의 단일 출처. 없으면 기본값으로 만든다.
+
+        예전 형식은 schema.migrate 로 이행해서 읽는다(파일은 다음 저장 때 바뀐다).
+        파일의 값이 검증에 걸리면 그 키만 기본값으로 돌리고 경고를 남긴다 -
+        잘못된 설정 하나로 프로그램이 안 뜨면 고칠 화면도 못 연다.
+        """
         got = safe_read_json(paths.SETTINGS_PATH)
-        if got:
-            p.update(got)
-        else:
+        if not got:
+            got = {}
             try:
-                atomic_write_json(paths.SETTINGS_PATH, p)
+                atomic_write_json(paths.SETTINGS_PATH,
+                                  schema.deep_merge(dict(detect.DEFAULTS), DEFAULT_APP))
                 logger.early("info", "settings.json 을 기본값으로 만들었습니다")
             except OSError as e:
                 logger.early("warn", "settings.json 을 만들지 못했습니다: %s" % e)
+        migrated, notes = schema.migrate(got)
+        for n in notes:
+            logger.early("info", "설정 이행 · " + n)
+        merged = schema.deep_merge(DEFAULT_APP, migrated)
+        v, errs, _w = schema.validate(merged)
+        for key, why in errs.items():
+            top = key.split("[")[0]
+            it = schema.BY_KEY.get(top)
+            if it is not None:
+                schema.set_path(merged, top, copy.deepcopy(it["default"]))
+            logger.early("warn", "설정 %s 무시(%s) · 기본값 사용" % (key, why))
+        if errs:
+            v, _e, _w = schema.validate(merged)
+        p = dict(detect.DEFAULTS)
+        p.update(merged)                   # 파일의 검출 파라미터·모르는 키까지
+        p.update({k: v[k] for k in APP_KEYS})
         self.params = p
-        self.settings = {k: p.get(k, DEFAULT_APP[k]) for k in APP_KEYS}
+        self.settings = {k: copy.deepcopy(v[k]) for k in APP_KEYS}
         self.apply_to_core()
         return p
 
     def apply_to_core(self):
-        """설정 중 core 가 쓰는 값(마커 좌표·가동범위)을 core 모듈에 반영한다."""
+        """설정 중 core 가 쓰는 값(마커 좌표·가동범위·속도·시간)을 core 모듈에 반영한다."""
+        g = self.get
         calib.set_marker_mm(self.settings.get("marker_mm_xy"))
-        lim = self.settings.get("limits")
-        if not isinstance(lim, dict):
-            lim = {}
+        lim = self.settings.get("limits") or {}
         stage_mod.set_limits(lim.get("x_max_mm"), lim.get("y_max_mm"), lim.get("z_max_mm"))
         got = stage_mod.limits_mm()
         calib.set_limits(got["x_max_mm"], got["y_max_mm"])
+        stage_mod.configure(speed_pps=g("motion.speed_pps"), jog_pps=g("motion.jog_pps"),
+                            jog_slow_pps=g("motion.jog_slow_pps"),
+                            line_timeout_s=g("serial.line_timeout_s"),
+                            move_timeout_s=g("serial.move_timeout_s"),
+                            boot_wait_s=g("serial.boot_wait_s"),
+                            origin_gap_mm=g("origin_gap_mm"))
 
-    def save_settings(self, patch):
-        """앱이 편집하는 키만 반영해 저장한다 (검출 파라미터는 건드리지 않는다)."""
-        cur = safe_read_json(paths.SETTINGS_PATH) or dict(self.params)
+    def candidate(self, values=None, patch=None):
+        """지금 설정 위에 values(중첩 dict) · patch({점 키: 값})를 얹은 후보."""
+        cur = copy.deepcopy(self.settings)
+        if values:
+            cur = schema.deep_merge(cur, {k: v for k, v in values.items() if k in APP_KEYS})
+        for k, v in (patch or {}).items():
+            if k.split(".")[0] in APP_KEYS:
+                schema.set_path(cur, k, v)
+        return cur
+
+    def check(self, cand):
+        """(정리된 값, errors, warnings) - 저장하지 않는다."""
+        return schema.validate(cand)
+
+    def commit(self, v):
+        """검증을 통과한 값 v 를 저장한다. 직전 파일을 백업하고 원자적으로 쓴다.
+
+        앱 키만 바꾸고 파일의 나머지(검출 파라미터·모르는 키)는 그대로 둔다.
+        """
+        cur = safe_read_json(paths.SETTINGS_PATH)
+        if cur is None:
+            cur = schema.deep_merge(dict(detect.DEFAULTS), DEFAULT_APP)
+        else:
+            self._backup_file()
         for k in APP_KEYS:
-            if k in patch:
-                cur[k] = patch[k]
+            cur[k] = copy.deepcopy(v[k])
         atomic_write_json(paths.SETTINGS_PATH, cur)
         self.load_settings()
         self.camera["index"] = self.settings.get("camera_index", 1)
-        self.sequence["dwell_s"] = float(self.settings.get("dwell_s", 5))
+
+    def _backup_file(self):
+        """저장 직전본을 data/settings_backup 에 남긴다(최근 BACKUP_KEEP 개)."""
+        try:
+            os.makedirs(paths.SETTINGS_BACKUP_DIR, exist_ok=True)
+            base = "settings_" + time.strftime("%Y%m%d_%H%M%S")
+            dst = os.path.join(paths.SETTINGS_BACKUP_DIR, base + ".json")
+            i = 1
+            while os.path.exists(dst):
+                dst = os.path.join(paths.SETTINGS_BACKUP_DIR, "%s_%02d.json" % (base, i))
+                i += 1
+            with open(paths.SETTINGS_PATH, "rb") as f:
+                data = f.read()
+            with open(dst, "wb") as f:
+                f.write(data)
+            olds = sorted(n for n in os.listdir(paths.SETTINGS_BACKUP_DIR)
+                          if n.startswith("settings_") and n.endswith(".json"))
+            for n in olds[:-BACKUP_KEEP]:
+                os.remove(os.path.join(paths.SETTINGS_BACKUP_DIR, n))
+        except OSError as e:
+            logger.write("warn", "설정 백업 실패: %s" % e)
+
+    def save_settings(self, patch):
+        """점 키 patch 를 검증해 저장한다(현재 위치를 파킹으로 등). 실패면 errors."""
+        v, errs, _w = self.check(self.candidate(patch=patch))
+        if errs:
+            return errs
+        self.commit(v)
+        return {}
+
+    def export_settings(self):
+        return {"app": version.APP_NAME, "version": version.APP_VERSION,
+                "exported": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "settings": copy.deepcopy(self.settings)}
+
+    def import_candidate(self, data):
+        """가져올 JSON(내보내기 형식 또는 settings.json 그대로)을 후보로. 형식이 틀리면 None."""
+        body = data.get("settings") if isinstance(data, dict) and isinstance(
+            data.get("settings"), dict) else data
+        if not isinstance(body, dict):
+            return None
+        migrated, _notes = schema.migrate(body)
+        return self.candidate(values={k: migrated[k] for k in APP_KEYS if k in migrated})
 
     # ---------------- 편의 ----------------
     def park_xy(self):
-        xy = self.settings.get("park_xy") or [0, 90]
+        xy = self.settings.get("park_xy") or DEFAULT_APP["park_xy"]
         return [float(xy[0]), float(xy[1])]
+
+    def capture_xy(self):
+        xy = self.settings.get("capture_xy") or self.park_xy()
+        return [float(xy[0]), float(xy[1])]
+
+    def get(self, key, default=None):
+        """점 키로 설정값."""
+        return schema.get_path(self.settings, key, default)
+
+    def tool(self):
+        """활성 공구 {name, dx_mm, dy_mm, z_work_mm, note}."""
+        return recipe_mod.active_tool(self.settings)
+
+    def stage_target(self, sx, sy):
+        """샘플 S 를 활성 공구로 겨냥할 때 스테이지가 갈 자리 P = S − (dx, dy).
+
+        스테이지 좌표 P 는 '기준 포인터가 가리키는 점' 이다. 공구 끝은 P + (dx, dy)
+        를 가리킨다. 가동범위 검사는 P 로 한다.
+        """
+        t = self.tool()
+        return (float(sx) - float(t.get("dx_mm") or 0.0),
+                float(sy) - float(t.get("dy_mm") or 0.0))
+
+    def recipe(self, name=None):
+        return recipe_mod.find(self.settings, name)
+
+    def estimate(self, name=None):
+        """레시피의 샘플당 · 전체 예상 시간(초). 이동은 대상 샘플 사이 평균 거리로 어림한다."""
+        rc = self.recipe(name)
+        speed = float(self.get("motion.speed_pps") or 6000) / stage_mod.PPMM   # mm/s
+        pts = [self.stage_target(s["X"], s["Y"]) for s in self.samples
+               if s.get("on") and s.get("status") not in ("skip", "done")]
+        if len(pts) >= 2:
+            dist = sum(((pts[i][0] - pts[i - 1][0]) ** 2 + (pts[i][1] - pts[i - 1][1]) ** 2) ** 0.5
+                       for i in range(1, len(pts))) / (len(pts) - 1)
+        else:
+            dist = 30.0
+        move_s = 0.6 + dist / max(speed, 1e-6) * 1.2      # 가감속 몫 20%
+        per = recipe_mod.estimate_sample_s(rc, self.settings, move_s, speed)
+        has_confirm = any((st or {}).get("type") == "confirm" for st in rc.get("steps") or [])
+        return {"recipe": rc.get("name"), "sample_s": round(per, 1),
+                "total_s": round(per * len(pts), 1), "n": len(pts),
+                "confirm": has_confirm, "relays": recipe_mod.relays_used(rc)}
+
+    def set_alarm(self, src, text):
+        """경보 배너 항목(출처마다 하나). text 가 비면 지운다."""
+        self.alarms = [a for a in self.alarms if a["src"] != src]
+        if text:
+            self.alarms.append({"src": src, "text": text})
 
     def sample(self, no):
         for s in self.samples:
@@ -196,7 +322,13 @@ class State:
             "edit": self.edit_summary(),
             "sequence": dict(self.sequence, estopped=_estopped()),
             "warnings": list(self.warnings),
-            "settings": dict(self.settings),
+            "settings": copy.deepcopy(self.settings),
+            "relays": [dict(r) for r in self.relays],
+            "photohome": dict(self.photohome),
+            "alarms": [dict(a) for a in self.alarms],
+            "tool": dict(self.tool()),
+            "job": dict(self.job),
+            "estimate": self.estimate(),
             "data_dir": paths.DATA_DIR,
             "log_file": _log_file(),
             "ts": time.time(),
