@@ -3,7 +3,25 @@
 이 폴더는 "샘플 자동 측정 시스템"의 ① 센싱·모터 제어 부분이다. ② 실제 측정(계측기 제어)은 backend/measure.py 인터페이스로 붙인다(장비 미정). 촬영 결과·보정 파일은 ..\data\ 에 두고 git 에 넣지 않는다.
 
 ## 목적
-4인치 웨이퍼(또는 철판) 위 샘플 조각 10~16개를 카메라로 검출하고, XY 갠트리가 프로브를 각 샘플 위로 옮긴다. 정확도 요구: 프로브가 샘플 위 ±1~2mm 안.
+4인치 웨이퍼(또는 철판) 위 샘플 조각 10~16개를 천장 카메라로 검출하고, XY 갠트리가 Z 축의 공구(지금은 히트건,
+나중에 프로브)를 각 샘플 위로 옮겨 레시피(측정 순서)대로 처리한다. 정확도 요구: 공구 지점이 샘플 위 ±1~2mm 안.
+
+## 바뀐 전제 (2026-11 개편)
+- 호밍 센서는 물리적으로 없앴다(V10 의 hs/hw 는 V11 에서 제거). 원점은 **사진 호밍**이 기본:
+  Z 모터 윗면의 헤드 마커(ArUco id 10 · 40 mm)를 천장 카메라로 찍어 실제 XY 를 재고 sp 로 맞춘다.
+  끝단 밀기 · 수동 원점 등록은 보조. Z 원점은 지금처럼 위쪽 하드스톱(끝단 이동 + 등록).
+- 카메라는 천장 고정(작업영역을 수직으로 본다). 카메라 위치가 바뀌면 판 마커 좌표를 다시 잡는다
+  (보정 창 → 판 마커). USB 케이블이 불안정 — 촬영 재시도 · 미리보기 재개방으로 견딘다.
+- Z 축에 히트건(노즐이 비스듬해 가열 지점이 노즐 바로 아래가 아님). 공구는 바뀐다는 전제 —
+  공구마다 오프셋(dx, dy)과 작업 높이. 스테이지 좌표 P = 기준 포인터가 가리키는 점, 공구 끝 = P + d,
+  샘플 S 를 겨냥하려면 P = S − d, 가동범위 검사는 P 로.
+- 촬영 위치(capture_xy)를 파킹(park_xy)과 분리 — 히트건이 웨이퍼를 가리지 않는 좌측 끝 쪽.
+- 릴레이 10개(R1~R10, D22~D40 짝수)가 히트건 · 쿨러 등 장비 전원. 실장 확인 결과 HIGH 에서 켜짐
+  (RELAY_ACTIVE_LOW = false). 전원 투입 시 전부 꺼짐, 명령으로만 켜짐.
+- 측정은 샘플마다 [이동 → Z 하강 → 릴레이 켜기 → 대기 → 측정 → 끄기 → Z 상승] 같은 레시피.
+  순서·시간은 자주 바뀐다 → 설정의 측정 순서 탭에서 편집. 계측기는 미정(measure.py 더미).
+- 측정 중에는 히트건·모터가 샘플을 가린다 → 샘플 위치는 측정 전 한 번 촬영, 측정 중 위치 확인은
+  헤드 마커로.
 
 ## 구조 (2026-09-10 재구성)
 서버가 상태의 주인이고 화면은 HTML 이다. 가스 센서 프로그램(Gas_Sensor_Measurment_System\Program)과 같은 골격.
@@ -12,9 +30,11 @@
   paths.py imgio.py camera.py detect.py calib.py stage.py
   CLI: `python -m core.calib fit|samples|check` · `python -m core.stage st|mx|my|save`
 - backend/: server.py(FastAPI·라우트·/ws·lifespan·CLI) window.py connection.py state.py
+  settings_schema.py(운용 설정 스키마) recipe.py(레시피 단계) relays.py photohome.py(사진 호밍·보정)
   commands.py engine.py stagectl.py vision.py measure.py loops.py logger.py storage.py version.py
   backend 안끼리는 `import engine` 처럼 이름으로, core 는 `from core import calib` 로 부른다.
-- frontend/: index.html · css/style.css · js/{app,core,camera,map,samples,sequence,jog}.js
+- frontend/: index.html · css/style.css · js/{core,camera,map,samples,sequence,jog,relays,editors,
+  settings,calib,app}.js (core.js 가 UI.h · 창 체계를 먼저 정의한다)
   화면은 1920×1040 고정 캔버스(fit() 로 축소, 페이지 스크롤 없음). ISA-101 계열 배색
   (무채색 바탕, 색은 상태에만), 상단 상태줄·경보 배너·하단 명령, 스테이지 맵으로
   기계 위치를 보여준다. 단계(1·2·3) 표시는 쓰지 않는다 — 반복 운전 프로그램이다.
@@ -26,15 +46,24 @@
   (stage.last_error·camera.last_error·sequence.message)는 한 줄 60자 이내 —
   logger.short(e) 를 거치고 원문은 파일 로그에만. 대화상자 본문만
   "…하십시오" 체. 파일명·모듈명·펌웨어 명령(fz 등)은 화면에 쓰지 않는다.
-  카메라 패널은 미리보기/촬영본 토글. 미리보기는 GET /preview.jpg 를 250ms 마다 받는다.
+  카메라 패널은 미리보기/촬영본 토글. 미리보기는 GET /preview.jpg 를 preview_fps(기본 4) 주기로 받는다.
+  **창(설정·보정·확인·공구 선택)은 showModal 금지** — show() + 막(#dimmer) + 비상정지 도크(#estopDock,
+  막 위). core.js UI.openWin/closeWin 으로만 연다. 비활성 버튼은 UI.why 로 사유를 툴팁에 붙인다.
+  화면 넘침은 playwright 로 1920×1040 스크린샷을 찍어 확인한다(칩·버튼 잘림 검사).
 - tools/: 개발·검증용. 프로그램 실행에는 필요 없다.
   `python tools/regress.py`(검출 개수 회귀) · `python tools/e2e_smoke.py`(전 흐름)
   · `python tools/flat_check.py DIR...`(평탄화 전·후 검출 비교)
   · `python tools/cam_probe.py`(카메라 포맷·해상도 실측. 앱 끄고. 못 열면 exit 2)
-  e2e_smoke 는 임시 폴더를 만들어 WAFER_STAGE_DATA 로 넘긴다 — 실제 data/ 에 쓰지 않는다.
-- firmware/stage_v6/, assets/
+  e2e_smoke 는 임시 폴더를 만들어 WAFER_STAGE_DATA 로, 케이스마다 임시 설정 파일을
+  WAFER_STAGE_SETTINGS 로 넘긴다 — 실제 data/ 와 저장소 settings.json 에 쓰지 않는다.
+  `python tools/e2e_smoke.py 릴레이 레시피` 처럼 케이스 이름 일부로 골라 돌린다.
+  사진 호밍 검증은 WAFER_STAGE_DRY_CAMERA=synth(tools/synth_cam.py 합성 카메라 + dry 탈조 흉내).
+- firmware/stage_v11/(현재, v8~v10 은 기록), assets/
 - 미리보기: backend/vision.py 의 CameraHolder 가 카메라 객체 하나를 lock 으로 공유한다.
-  미리보기 스레드가 4fps 로 읽고 촬영도 같은 객체를 쓴다 - 촬영 때 닫았다 다시 열지 않는다.
+  미리보기 스레드가 preview_fps 로 읽고 촬영도 같은 객체를 쓴다 - 촬영 때 닫았다 다시 열지 않는다.
+  연속 실패 cam_fail_limit 면 닫고 cam_reopen_s(두 배씩, 최대 cam_reopen_max_s) 뒤 다시 연다.
+  촬영 실패는 닫고 다시 열어 capture_retries 번까지 다시 찍는다. 단발 촬영(vision.single_shot)은
+  사진 호밍·헤드 보정·확인 촬영용(브라케팅·검출 없음).
 - 촬영 순서(vision._capture_sync): [노출 브라케팅 → Mertens 융합](camera.capture_bracket,
   설정 bracket/bracket_exposure/bracket_settle_s) → 마커로 감지영역 → [종이 기준 조명
   평탄화](core/flat.py, 설정 flat_field) → 마커 재계산·검출은 평탄화본으로.
@@ -51,21 +80,43 @@
   것에 대한 대응이다. 검출 임계값은 사진이 일정해진 뒤 따로 맞춘다.
 - 카메라 설정: width/height/fourcc(MJPG|YUY2) · wb_temperature(0 = 기본. AUTO_WB 끄고 값
   안 주면 초록끼) · exposure(0 = 자동, 값 주면 auto_exposure 꺼짐 - 화면은 둘을 따로 못
-  고른다). 카메라 키가 바뀌면 holder.reopen.
+  고른다) · focus_mode(auto|fixed)·focus·focus_sweep(고정 모드에서 열 때 스윕). 카메라 키가
+  바뀌면 holder.reopen.
 - 시리얼 원문은 core/stage.py 의 on_line 콜백 → connection.push_log_threadsafe 로 화면에
-  간다(level tx/rx). 폴링(st/ST)은 표시만 달아 보내고 숨길지는 화면이 정한다.
+  간다(level tx/rx). 폴링(st/ST · rs/RS)은 표시만 달아 보내고 숨길지는 화면이 정한다.
 - 수동 이동(조그) 팝업은 show() 로 연다 - showModal 이면 뒤 화면이 inert 가 되어
   비상정지를 못 누른다. 조그는 ack{of:"jog"} 를 받고서야 다음 스텝을 보낸다(한 번에
   하나). 목표 좌표와 가동범위 자르기는 서버가 한다.
 - 명령은 줄 세우지 않는다: ws_endpoint 가 메시지마다 create_task. 비상정지는
   handle_command 맨 앞에서 검사 없이 처리하고 POST /estop 우회로도 둔다(2026-09-11 사고:
   원점 탐색 69초 동안 비상정지 3건이 소켓에서 기다렸다). 이동 중이면 이동 명령은 거절.
-- 이동 후 3초 조용하면 자동 save(디바운스). USB 절전으로 끊기면 원점을 잃는다.
-- 원점은 사람이 축별로 잡는다: 끝단 이동(touch_end, 밀기만) → set_origin(2mm 이격 후 z).
+- 이동 후 autosave_s(기본 3초) 조용하면 자동 save(디바운스). USB 절전으로 끊기면 원점을 잃는다.
+- 사진 호밍(photohome.py): 지금 자리에서 한 장 → 헤드 마커 → 헤드 보정(data/head_calib.json, 판과
+  다른 평면이라 전용 호모그래피) → 실제 XY. d < 허용(0.3) 그대로 / ~경고(5) 자동 sp / 넘거나 원점
+  없음이면 확인 후 sp(서버가 잰 값, 120초 · 이동 없을 때만). sp 뒤 save · reset_estop(원점 복구 수단).
+  카메라 번호·해상도·마커 번호가 보정 때와 다르면 무효 → 막는다. 촬영 전 자동 확인은 경고만.
+- 수동 원점(보조)은 사람이 축별로 잡는다: 끝단 이동(touch_end, 밀기만) → set_origin(origin_gap_mm 이격 후 z).
   원점은 축마다 따로다(HX/HY). 가동범위를 벗어나면 펌웨어가 그 축 원점을 푼다.
   비상정지 때 forget 을 보내 EEPROM 의 원점 기록도 지운다.
   끝단 이동(touch_end)과 원점 등록(set_origin)은 따로다. 축마다 따로 잡는다.
 - 메시지 계약(state/명령)은 README.md 에 표로 있다. 화면은 요청만 보내고 서버 state 가 와야 바뀐다.
+- **설정 스키마 규칙: 운용 값은 backend/settings_schema.py 에만 기본값을 둔다**(코드에 숫자를 박지
+  않는다). 항목 = key(점 표기)·default·type·min/max·step·unit·tab·group·label·tip·apply·advanced·
+  validate. state.DEFAULT_APP/APP_KEYS 는 스키마에서 만든다. 저장은 전부 검증 통과해야(부분 저장
+  없음) 원자적으로 쓰고 직전본을 data/settings_backup(20개)에. 예전 settings.json 은 migrate 로 읽고
+  모르는 키는 보존. 설정 화면은 스키마로 자동 생성 — 새 설정은 스키마에 항목만 더하면 화면이 생긴다
+  (목록·표 같은 것은 frontend/js/editors.js 에 전용 편집기). 검출 파라미터만 settings.json 직접 편집.
+  안전상 사용자가 바꾸면 안 되는 펌웨어 타이밍(펄스 폭 등)은 스키마에 넣지 않는다.
+- 레시피 엔진(engine._run_loop + RUNNERS, 정의는 recipe.py): 샘플마다 단계 실행, steps.jsonl 기록.
+  **안전 불변식**: X·Y 이동 전 항상 Z 맨 위(Z 원점 있을 때, goto_xy·단계·순회 후 이동 전부) ·
+  Z 원점 없으면 z 단계 거절(시작부터) · 비상정지는 아무것도 안 움직이고 save 안 함(릴레이 정책만) ·
+  정지는 지금 단계 즉시 끊고 릴레이 정책 → Z 맨 위 → after_run → save · 일시정지는 단계 사이(대기는
+  남은 시간 멈춤). 흐름(CAPTURE_FLOW · POST_RUN_FLOW)은 설정으로 조합 — 하드코딩하지 않는다.
+  조그만은 Z 를 올리지 않는다(공구 끝 맞추기). 순회 밖의 긴 작업(헤드 보정·공구 가열)은
+  engine.run_job 으로 띄워 busy() 에 잡힌다.
+- 릴레이(relays.py): 펌웨어 RS 가 진실. 사용 안 함 켜기 거절 · 순회 중 수동 거절(전체 끄기만) ·
+  정책 off|keep(비상정지·정지·오류·종료) · 비상정지는 '!' 와 같은 쓰기에 "r all 0" · 감시 시간 1/3
+  주기 rs 하트비트(이동 중 제외) · max_on_s 초과 자동 끄기 + 경보 · "[!] 통신 끊김" 은 경보 배너.
 - 샘플 편집(engine add_sample_px·add_sample_here·delete_sample·undo_edit, 스택 state.edits):
   번호는 다시 매기지 않는다(지운 번호는 빈 번호, 추가는 state.next_no - 되돌려도 줄지 않음).
   변환은 이번 촬영 보정(_CAL_CACHE)으로만 - _last_cal() 은 옛 보정으로 떨어지므로 쓰지 않는다.
@@ -74,52 +125,61 @@
   capture 가 needs_confirm).
 
 ## 하드웨어 (실측 확정값)
-- 컨트롤러: Arduino Mega 2560 + 자작 펌웨어 V10(firmware/stage_v10). USB 시리얼 115200, 줄끝 \n. COM7.
+- 컨트롤러: Arduino Mega 2560 + 자작 펌웨어 V11(firmware/stage_v11). USB 시리얼 115200, 줄끝 \n. COM7.
 - 드라이버: 모터뱅크 MSD-224 ×4(2상, 1/8분주 = 1600펄스/회전). ENA LOW = 동작
-- 축: X = 모터 2개 동기(갠트리 양측, 논리축 하나) / Y = 빔 위 캐리지 / Z = 모터만 장착(프로브 미장착)
-- 핀(V10, 드라이버 번호 기준): 드라이버1=X1 ENA39 DIR41 PUL5(PE3) / 2=X2 ENA43 DIR45 PUL4(PG5) / 3=Y ENA47 DIR49 PUL3(PE5) / 4=Z ENA51 DIR53 PUL2(PE4).
+- 축: X = 모터 2개 동기(갠트리 양측, 논리축 하나) / Y = 빔 위 캐리지 / Z = 히트건 장착(나중에 프로브 추가·교체)
+- 핀(V10~, 드라이버 번호 기준): 드라이버1=X1 ENA39 DIR41 PUL5(PE3) / 2=X2 ENA43 DIR45 PUL4(PG5) / 3=Y ENA47 DIR49 PUL3(PE5) / 4=Z ENA51 DIR53 PUL2(PE4).
   축↔드라이버는 .ino 맨 위 배정 블록 AXIS_*_DRV 4줄(확정 2026-10-26: X1=1 X2=2 Y=3 Z=4).
   PUL 포트·비트는 setup 에서 digitalPinToPort 로 계산·캐시, 같은 포트 축은 한 번의 쓰기로 동시 출력.
   X1·X2 는 다른 포트(PE·PG)라 한 cli 구간 안 연속 쓰기 두 번으로 나간다(시차 1µs 미만).
-- 릴레이 R1~R10 D22~D40 짝수(RELAY_ACTIVE_LOW 기본 true, 부팅 시 전부 꺼짐, !·forget 은 안 건드림).
-  호밍 센서 H1~H8 D23~D37 홀수(INPUT_PULLUP, LOW=닿음, 5회 연속 같은 값으로 확정). 센서↔위치 미정 — 읽기만.
+- 릴레이 R1~R10 D22~D40 짝수(RELAY_ACTIVE_LOW = false — 2026-10-26 실장 확인, HIGH 에서 켜짐,
+  KOINO KH-103-4CL DC24V 소켓형. 부팅 시 꺼짐 레벨 쓰기 → OUTPUT, 펌웨어는 !·forget 때 안 건드림).
+  호밍 센서는 없앴다(D23~D37 홀수는 V11 에서 설정하지 않는다).
 - 스케일: 160 펄스 = 1mm. 스트로크 X 0~39620(247.6mm), Y 0~39640(247.8mm). 속도 v6000/a40000/b300 ≈ 37.5 mm/s
 - 가동범위는 두 겹: 펌웨어 X_MAX/Y_MAX/Z_MAX 는 기계 한계, 앱은 settings.json "limits"
   (x_max_mm·y_max_mm·z_max_mm, 기본 247.6·247.8·45)로 실사용 범위를 정한다.
   core/stage.py 의 *_MAX_PULSE 는 기본값일 뿐이고 set_limits 가 런타임에 바꾼다 —
   다른 모듈은 값을 복사하지 말고 stage_mod.limits_mm() / stagectl.limits_mm() 로 읽는다.
   calib.AXIS_MAX_X/Y 도 calib.set_limits 로 같이 따라간다(state.apply_to_core).
-  "z_measure_mm"(기본 44)은 순회 중 Z 를 내릴 깊이 — 저장·표시·검증만 하고 아직 순회에는 안 쓴다.
-- 좌표계: 각 축 모터 쪽 끝(하드스톱 2mm 이격) = 0. 파킹 위치 (0, 90) — 캐리지를 카메라 시야에서 치우는 자리
+  Z 를 내리는 깊이는 공구마다의 작업 높이 tool.items[].z_work_mm(≤ Z 가동범위, 예전 z_measure_mm 은
+  히트건의 작업 높이로 이행). 레시피의 z 단계가 쓴다.
+- 좌표계: 각 축 모터 쪽 끝(하드스톱 origin_gap_mm 2mm 이격) = 0. 스테이지 좌표 = 기준 포인터가 가리키는 점.
+  파킹(park_xy, 기본 (0, 90)) = 끝나고 쉬는 자리, 촬영 위치(capture_xy) = 찍는 자리(히트건이 웨이퍼를
+  가리지 않는 좌측 끝 쪽 — 사용자가 설정에서 입력).
 - Z 규약: Z=0 이 맨 위(들어 올린 자리), 값이 커질수록 아래(펄스 부호도 +가 아래).
   원점은 위쪽 하드스톱으로 밀어 잡는다 - Z 의 끝단 이동은 '위로' 다.
   Z_MAX 7200(45mm)·Z_PPMM 160 둘 다 실측 확인(2026-09-14 · 스트로크 2026-09-16 재실측).
   고치면 펌웨어·core/stage.py(기본값)·state.DEFAULT_APP["limits"] 셋 다.
-- 원점 복귀(return_origin)·파킹은 Z 를 먼저 0(맨 위)으로 올린 뒤 X·Y 를 움직인다.
-  Z 원점이 없으면 경고만 하고 X·Y 만 간다 - 프로브 장착 뒤 거절(인터록)로 올린다.
-  Z 는 아직 X·Y 와 인터록이 없는 독립 축이다(서로 잠그지 않는다).
+- X·Y 이동은 언제나 Z 를 먼저 0(맨 위)으로 올린 뒤(엔진 불변식 — 좌표 이동·샘플 이동·원점 복귀·
+  파킹·촬영 위치·순회). Z 원점이 없으면 경고만 하고 X·Y 만 간다(z 단계 레시피는 시작 거절).
+  수동 조그는 Z 를 올리지 않는다.
 - 리밋 스위치 없음 → 소프트 리밋 + EEPROM 위치 기억
-- 카메라: USB index 1, 1280×720 YUY2(MJPG 협상 실패), 작업영역 전체(약 52×29cm)를 위에서 본다. 약 0.41 mm/px
+- 카메라: 천장 고정(2026-11 이전), USB index 1, 1280×720, 작업영역 전체를 수직으로 본다. USB 케이블
+  불안정(납땜 수리 중) — 촬영 재시도 · 미리보기 재개방. 위치가 바뀌었으니 판 마커 좌표·헤드 보정을 다시 잡는다
   해상도·포맷(width/height/fourcc)은 설정 창에서 고른다. 카메라는 못 하는 요청을 조용히
   가까운 값으로 바꾸므로 열 때마다 실제 포맷을 로그에 남기고 다르면 경고한다
   (camera.format_text/format_mismatch). 표기 화소 수(5000만)는 보간이라 믿지 말고
   tools/cam_probe.py 의 detail 지표(1/2 축소→복원 RMS)로 실측해서 정한다.
-- 기준 마커: ArUco DICT_4X4_50 30mm, id0~id3 을 베이스에 부착. 중심 기계좌표(mm, 실측)
-  id3 (15,20) / id2 (15,160) / id1 (201,19) / id0 (201,160) — settings.json 의 marker_mm_xy 가 단일 출처
-- 캐리지 앞 드라이버 포인터(육안 확인용)
+- 판 마커: ArUco DICT_4X4_50 30mm, id0~id3 을 베이스에 부착. 중심 기계좌표는 settings.json 의
+  marker_mm_xy(옛 실측 id3 (15,20) / id2 (15,160) / id1 (201,19) / id0 (201,160) — 카메라 이전 뒤
+  보정 창 → 판 마커로 기준 포인터를 맞춰 다시 기록)
+- 헤드 마커: ArUco id 10 · 40mm(설정 photohome.*), Z 모터 윗면. 판 마커 번호와 겹치면 저장 거절
+- 캐리지 앞 기준 포인터(스테이지 좌표가 가리키는 점)
 
-## 아두이노 프로토콜 (V10 — V9 명령·출력 그대로 + 릴레이·호밍)
+## 아두이노 프로토콜 (V11 — V10 명령·출력 그대로 + 통신 감시, 호밍 센서 제거)
 - 원점: `fz x <탐색펄스>` / `fz y` / `z zx zy`(현재 위치=0) / `sp <x> <y>` / `home`
   · 수동: `jx <±펄스>` `jy` `jz` (원점 없어도 움직인다 - 사람이 끝단까지 몰 때)
   · Z: `fz z` / `zz`(현재 위치=0) / `mz <mm>` / `gz <펄스>`
 - 절대 이동: `gx <펄스>` `gy` `gz` `g <x> <y>` / `mx <mm>` `my` `mz`
 - 상태: `p`(사람용) / `st` → `ST X= Y= X2= Z= HX=0|1 HY=0|1 HZ=0|1 DIRTY=0|1`
 - 저장 `save` / 비상정지 `!` / 기타 `v a b w`, `e 0|1`, `forget`
-- 릴레이 `r <1~10> <1|0>` · `r all 0` · `rs` → `RS R1=0 … R10=0` / 호밍 `hs` → `HS H1=0 … H8=0` · `hw`(감시, 아무 입력이면 끝)
+- 릴레이 `r <1~10> <1|0>` · `r all 0` · `rs` → `RS R1=0 … R10=0` / 통신 감시 `wd <ms>`(0 = 끔) — 마지막 줄 수신
+  뒤 ms 가 지나면 켜진 릴레이 전부 끄고 `[!] 통신 끊김 · 릴레이 전부 꺼짐`. 블로킹 이동 중에는 판정 안 함,
+  명령이 끝나는 순간 타이머 재시작 / 위치 세팅 `sp <x펄스> <y펄스>`(사진 호밍) / 속도 `v a b`(앱이 motion.* 로)
 - 이동 완료 보고: `  X  + cmd=16000 out=16000 t=2783.53ms | X=16000 Y=8000 Z=0` → `" | X="` 가 완료 신호
 - 이미 목표면 `  이미 그 위치`(보고 줄 없음) / 거부 `  [거부] ...` / 경고 `[!]`
 - 원점 없으면(HX·HY·HZ=0) fz·j* 외 모든 이동 거부. 이동은 블로킹. save 없이 껐으면 부팅 시 원점없음.
-- EEPROM 매직 POSA(V10, 배선 변경으로 새로 잡음 · 형식은 V9 와 같음). V9 이하 기록은 '기록 없음' 으로 읽힌다.
+- EEPROM 매직 POSA(V10 부터, V11 도 같음 · 형식은 V9 와 같음). V9 이하 기록은 '기록 없음' 으로 읽힌다.
 - 주의: pyserial 의 `timeout` 에 값을 대입할 때마다 포트가 재설정된다 — 매 읽기마다 대입하면 들어오던 응답이 사라진다(core/stage.py `_readline` 주석).
 
 ## 검출 파이프라인 (검증 완료·고정. 순서 바꾸지 말 것)
@@ -138,43 +198,50 @@ surface 모드 wafer/plate/auto. 검출 로직을 고치면 반드시 `python to
 - 촬영마다 그 프레임의 마커로 다시 보정한다. 카메라 고정이 흔들려 촬영 사이에 1~2° 돌아간다(13분 사이 2.3°, 작업영역에서 최대 11mm 차이).
 - 마커 중심 최소제곱 어파인으로 모서리를 mm 에 배정한 뒤, 모서리 전부(4마커 16점 / 3마커 12점)로 호모그래피. 잔차 RMS 0.14~0.24mm.
 - 감지영역 = 마커 사각형(3개면 네 번째 꼭짓점을 A+C−B 로 보완). detect 는 이 영역만 본다 — 전체 프레임을 넣으면 레일·모터를 원판으로 오검출한다.
-- 마커가 3개뿐이면 화면이 확인을 요구한다(오차 약 1mm).
+- 마커가 3개뿐이면 화면이 확인을 요구한다(오차 약 1mm, calib.confirm_3markers). 최소 개수 calib.min_markers(3~4).
+- 헤드 마커 보정(photohome.py)은 판과 다른 평면 — 격자 점(n×n · 여백)에서 (픽셀 중심 ↔ 스테이지 XY)
+  호모그래피, 점별 잔차·RMS, [적용] 해야 data/head_calib.json. 카메라 번호·해상도가 다르면 무효.
+- 공구 오프셋 보정: 방법 1 d = A − B(포인터 / 공구 끝을 같은 점에), 방법 2 d = M − P0(단독 가열 자국을
+  촬영본에서 클릭, 판 보정으로 mm). [적용] 해야 공구에 저장.
 
 ## 운용 규칙
 - 웨이퍼는 마커 4개 안쪽에, 마커를 가리지 않게 둔다.
 - 종료는 이동을 일으키지 않는다: save 만 하고 끝난다(다음 실행에서 EEPROM 복원).
   순회 중·이동 중에는 종료를 거절한다. 꺼진 동안 손으로 밀지 않는다.
-- 원점(0)은 언제나 끝단에서 2 mm 물러난 자리다(core/stage.py ORIGIN_GAP_MM =
-  펌웨어 HOME_GAP 320 펄스). settings.json 의 마커 좌표가 이 원점 기준으로
-  실측되어 있어서 이격은 선택이 아니라 좌표계의 일부다 - 화면에서 고를 수 없게 했다.
+- 원점(0)은 언제나 끝단에서 origin_gap_mm(기본 2 mm = 펌웨어 HOME_GAP 320 펄스) 물러난 자리다.
+  판 마커 좌표·헤드 보정이 이 원점 기준이라 이격은 좌표계의 일부다 - 고급 탭에만 두고, 바꾸면
+  다시 보정해야 한다는 경고 대화상자가 뜬다.
 - 끝단 이동 거리는 1~그 축의 가동범위(limits). 펌웨어 jx/jy 한도(8000 펄스 = 50 mm)는 그대로 두고
   드라이버(jog_rel)가 조각으로 나눠 보낸다. 조각 사이마다 중단을 확인한다.
-- 수동 이동 팝업은 위에서 아래로 [위치] [조그] [좌표 이동] [원점 잡기] [비상정지].
+- 수동 이동 팝업은 위에서 아래로 [위치] [조그] [좌표 이동 · 현재 위치를 파킹/촬영 위치로] [원점 잡기(보조)] [비상정지].
+  조그 스텝 선택지는 설정 jog.steps, 한 번 한도 jog.max_mm.
   원점 잡기는 축이 행(X·Y·Z), 동작(밀기 · 등록)이 열인 표다. 조그 패드 오른쪽에
   [Z↑][Z↓](PageUp/PageDown). 패드는 클릭 한 번 = 한 스텝, 0.5초 이상 누르면 연속.
 - 아두이노 IDE 시리얼 모니터와 앱을 동시에 쓸 수 없다(포트 점유).
 - 이중 실행 방지 뮤텍스는 창 모드에서만. --no-window(스모크·개발)는 여러 개 띄워도 된다.
 - 마커 시트는 실제 크기(100%)로 인쇄해 평평하게 부착.
-- 비상정지는 확인 없이 즉시 `!` 를 보낸다(WS + POST /estop 둘 다). 그 뒤 위치는 신뢰할 수 없으니 원점잡기를 다시 한다.
+- 비상정지는 확인 없이 즉시 `!` 를 보낸다(WS + POST /estop 둘 다, 정책이 끄기면 같은 쓰기에 `r all 0`).
+  그 뒤 위치는 신뢰할 수 없으니 사진 호밍(또는 수동 원점)을 다시 한다.
 
 ## 안전
-- 프로브 장착 후 충돌 = 파손. 소프트 리밋이 유일한 방어선 → 원점 정확도가 전부.
+- 공구(히트건·프로브) 충돌 = 파손. 소프트 리밋이 유일한 방어선 → 원점 정확도가 전부(사진 호밍으로 확인).
+- 히트건 전원은 릴레이 — 통신이 끊기면 펌웨어 통신 감시가 끈다. 정책 기본은 비상정지·정지·오류·종료 때 끄기.
+- 애매하면 안전한 쪽(움직이지 않음 · 릴레이 끔 · 확인 요구)을 기본으로.
 - 끝단 이동은 5mm 씩 사람이 보면서, 원점 등록도 사람이 누른다. 하드스톱 충돌은
   시리얼로 감지되지 않는다(보고는 정상으로 나온다).
 
 ## 미결·다음 목표
-1. 조명 — 밝은 회색/반투명 칩은 웨이퍼와 밝기 편차 4~9%, 채도 차 0~7 이라 영상만으로 구분되지 않는다. 확산광으로 바꾸면 반사광(현재 일부 사진 70%)과 함께 해결된다.
-2. 렌즈 왜곡 보정 — 지금은 호모그래피(평면 가정)뿐이다. 화면 가장자리 정확도를 더 올리려면 체스보드로 왜곡 계수를 잡는다.
-3. Z축·프로브 — 펌웨어 V9·드라이버·조그·원점 등록·실측(45mm, 160펄스/mm)까지 완료.
-   원점 복귀·파킹은 Z 를 먼저 올린다. 남은 것: Z 원점이 없을 때를 거절로 올리고
-   좌표 이동·순회 전체에 같은 인터록 적용, 순회에 Z 하강·상승 넣기(프로브 장착 뒤,
-   깊이는 settings z_measure_mm).
-4. 계측기 — backend/measure.py 의 Measurer 인터페이스로 붙인다(지금은 DummyMeasurer 가 값 없이 통과).
+1. 계측기 — backend/measure.py 의 Measurer 인터페이스로 붙인다(지금은 DummyMeasurer 가 값 없이 통과). 레시피 measure 단계가 부른다.
+2. 레시피 photo 단계 — 자리만 구조로 남겼다(recipe.STEP_TYPES + engine.RUNNERS 에 더하면 된다).
+3. Z 인터록 강화 — 프로브 장착 뒤 Z 원점 없음을 X·Y 이동 거절로 올릴지 결정.
+4. 조명 — 밝은 회색/반투명 칩은 웨이퍼와 밝기 편차 4~9%, 채도 차 0~7 이라 영상만으로 구분되지 않는다. 확산광으로 바꾸면 반사광과 함께 해결된다.
+5. 렌즈 왜곡 보정 — 지금은 호모그래피(평면 가정)뿐이다(판·헤드 모두).
 
 ## 작업 규칙
 - 하드웨어 실행은 사용자가 한 단계씩. 코드는 요청 범위만.
 - 화면은 HTML(서버가 상태의 주인). cv2.imshow 금지. 오프라인 납품 전제 — 웹폰트·CDN 금지(맑은 고딕·Consolas), 자산 URL 에 ?v=버전.
 - 오프라인 재현 스위치(--image) 필수. 특정 사진에 오버피팅 금지 — tools/regress.py 로 전체 회귀.
 - 검출 로직 수정 금지(요청된 소규모 수정만). 땜질 대신 근본적 해결.
+- 운용 값은 settings_schema 에만(위 설정 스키마 규칙). 새 설정은 스키마 항목으로 더하고 README 설정 표를 갱신한다.
 - md 문서는 README.md·CLAUDE.md 둘뿐. 프롬프트 사본·작업 기록 만들지 않는다.
 - 상세 기록은 Obsidian 01_Projects/Auto_Measurement_Program 에 사용자가 관리.
