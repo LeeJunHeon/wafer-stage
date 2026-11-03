@@ -194,8 +194,11 @@ class State:
             data.get("settings"), dict) else data
         if not isinstance(body, dict):
             return None
-        migrated, _notes = schema.migrate(body)
-        return self.candidate(values={k: migrated[k] for k in APP_KEYS if k in migrated})
+        migrated, _notes = schema.migrate(body, fill=False)
+        values = {k: migrated[k] for k in APP_KEYS if k in migrated}
+        if not values:
+            return None                    # 설정 키가 하나도 없다 - 설정 파일이 아니다
+        return self.candidate(values=values)
 
     # ---------------- 편의 ----------------
     def park_xy(self):

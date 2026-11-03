@@ -384,8 +384,11 @@ def deep_merge(base, over):
 # --------------------------------------------------------------------------
 # 이행(예전 settings.json) · 정규화
 # --------------------------------------------------------------------------
-def migrate(raw):
+def migrate(raw, fill=True):
     """예전 settings.json 을 지금 형식으로. 모르는 키는 지우지 않는다.
+
+    fill=False(가져오기)면 파일에 있는 예전 키만 바꾸고, 없는 항목을 기본값으로
+    채우지 않는다 - 일부만 담긴 파일을 가져올 때 공구·레시피가 기본값으로 덮이면 안 된다.
 
     - park_xy · marker_mm_xy 는 그대로
     - z_measure_mm → 히트건(기본 공구)의 z_work_mm
@@ -396,7 +399,7 @@ def migrate(raw):
     """
     s = copy.deepcopy(raw or {})
     notes = []
-    if not has_path(s, "tool.items"):
+    if not has_path(s, "tool.items") and (fill or "z_measure_mm" in s):
         z = s.get("z_measure_mm")
         try:
             z = float(z) if z is not None else 44.0
@@ -405,7 +408,7 @@ def migrate(raw):
         set_path(s, "tool.items", _tools_default(z))
         if "z_measure_mm" in s:
             notes.append("z_measure_mm %g → 히트건 작업 높이" % z)
-    if not has_path(s, "recipe.items"):
+    if not has_path(s, "recipe.items") and (fill or "dwell_s" in s):
         w = s.get("dwell_s")
         try:
             w = float(w) if w is not None else 5.0
@@ -414,7 +417,7 @@ def migrate(raw):
         set_path(s, "recipe.items", [recipe.default_recipe(w)])
         if "dwell_s" in s:
             notes.append("dwell_s %g → 기본 레시피 대기" % w)
-    if "focus_mode" not in s:
+    if "focus_mode" not in s and (fill or "autofocus" in s):
         af = s.get("autofocus", True)
         s["focus_mode"] = "auto" if af in (True, None) else "fixed"
     if isinstance(s.get("focus"), str):
