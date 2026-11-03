@@ -1,4 +1,4 @@
-"""stage.py - 펌웨어 V6(firmware/stage_v6/stage_v6.ino) 시리얼 드라이버.
+"""stage.py - 펌웨어 V11(firmware/stage_v11/stage_v11.ino) 시리얼 드라이버.
 
 프로토콜은 .ino 에서 그대로 따왔다.
   보내는 것   : "st" / "mx 100.0" / "my 50.5" / "save"  (줄바꿈으로 끝)
@@ -9,6 +9,13 @@
   거부        : "  [거부] 원점 미확정 ..." / "  [거부] 범위 밖  목표=..."
   경고        : 줄 안에 "[!]" (X 틀어짐 / CPU / 중단)
   저장        : "save" -> "  저장됨 (신뢰 확정)"
+  릴레이(V10) : "r 3 1" / "r all 0" / "rs" -> "RS R1=0 ... R10=0"
+  통신 감시   : "wd 5000"(V11) -> 끊기면 펌웨어가 "[!] 통신 끊김 · 릴레이 전부 꺼짐"
+  위치 세팅   : "sp <x펄스> <y펄스>" -> "  PC 위치로 세팅 (저장됨)" (사진 호밍)
+
+--dry 는 시리얼 없이 펌웨어를 흉내 낸다(이동 · 원점 · 릴레이 · sp · 통신 감시).
+통신 감시는 펌웨어처럼 스레드가 시간을 보고 판정한다. 검증용으로 '실제 위치'를
+보고 위치와 어긋나게(탈조) 만들 수 있다(dry_slip) - 사진 호밍 검증이 쓴다.
 
 펌웨어가 한글을 찍으므로 디코딩은 UTF-8 + errors="replace" 로 한다 (깨져도
 파싱은 ASCII 부분만 보므로 문제 없다).
@@ -26,6 +33,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 
 from . import paths
@@ -35,7 +43,7 @@ from . import paths
 DRY_MOVE_S = float(os.environ.get("WAFER_STAGE_DRY_MOVE_S", "0") or 0)
 DRY_TICK_S = 0.05                  # 자는 동안 이만큼마다 중단을 확인한다
 # --dry 가 흉내 낼 펌웨어 버전(검증용). 실제 연결에서는 배너에서 읽는다.
-DRY_FW = os.environ.get("WAFER_STAGE_DRY_FW", "V10").upper()
+DRY_FW = os.environ.get("WAFER_STAGE_DRY_FW", "V11").upper()
 # --dry 는 늘 "원점 있음" 으로 답해 왔다. 원점이 없는 상태의 동작(수동 이동만
 # 허용, goto 거절)을 검증하려면 그것도 흉내 낼 수 있어야 한다.
 DRY_NO_HOME = os.environ.get("WAFER_STAGE_DRY_NO_HOME", "") not in ("", "0")
@@ -44,10 +52,14 @@ JOG_MAX_PULSE = 8000               # 펌웨어 V8 의 jx/jy 한도와 같은 값
 # 원점(0)은 끝단에서 이만큼 물러난 자리다. 펌웨어의 HOME_GAP(320 펄스)과 같은
 # 값이어야 한다. settings.json 의 마커 좌표가 이 원점 기준으로 실측되어 있어서,
 # 이격 거리는 취향이 아니라 좌표계의 일부다 - 바꾸면 모든 샘플이 그만큼 어긋난다.
+# 값은 설정(origin_gap_mm, 고급)이 configure() 로 넣는다 - 아래는 그 전의 초기값이다.
 ORIGIN_GAP_MM = 2.0
 
 PPMM = 160.0                  # 160 펄스 = 1mm (.ino 의 PPMM)
-DEFAULT_SPEED_PPS = 6000      # 펌웨어 기본 vMax (v6000)
+# 속도·시간은 설정(motion.* · serial.*)이 configure() 로 넣는다. 아래는 초기값일 뿐이다
+# (단독 CLI 실행용). 펌웨어 펄스 폭 같은 타이밍은 펌웨어 상수라 여기서 다루지 않는다.
+DEFAULT_SPEED_PPS = 6000      # 절대 이동
+JOG_PPS = 6000                # 원점이 있을 때 조그
 JOG_SLOW_PPS = 1500           # 원점 없이 수동으로 몰 때 - 끝단에 닿아도 살살
 # 가동범위(기본값). 펌웨어의 X_MAX/Y_MAX/Z_MAX 는 기계 한계이고, 앱은 그 안에서
 # 실사용 범위를 settings.json 의 "limits" 로 정한다 - set_limits() 가 아래 값을
@@ -55,7 +67,7 @@ JOG_SLOW_PPS = 1500           # 원점 없이 수동으로 몰 때 - 끝단에 �
 # 복사해 두지 말고 매번 stage_mod.X 로 읽어야 바뀐 값을 본다.
 X_MAX_PULSE = 39620           # 247.6mm
 Y_MAX_PULSE = 39640           # 247.8mm
-# 펌웨어 V10(V9 와 같은 값)의 Z_PPMM · Z_MAX 와 같은 값이어야 한다.
+# 펌웨어 V11(V9 와 같은 값)의 Z_PPMM · Z_MAX 와 같은 값이어야 한다.
 # 실측: 위 끝단에서 2mm 이격한 0 에서 아래 끝단까지 45mm (2026-09-16 재실측).
 Z_PPMM      = 160.0           # 실측 확인 2026-09-14 (1mm 명령 = 1mm 이동)
 Z_MAX_PULSE = 7200            # 45mm - 실측값
@@ -87,6 +99,27 @@ def set_limits(x_max_mm=None, y_max_mm=None, z_max_mm=None):
         Z_MAX_PULSE = int(round(z * Z_PPMM))
         Z_MAX_MM = Z_MAX_PULSE / Z_PPMM
     return limits_mm()
+
+
+def configure(speed_pps=None, jog_pps=None, jog_slow_pps=None, line_timeout_s=None,
+              move_timeout_s=None, boot_wait_s=None, origin_gap_mm=None):
+    """설정(settings_schema)의 속도·시간을 반영한다. None 은 지금 값 유지."""
+    global DEFAULT_SPEED_PPS, JOG_PPS, JOG_SLOW_PPS, LINE_TIMEOUT_S, MOVE_TIMEOUT_S
+    global BOOT_MAX_S, ORIGIN_GAP_MM
+    if speed_pps:
+        DEFAULT_SPEED_PPS = int(speed_pps)
+    if jog_pps:
+        JOG_PPS = int(jog_pps)
+    if jog_slow_pps:
+        JOG_SLOW_PPS = int(jog_slow_pps)
+    if line_timeout_s:
+        LINE_TIMEOUT_S = float(line_timeout_s)
+    if move_timeout_s:
+        MOVE_TIMEOUT_S = float(move_timeout_s)
+    if boot_wait_s:
+        BOOT_MAX_S = float(boot_wait_s)
+    if origin_gap_mm is not None:
+        ORIGIN_GAP_MM = float(origin_gap_mm)
 
 
 def limits_mm():
@@ -121,8 +154,8 @@ POLL_S = 0.2                  # 한 번 읽기에 기다리는 시간 (포트 �
 DONE_MARK = " | X="           # 이동 보고 줄
 ALREADY_MARK = "이미 그 위치"
 REJECT_MARK = "[거부]"
-N_RELAY = 10                  # 펌웨어 V10 의 릴레이 R1~R10
-N_HOME = 8                    # 펌웨어 V10 의 호밍 센서 H1~H8
+N_RELAY = 10                  # 펌웨어 V10+ 의 릴레이 R1~R10
+WD_MARK = "통신 끊김"          # 펌웨어 V11 통신 감시가 릴레이를 끈 줄
 WARN_MARK = "[!]"
 
 
@@ -191,7 +224,7 @@ class Stage:
         self.dry = bool(dry)
         self.ser = None
         self.banner = ""
-        self.fw_version = ""           # 배너에서 읽은 "V8" / "V9" / "V10"
+        self.fw_version = ""           # 배너에서 읽은 "V8" … "V11"
         self.needs_home = False        # 배너에 "원점없음" 이 있었나
         self.log_path = log_path or os.path.join(paths.OUT_DIR, "serial.log")
         # 주고받은 줄을 그대로 넘겨받을 곳(서버가 화면 로그로 보낸다). 파일 로그는
@@ -209,9 +242,22 @@ class Stage:
         self._dry_homed = {"x": not DRY_NO_HOME, "y": not DRY_NO_HOME,
                            "z": not DRY_NO_HOME}
         self.speed_pps = None          # 아직 펌웨어에 속도를 보낸 적이 없다
-        # dry 의 릴레이·호밍 센서(V10). 전원 투입 때 릴레이는 전부 꺼짐, 센서는 안 닿음.
+        # dry 의 릴레이(V10). 전원 투입 때 전부 꺼짐.
         self._dry_relay = [False] * N_RELAY
-        self._dry_home = [False] * N_HOME
+        # dry 통신 감시(V11): 펌웨어처럼 마지막 줄을 받은 뒤 시간이 지나면 릴레이를 끈다.
+        self._dry_lock = threading.RLock()
+        self._dry_wd_ms = 0
+        self._dry_last_rx = time.monotonic()
+        self._dry_tripped = False
+        self._dry_busy = False         # 블로킹 이동 중(펌웨어는 이때 판정하지 않는다)
+        self._dry_stall_until = 0.0    # 검증용: 이 시각까지 받은 줄을 '못 받은 것' 으로
+        self._dry_alive = False
+        # 검증용 '실제 위치' 오프셋(탈조). 실제 = 보고 + off. sp 는 보고만 바꾼다.
+        self._dry_off = {"x": 0.0, "y": 0.0}
+        # 펌웨어가 스스로 보낸 사건(통신 끊김 등). fn(kind, line) - 워커·감시 스레드에서 불린다.
+        self.on_event = None
+        self.wd_tripped_at = None
+        self.profile = None            # 마지막으로 보낸 (가속도, 시작 속도)
 
     # ---- 로그 ----------------------------------------------------------
     def _log(self, arrow, text):
@@ -231,9 +277,12 @@ class Stage:
     # ---- 열기/닫기 ------------------------------------------------------
     def open(self):
         if self.dry:
-            self.banner = "=== 3-AXIS %s ===\n(dry) 시리얼 없이 실행" % DRY_FW
+            self.banner = ("=== 3-AXIS %s ===\n  X 0~%d  Y 0~%d  Z 0~%d\n(dry) 시리얼 없이 실행"
+                           % (DRY_FW, 39620, 39640, 7200))
             self.fw_version = DRY_FW
             self._log("--", self.banner)
+            self._dry_alive = True
+            threading.Thread(target=self._dry_watch, name="dry-wd", daemon=True).start()
             return self.banner
         try:
             import serial
@@ -266,6 +315,7 @@ class Stage:
         return self.banner
 
     def close(self):
+        self._dry_alive = False
         if self.ser is not None:
             self._log("--", "close")
             try:
@@ -286,6 +336,7 @@ class Stage:
         self._log("->", cmd)
         if self.dry:
             print("  (dry) %s" % cmd)
+            self._dry_rx()
             return
         self.ser.write((cmd + "\n").encode("ascii"))
         self.ser.flush()
@@ -312,7 +363,60 @@ class Stage:
         # 있어서 v 를 다시 보내지 않는다. 믿음을 버려 다음 이동에서 보내게 한다.
         if "3-AXIS" in ln:
             self.speed_pps = None
+            self.profile = None
+        if WD_MARK in ln:
+            self._event("wd_trip", ln)
         return ln
+
+    def _event(self, kind, line):
+        if kind == "wd_trip":
+            self.wd_tripped_at = time.time()
+        fn = self.on_event
+        if fn is not None:
+            try:
+                fn(kind, line)
+            except Exception:              # noqa: BLE001
+                pass
+
+    # ---- dry 펌웨어 흉내: 통신 감시 ------------------------------------
+    def _dry_rx(self):
+        """dry 가 줄 하나를 받았다(펌웨어의 lastRx 갱신)."""
+        with self._dry_lock:
+            if time.monotonic() < self._dry_stall_until:
+                return                     # 검증용: 링크가 끊긴 척
+            self._dry_last_rx = time.monotonic()
+            self._dry_tripped = False
+
+    def _dry_watch(self):
+        """펌웨어 loop() 의 통신 감시. 블로킹 이동 중에는 판정하지 않는다."""
+        while self._dry_alive:
+            time.sleep(0.05)
+            line = None
+            with self._dry_lock:
+                if (self._dry_wd_ms > 0 and not self._dry_busy and not self._dry_tripped
+                        and any(self._dry_relay)
+                        and (time.monotonic() - self._dry_last_rx) * 1000.0 > self._dry_wd_ms):
+                    self._dry_relay = [False] * N_RELAY
+                    self._dry_tripped = True
+                    line = "  [!] 통신 끊김 · 릴레이 전부 꺼짐"
+            if line:
+                self._log("<-", line)
+                self._event("wd_trip", line)
+
+    def dry_stall(self, seconds):
+        """검증용: seconds 동안 dry 펌웨어가 받은 줄을 무시한다(통신 끊김 흉내)."""
+        with self._dry_lock:
+            self._dry_stall_until = time.monotonic() + float(seconds)
+
+    def dry_slip(self, dx_mm, dy_mm):
+        """검증용: 실제 위치를 보고 위치에서 (dx, dy) 만큼 어긋나게 한다(탈조)."""
+        self._dry_off["x"] += float(dx_mm)
+        self._dry_off["y"] += float(dy_mm)
+
+    def dry_true_xy(self):
+        """dry 의 실제(물리) 위치 mm. 합성 카메라가 헤드 마커를 그리는 자리다."""
+        return (self._dry_xy["x"] + self._dry_off["x"],
+                self._dry_xy["y"] + self._dry_off["y"])
 
     def _collect(self, deadline_s, is_done, what):
         """완료 줄이 올 때까지 읽는다. [거부] 면 예외, [!] 는 모아 둔다."""
@@ -390,10 +494,15 @@ class Stage:
         # 중에 새로 들어온 '!' 만 중단으로 본다.
         was = self._aborted
         end = time.time() + DRY_MOVE_S
-        while time.time() < end:
-            if self._aborted and not was:
-                raise StageError("비상정지로 중단됨 · (dry) [!] 중단")
-            time.sleep(min(DRY_TICK_S, max(0.0, end - time.time())))
+        self._dry_busy = True
+        try:
+            while time.time() < end:
+                if self._aborted and not was:
+                    raise StageError("비상정지로 중단됨 · (dry) [!] 중단")
+                time.sleep(min(DRY_TICK_S, max(0.0, end - time.time())))
+        finally:
+            self._dry_busy = False
+            self._dry_rx()                 # 펌웨어는 이동이 끝나는 순간 타이머를 다시 시작한다
 
     def _move(self, cmd, what):
         if self._aborted:
@@ -411,18 +520,18 @@ class Stage:
         return self._collect(MOVE_TIMEOUT_S,
                              lambda s: (DONE_MARK in s) or (ALREADY_MARK in s), what)
 
-    def move_x_mm(self, mm):
-        self._ensure_speed(DEFAULT_SPEED_PPS)
+    def move_x_mm(self, mm, speed=None):
+        self._ensure_speed(speed or DEFAULT_SPEED_PPS)
         return self._move("mx %.1f" % float(mm), "X 이동")
 
-    def move_y_mm(self, mm):
-        self._ensure_speed(DEFAULT_SPEED_PPS)
+    def move_y_mm(self, mm, speed=None):
+        self._ensure_speed(speed or DEFAULT_SPEED_PPS)
         return self._move("my %.1f" % float(mm), "Y 이동")
 
-    def move_z_mm(self, mm):
+    def move_z_mm(self, mm, speed=None):
         """Z 절대 이동. 0 이 맨 위이고 값이 커질수록 내려간다."""
         self._need_fw(9, "Z 이동")
-        self._ensure_speed(DEFAULT_SPEED_PPS)
+        self._ensure_speed(speed or DEFAULT_SPEED_PPS)
         return self._move("mz %.2f" % float(mm), "Z 이동")
 
     # ---- 수동 원점 잡기(V7) --------------------------------------------
@@ -453,6 +562,50 @@ class Stage:
                 if self._readline() is None:
                     break
         self.speed_pps = pps
+
+    def set_profile(self, accel, start_pps):
+        """가속도(a)·시작 속도(b)를 펌웨어로 보낸다. 같으면 보내지 않는다."""
+        want = (int(accel), int(start_pps))
+        if self.profile == want:
+            return
+        for cmd in ("a %d" % want[0], "b %d" % want[1]):
+            self._write(cmd)
+            if not self.dry:
+                t0 = time.time()           # printStatus 한 덩어리를 읽어 버린다
+                while time.time() - t0 < 1.0:
+                    if self._readline() is None:
+                        break
+        self.profile = want
+
+    def set_position(self, x_mm, y_mm):
+        """지금 위치를 (x, y) 로 세팅한다(sp). 사진 호밍이 잰 실제 위치로 맞출 때 쓴다.
+
+        펌웨어는 X·Y 원점을 '있음' 으로 만들고 EEPROM 에 저장한다. Z 는 건드리지 않는다.
+        """
+        xp, yp = int(round(float(x_mm) * PPMM)), int(round(float(y_mm) * PPMM))
+        self._write("sp %d %d" % (xp, yp))
+        if self.dry:
+            if not (0 <= xp <= X_MAX_PULSE and 0 <= yp <= Y_MAX_PULSE):
+                raise StageError("펌웨어 거부: [거부] sp 값이 범위 밖")
+            tx, ty = self.dry_true_xy()
+            self._dry_xy["x"], self._dry_xy["y"] = xp / PPMM, yp / PPMM
+            self._dry_off = {"x": tx - self._dry_xy["x"], "y": ty - self._dry_xy["y"]}
+            self._dry_homed["x"] = self._dry_homed["y"] = True
+        else:
+            self._collect(LINE_TIMEOUT_S, lambda t: "PC 위치로 세팅" in t, "위치 세팅")
+        return self.status()
+
+    def watchdog(self, ms):
+        """펌웨어 통신 감시 시간(V11). 0 = 끔."""
+        self._need_fw(11, "통신 감시")
+        ms = max(0, int(ms))
+        self._write("wd %d" % ms)
+        if self.dry:
+            with self._dry_lock:
+                self._dry_wd_ms = ms
+            return ms
+        self._collect(LINE_TIMEOUT_S, lambda t: "통신 감시" in t, "통신 감시")
+        return ms
 
     def forget(self):
         """펌웨어의 원점 기록을 지운다(비상정지 뒤).
@@ -545,20 +698,30 @@ class Stage:
         """펌웨어에 동시 이동이 없으므로 X 먼저, 그다음 Y."""
         return [self.move_x_mm(x), self.move_y_mm(y)]
 
-    def abort(self):
+    def abort(self, relays_off=False):
         """비상정지. 어느 스레드에서든 즉시 "!" 를 쓴다.
+
+        relays_off 면 같은 쓰기에 "r all 0" 을 바로 붙인다(정책이 '끄기' 일 때).
+        "!" 가 먼저 나가고 펌웨어는 이동을 끊은 뒤 다음 줄로 릴레이를 끈다 - 비상정지
+        자체가 늦어지지 않는다.
 
         이동은 블로킹이라 워커 스레드가 보고 줄을 기다리고 있다. 큐에 넣어 순서를
         기다리면 '비상' 이 아니므로 여기서만 예외적으로 포트에 직접 쓴다
         (pyserial 의 write 는 스레드 안전하고, 진행 중이던 이동은 보고 줄에
         "[!] 중단" 이 붙어 돌아온다).
         """
-        self._log("->", "! (abort)")
+        self._log("->", "! (abort)" + (" + r all 0" if relays_off else ""))
         self._aborted = True
-        if self.dry or self.ser is None:
+        if self.dry:
+            self._dry_rx()
+            if relays_off:
+                self._dry_relay = [False] * N_RELAY
+            return True
+        if self.ser is None:
             return True
         try:
-            self.ser.write(("!" + chr(10)).encode("ascii"))
+            data = "!" + chr(10) + ("r all 0" + chr(10) if relays_off else "")
+            self.ser.write(data.encode("ascii"))
             self.ser.flush()
             return True
         except Exception as e:             # noqa: BLE001
@@ -610,14 +773,6 @@ class Stage:
             return list(self._dry_relay)
         return self._read_bits("rs", "RS", "R", N_RELAY, "릴레이 상태")
 
-    def homing_status(self):
-        """'hs' -> [bool]*8 (True = 닿음). 이동·원점에는 아직 쓰지 않는다."""
-        self._need_fw(10, "호밍 센서")
-        self._write("hs")
-        if self.dry:
-            return list(self._dry_home)
-        return self._read_bits("hs", "HS", "H", N_HOME, "호밍 센서")
-
     def save(self):
         if self._aborted:
             # 비상정지 뒤의 위치는 신뢰할 수 없다. EEPROM 에 굳히면 다음 전원에서
@@ -650,7 +805,7 @@ def load_port_setting():
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="스테이지 펌웨어 V6 시리얼 드라이버")
+    ap = argparse.ArgumentParser(description="스테이지 펌웨어 V11 시리얼 드라이버")
     ap.add_argument("cmd", nargs="?", choices=["st", "mx", "my", "save"],
                     help="보낼 명령")
     ap.add_argument("value", nargs="?", type=float, help="mx / my 의 mm 값")

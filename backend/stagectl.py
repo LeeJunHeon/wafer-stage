@@ -35,6 +35,9 @@ class StageCtl:
         self.dry = bool(dry)
         self.dev = None
         self._ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stage")
+        # 펌웨어가 스스로 보낸 사건(통신 끊김 등)을 받을 곳. fn(kind, line) - 워커·감시
+        # 스레드에서 불리므로 받는 쪽이 루프로 넘긴다(relays 가 단다).
+        self.event_handler = None
 
     async def _call(self, fn, *a, **kw):
         loop = asyncio.get_running_loop()
@@ -46,6 +49,7 @@ class StageCtl:
             await self.disconnect()
         dev = stage_mod.Stage(port, dry=self.dry)
         dev.on_line = _serial_line          # 주고받은 줄을 화면 로그로도 보낸다
+        dev.on_event = self._on_event
         banner = await self._call(dev.open)
         if self.dry:
             dev.port_name = "--dry"        # 화면 칩에 '?' 대신 무엇인지 보이게
@@ -56,6 +60,14 @@ class StageCtl:
         dev, self.dev = self.dev, None
         if dev is not None:
             await self._call(dev.close)
+
+    def _on_event(self, kind, line):
+        fn = self.event_handler
+        if fn is not None:
+            try:
+                fn(kind, line)
+            except Exception:              # noqa: BLE001
+                pass
 
     @property
     def connected(self):
@@ -78,14 +90,50 @@ class StageCtl:
         dev = self._need()
         return await self._call(dev.goto_mm, x_mm, y_mm)
 
-    async def move_x(self, mm):
-        return await self._call(self._need().move_x_mm, mm)
+    async def move_x(self, mm, speed=None):
+        return await self._call(self._need().move_x_mm, mm, speed)
 
-    async def move_y(self, mm):
-        return await self._call(self._need().move_y_mm, mm)
+    async def move_y(self, mm, speed=None):
+        return await self._call(self._need().move_y_mm, mm, speed)
 
-    async def move_z(self, mm):
-        return await self._call(self._need().move_z_mm, mm)
+    async def move_z(self, mm, speed=None):
+        return await self._call(self._need().move_z_mm, mm, speed)
+
+    async def set_position(self, x_mm, y_mm):
+        return await self._call(self._need().set_position, x_mm, y_mm)
+
+    async def set_profile(self, accel, start_pps):
+        return await self._call(self._need().set_profile, accel, start_pps)
+
+    async def watchdog(self, ms):
+        return await self._call(self._need().watchdog, ms)
+
+    async def relay_set(self, n, on):
+        return await self._call(self._need().relay_set, n, on)
+
+    async def relay_all_off(self):
+        return await self._call(self._need().relay_all_off)
+
+    async def relay_status(self):
+        return await self._call(self._need().relay_status)
+
+    def fw_major(self):
+        return stage_mod._major_of(self.fw_version)
+
+    # ---- 검증용(dry 전용) ----
+    def dry_true_xy(self):
+        dev = self.dev
+        if dev is None or not getattr(dev, "dry", False):
+            return None
+        return dev.dry_true_xy()
+
+    def dry_slip(self, dx, dy):
+        if self.dev is not None and self.dev.dry:
+            self.dev.dry_slip(dx, dy)
+
+    def dry_stall(self, seconds):
+        if self.dev is not None and self.dev.dry:
+            self.dev.dry_stall(seconds)
 
     async def jog_rel(self, axis, mm):
         return await self._call(self._need().jog_rel, axis, mm)
@@ -103,12 +151,12 @@ class StageCtl:
     async def save(self):
         return await self._call(self._need().save)
 
-    def abort(self):
-        """워커 큐를 거치지 않는 즉시 호출 (동기)."""
+    def abort(self, relays_off=False):
+        """워커 큐를 거치지 않는 즉시 호출 (동기). relays_off 면 "r all 0" 을 바로 붙인다."""
         if self.dev is None:
             return False
         try:
-            return self.dev.abort()
+            return self.dev.abort(relays_off=relays_off)
         except Exception as e:             # noqa: BLE001
             logger.write("err", "비상정지 실패: %s" % e)
             return False
@@ -118,8 +166,11 @@ class StageCtl:
 
 
 StageError = stage_mod.StageError
-# 원점(0)이 끝단에서 물러나는 거리. 드라이버 상수를 그대로 쓴다(단일 출처).
-ORIGIN_GAP_MM = stage_mod.ORIGIN_GAP_MM
+
+
+def origin_gap_mm():
+    """원점(0)이 끝단에서 물러나는 거리(설정 origin_gap_mm → 드라이버). 매번 읽는다."""
+    return stage_mod.ORIGIN_GAP_MM
 
 
 def z_max_mm():
