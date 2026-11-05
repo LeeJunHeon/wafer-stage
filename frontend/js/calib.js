@@ -68,10 +68,11 @@
   // ---------------- 그리기 ----------------
   function render() {
     if (!C.open) return;
-    ['head', 'marker', 'tool'].forEach(t => {
+    ['head', 'plate', 'marker', 'tool'].forEach(t => {
       $('cal' + t[0].toUpperCase() + t.slice(1)).hidden = t !== C.tab;
     });
     if (C.tab === 'head') renderHead();
+    else if (C.tab === 'plate') UI.renderPlate($('calPlate'));
     else if (C.tab === 'marker') renderMarker();
     else renderTool();
     footer();
@@ -129,6 +130,10 @@
       kids.push(h('div', { cls: res.ok ? 'okline' : 'warnline',
         text: 'RMS ' + (+res.rms_mm).toFixed(3) + ' mm · 최대 ' + (+res.max_mm).toFixed(3) + ' mm'
           + (res.ok ? '' : ' · 한계 ' + res.rms_limit_mm + ' mm 초과 · 다시 권장') }));
+      if ((res.skipped || []).length) {
+        kids.push(h('div', { cls: 'warnline', text: '마커가 화면 끝이라 건너뜀 ' + res.skipped.length + '점 · '
+          + res.skipped.map(p => 'X' + (+p[0]).toFixed(0) + ' Y' + (+p[1]).toFixed(0)).join(' · ') }));
+      }
       kids.push(h('div', { cls: 'row' }, [
         btn('적용', () => UI.send({ cmd: 'head_calib_apply' }), { primary: res.ok,
           tip: '이 보정을 저장합니다(카메라 번호 · 해상도도 함께 기록).' }),
@@ -274,9 +279,12 @@
     }
   }
 
+  UI.calibKit = { card: card, check: check, btn: btn, states: states, f2: f2, homed: homed, busy: busy };
+
   // ---------------- 서버 응답 ----------------
   UI.onCalibAck = function (msg) {
     const of = msg.of;
+    if (of.indexOf('plate_') === 0) { UI.onPlateAck(msg); return; }
     if (of === 'head_calib' && msg.ok) C.head = msg.result;
     if (of === 'head_calib' && !msg.ok && msg.reason !== 'busy' && (msg.needs_confirm || []).length) {
       UI.alert(msg.needs_confirm.join('\n'), '헤드 보정');

@@ -134,25 +134,30 @@
   .camlegend { display: flex; gap: 14px; padding: 4px 12px 6px; font-size: 11px; color: var(--dim); border-top: 1px solid var(--line); }
   .camlegend .sp { flex: 1; }
   .capturing { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(14,20,24,.6); color: #fff; font-weight: 600; letter-spacing: .3px; }
-  .ov-rect { fill: none; stroke: #ffd400; stroke-width: 2; stroke-dasharray: 8 6; }
+  .ov-rect { fill: none; stroke: #ffd400; stroke-width: calc(2px * var(--ovs, 1)); stroke-dasharray: calc(8px * var(--ovs, 1)) calc(6px * var(--ovs, 1)); }
+  .ov-quad { fill: none; stroke: #ffd400; stroke-width: calc(1.2px * var(--ovs, 1)); }
+  .ov-head { fill: rgba(255,120,200,.12); stroke: #ff78c8; stroke-width: calc(1.6px * var(--ovs, 1)); }
+  .ov-label { font: 600 calc(13px * var(--ovs, 1)) var(--mono); fill: #ffd400; paint-order: stroke; stroke: #0e1418; stroke-width: calc(3px * var(--ovs, 1)); }
+  .ov-label.head { fill: #ff78c8; }
   /* 미리보기에서는 검출 결과가 없다. 촬영본은 감추고 감지영역·포인터만 흐리게. */
   #cam.livemode #frame { display: none; }
   #cam.livemode #ovMarkers, #cam.livemode #ovWafer, #cam.livemode #ovSamples { display: none; }
-  #cam.livemode #ovRect { opacity: .45; }
+  #cam.livemode #ovRect, #cam.livemode #ovQuad { opacity: .45; }
+  #cam.livemode #ovHead { display: none; }
   /* 이전 보정으로 찍은 십자. 카메라가 돌아갔으면 실제와 어긋나므로 흐리게. */
   #ovPointer.stale { opacity: .4; }
   .ov-wafer { fill: none; stroke: #ffd400; stroke-width: 1.5; opacity: .9; }
-  .ov-marker { fill: none; stroke: #2f8cff; stroke-width: 2; }
-  .ov-marker-label { font: 600 14px var(--mono); fill: #2f8cff; paint-order: stroke; stroke: #0e1418; stroke-width: 3px; }
-  .ov-sample { fill: rgba(60,220,110,.10); stroke: #35e07a; stroke-width: 1.6; }
+  .ov-marker { fill: none; stroke: #2f8cff; stroke-width: calc(2px * var(--ovs, 1)); }
+  .ov-marker-label { font: 600 calc(14px * var(--ovs, 1)) var(--mono); fill: #2f8cff; paint-order: stroke; stroke: #0e1418; stroke-width: calc(3px * var(--ovs, 1)); }
+  .ov-sample { fill: rgba(60,220,110,.10); stroke: #35e07a; stroke-width: calc(1.6px * var(--ovs, 1)); }
   .ov-sample.done { fill: rgba(60,220,110,.30); }
   .ov-sample.skip { stroke: #9aa7b2; fill: none; stroke-dasharray: 3 3; }
-  .ov-sample.target { stroke: #ffa53a; stroke-width: 2.6; fill: rgba(255,165,58,.2); }
-  .ov-sample.selected { stroke: #7fc8ff; stroke-width: 2.4; }
-  .ov-num { font: 600 12.5px var(--mono); fill: #fff; paint-order: stroke; stroke: #0e1418; stroke-width: 3px; pointer-events: none; }
+  .ov-sample.target { stroke: #ffa53a; stroke-width: calc(2.6px * var(--ovs, 1)); fill: rgba(255,165,58,.2); }
+  .ov-sample.selected { stroke: #7fc8ff; stroke-width: calc(2.4px * var(--ovs, 1)); }
+  .ov-num { font: 600 calc(12.5px * var(--ovs, 1)) var(--mono); fill: #fff; paint-order: stroke; stroke: #0e1418; stroke-width: calc(3px * var(--ovs, 1)); pointer-events: none; }
   .ov-hit { fill: transparent; cursor: pointer; }
   /* 수동 샘플: 중심의 작은 마름모. 상태 클래스(done·skip·target·selected)는 공통. */
-  .ov-sample.manual { stroke-width: 2; }
+  .ov-sample.manual { stroke-width: calc(2px * var(--ovs, 1)); }
   /* 추가 모드: 십자 커서 · hit 원 끔 · 윤곽/마름모 안(채움 없어도)만 선택 */
   #cam.addmode { cursor: crosshair; }
   #cam.addmode .ov-hit { display: none; }
@@ -447,7 +452,7 @@
   /* ---------- 보정 ---------- */
   dialog.cal { width: 1020px; height: 800px; }
   .calbody { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 16px; gap: 10px; }
-  .caltabs { flex: none; width: 420px; }
+  .caltabs { flex: none; width: 600px; }
   .calpane { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
   .calnow { font-size: 12.5px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
   .card { display: grid; grid-template-columns: 30px 1fr; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; opacity: .72; }
@@ -466,6 +471,30 @@
   .markimg { position: relative; width: 560px; max-width: 100%; }
   .markimg img { display: block; width: 100%; cursor: crosshair; border: 1px solid var(--line2); }
   .markdot { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid #ff3b3b; border-radius: 50%; pointer-events: none; }
+
+  /* ---------- 감지 영역 · 판 보정 ---------- */
+  .plategrid { display: grid; grid-template-columns: 380px 1fr; gap: 10px; min-height: 0; flex: 1; }
+  .platecards { display: flex; flex-direction: column; gap: 8px; min-width: 0; overflow: auto; }
+  .plateside { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
+  .plateview { flex: 1; min-height: 360px; overflow: auto; border: 1px solid var(--line2); background: #10161b; position: relative; }
+  .plateinner { position: relative; }
+  .plateinner img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
+  .plateinner svg { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  .plateview .pq { fill: rgba(255,212,0,.07); stroke: #ffd400; vector-effect: non-scaling-stroke; stroke-width: 1.2; }
+  .plateview .pv { fill: #ffd400; stroke: #0e1418; vector-effect: non-scaling-stroke; stroke-width: 1; cursor: grab; }
+  .plateview .pp { stroke: #35e0e0; vector-effect: non-scaling-stroke; stroke-width: 1.4; fill: none; }
+  .plateview .pp.sel { stroke: #ff3b3b; }
+  .plateview .pp.bad { stroke: #ff3b3b; stroke-dasharray: 3 2; }
+  .plateview text { fill: #fff; paint-order: stroke; stroke: #0e1418; stroke-width: 3px; font-family: var(--mono); font-weight: 600; pointer-events: none; }
+  .platebar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .platebar .seg { flex: none; }
+  .platetbl { max-height: 220px; overflow: auto; }
+  .platetbl tr.sel td { background: #e3f0ff; }
+  .platetbl tr.bad td { color: #b3261e; font-weight: 700; }
+  .platetbl td .btn { min-width: 0; }
+  .nudge { display: inline-flex; gap: 2px; }
+  .nudge .btn { min-width: 0; width: 28px; padding: 0; }
+  .nowrap { white-space: nowrap; }
 
   /* ---------- 공구 선택 ---------- */
   .toolpick { padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }

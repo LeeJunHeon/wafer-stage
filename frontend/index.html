@@ -22,6 +22,7 @@
       <span class="chip" id="chipServer" data-tip="화면과 서버의 연결 상태입니다."><i class="dot"></i><b>서버</b><span class="mono">연결 중</span></span>
       <span class="chip" id="chipCam" data-tip="카메라 번호와 미리보기 상태입니다. 번호는 [설정]에서 바꿉니다."><i class="dot"></i><b>카메라</b><span class="mono">—</span></span>
       <span class="chip" id="chipStage" data-tip="연결 포트 · 축별 원점 상태 · 저장 여부입니다. '미저장'이면 전원이 꺼질 때 위치가 사라질 수 있습니다(이동 뒤 자동 저장)."><i class="dot"></i><b>스테이지</b><span class="mono" id="chipStageTxt">—</span></span>
+      <span class="chip" id="chipCalib" data-tip="좌표 보정 상태입니다. 고정 보정은 저장한 감지 영역 · 판 보정의 잔차(RMS)를 보이고, 무효이거나 설정되지 않았으면 경보 색입니다."><i class="dot"></i><b>보정</b><span class="mono">—</span></span>
       <span class="chip" id="chipHome" data-tip="사진 호밍(헤드 마커)으로 확인한 위치 상태입니다. 미확인 · 정상 · 보정됨 · 실패 중 하나입니다."><i class="dot"></i><b>위치 확인</b><span class="mono">—</span></span>
       <span class="chip click" id="chipTool" data-tip="활성 공구입니다. 순회와 샘플 이동이 이 공구의 오프셋을 적용합니다. 누르면 바꿉니다(순회 중 제외)."><i class="dot"></i><b>공구</b><span class="mono">—</span></span>
       <span class="chip" id="chipRelay" data-tip="켜진 릴레이 개수입니다. 하나라도 켜져 있으면 강조합니다."><i class="dot"></i><b>릴레이</b><span class="mono">—</span></span>
@@ -29,7 +30,7 @@
     </div>
     <div class="hbtns">
       <button class="btn" id="btnSettings" data-tip="카메라 · 스테이지 · 위치 · 사진 호밍 · 공구 · 릴레이 · 측정 순서 · 검출 설정을 바꿉니다.">설정</button>
-      <button class="btn" id="btnCalib" data-tip="헤드 마커 · 판 마커 · 공구 오프셋 보정 창을 엽니다.">보정</button>
+      <button class="btn" id="btnCalib" data-tip="헤드 마커 · 감지 영역 · 판 보정 · 판 마커 · 공구 오프셋 보정 창을 엽니다.">보정</button>
       <button class="btn" id="btnExit" data-tip="위치를 저장하고 프로그램을 종료합니다. 스테이지는 움직이지 않으며, 다음 실행 때 저장된 위치에서 이어집니다.">종료</button>
       <button class="btn lg estop" id="btnEstop" data-tip="확인 없이 즉시 정지 명령을 보냅니다. 정지 뒤에는 위치를 믿을 수 없어 원점 등록이나 사진 호밍을 다시 해야 이동할 수 있습니다.">비상정지</button>
     </div>
@@ -50,6 +51,8 @@
             <g id="overlays">
             <g id="ovMarkers"></g>
             <rect id="ovRect" class="ov-rect"></rect>
+            <polygon id="ovQuad" class="ov-quad" points=""></polygon>
+            <g id="ovHead"></g>
             <circle id="ovWafer" class="ov-wafer"></circle>
             <g id="ovSamples"></g>
             <g id="ovPointer" hidden>
@@ -68,7 +71,7 @@
           <div><span class="k">웨이퍼</span><span class="v" id="infoWafer">—</span></div>
           <div><span class="k">샘플</span><span class="v" id="infoSamples">—</span></div>
         </div>
-        <div class="camlegend"><span>┅ 감지영역</span><span>■ 마커</span><span>▭ 샘플</span><span>✚ 포인터</span><span>◇ 수동</span><span>E: 윤곽 보완</span><span>M: 수동 추가</span><span class="sp"></span><span id="camHint">샘플 클릭: 선택</span></div>
+        <div class="camlegend"><span>┅ 감지영역</span><span>■ 마커</span><span>◆ 헤드 마커</span><span>▭ 샘플</span><span>✚ 포인터</span><span>◇ 수동</span><span>E: 윤곽 보완</span><span>M: 수동 추가</span><span class="sp"></span><span id="camHint">샘플 클릭: 선택</span></div>
       </div>
     </section>
 
@@ -159,10 +162,12 @@
   <div class="calbody">
     <div class="caltabs seg" id="calTabs" role="radiogroup">
       <label><input type="radio" name="caltab" value="head" checked>헤드 마커</label>
+      <label><input type="radio" name="caltab" value="plate">감지 영역 · 판 보정</label>
       <label><input type="radio" name="caltab" value="marker">판 마커</label>
       <label><input type="radio" name="caltab" value="tool">공구 오프셋</label>
     </div>
     <div class="calpane" id="calHead"></div>
+    <div class="calpane" id="calPlate" hidden></div>
     <div class="calpane" id="calMarker" hidden></div>
     <div class="calpane" id="calTool" hidden></div>
   </div>
@@ -261,6 +266,7 @@
 <script src="js/editors.js?v=__ASSET_V__"></script>
 <script src="js/settings.js?v=__ASSET_V__"></script>
 <script src="js/calib.js?v=__ASSET_V__"></script>
+<script src="js/plate.js?v=__ASSET_V__"></script>
 <script src="js/app.js?v=__ASSET_V__"></script>
 </body>
 </html>

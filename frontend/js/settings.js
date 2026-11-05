@@ -34,8 +34,12 @@
   }
 
   function items() { return (S.schema && S.schema.items) || []; }
+  // show_if: {키: 값} 이 지금 폼 값과 모두 같을 때만 보인다(보정 방식 → 판 마커 항목).
+  function shown(it) {
+    return !it.show_if || Object.keys(it.show_if).every(k => getP(S.form, k) === it.show_if[k]);
+  }
   function tabItems(tab) {
-    return items().filter(it => !it.hidden
+    return items().filter(it => !it.hidden && shown(it)
       && (tab === 'advanced' ? it.advanced : (it.tab === tab && !it.advanced)));
   }
   function errsFor(prefix) {
@@ -191,6 +195,15 @@
     const fc = h('div', { cls: 'fc' });
     control(fc, it);
     if (it.unit && it.type !== 'xy' && !it.editor) fc.appendChild(h('span', { cls: 'unit', text: it.unit }));
+    if (it.action) {
+      // 스키마가 정한 한 번에 바꾸기(예: 최대 해상도). 저장은 따로 눌러야 적용된다.
+      fc.appendChild(h('button', { cls: 'btn sm', text: it.action.label, 'data-tip': it.action.tip || null,
+        onclick: () => {
+          Object.keys(it.action.set).forEach(k => setP(S.form, k, it.action.set[k]));
+          Object.keys(it.action.set).forEach(k => { const o = items().find(x => x.key === k); if (o) changed(o); });
+          render();
+        } }));
+    }
     f.appendChild(fc);
     f.appendChild(h('div', { cls: 'fe' }));
     markMod(f, it);
@@ -210,6 +223,8 @@
     if (f) markMod(f, it);
     updateDirty();
     validateSoon();
+    // 이 값에 따라 보이는 항목이 있으면 다시 그린다(입력 칸 포커스를 잃지 않게 enum 만)
+    if (it.type === 'enum' && items().some(x => x.show_if && it.key in x.show_if)) render();
   }
 
   function num(v) {

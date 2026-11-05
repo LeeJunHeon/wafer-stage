@@ -90,6 +90,8 @@
         lastFrameId = s.frame.id;
         img.setAttribute('href', s.frame.url);
         $('cam').setAttribute('viewBox', '0 0 ' + s.frame.w + ' ' + s.frame.h);
+        // 고해상도 사진을 같은 화면 크기로 줄여 보이므로 선 굵기 · 글자를 비례로 키운다(원본 px 기준).
+        $('cam').style.setProperty('--ovs', String(Math.max(1, s.frame.w / 1280)));
         img.setAttribute('width', s.frame.w);
         img.setAttribute('height', s.frame.h);
       }
@@ -149,6 +151,39 @@
       rect.setAttribute('width', 0); rect.setAttribute('height', 0);
     }
 
+    // ---- 고정 보정: 감지 영역 사각형(얇은 선) + 라벨은 사각형 밖 ----
+    const K = Math.max(1, ((s.frame && s.frame.w) || 1280) / 1280);
+    const quad = s.sensing && s.sensing.quad;
+    const pq = $('ovQuad');
+    if (quad && quad.length === 4) {
+      pq.setAttribute('points', quad.map(p => p.join(',')).join(' '));
+      rect.setAttribute('width', 0); rect.setAttribute('height', 0);   // 사각형이 곧 감지 영역
+    } else {
+      pq.setAttribute('points', '');
+    }
+    // ---- 헤드 마커 검출 표시 ----
+    const gh = $('ovHead');
+    gh.textContent = '';
+    const hm = s.head_marker;
+    if (hm && hm.corners && hm.corners.length === 4) {
+      gh.appendChild(el('polygon', { class: 'ov-head', points: hm.corners.map(p => p.join(',')).join(' ') }));
+      const top = Math.min.apply(null, hm.corners.map(p => p[1]));
+      const lx = Math.max.apply(null, hm.corners.map(p => p[0])) + 8 * K;
+      const t = el('text', { class: 'ov-label head', x: lx, y: Math.max(14 * K, top) });
+      t.textContent = '헤드 id' + ((s.settings || {}).photohome || {}).marker_id;
+      gh.appendChild(t);
+    }
+    if (quad && quad.length === 4) {
+      // 라벨: 가장 위 꼭짓점의 위쪽(선과 겹치지 않게 사각형 밖), 프레임 밖으로 나가면 아래쪽
+      const topP = quad.reduce((a, p) => (p[1] < a[1] ? p : a), quad[0]);
+      const botP = quad.reduce((a, p) => (p[1] > a[1] ? p : a), quad[0]);
+      const fh = (s.frame && s.frame.h) || 720;
+      const up = topP[1] - 8 * K > 14 * K;
+      const t = el('text', { class: 'ov-label', x: up ? topP[0] : botP[0], y: up ? topP[1] - 8 * K : Math.min(fh - 4 * K, botP[1] + 18 * K) });
+      t.textContent = '감지 영역';
+      gh.appendChild(t);
+    }
+
     // ---- 웨이퍼 ----
     const w = s.wafer;
     const cw = $('ovWafer');
@@ -168,7 +203,7 @@
       if (sm.status === 'moving' || sm.status === 'measuring') cls.push('target');
       if (UI.selected === sm.no) cls.push('selected');
       // 수동 샘플은 윤곽이 없다 - 중심에 작은 마름모(포인터 십자와 다른 모양).
-      const D = 7;
+      const D = 7 * K;
       const pts = sm.manual
         ? [[sm.u, sm.v - D], [sm.u + D, sm.v], [sm.u, sm.v + D], [sm.u - D, sm.v]]
             .map(p => p.join(',')).join(' ')
@@ -184,7 +219,7 @@
         });
         gs.appendChild(pg);
       }
-      const t = el('text', { class: 'ov-num', x: sm.u + 8, y: sm.v - 6 });
+      const t = el('text', { class: 'ov-num', x: sm.u + 8 * K, y: sm.v - 6 * K });
       t.textContent = sm.no + (sm.manual ? 'M' : '') + (sm.edge_completed ? 'E' : '')
         + (sm.edge_only ? 'G' : '') + (sm.weak ? '?' : '');
       // 추가 모드에서는 번호 라벨도 그 샘플 선택이다(hit 원이 꺼져 있어 라벨 클릭이
@@ -196,7 +231,7 @@
       });
       gs.appendChild(t);
       // 클릭 판정용(다각형이 얇아도 집히도록 원을 덮는다)
-      const hit = el('circle', { class: 'ov-hit', cx: sm.u, cy: sm.v, r: 16 });
+      const hit = el('circle', { class: 'ov-hit', cx: sm.u, cy: sm.v, r: 16 * K });
       hit.addEventListener('click', () => UI.select(sm.no));
       gs.appendChild(hit);
     });
@@ -208,7 +243,7 @@
     const gp = $('ovPointer');
     if (st.connected && st.u != null && st.v != null) {
       gp.removeAttribute('hidden');
-      gp.setAttribute('transform', 'translate(' + st.u + ',' + st.v + ')');
+      gp.setAttribute('transform', 'translate(' + st.u + ',' + st.v + ') scale(' + K + ')');
       // 미리보기에는 검출 결과가 없다. 십자는 보정으로 계산한 자리이므로 무엇을
       // 기준으로 그렸는지 밝힌다 - 이번 실행에 촬영이 없으면 저장된(이전) 보정을
       // 쓰는데, 그 사이 카메라가 돌아갔다면 십자가 실제 포인터와 수십 mm 떨어진다.
@@ -223,14 +258,17 @@
 
     // ---- 정보 4칸 ----
     const c = s.calib;
+    const fixed = c && c.mode === 'fixed';
     $('infoCal').textContent = c
-      ? (c.used_ids.length + '마커 ' + c.corners + '점 · 오차 RMS '
+      ? (fixed ? ('고정 보정 · 오차 RMS ' + c.corner_rms_mm.toFixed(2) + ' · 최대 ' + c.corner_max_mm.toFixed(2) + ' mm')
+        : (c.used_ids.length + '마커 ' + c.corners + '점 · 오차 RMS '
          + c.corner_rms_mm.toFixed(2) + ' · 최대 ' + c.corner_max_mm.toFixed(2) + ' mm'
-         + (c.missing_ids.length ? ' · id' + c.missing_ids.join(',') + ' 미검출' : ''))
+         + (c.missing_ids.length ? ' · id' + c.missing_ids.join(',') + ' 미검출' : '')))
       : UI.EMPTY;
     $('infoRect').textContent = r
-      ? ('(' + r[0] + ',' + r[1] + ')-(' + r[2] + ',' + r[3] + ') '
-         + (r[2] - r[0]) + '×' + (r[3] - r[1]) + ' px')
+      ? (quad ? ('사각형 ' + (r[2] - r[0]) + '×' + (r[3] - r[1]) + ' px 안')
+              : ('(' + r[0] + ',' + r[1] + ')-(' + r[2] + ',' + r[3] + ') '
+                 + (r[2] - r[0]) + '×' + (r[3] - r[1]) + ' px'))
       : UI.EMPTY;
     $('infoWafer').textContent = (w && w.found && w.center_mm)
       ? ('중심 X' + w.center_mm[0].toFixed(1) + ' Y' + w.center_mm[1].toFixed(1)

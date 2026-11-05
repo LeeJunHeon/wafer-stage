@@ -293,6 +293,22 @@
           + ' · Z ' + (st.homed_z ? '원점' : '없음')
           + ' · ' + (st.dirty ? '미저장' : '저장')
         : '미연결');
+    // 보정 칩: 고정 보정이면 저장한 판 보정의 RMS, 무효 · 미설정이면 경보 색. 마커 방식은 이번 촬영의 보정.
+    const pl = s.plate || {};
+    if (pl.mode === 'fixed') {
+      const pd = pl.data || {};
+      chip($('chipCalib'), pl.valid ? ((pd.res_limit_mm && pd.max_mm > pd.res_limit_mm) ? 'warn' : 'ok') : 'bad',
+        pl.valid ? ('고정 보정 · RMS ' + (+pd.rms_mm).toFixed(2) + ' mm') : (pd.n || pd.area ? '무효 · 다시 보정' : '미설정'));
+      $('chipCalib').setAttribute('data-tip', pl.valid
+        ? ('고정 보정입니다. 판 보정 ' + (pd.created || '') + ' · ' + pd.n + '점 · RMS ' + (+pd.rms_mm).toFixed(3)
+           + ' mm · 최대 ' + (+pd.max_mm).toFixed(3) + ' mm 입니다.')
+        : ('고정 보정이 무효입니다. ' + (pl.reason || '') + ' · 보정 창의 감지 영역 · 판 보정에서 다시 잡으십시오.'));
+    } else {
+      const c = s.calib;
+      chip($('chipCalib'), c ? (c.missing_ids && c.missing_ids.length ? 'warn' : 'ok') : null,
+        c ? ('마커 ' + c.used_ids.length + '개 · RMS ' + c.corner_rms_mm.toFixed(2) + ' mm') : '마커 방식');
+      $('chipCalib').setAttribute('data-tip', '판 마커 방식의 보정입니다. 이번 촬영의 마커로 계산한 잔차(RMS)입니다.');
+    }
     const ph = s.photohome || {};
     const hk = HOME[ph.status] || HOME.unknown;
     chip($('chipHome'), st.connected ? hk[1] : null,
@@ -385,7 +401,7 @@
     chip($('chipServer'), on ? 'ok' : 'bad', on ? '정상' : '끊김');
     document.body.classList.toggle('offline', !on);
     if (!on) {
-      ['chipCam', 'chipStage', 'chipMeter', 'chipHome', 'chipTool', 'chipRelay']
+      ['chipCam', 'chipStage', 'chipMeter', 'chipCalib', 'chipHome', 'chipTool', 'chipRelay']
         .forEach(id => chip($(id), null, EMPTY));
       $('statePill').className = 'statepill error';
       $('stateText').textContent = '연결 끊김';

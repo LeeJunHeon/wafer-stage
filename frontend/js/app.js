@@ -47,7 +47,8 @@
   const SETTINGS_ACKS = ['settings_schema', 'settings_validate', 'settings_save',
                          'settings_export', 'settings_import'];
   const CALIB_ACKS = ['head_calib', 'head_calib_apply', 'calib_marker', 'calib_marker_apply',
-                      'calib_tool', 'calib_tool_heat', 'calib_tool_mark', 'calib_tool_apply'];
+                      'calib_tool', 'calib_tool_heat', 'calib_tool_mark', 'calib_tool_apply',
+                      'plate_shot', 'plate_pos', 'plate_calib_fit', 'plate_calib_apply', 'plate_area_apply'];
 
   function handleAck(msg) {
     if (msg.of === 'run' && !msg.ok) {
