@@ -829,7 +829,11 @@ def save_samples_image(bgr, res, params, outdir=None,
     u0, v0, u1, v1 = rect
     img = bgr.copy()
     img[v0:v1, u0:u1] = res["vis_crop"]
-    cv2.rectangle(img, (u0, v0), (u1 - 1, v1 - 1), (0, 255, 255), 2)   # 감지 영역
+    if res.get("quad"):                                                # 고정 보정: 감지 영역 사각형
+        cv2.polylines(img, [np.round(np.asarray(res["quad"])).astype(np.int32)], True,
+                      (0, 255, 255), 2)
+    else:
+        cv2.rectangle(img, (u0, v0), (u1 - 1, v1 - 1), (0, 255, 255), 2)   # 감지 영역
     for i, p in (cal.get("pixels") or {}).items():
         cv2.drawMarker(img, (int(round(p[0])), int(round(p[1]))), (255, 128, 0),
                        cv2.MARKER_CROSS, 18, 2)

@@ -168,11 +168,20 @@ class Camera:
             self.info["backend"] = name
             self._configure(name)
             ok = False
-            for _ in range(10):
+            # 첫 프레임: 고해상도(4백만 화소 초과)는 첫 장이 늦고 끊기므로 두 배로 기다린다.
+            mp = int(self.p.get("width", 1280)) * int(self.p.get("height", 720))
+            wait_s = float(self.p.get("cam_first_frame_s", 5.0)) * (2.0 if mp > 4_000_000 else 1.0)
+            t_end = time.monotonic() + wait_s
+            n_read = 0
+            while n_read < 10 or time.monotonic() < t_end:
+                n_read += 1
                 r, f = cap.read()
                 if r and f is not None and f.size:
                     ok = True
                     break
+                if time.monotonic() >= t_end and n_read >= 10:
+                    break
+                time.sleep(0.05)
             if ok:
                 self.info["actual_fourcc"] = _fourcc_str(cap.get(cv2.CAP_PROP_FOURCC))
                 self.info["actual_size"] = [int(f.shape[1]), int(f.shape[0])]
@@ -456,7 +465,9 @@ class Camera:
             f, st = self.capture_best()
             st.update(stats, raw=f)
             return f, st
+        t_fuse = time.perf_counter()
         fused = fuse_exposures(frames)
+        stats["fuse_s"] = round(time.perf_counter() - t_fuse, 3)
         stats["bracketed"] = True
         stats["bracket_frames"] = list(frames)     # 장별 원본(진단용 저장)
         stats["chosen_focus_score"] = focus_score(fused)

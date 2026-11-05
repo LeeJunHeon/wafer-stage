@@ -9,6 +9,7 @@
     data\\          <- DATA_DIR (settings.json 의 "data_dir", 기본 "../data")
       out\\         <- OUT_DIR   (촬영 결과 폴더 + log.jsonl)
       calib_matrix.json          <- CALIB_PATH
+      plate_calib.json           <- PLATE_CALIB_PATH (고정 보정)
 
 환경변수 WAFER_STAGE_DATA 가 있으면 settings.json 의 data_dir 보다 우선한다
 (검증 스크립트가 임시 폴더로 돌리기 위한 통로).
@@ -56,6 +57,7 @@ LOGS_DIR = os.path.join(DATA_DIR, "logs")            # 날짜별 파일 로그
 SETTINGS_BACKUP_DIR = os.path.join(DATA_DIR, "settings_backup")   # 저장 직전본(최근 20개)
 SETTINGS_EXPORT_DIR = os.path.join(DATA_DIR, "settings_export")   # 내보내기 사본
 HEAD_CALIB_PATH = os.path.join(DATA_DIR, "head_calib.json")       # 헤드 마커 보정
+PLATE_CALIB_PATH = os.path.join(DATA_DIR, "plate_calib.json")     # 고정 보정: 감지 영역 + 판 보정
 SEQ_LOG_PATH = os.path.join(OUT_DIR, "sequence_log.jsonl")
 SERIAL_LOG_PATH = os.path.join(OUT_DIR, "serial.log")
 FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
