@@ -50,12 +50,19 @@
   const CALIB_ACKS = ['head_calib', 'head_calib_apply', 'calib_marker', 'calib_marker_apply',
                       'calib_tool', 'calib_tool_heat', 'calib_tool_mark', 'calib_tool_apply',
                       'plate_shot', 'plate_pos', 'plate_calib_fit', 'plate_calib_apply', 'plate_area_apply',
-                      'plate_exclude_apply', 'plate_ref_shot', 'plate_ref_use'];
+                      'plate_exclude_apply', 'plate_ref_shot', 'plate_ref_use',
+                      'plate_approx_make', 'plate_sample_calib', 'plate_point_delete', 'plate_hist_restore'];
 
   function handleAck(msg) {
     if (msg.of === 'run' && !msg.ok) {
       if (msg.reason === 'needs_confirm') UI.confirmRun(msg.needs_confirm || []);
       else if ((msg.needs_confirm || []).length) UI.alert(msg.needs_confirm.join('\n'), '시작 불가');
+    }
+    // 근사 상태의 샘플 이동은 확인 뒤에(Z 맨 위 유지)
+    if (msg.of === 'goto' && !msg.ok && msg.reason === 'needs_confirm') {
+      UI.confirm((msg.needs_confirm || []).join('\n'), '샘플 이동').then(ok => {
+        if (ok) UI.send({ cmd: 'goto', no: msg.no, confirm: true });
+      });
     }
     if (msg.of === 'capture' && !msg.ok && msg.reason === 'needs_confirm') {
       // 편집(수동 추가·삭제)은 그 촬영에만 속한다. 새로 찍으면 사라지므로 묻는다.

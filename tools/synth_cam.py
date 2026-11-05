@@ -56,7 +56,18 @@ def _marker_img(mid, dict_name, px=200):
 
 
 def render(params, true_xy, seed=None):
-    """BGR 프레임. true_xy 가 None 이면 헤드 마커 없이 배경만."""
+    """BGR 프레임. true_xy 가 None 이면 헤드 마커 없이 배경만.
+
+    WAFER_STAGE_SYNTH_ROT=1 이면 카메라를 90° 돌린 장면(같은 w x h 로 시계방향 90° 회전한 그림)."""
+    if os.environ.get("WAFER_STAGE_SYNTH_ROT"):
+        p2 = dict(params)
+        p2["width"], p2["height"] = int(params.get("height", 720)), int(params.get("width", 1280))
+        os.environ.pop("WAFER_STAGE_SYNTH_ROT")
+        try:
+            img = render(p2, true_xy, seed)
+        finally:
+            os.environ["WAFER_STAGE_SYNTH_ROT"] = "1"
+        return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
     w = int(params.get("width", 1280))
     h = int(params.get("height", 720))
     ph = params.get("photohome") or {}

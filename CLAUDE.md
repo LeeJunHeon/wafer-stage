@@ -144,6 +144,9 @@
 - 릴레이(relays.py): 펌웨어 RS 가 진실. 사용 안 함 켜기 거절 · 순회 중 수동 거절(전체 끄기만) ·
   정책 off|keep(비상정지·정지·오류·종료) · 비상정지는 '!' 와 같은 쓰기에 "r all 0" · 감시 시간 1/3
   주기 rs 하트비트(이동 중 제외) · max_on_s 초과 자동 끄기 + 경보 · "[!] 통신 끊김" 은 경보 배너.
+- **판 보정 두 방식**(core/plate.py solve_record · backend/platecal.py): 점 클릭(기존) + 샘플로 맞추기. 근사 변환(감지 영역 = area_size_mm 154 정사각형 + 축 방향(헤드 보정 | 자동 측정)) →
+  1점 오프셋 / 2점+ 닮음 / 4점+ 퍼짐 호모그래피. 같은 points 목록(src sample|click), 근사 상태는 순회 금지 · 샘플 이동은 확인. [이 자리로 보정]은 핀으로만(활성 공구가 핀이
+  아니면 거절), 순회 중엔 일시정지에서만. 이상점(중앙값 n배) · 카메라 이동 의심(연속 2) 확인, 이력 plate_calib_history 20개.
 - **측정 과정**(backend/devices.py · engine 단계 실행기): 온도(TempSource) · 접촉(ContactSource) 드라이버 인터페이스 + 더미(열 모델 시뮬레이터, sim.time_scale 로 빠르게).
   쿨러 구역(cooler.zones 3×3 → 샘플 cooler) · 레시피 단계 cooler/contact/wait_temp/heat/cool/repeat/log · 기록 CSV(sample_NN_log.csv). **안전 불변식**: X·Y 이동 전
   히트건 꺼짐(engine._goto 강제) · 정지/오류/비상정지는 릴레이 정책과 무관하게 히트건 끔 · 과열 보호(heater.max_c · 센서 오류 연속)는 레시피와 무관. 실제 장비에서

@@ -36,7 +36,7 @@
   function loadSaved() {
     const d = plateState().data;
     P.quad = d && d.area ? d.area.map(p => p.slice()) : [];
-    P.pts = d && d.points ? d.points.map(p => ({ x: p.x, y: p.y, u: p.u, v: p.v })) : [];
+    P.pts = d && d.points ? d.points.map(p => ({ x: p.x, y: p.y, u: p.u, v: p.v, src: p.src, no: p.no })) : [];
     P.excl = d && d.exclude ? d.exclude.map(q => q.map(p => p.slice())) : [];
     P.exclCur = []; P.exclDirty = false;
     P.quadDirty = false; P.sel = null; P.pend = null; P.recFor = null; P.fit = null;
@@ -133,6 +133,9 @@
         kit.btn('빈 판 기준 촬영', () => UI.send({ cmd: 'plate_ref_shot' }),
           { sm: true, disabled: kit.busy() || !areaSaved, tip: '샘플을 치운 빈 판을 한 장 찍어 기준 사진으로 저장합니다(노출 · 화이트밸런스도 기록). 설정의 빈 판 기준 사용을 켜야 쓰입니다.' })])]));
 
+    // 샘플로 맞추는 판 보정 · 이력
+    left.appendChild(sampleCalibCard(pl, kit, areaSaved));
+
     // 3. 판 보정점
     const rec = P.sel != null && P.pts[P.sel];
     left.appendChild(kit.card(3, '판 보정점', sts[2], [
@@ -190,6 +193,75 @@
     side.appendChild(buildView(fr, sx, sy));
     side.appendChild(h('div', { cls: 'note', text: P.hint || hintText(fr) }));
   };
+
+  // 샘플로 맞추는 판 보정: 근사 변환 → 샘플로 이동 → 조그로 핀 맞춤 → [이 자리로 보정]. 점 분포 · 잔차 · 이력(되돌리기)
+  UI.calibWhy = function (s) {
+    if (!s || !UI.online) return '서버 연결 끊김';
+    const st = s.stage || {}, pl = s.plate || {}, pc = pl.calib || {};
+    if (pl.mode !== 'fixed') return '고정 보정에서만 씁니다';
+    if (((s.tip || {}).name) !== '기준 포인터') return '활성 공구가 핀(기준 포인터)이 아님 · 공구 오프셋 보정을 쓰세요';
+    if (!st.connected) return '스테이지 미연결';
+    if (!(st.homed_x && st.homed_y) || st.needs_home) return '원점 없음';
+    if (st.moving) return '이동 중';
+    if (UI.isRunning(s) && ((s.sequence || {}).phase !== 'paused')) return '순회 중 · 일시정지 상태에서만';
+    if (!pc.has_axes) return '근사 변환 필요 · 보정 → 샘플로 보정에서 [근사 변환 만들기]';
+    if (UI.selected == null || !(s.samples || []).some(x => x.no === UI.selected)) return '샘플 미선택';
+    return '';
+  };
+  const MODEL = { approx: '근사', offset: '오프셋 맞춤', similarity: '닮음 변환', homography: '호모그래피', click: '점 클릭' };
+  function sampleCalibCard(pl, kit, areaSaved) {
+    const pc = pl.calib || {};
+    const st = pc.state === 'approx' ? '근사 상태 · 보정점 0 · 순회 금지'
+      : pc.state === 'calibrated' ? '보정점 ' + pc.n + ' · ' + (MODEL[pc.model] || pc.model) + ' · RMS ' + (+pc.rms_mm).toFixed(2) + ' mm · 최대 ' + (+pc.max_mm).toFixed(2) + ' mm'
+      : '보정 없음';
+    const kids = [
+      h('div', { cls: 'note', text: '사람이 하는 일: ① 샘플 선택 → [보정 이동] ② 조그로 핀을 칩 중앙에 맞춤 ③ [이 자리로 보정]. 귀퉁이 샘플부터 2~4개(대각선 두 곳부터)를 기록하면 전체 오차가 줄어듭니다.' }),
+      h('div', { cls: 'row' }, [
+        kit.btn('근사 변환 만들기', () => UI.send({ cmd: 'plate_approx_make' }),
+          { sm: true, primary: !pc.has_axes, disabled: !areaSaved || kit.busy(),
+            tip: '감지 영역 = 판에 새겨진 사각형(설정의 실제 크기)으로 배율 · 원근을 잡고, 스테이지 축 방향은 헤드 보정에서(없으면 X · Y 를 조금 움직여 헤드 마커 이동으로) 잽니다. 위치 기준은 모르므로 근사 상태입니다.' }),
+        kit.btn('보정 이동', () => { if (UI.selected != null) UI.send({ cmd: 'goto', no: UI.selected }); },
+          { sm: true, disabled: !pc.has_axes || UI.selected == null || kit.busy(),
+            tip: '선택한 샘플로 현재 변환(근사 포함)으로 이동합니다. Z 는 맨 위로 올린 채 갑니다. 근사 상태에서는 확인을 받습니다.' }),
+        kit.btn('이 자리로 보정', () => { if (UI.selected != null) UI.send({ cmd: 'plate_sample_calib', no: UI.selected }); },
+          { sm: true, primary: !!pc.has_axes, disabled: !!(UI.calibWhy && UI.calibWhy(UI.state)),
+            tip: (UI.calibWhy && UI.calibWhy(UI.state)) || '지금 스테이지 X·Y(핀이 칩 중앙에 맞은 자리)를 선택 샘플의 사진 중심과 짝지어 보정점으로 기록합니다.' })]),
+      h('div', { cls: pc.state === 'calibrated' ? 'okline' : 'note', text: st + (pc.axes ? ' · 축 방향: ' + (pc.axes === 'head' ? '헤드 보정' : '자동 측정') : '') }),
+    ];
+    if (pc.suspect) kids.push(h('div', { cls: 'warnline', text: '카메라 이동 의심 · 연속으로 점이 크게 어긋났습니다. 점을 확인하거나 이력에서 되돌리십시오.' }));
+    // 판 위 점 분포(사각형 위에 점 표시는 오른쪽 사진, 여기는 칸별 개수 · 빈 구역 강조)
+    const bins = pc.bins || [];
+    if (bins.length) {
+      const tb = h('tbody');
+      bins.forEach(r => tb.appendChild(h('tr', {}, r.map(n => h('td', { cls: 'mono' + (n ? '' : ' binempty'), text: String(n) })))));
+      kids.push(h('div', { cls: 'row' }, [h('span', { cls: 'note', text: '점 분포(칸별)' }), h('table', { cls: 'etable narrow bins' }, [tb]),
+        h('span', { cls: pc.spread_ok ? 'okline' : 'note', text: pc.spread_ok ? '고르게 퍼짐 · 전체 보정 가능' : '4점 이상 · 판 위에 고르게 퍼지면 전체 보정' })]));
+    }
+    // 점 표(출처 · 잔차 · 개별 삭제)
+    const pts = (pl.data && pl.data.points) || [];
+    if (pts.length) {
+      const lim = g('calib.residual_limit_mm') || 1.0;
+      const tb = h('tbody');
+      pts.forEach((p, i) => tb.appendChild(h('tr', { cls: (+p.res_mm > lim ? 'bad' : '') }, [
+        h('td', { text: String(i + 1) }), h('td', { text: p.src === 'sample' ? '샘플' + (p.no != null ? ' #' + p.no : '') : '클릭' }),
+        h('td', { cls: 'mono', text: (+p.x).toFixed(1) + ', ' + (+p.y).toFixed(1) }),
+        h('td', { cls: 'mono', text: p.res_mm == null ? UI.EMPTY : (+p.res_mm).toFixed(2) }),
+        h('td', {}, [kit.btn('삭제', () => UI.send({ cmd: 'plate_point_delete', i: i }), { sm: true, disabled: kit.busy(), tip: '이 보정점을 지우고 변환을 다시 계산합니다.' })])])));
+      kids.push(h('div', { cls: 'platetbl' }, [h('table', { cls: 'etable' }, [
+        h('thead', {}, [h('tr', {}, ['#', '출처', 'X, Y mm', '잔차', ''].map(t => h('th', { text: t })))]), tb])]));
+    }
+    // 이력(최근 20개)
+    const hist = pc.history || [];
+    if (hist.length) {
+      kids.push(h('div', { cls: 'note', text: '이력(최근 20개) · 보정이 바뀔 때마다 이전 상태 보관' }));
+      const box = h('div', { cls: 'reflist' });
+      hist.forEach(x => box.appendChild(h('div', { cls: 'refrow' }, [
+        h('div', { cls: 'refinfo' }, [h('div', { cls: 'mono', text: x.name }), h('div', { cls: 'note', text: (x.reason || '') + ' · 점 ' + x.n_points + ' · ' + (MODEL[x.model] || x.model) })]),
+        kit.btn('되돌리기', () => UI.send({ cmd: 'plate_hist_restore', name: x.name }), { sm: true, disabled: kit.busy(), tip: '이 상태로 되돌립니다. 지금 상태는 이력에 보관됩니다.' })])));
+      kids.push(box);
+    }
+    return kit.card(6, '샘플로 보정', null, kids);
+  }
 
   // 기준 목록: 현재 + 보관(최근 10개). 시각 · 유효/무효 · 작은 미리보기 · [이 기준 사용]
   function refList(ref) {
@@ -325,6 +397,26 @@
     });
   }
 
+  // 판 위 점 분포: 감지 영역을 3x3 칸으로 나눠 빈 칸을 옅게 강조하고, 샘플로 기록한 점을 표시한다
+  function drawCalibDist(svg, k) {
+    const pl = plateState(), pc = pl.calib || {}, d = pl.data || {};
+    const q = d.area;
+    if (!q || q.length !== 4 || !pc.has_axes) return;
+    const sm = q.map(p => p[0] + p[1]), df = q.map(p => p[0] - p[1]);
+    const tl = q[sm.indexOf(Math.min.apply(null, sm))], br = q[sm.indexOf(Math.max.apply(null, sm))];
+    const tr = q[df.indexOf(Math.max.apply(null, df))], bl = q[df.indexOf(Math.min.apply(null, df))];
+    const lp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    const pt = (x, y) => lp(lp(tl, tr, x), lp(bl, br, x), y);
+    (pc.bins || []).forEach((row, r) => row.forEach((n, c) => {
+      if (n) return;
+      const ps = [pt(c / 3, r / 3), pt((c + 1) / 3, r / 3), pt((c + 1) / 3, (r + 1) / 3), pt(c / 3, (r + 1) / 3)];
+      svg.appendChild(el('polygon', { class: 'pbin', points: ps.map(p => p.join(',')).join(' ') }));
+    }));
+    (d.points || []).forEach((p, i) => {
+      svg.appendChild(el('circle', { class: 'pdot' + (p.src === 'sample' ? ' s' : ''), cx: p.u, cy: p.v, r: 5 * k }));
+    });
+  }
+
   function drawOverlay(svg, fr, scale) {
     svg.textContent = '';
     const k = 1 / Math.max(scale, 1e-6);            // 화면 1 px = 원본 k px
@@ -341,6 +433,7 @@
     P.excl.forEach(poly => svg.appendChild(el('polygon', { class: 'px', points: poly.map(q => q.join(',')).join(' ') })));
     if (P.exclCur.length >= 2) svg.appendChild(el('polyline', { class: 'pxc', points: P.exclCur.map(q => q.join(',')).join(' ') }));
     P.exclCur.forEach(q => svg.appendChild(el('circle', { class: 'pxv', cx: q[0], cy: q[1], r: 4 * k })));
+    drawCalibDist(svg, k);
     const lim = g('calib.residual_limit_mm') || 1.0;
     const comp = complete();
     P.pts.forEach((p, i) => {
@@ -372,6 +465,18 @@
     } else if (of === 'plate_calib_apply') {
       if (msg.ok) { P.sig = ''; UI.alert('판 보정 저장 · RMS ' + (+msg.rms_mm).toFixed(3) + ' mm · 최대 ' + (+msg.max_mm).toFixed(3) + ' mm' + ((msg.over || []).length ? '\n한계 초과 ' + msg.over.length + '점' : '') + '\n다시 촬영하면 반영됩니다.', '판 보정'); }
       else UI.alert((msg.needs_confirm || []).join('\n') || '저장하지 않았습니다', '판 보정');
+    } else if (of === 'plate_approx_make') {
+      if (!msg.ok && msg.reason === 'needs_confirm') {
+        UI.confirm((msg.needs_confirm || []).join('\n'), '근사 변환').then(ok => { if (ok) UI.send({ cmd: 'plate_approx_make', source: 'auto', confirm: true }); });
+      } else if (!msg.ok && msg.reason !== 'stopped') UI.alert((msg.needs_confirm || []).join('\n') || '근사 변환을 만들지 못했습니다', '근사 변환');
+    } else if (of === 'plate_sample_calib') {
+      if (!msg.ok && msg.reason === 'outlier') {
+        UI.confirm((msg.needs_confirm || []).join('\n'), '이상점 의심').then(ok => { if (ok) UI.send({ cmd: 'plate_sample_calib', no: UI.selected, confirm: true }); });
+      } else if (!msg.ok && msg.reason === 'camera_move') {
+        UI.confirm((msg.needs_confirm || []).join('\n'), '카메라 이동 의심').then(ok => { if (ok) UI.send({ cmd: 'plate_sample_calib', no: UI.selected, confirm: 'invalidate' }); });
+      } else if (!msg.ok) UI.alert((msg.needs_confirm || []).join('\n') || '기록하지 못했습니다', '보정점');
+    } else if (of === 'plate_point_delete' || of === 'plate_hist_restore') {
+      if (!msg.ok) UI.alert((msg.needs_confirm || []).join('\n') || '처리하지 못했습니다', '판 보정');
     } else if (of === 'plate_exclude_apply') {
       if (msg.ok) { P.sig = ''; P.exclDirty = false; }
       else UI.alert((msg.needs_confirm || []).join('\n') || '저장하지 않았습니다', '제외 영역');

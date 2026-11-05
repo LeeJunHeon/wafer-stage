@@ -130,6 +130,17 @@
       tdc2.appendChild(cs);
       tr.appendChild(tdc2);
       const tds = document.createElement('td');
+      if (sm.no === UI.selected) {                      // 선택 행: [자리 보정] = 지금 핀 자리를 이 샘플의 보정점으로
+        const cb = document.createElement('button');
+        cb.className = 'btn sm';
+        cb.textContent = '자리 보정';
+        const why = UI.calibWhy ? UI.calibWhy(s) : '';
+        cb.disabled = !!why;
+        cb.setAttribute('data-tip0', '조그로 핀을 칩 중앙에 맞춘 뒤 누르면 지금 스테이지 X·Y 가 이 샘플의 보정점이 됩니다.');
+        cb.setAttribute('data-tip', why || cb.getAttribute('data-tip0'));
+        cb.onclick = (ev) => { ev.stopPropagation(); UI.send({ cmd: 'plate_sample_calib', no: sm.no }); };
+        tds.appendChild(cb);
+      }
       const sp = document.createElement('span');
       sp.className = 'st ' + sm.status;
       sp.textContent = STATUS[sm.status] || sm.status;

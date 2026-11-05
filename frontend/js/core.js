@@ -297,6 +297,17 @@
     const pl = s.plate || {};
     if (pl.mode === 'fixed') {
       const pd = pl.data || {};
+      const pc = pl.calib || {};
+      if (pl.valid && (pc.state === 'approx' || pc.suspect || (pd.points || []).some(p => p.src === 'sample'))) {
+        chip($('chipCalib'), pc.suspect ? 'bad' : (pc.state === 'approx' ? 'warn' : 'ok'),
+          pc.suspect ? '카메라 이동 의심'
+            : (pc.state === 'approx' ? '근사 · 보정점 0'
+               : '보정점 ' + pc.n + ' · 잔차 ' + (+pc.rms_mm).toFixed(2) + ' mm'));
+        $('chipCalib').setAttribute('data-tip', pc.state === 'approx'
+          ? '판 보정이 근사 상태입니다(배율 · 원근 · 축 방향만). 샘플로 보정점을 기록하기 전에는 순회할 수 없습니다.'
+          : '샘플로 맞춘 판 보정입니다. 모델 ' + pc.model + ' · 점 ' + pc.n + '개 · RMS ' + (+pc.rms_mm).toFixed(3)
+            + ' mm · 최대 ' + (+pc.max_mm).toFixed(3) + ' mm 입니다.' + (pc.suspect ? ' 카메라 이동이 의심됩니다 · 보정 탭에서 확인하십시오.' : ''));
+      } else
       chip($('chipCalib'), pl.valid ? ((pd.res_limit_mm && pd.max_mm > pd.res_limit_mm) ? 'warn' : 'ok') : (pl.area_ok ? 'warn' : 'bad'),
         pl.valid ? ('고정 보정 · RMS ' + (+pd.rms_mm).toFixed(2) + ' mm')
           : (pl.area_ok ? '검출만 · 판 보정 필요' : (pd.n || pd.area ? '무효 · 다시 보정' : '미설정')));

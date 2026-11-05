@@ -54,7 +54,8 @@ BUSY_BLOCKED = ("park", "goto", "return_origin", "jog", "park_here", "capture_he
                 "calib_marker_record", "calib_marker_apply", "calib_tool_record",
                 "calib_tool_heat", "calib_tool_mark", "calib_tool_apply",
                 "plate_shot", "plate_area_apply", "plate_calib_apply",
-                "plate_exclude_apply", "plate_ref_shot", "plate_ref_use")
+                "plate_exclude_apply", "plate_ref_shot", "plate_ref_use", "plate_approx_make",
+                "plate_point_delete", "plate_hist_restore")
 # 샘플 추가 둘은 결과를 ack{of:"sample_add"} 로 돌려준다(화면이 새 번호를 선택한다).
 SAMPLE_ADD_CMDS = ("sample_add", "sample_add_here")
 # 순회 중 거절을 ack 로도 알려야 하는 명령(화면이 결과를 기다린다)
@@ -267,6 +268,10 @@ async def _park(_data):
 
 async def _goto(data):
     if "no" in data:
+        if platecal.approx_state() and not data.get("confirm"):
+            await push_ack("goto", False, "needs_confirm",
+                           ["판 보정이 근사 상태입니다. 위치가 수십 mm 어긋날 수 있어 Z 를 맨 위로 올린 채 이동합니다. 이동할까요?"], no=int(data["no"]))
+            return
         await engine.goto_sample(int(data["no"]))
     else:
         await engine.goto_xy(float(data.get("x", 0)), float(data.get("y", 0)))
@@ -811,6 +816,22 @@ async def _plate_area_apply(data):
     await platecal.area_apply(data)
 
 
+async def _plate_approx_make(data):
+    await platecal.approx_make(data)
+
+
+async def _plate_sample_calib(data):
+    await platecal.sample_calib(data)
+
+
+async def _plate_point_delete(data):
+    await platecal.point_delete(data)
+
+
+async def _plate_hist_restore(data):
+    await platecal.hist_restore(data)
+
+
 async def _plate_exclude_apply(data):
     await platecal.exclude_apply(data)
 
@@ -950,6 +971,10 @@ _TABLE = {
     "plate_exclude_apply": _plate_exclude_apply,
     "plate_ref_shot": _plate_ref_shot,
     "plate_ref_use": _plate_ref_use,
+    "plate_approx_make": _plate_approx_make,
+    "plate_sample_calib": _plate_sample_calib,
+    "plate_point_delete": _plate_point_delete,
+    "plate_hist_restore": _plate_hist_restore,
     "calib_tool_apply": _calib_tool_apply,
     "dry_slip": _dry_slip,
     "dry_stall": _dry_stall,

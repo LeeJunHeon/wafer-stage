@@ -345,8 +345,10 @@ def new_record(camera_index, size, old=None):
          "rms_mm": None, "max_mm": None, "res_limit_mm": None}
     if old and int(old.get("camera_index", -1)) == int(camera_index) \
             and [int(x) for x in old.get("size") or []] == d["size"]:
-        for k in ("area", "points", "H", "rms_mm", "max_mm", "res_limit_mm", "exclude"):
-            d[k] = old.get(k)
+        for k in ("area", "points", "H", "rms_mm", "max_mm", "res_limit_mm", "exclude",
+                  "approx_axes", "approx_t", "approx", "model", "suspect_run"):
+            if k in old:
+                d[k] = old.get(k)
     return d
 
 
@@ -473,6 +475,233 @@ def sense_fixed(bgr, params, d, log=print):
             "vis_crop": vis, "info": info, "quad": [[float(a), float(b)] for a, b in quad],
             "scale": s, "mm_per_px": mm_px, "detect_ms": det.detect_ms, "mode": "fixed",
             "area_only": H is None}
+
+
+# --------------------------------------------------------------------------
+# 샘플로 맞추는 판 보정 (근사 → 오프셋 1점 → 닮음 2점+ → 호모그래피 4점+) - 점 클릭 방식과 같은 points 목록을 쓴다
+# --------------------------------------------------------------------------
+HIST_KEEP = 20                      # data/plate_calib_history 에 보관하는 이전 상태 수
+SPREAD_MIN_FRAC = 0.25              # 점들의 볼록껍질이 감지 영역의 이 비율 이상이면 '고르게 퍼짐'
+PRIOR_W = 0.1                       # 전체 호모그래피 최소제곱에서 근사 사각형(사전 정보)의 가중치
+
+
+def plate_homography(quad, size_mm):
+    """사진 px → 판 평면 mm. 감지 영역 네 꼭짓점(사진 기준 TL · TR · BR · BL) = area_size_mm 사각형의 (0,0) · (W,0) · (W,H) · (0,H)."""
+    q = order_quad(quad).astype(np.float32)
+    w, h = float(size_mm[0]), float(size_mm[1])
+    dst = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    return cv2.getPerspectiveTransform(q, dst).astype(np.float64)
+
+
+def axes_matrix(p_x, p_y):
+    """스테이지 +X · +Y 가 판 평면에서 가리키는 방향 → 직교 정규화한 Q(판 = Q · 스테이지). 반사(거울상)도 허용한다."""
+    x = np.asarray(p_x, np.float64)
+    x = x / max(np.linalg.norm(x), 1e-12)
+    y = np.asarray(p_y, np.float64)
+    y = y - float(y @ x) * x
+    y = y / max(np.linalg.norm(y), 1e-12)
+    return np.column_stack([x, y])
+
+
+def axes_from_head(H_head, Hp, center_px):
+    """헤드 보정(사진 px → 스테이지 mm)에서 축 방향: 스테이지 +X · +Y 단위 이동이 사진에서 움직이는 방향을 판 평면 방향으로 옮긴다."""
+    c = np.asarray(center_px, np.float64)
+    x0, y0 = px_to_mm(H_head, c[0], c[1])
+    xu, yu = px_to_mm(H_head, c[0] + 1.0, c[1])
+    xv, yv = px_to_mm(H_head, c[0], c[1] + 1.0)
+    J = np.array([[xu - x0, xv - x0], [yu - y0, yv - y0]])           # px → mm
+    out = []
+    for e in (np.array([1.0, 0.0]), np.array([0.0, 1.0])):
+        d_px = np.linalg.solve(J, e)
+        p0 = np.array(px_to_mm(Hp, c[0], c[1]))
+        p1 = np.array(px_to_mm(Hp, c[0] + d_px[0] * 20.0, c[1] + d_px[1] * 20.0))
+        out.append(p1 - p0)
+    return axes_matrix(out[0], out[1])
+
+
+def axes_from_probe(px0, px_x, px_y, Hp):
+    """자동 측정: 헤드 마커가 X(+dx) · Y(+dy) 이동 때 사진에서 옮겨 간 자리 → 판 평면 방향(부호는 이동 방향 부호를 호출 쪽이 곱해 넘긴다)."""
+    p0 = np.array(px_to_mm(Hp, px0[0], px0[1]))
+    return axes_matrix(np.array(px_to_mm(Hp, px_x[0], px_x[1])) - p0, np.array(px_to_mm(Hp, px_y[0], px_y[1])) - p0)
+
+
+def _fit_h_weighted(src, dst, w):
+    """가중 DLT 호모그래피(정규화) src(px) → dst(mm)."""
+    def norm(P):
+        c = P.mean(axis=0)
+        s = math.sqrt(2.0) / max(float(np.mean(np.linalg.norm(P - c, axis=1))), 1e-12)
+        return np.array([[s, 0, -s * c[0]], [0, s, -s * c[1]], [0, 0, 1.0]])
+    Ts, Td = norm(src), norm(dst)
+    S = (Ts @ np.column_stack([src, np.ones(len(src))]).T).T
+    D = (Td @ np.column_stack([dst, np.ones(len(dst))]).T).T
+    rows = []
+    for (x, y, _), (u, v, _), wi in zip(S, D, w):
+        rows.append(wi * np.array([-x, -y, -1, 0, 0, 0, u * x, u * y, u]))
+        rows.append(wi * np.array([0, 0, 0, -x, -y, -1, v * x, v * y, v]))
+    _u, _s, vt = np.linalg.svd(np.array(rows))
+    Hn = vt[-1].reshape(3, 3)
+    H = np.linalg.inv(Td) @ Hn @ Ts
+    return H / H[2, 2]
+
+
+def points_spread_ok(points, quad):
+    """판 위에 고르게 퍼졌는가: 점 4개 이상이고 사진 px 볼록껍질 넓이가 감지 영역의 SPREAD_MIN_FRAC 이상."""
+    if len(points) < 4 or not quad:
+        return False
+    pts = np.array([[p["u"], p["v"]] for p in points], np.float32)
+    area = cv2.contourArea(cv2.convexHull(pts))
+    qa = cv2.contourArea(order_quad(quad).astype(np.float32))
+    return bool(qa > 0 and area >= SPREAD_MIN_FRAC * qa)
+
+
+def solve_record(d, size_mm):
+    """저장 본문 d(area · approx_axes · approx_t · points)에서 변환 H 를 다시 계산해 d 에 쓴다. 반환: 정보 dict | None.
+
+    n = 0 근사(배율 · 원근 · 축 방향, 오프셋은 approx_t) / 1 오프셋만 맞춤 / 2+ 닮음 변환(이동 · 회전 · 배율, 원근은 근사에서) /
+    4+ 이고 고르게 퍼짐 = 전체 호모그래피(근사 사각형을 약한 사전 정보로). 점이 모두 클릭 방식이고 4개 이상이면 예전과 같은 최소제곱(fit).
+    """
+    quad, axes = d.get("area"), d.get("approx_axes")
+    pts = d.get("points") or []
+    if not quad or not axes or not d.get("approx_t"):
+        return None
+    Hp = plate_homography(quad, size_mm)
+    QT = np.asarray(axes["Q"], np.float64).T
+    t0 = np.asarray(d["approx_t"], np.float64)
+    n = len(pts)
+
+    def aff(s_rot, t):
+        A = np.eye(3)
+        A[:2, :2], A[:2, 2] = s_rot, t
+        return A
+
+    base = aff(QT, np.zeros(2)) @ Hp                                  # 근사(오프셋 0)
+    a = np.array([QT @ np.array(px_to_mm(Hp, p["u"], p["v"])) for p in pts]) if n else np.zeros((0, 2))
+    b = np.array([[p["x"], p["y"]] for p in pts]) if n else np.zeros((0, 2))
+    scale_rot = np.eye(2)
+    if n == 0:
+        model, H = "approx", aff(np.eye(2), t0) @ base
+    elif n == 1:
+        model, H = "offset", aff(np.eye(2), b[0] - a[0]) @ base
+    else:
+        mu_a, mu_b = a.mean(axis=0), b.mean(axis=0)
+        A0, B0 = a - mu_a, b - mu_b
+        var_a = float(np.sum(A0 ** 2) / n)
+        U, D, Vt = np.linalg.svd(B0.T @ A0 / n)
+        S = np.diag([1.0, np.sign(np.linalg.det(U) * np.linalg.det(Vt)) or 1.0])
+        R = U @ S @ Vt
+        s = float(np.trace(np.diag(D) @ S) / max(var_a, 1e-12))
+        scale_rot = s * R
+        t = mu_b - scale_rot @ mu_a
+        model, H = "similarity", aff(scale_rot, t) @ base
+    if n >= 4 and points_spread_ok(pts, quad):
+        src = [[p["u"], p["v"]] for p in pts]
+        dst = [[p["x"], p["y"]] for p in pts]
+        w = [1.0] * n
+        for q in order_quad(quad):                                    # 근사 사각형 꼭짓점 = 약한 사전 정보
+            src.append([float(q[0]), float(q[1])])
+            dst.append(list(px_to_mm(H, q[0], q[1])))
+            w.append(PRIOR_W)
+        Hh = _fit_h_weighted(np.array(src, np.float64), np.array(dst, np.float64), w)
+        if np.all(np.isfinite(Hh)):
+            model, H = "homography", Hh
+    if not np.all(np.isfinite(H)):
+        return None
+    res = [math.hypot(px_to_mm(H, p["u"], p["v"])[0] - p["x"], px_to_mm(H, p["u"], p["v"])[1] - p["y"]) for p in pts]
+    for p, r in zip(pts, res):
+        p["res_mm"] = round(r, 4)
+    rms = float(np.sqrt(np.mean(np.square(res)))) if res else 0.0
+    d["H"] = np.asarray(H, np.float64)
+    d["model"], d["approx"] = model, (n == 0)
+    d["rms_mm"], d["max_mm"] = round(rms, 4), round(float(max(res)) if res else 0.0, 4)
+    scale = float(math.sqrt(abs(np.linalg.det(scale_rot)))) if n >= 2 else 1.0
+    return {"model": model, "n": n, "rms": rms, "max": float(max(res)) if res else 0.0, "res": res, "scale": scale}
+
+
+def predict_mm(d, u, v):
+    """저장 본문의 현재 변환으로 사진 (u, v) 의 스테이지 mm (변환이 없으면 None)."""
+    if d is None or d.get("H") is None:
+        return None
+    return px_to_mm(np.asarray(d["H"], np.float64), u, v)
+
+
+def point_bins(points, quad, size_mm, n=3):
+    """판 위 점 분포(n x n 칸 · 사진 기준 위→아래, 왼쪽→오른쪽): 칸마다 점 개수. 빈 구역 강조용."""
+    out = [[0] * n for _ in range(n)]
+    if not quad:
+        return out
+    Hp = plate_homography(quad, size_mm)
+    w, h = float(size_mm[0]), float(size_mm[1])
+    for p in points:
+        x, y = px_to_mm(Hp, p["u"], p["v"])
+        c, r = min(n - 1, max(0, int(x / w * n))), min(n - 1, max(0, int(y / h * n)))
+        out[r][c] += 1
+    return out
+
+
+def hist_dir():
+    return os.path.join(os.path.dirname(_path()), "plate_calib_history")
+
+
+def hist_save(reason=""):
+    """지금 plate_calib.json 을 plate_calib_history/<시각>.json 에 보관한다(최근 HIST_KEEP 개). 반환: 이름 | None."""
+    p = _path()
+    if not os.path.exists(p):
+        return None
+    import shutil
+    os.makedirs(hist_dir(), exist_ok=True)
+    name = time.strftime("%Y%m%d_%H%M%S")
+    k, base = 1, name
+    while os.path.exists(os.path.join(hist_dir(), name + ".json")):
+        k += 1
+        name = "%s_%d" % (base, k)
+    shutil.copyfile(p, os.path.join(hist_dir(), name + ".json"))
+    with open(os.path.join(hist_dir(), name + ".why"), "w", encoding="utf-8") as f:
+        f.write(reason)
+    names = sorted((f[:-5] for f in os.listdir(hist_dir()) if f.endswith(".json")), reverse=True)
+    for old in names[HIST_KEEP:]:
+        for ext in (".json", ".why"):
+            try:
+                os.remove(os.path.join(hist_dir(), old + ext))
+            except OSError:
+                pass
+    return name
+
+
+def hist_list():
+    """[{name, reason, created, n_points, model}] 최근 것 먼저."""
+    out = []
+    try:
+        names = sorted((f[:-5] for f in os.listdir(hist_dir()) if f.endswith(".json")), reverse=True)
+    except OSError:
+        return out
+    for n in names:
+        try:
+            with open(os.path.join(hist_dir(), n + ".json"), encoding="utf-8") as f:
+                d = json.load(f)
+            why = ""
+            try:
+                with open(os.path.join(hist_dir(), n + ".why"), encoding="utf-8") as f:
+                    why = f.read()
+            except OSError:
+                pass
+            out.append({"name": n, "reason": why, "created": d.get("created"), "n_points": len(d.get("points") or []),
+                        "model": d.get("model") or ("click" if d.get("H") is not None else "none")})
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def hist_restore(name):
+    """보관된 상태를 현재 plate_calib.json 으로 되돌린다(지금 상태는 먼저 보관). 반환: (ok, 사유)."""
+    if not name or not all(ch.isdigit() or ch == "_" for ch in str(name)):
+        return False, "이름 오류"
+    src = os.path.join(hist_dir(), name + ".json")
+    if not os.path.exists(src):
+        return False, "보관본 없음"
+    import shutil
+    hist_save("되돌리기 전")
+    shutil.copyfile(src, _path())
+    return True, ""
 
 
 # --------------------------------------------------------------------------

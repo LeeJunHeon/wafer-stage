@@ -247,6 +247,7 @@
   $('jogZeroZ').onclick = () => setOrigin('z');
 
   $('jogAddHere').onclick = () => UI.send({ cmd: 'sample_add_here' });
+  $('jogCalib').onclick = () => { if (UI.selected != null) UI.send({ cmd: 'plate_sample_calib', no: UI.selected }); };
   $('jogEstop').onclick = () => UI.sendEstop();   // 확인 없이 즉시 · WS + HTTP
 
   // 스테이지 맵 클릭 → 절대 이동 칸 채우기(이동은 [이동] 을 눌러야 한다)
@@ -325,6 +326,9 @@
     dis('jogSaveCapture', !usable);
     // 지금 위치를 샘플로: 위치를 믿을 수 있고(원점) 이번 촬영 결과가 있고 멈춰 있을 때.
     dis('jogAddHere', !usable || !(s && s.calib) || !!st.moving);
+    const cw = UI.calibWhy ? UI.calibWhy(s) : '';
+    dis('jogCalib', !!cw);
+    if (UI.why && $('jogCalib')) UI.why($('jogCalib'), cw);
     // 끝단 이동·원점 등록은 원점 유무와 무관하다(그것을 만드는 절차다).
     ['jogPushX', 'jogPushY', 'jogPushZ', 'jogPushMm',
      'jogZeroX', 'jogZeroY', 'jogZeroZ'].forEach(id => dis(id, !canStep));

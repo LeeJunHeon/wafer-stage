@@ -2137,6 +2137,214 @@ async def process_flow(c):
     check(not _relay_on(c, 10), "비상정지(정책 keep)여도 히트건 꺼짐")
 
 
+# ---------------------------------------------------------------------------
+# 샘플로 맞추는 판 보정: 근사 → 1점 오프셋 → 2점 닮음 → 4점 호모그래피 · 이상점 · 카메라 이동 의심 · 이력
+# ---------------------------------------------------------------------------
+PIN_OFF = (7.0, -3.0)           # 알려진 핀 오프셋(스테이지 = 판 장면 mm + 이 값)
+
+
+def prep_sample_calib():
+    """합성 판 장면 + 감지 영역만 있고 축 방향 · 근사 변환이 들어 있는 plate_calib.json(보정점 0)."""
+    import numpy as np
+    from core import plate as plate_mod
+    path = prep_fixed(1280, 960, with_h=False)
+    sc = _synth()
+    H = np.asarray(FIXED["truth"]["H"], np.float64)
+    d = plate_mod.load(os.path.join(DATA_DIR, "plate_calib.json"))
+    size = (156.0, 156.0)                                        # 일부러 2.5% 틀린 실제 크기(근사의 배율 오차)
+    Hp = plate_mod.plate_homography(d["area"], size)
+
+    def p_at(x, y):
+        return np.array(plate_mod.px_to_mm(Hp, *sc.project(H, x, y)))
+    Q = plate_mod.axes_matrix(p_at(121, 120) - p_at(120, 120), p_at(120, 121) - p_at(120, 120))
+    d["approx_axes"] = {"Q": Q.tolist(), "source": "head", "time": "test"}
+    d["approx_t"] = [float(v) for v in (np.array([247.6, 247.8]) / 2.0 - Q.T @ np.array([78.0, 78.0]))]
+    plate_mod.solve_record(d, size)
+    plate_mod.save(d, os.path.join(DATA_DIR, "plate_calib.json"))
+    return path
+
+
+def _truth_stage(c):
+    """샘플 번호 → 참 스테이지 XY(판 장면 mm + 핀 오프셋)."""
+    sc = _synth()
+    H = FIXED["truth"]["H"]
+    out = {}
+    for s in c.state["samples"]:
+        best = min(FIXED["truth"]["samples"], key=lambda t: (sc.project(H, *t)[0] - s["u"]) ** 2 + (sc.project(H, *t)[1] - s["v"]) ** 2)
+        out[s["no"]] = (best[0] + PIN_OFF[0], best[1] + PIN_OFF[1])
+    return out
+
+
+def _max_err(c, tr):
+    return max(((s["X"] - tr[s["no"]][0]) ** 2 + (s["Y"] - tr[s["no"]][1]) ** 2) ** 0.5 for s in c.state["samples"])
+
+
+async def _record_at(c, no, tr, dx=0.0, dy=0.0, confirm=None):
+    """사람 역할: 핀을 그 샘플의 참 자리(+dx, dy 어긋남)에 맞춘 뒤 [이 자리로 보정]."""
+    await c.send(cmd="goto", x=tr[no][0] + dx, y=tr[no][1] + dy)
+    await c.pump(1.2)
+    c.acks.clear()
+    msg = dict(cmd="plate_sample_calib", no=no)
+    if confirm:
+        msg["confirm"] = confirm
+    await c.send(**msg)
+    a = await wait_ack(c, "plate_sample_calib")
+    await c.pump(0.5)
+    return a
+
+
+async def sample_calib_flow(c):
+    await c.send(cmd="capture")
+    ph = await c.wait_phase(("ready", "error"), 90)
+    sm = c.state["samples"]
+    check(ph == "ready" and len(sm) == 9, "촬영 · 샘플 9 (%s %d)" % (ph, len(sm)))
+    pc = c.state["plate"]["calib"]
+    check(pc["state"] == "approx" and pc["n"] == 0 and pc["has_axes"], "근사 상태 · 보정점 0 (%s)" % pc["state"])
+    tr = _truth_stage(c)
+    err0 = _max_err(c, tr)
+    check(err0 > 5.0, "근사 상태 오차가 크다(위치 기준 미정) %.1f mm" % err0)
+    # 근사 상태: 순회 금지 · 샘플 이동은 확인 후
+    c.acks.clear()
+    await c.send(cmd="run", mode="auto", confirm=True)
+    a = await wait_ack(c, "run")
+    check(bool(a) and not a["ok"] and any("근사" in r for r in a.get("needs_confirm", [])), "근사 상태 순회 금지 (%s)" % (a or {}).get("needs_confirm"))
+    c.acks.clear()
+    await c.send(cmd="goto", no=1)
+    a = await wait_ack(c, "goto")
+    check(bool(a) and not a["ok"] and a["reason"] == "needs_confirm", "근사 상태 샘플 이동은 확인을 받음")
+    await c.send(cmd="goto", no=1, confirm=True)
+    await c.pump(1.5)
+    check(c.state["stage"]["z_mm"] in (0, 0.0, None), "확인 뒤 이동 · Z 맨 위")
+    # 활성 공구가 핀이 아니면 거절
+    await c.send(cmd="tool_select", name="히트건")
+    await wait_ack(c, "tool_select")
+    c.acks.clear()
+    await c.send(cmd="plate_sample_calib", no=1)
+    a = await wait_ack(c, "plate_sample_calib")
+    check(bool(a) and not a["ok"] and any("핀" in r for r in a.get("needs_confirm", [])), "활성 공구가 핀이 아니면 거절 (%s)" % (a or {}).get("needs_confirm"))
+    await c.send(cmd="tool_select", name="기준 포인터")
+    await wait_ack(c, "tool_select")
+    # 1점(대각선 한 귀퉁이): 오프셋 제거
+    order = sorted(sm, key=lambda s: s["u"] + s["v"])
+    byd = sorted(sm, key=lambda s: s["u"] - s["v"])
+    nA, nB, nC, nD = order[0]["no"], order[-1]["no"], byd[0]["no"], byd[-1]["no"]       # 귀퉁이 네 곳
+    a = await _record_at(c, nA, tr)
+    check(bool(a) and a["ok"] and a["model"] == "offset", "1점 → 오프셋 맞춤 (%s)" % (a or {}).get("model"))
+    err1 = _max_err(c, tr)
+    check(err1 < err0 / 2.0, "1점 뒤 오차 %.1f → %.1f mm" % (err0, err1))
+    # 2점(대각선): 닮음 변환
+    a = await _record_at(c, nB, tr)
+    err2 = _max_err(c, tr)
+    check(bool(a) and a["model"] == "similarity" and err2 < 1.0, "대각선 2점 뒤 전체 오차 %.2f mm < 1 (%s)" % (err2, (a or {}).get("model")))
+    # 4점: 전체 호모그래피
+    await _record_at(c, nC, tr)
+    a = await _record_at(c, nD, tr)
+    err4 = _max_err(c, tr)
+    check(bool(a) and a["model"] == "homography" and err4 < 0.5, "4점 뒤 오차 %.2f mm < 0.5 (%s)" % (err4, (a or {}).get("model")))
+    check(c.state["plate"]["calib"]["state"] == "calibrated" and c.state["plate"]["calib"]["n"] == 4
+          and all(p.get("src") == "sample" for p in c.state["plate"]["data"]["points"]), "보정점 4 · 출처 sample")
+    # 이상점 의심: 다섯째 점을 6 mm 어긋난 자리에서 → 확인 필요
+    nE = sm[4]["no"] if sm[4]["no"] not in (nA, nB, nC, nD) else order[len(order) // 2]["no"]
+    a = await _record_at(c, nE, tr, dx=6.0)
+    check(bool(a) and not a["ok"] and a["reason"] == "outlier" and a["res_mm"] > 4, "이상점 의심 확인 (%s · %.1f mm)" % ((a or {}).get("reason"), (a or {}).get("res_mm") or 0))
+    a = await _record_at(c, nE, tr, dx=6.0, confirm=True)
+    check(bool(a) and a["ok"], "확인하면 기록")
+    # 연속 두 번째 큰 어긋남 → 카메라 이동 의심(경보) · 기존 점 무효화 확인
+    others = [x["no"] for x in sm if x["no"] not in (nA, nB, nC, nD, nE)]
+    nF = others[0]
+    a = await _record_at(c, nF, tr, dy=-7.0)
+    check(bool(a) and not a["ok"] and a["reason"] in ("camera_move", "outlier"), "연속 큰 어긋남 (%s)" % (a or {}).get("reason"))
+    if a and a["reason"] == "outlier":
+        a = await _record_at(c, nF, tr, dy=-7.0, confirm=True)
+        a = await _record_at(c, others[1], tr, dx=-6.0)
+    check(bool(a) and a["reason"] == "camera_move", "카메라 이동 의심 (%s)" % (a or {}).get("reason"))
+    await c.pump(0.4)
+    check(any(x["src"] == "카메라 이동" for x in c.state["alarms"]), "카메라 이동 의심 경보 배너")
+    n_before = c.state["plate"]["calib"]["n"]
+    a = await _record_at(c, others[1], tr, dx=-6.0, confirm="invalidate")
+    await c.pump(0.4)
+    check(bool(a) and a["ok"] and c.state["plate"]["calib"]["n"] == 1 and n_before > 1, "무효화 → 이 점부터 다시 (점 %d → %d)" % (n_before, c.state["plate"]["calib"]["n"]))
+    # 이력에서 되돌리기: 4점 상태로
+    hist = c.state["plate"]["calib"]["history"]
+    h4 = next((h for h in hist if h["n_points"] == 4 and h["model"] == "homography"), None)
+    check(h4 is not None and len(hist) <= 20, "이력 보관(최대 20) · 4점 상태 있음 (%d개)" % len(hist))
+    c.acks.clear()
+    await c.send(cmd="plate_hist_restore", name=h4["name"])
+    a = await wait_ack(c, "plate_hist_restore")
+    await c.pump(0.5)
+    check(bool(a) and a["ok"] and c.state["plate"]["calib"]["n"] == 4 and _max_err(c, tr) < 0.5, "이력 되돌리기 → 4점 · 오차 %.2f mm" % _max_err(c, tr))
+    # 점 삭제
+    await c.send(cmd="plate_point_delete", i=3)
+    a = await wait_ack(c, "plate_point_delete")
+    await c.pump(0.4)
+    check(bool(a) and a["ok"] and c.state["plate"]["calib"]["n"] == 3, "보정점 개별 삭제 (%d)" % c.state["plate"]["calib"]["n"])
+
+
+async def _probe_axes(c, rot):
+    """헤드 보정이 없는 상태에서 [근사 변환 만들기] → X·Y 를 조금 움직여 축 방향을 자동 측정한다."""
+    await c.send(cmd="goto", x=100, y=100)             # 헤드 마커가 시야 가운데에 오는 자리
+    await c.pump(1.5)
+    c.acks.clear()
+    await c.send(cmd="plate_approx_make")
+    a = await wait_ack(c, "plate_approx_make")
+    check(bool(a) and not a["ok"] and a["reason"] == "needs_confirm", "자동 측정은 이동 전 확인을 받음 (%s)" % (a or {}).get("reason"))
+    c.acks.clear()
+    await c.send(cmd="plate_approx_make", source="auto", confirm=True)
+    a = await wait_ack(c, "plate_approx_make", timeout=60)
+    await c.pump(0.5)
+    check(bool(a) and a["ok"] and a["source"] == "auto", "축 방향 자동 측정 (%s)" % (a or {}))
+    import numpy as np
+    from core import plate as plate_mod
+    sc = _synth()
+    d = plate_mod.load(os.path.join(DATA_DIR, "plate_calib.json"))
+    w, h = FIXED["probe_size"]
+    Hh = np.asarray(sc.true_homography(h if rot else w, w if rot else h), np.float64)    # 마커 평면 mm → px (회전 전 캔버스)
+    if rot:
+        Hh = np.array([[0, -1, w - 1], [1, 0, 0], [0, 0, 1.0]]) @ Hh
+    Hp = plate_mod.plate_homography(d["area"], (160.0, 160.0))
+
+    def pa(x, y):
+        return np.array(plate_mod.px_to_mm(Hp, *sc.project(Hh, x, y)))
+    Qt = plate_mod.axes_matrix(pa(101, 100) - pa(100, 100), pa(100, 101) - pa(100, 100))      # 참 축 방향
+    Qm = np.asarray(d["approx_axes"]["Q"], np.float64)
+    ang = [math.degrees(math.acos(max(-1.0, min(1.0, float(Qt[:, k] @ Qm[:, k]))))) for k in (0, 1)]
+    check(max(ang) < 3.0 and d["approx_axes"]["source"] == "auto",
+          "자동 측정한 축 방향이 참과 같다(어긋남 %.2f° · %.2f° · rot=%s)" % (ang[0], ang[1], rot))
+    # 변환 전체: 오프셋만 다르다(5곳의 차이 벡터 표준편차 - 합성 카메라가 비등방이라 90° 장면은 느슨하게)
+    Hi = np.linalg.inv(Hh)
+    diffs = []
+    for u, v in [(300, 200), (900, 200), (300, 600), (900, 600), (640, 360)]:
+        X, Y = plate_mod.px_to_mm(d["H"], u, v)
+        x, y = plate_mod.px_to_mm(Hi, u, v)
+        diffs.append((X - x, Y - y))
+    sd = float(np.std(np.array(diffs), axis=0).max())
+    check(sd < (0.6 if not rot else 4.0), "근사 변환은 참과 오프셋만 다름(표준편차 %.2f mm)" % sd)
+
+
+def axes_flow(rot):
+    async def flow(c):
+        await _probe_axes(c, rot)
+    return flow
+
+
+def prep_axes(rot):
+    """헤드 마커 합성 카메라 + 감지 영역만 있는 plate_calib.json(헤드 보정은 두지 않는다)."""
+    import numpy as np
+    from core import plate as plate_mod
+    sc = _synth()
+    w, h = 1280, 720
+    Hh = np.asarray(sc.true_homography(h if rot else w, w if rot else h), np.float64)
+    if rot:
+        Hh = np.array([[0, -1, w - 1], [1, 0, 0], [0, 0, 1.0]]) @ Hh
+    quad = [list(sc.project(Hh, a, b)) for a, b in [(40, 40), (40, 200), (200, 200), (200, 40)]]
+    d = plate_mod.new_record(1, (w, h))
+    q, _why = plate_mod.check_quad(quad, (w, h))
+    d["area"] = q
+    plate_mod.save(d, os.path.join(DATA_DIR, "plate_calib.json"))
+    FIXED["probe_size"] = (w, h)
+    return None
+
+
 def _px_dir_deg(H, x=1.0, y=0.0):
     """스테이지 방향(x, y) 이 사진에서 가리키는 각도(도) - 참 호모그래피 H(mm→px) 의 미분."""
     sc = _synth()
@@ -2799,6 +3007,10 @@ def main():
         TIPDIR_P = dict(FIXED_P, tool={"fit_margin_mm": 50.0, "active": "기준 포인터", "items": [
             _PTR_Z10, {"name": "이행 핀", "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 0.0, "note": "", "tip_shape": "rect",
                        "tip_w_mm": 10.0, "tip_h_mm": 2.0, "tip_angle_deg": None, "tip_angle_img_deg": 90.0}]})
+        SC_P = dict(FIXED_P, calib={"mode": "fixed", "area_size_mm": [156.0, 156.0]},
+                    tool={"fit_margin_mm": 50.0})
+        AXES_P = {"calib": {"mode": "fixed", "axis_probe_mm": 30.0, "area_size_mm": [160.0, 160.0]}, "width": 1280, "height": 720,
+                  "photohome": {"before_capture": False, "settle_s": 0.1}}
         HEAD_P = {"calib": {"mode": "fixed"}, "width": 1280, "height": 720,
                   "photohome": {"on_connect": True, "settle_s": 0.2, "edge_margin_px": 5}}
         cases = [
@@ -2844,6 +3056,9 @@ def main():
                 )] if REAL.setdefault("scene", real_scene()) else []),
             ("공구 끝 표시", lambda: prep_fixed(1280, 960), tip_flow, None, TIP_PATCH),
             ("측정 과정", lambda: prep_fixed(1280, 960), process_flow, None, MEAS_P),
+            ("샘플로 보정", prep_sample_calib, sample_calib_flow, None, SC_P),
+            ("축 방향 측정", lambda: (prep_axes(False) or good), axes_flow(False), SYNTH, AXES_P),
+            ("축 방향 측정 90", lambda: (prep_axes(True) or good), axes_flow(True), dict(SYNTH, WAFER_STAGE_SYNTH_ROT="1"), AXES_P),
             ("공구 방향 0", lambda: prep_fixed_rot(False), tip_dir_flow(False), None, TIPDIR_P),
             ("공구 방향 90", lambda: prep_fixed_rot(True), tip_dir_flow(True), None,
              dict(TIPDIR_P, width=960, height=1280)),

@@ -529,6 +529,10 @@
   .tempsvg .tp-lab { font: 600 9.5px var(--font); fill: var(--dim); }
   .tempsvg .tp-lab.tgt { fill: #a86a00; }
   .tempsvg .tp-lab.cur { fill: #1d5fd1; }
+  .plateview .pbin { fill: rgba(255,120,60,.14); stroke: rgba(255,120,60,.6); stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; stroke-width: 1; pointer-events: none; }
+  .plateview .pdot { fill: none; stroke: #ffffff; vector-effect: non-scaling-stroke; stroke-width: 1.4; pointer-events: none; }
+  .plateview .pdot.s { stroke: #35e07a; fill: rgba(53,224,122,.25); }
+  .bins td { width: 22px; text-align: center; } .bins td.binempty { background: rgba(255,120,60,.18); color: var(--faint); }
   .plateview .px { fill: rgba(255,59,59,.16); stroke: #ff3b3b; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; stroke-width: 1.4; }
   .plateview .pxc { fill: none; stroke: #ff9a3b; vector-effect: non-scaling-stroke; stroke-width: 1.4; }
   .plateview .pxv { fill: #ff9a3b; stroke: #0e1418; vector-effect: non-scaling-stroke; stroke-width: 1; }

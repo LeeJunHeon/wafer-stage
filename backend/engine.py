@@ -97,6 +97,11 @@ async def autosave_tick():
         logger.write("warn", "자동 저장 실패: %s" % logger.short(e))
 
 
+def paused():
+    """순회가 일시정지 상태인가(보정점 기록은 이때만 순회 중에 받는다)."""
+    return busy() and _pause_evt is not None and not _pause_evt.is_set()
+
+
 def busy():
     """순회 또는 긴 작업(보정·가열)이 도는 중인가."""
     return ((_task is not None and not _task.done())
@@ -1284,6 +1289,8 @@ def run_refusal(rc=None):
         out.append("Z 원점 없음 · Z 단계가 있는 레시피는 시작 안 함")
     if any(s.get("X") is None for s in state.samples):
         out.append("판 보정 필요 · 좌표 없는 샘플")
+    if ((state.plate or {}).get("calib") or {}).get("state") == "approx":
+        out.append("판 보정 근사 상태 · 샘플로 보정점을 기록한 뒤 순회 (보정 → 샘플로 보정)")
     off = [n for n in recipe_mod.relays_used(rc, state.settings) if not recipe_mod.relay_enabled(n, state.settings)]
     if off:
         out.append("릴레이 %s 사용 안 함 · 릴레이 탭에서 사용 지정" % ", ".join("R%d" % n for n in off))
