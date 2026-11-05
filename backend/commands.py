@@ -16,6 +16,7 @@ from core import paths
 import engine
 import logger
 import photohome
+import platecal
 import recipe as recipe_mod
 import relays
 import settings_schema as schema
@@ -51,7 +52,8 @@ BUSY_BLOCKED = ("park", "goto", "return_origin", "jog", "park_here", "capture_he
                 "sample_undo", "tool_select", "recipe_select", "photo_home",
                 "photo_home_apply", "head_calib_start", "head_calib_apply",
                 "calib_marker_record", "calib_marker_apply", "calib_tool_record",
-                "calib_tool_heat", "calib_tool_mark", "calib_tool_apply")
+                "calib_tool_heat", "calib_tool_mark", "calib_tool_apply",
+                "plate_shot", "plate_area_apply", "plate_calib_apply")
 # 샘플 추가 둘은 결과를 ack{of:"sample_add"} 로 돌려준다(화면이 새 번호를 선택한다).
 SAMPLE_ADD_CMDS = ("sample_add", "sample_add_here")
 # 순회 중 거절을 ack 로도 알려야 하는 명령(화면이 결과를 기다린다)
@@ -148,6 +150,7 @@ def start_preview():
     vision.holder.start(state.params)
     state.camera["preview"] = True
     photohome.refresh_state()
+    platecal.refresh_state()
 
 
 async def _preview_start(_data):
@@ -211,6 +214,9 @@ async def _stage_connect(data):
         await push_log("저장된 위치 복원 · X%.2f Y%.2f"
                        % (state.stage["x_mm"], state.stage["y_mm"]), "ok")
     await push_state()
+    # 연결 직후 헤드 마커로 위치 판단(이동 없음). 촬영이 느릴 수 있어 연결 응답을 붙잡지 않는다.
+    if state.get("photohome.on_connect"):
+        asyncio.get_running_loop().create_task(photohome.on_connect_check())
 
 
 def _warn_fw_limits(banner):
@@ -623,6 +629,7 @@ async def _commit_with_effects(v, warns, of):
     if "tool" in changed or "limits" in changed:
         engine.refresh_sample_status()
     photohome.refresh_state()
+    platecal.refresh_state()
     for w in warns:
         await push_log("설정 · " + w, "warn")
     await push_log("설정을 저장했습니다%s" % (" (%d 항목)" % len(changed) if changed else ""),
@@ -747,6 +754,26 @@ async def _calib_tool_heat(data):
     await photohome.tool_heat_start(data.get("n"), data.get("s"), data.get("z_mm"))
 
 
+async def _plate_shot(_data):
+    await platecal.shot()
+
+
+async def _plate_pos(_data):
+    await platecal.pos_record()
+
+
+async def _plate_calib_fit(data):
+    await platecal.fit_preview(data)
+
+
+async def _plate_calib_apply(data):
+    await platecal.calib_apply(data)
+
+
+async def _plate_area_apply(data):
+    await platecal.area_apply(data)
+
+
 async def _calib_tool_mark(data):
     await photohome.tool_mark(data.get("u"), data.get("v"))
 
@@ -861,6 +888,11 @@ _TABLE = {
     "calib_tool_record": _calib_tool_record,
     "calib_tool_heat": _calib_tool_heat,
     "calib_tool_mark": _calib_tool_mark,
+    "plate_shot": _plate_shot,
+    "plate_pos": _plate_pos,
+    "plate_calib_fit": _plate_calib_fit,
+    "plate_calib_apply": _plate_calib_apply,
+    "plate_area_apply": _plate_area_apply,
     "calib_tool_apply": _calib_tool_apply,
     "dry_slip": _dry_slip,
     "dry_stall": _dry_stall,

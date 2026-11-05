@@ -28,7 +28,7 @@ import time
 import cv2
 import numpy as np
 
-from core import calib, paths
+from core import calib, paths, plate
 
 import engine
 import logger
@@ -47,24 +47,9 @@ _pending = {"home": None, "head": None, "marker": {}, "tool": {}}
 # 헤드 마커 검출 · 보정 파일
 # --------------------------------------------------------------------------
 def detect_head(bgr, values):
-    """(u, v) 헤드 마커 중심(px) 또는 None."""
-    aruco = getattr(cv2, "aruco", None)
-    if aruco is None or bgr is None:
-        return None
-    ph = values.get("photohome") or {}
-    name = "DICT_" + str(ph.get("dict", "4X4_50"))
-    dic = aruco.getPredefinedDictionary(getattr(aruco, name, aruco.DICT_4X4_50))
-    dp = aruco.DetectorParameters()
-    dp.cornerRefinementMethod = aruco.CORNER_REFINE_SUBPIX
-    corners, ids, _rej = aruco.ArucoDetector(dic, dp).detectMarkers(bgr)
-    if ids is None:
-        return None
-    want = int(ph.get("marker_id", 10))
-    for c, i in zip(corners, ids.reshape(-1)):
-        if int(i) == want:
-            q = np.asarray(c).reshape(4, 2).astype(np.float64)
-            return float(q[:, 0].mean()), float(q[:, 1].mean())
-    return None
+    """(u, v) 헤드 마커 중심(px) 또는 None. 판 마커와 무관하다."""
+    got = plate.detect_head(bgr, values.get("photohome") or {})
+    return None if got is None else (got[0], got[1])
 
 
 def load_head_calib():
@@ -115,8 +100,14 @@ def px_to_stage(H, u, v):
 
 
 async def _shot_find(retries):
-    """헤드 마커가 보일 때까지 찍는다. (u, v, (w, h)) 또는 (None, None, size)."""
+    """헤드 마커가 보일 때까지 찍는다. (u, v, (w, h), edge).
+
+    edge 는 마커가 화면 끝(photohome.edge_margin_px)에 걸쳤다는 뜻이다 - 그러면 u, v 는
+    None 이다(가장자리의 마커는 렌즈 왜곡·잘림으로 믿을 수 없다). 못 찾으면 (None, None, size, False).
+    """
     size = None
+    edge = False
+    ph = state.settings.get("photohome") or {}
     for i in range(1 + max(0, int(retries))):
         try:
             bgr = await vision.single_shot(state.params)
@@ -125,10 +116,13 @@ async def _shot_find(retries):
             await asyncio.sleep(0.3)
             continue
         size = (int(bgr.shape[1]), int(bgr.shape[0]))
-        uv = await vision.run_blocking(detect_head, bgr, state.settings)
-        if uv is not None:
-            return uv[0], uv[1], size
-    return None, None, size
+        got = await vision.run_blocking(plate.detect_head, bgr, ph)
+        if got is not None:
+            if plate.touches_edge(got[2], size, plate.edge_margin_px(ph, size)):
+                edge = True
+                continue                   # 다시 찍어도 같은 자리면 같은 결과다
+            return got[0], got[1], size, False
+    return None, None, size, edge
 
 
 async def measure():
@@ -141,11 +135,14 @@ async def measure():
     if not ok:
         return {"ok": False, "reason": "no_calib" if cal is None else "calib_invalid",
                 "msg": why}
-    u, v, size = await _shot_find(int(state.get("photohome.shot_retries") or 0))
+    u, v, size, edge = await _shot_find(int(state.get("photohome.shot_retries") or 0))
     if size is not None:
         ok, why = calib_validity(cal, size)
         if not ok:
             return {"ok": False, "reason": "calib_invalid", "msg": why}
+    if edge:
+        return {"ok": False, "reason": "edge",
+                "msg": "헤드 마커가 화면 끝 · 안쪽으로 이동"}
     if u is None:
         return {"ok": False, "reason": "not_found",
                 "msg": "헤드 마커 미검출 · 수동 이동으로 시야 안에"}
@@ -343,7 +340,8 @@ async def _head_calib_job(pts):
     state.job.update({"n": len(pts), "i": 0, "message": "헤드 보정 시작", "result": None})
     await push_log("헤드 마커 보정 · %d점" % len(pts))
     await push_state()
-    got = []
+    got, skipped = [], []
+    size = None
     settle = float(state.get("photohome.settle_s") or 0.5)
     retries = int(state.get("photohome.shot_retries") or 3)
     try:
@@ -355,11 +353,18 @@ async def _head_calib_job(pts):
             await engine.lift_z()
             await engine._goto(x, y, no="head_calib")
             await asyncio.sleep(settle)
-            u, v, size = await _shot_find(retries)
+            u, v, size, edge = await _shot_find(retries)
+            if edge:
+                skipped.append([x, y])
+                await push_log("헤드 보정 · X%.0f Y%.0f 마커가 화면 끝 · 건너뜀" % (x, y), "warn")
+                continue
             if u is None:
                 raise engine.StepError("X%.0f Y%.0f 에서 헤드 마커 미검출" % (x, y))
             got.append({"x": state.stage["x_mm"], "y": state.stage["y_mm"],
                         "u": round(u, 3), "v": round(v, 3)})
+        if len(got) < 4:
+            raise engine.StepError("쓸 수 있는 점 %d개 · 4개 이상 필요 (화면 끝 %d점 건너뜀)"
+                                   % (len(got), len(skipped)))
         H, res, rms, mx = fit_head(got)
         if H is None:
             raise engine.StepError("호모그래피 계산 실패")
@@ -374,14 +379,16 @@ async def _head_calib_job(pts):
                   "marker_mm": float(ph.get("marker_mm", 40.0)),
                   "dict": ph.get("dict", "4X4_50"),
                   "H": [[float(a) for a in row] for row in H],
-                  "points": got, "rms_mm": round(rms, 4), "max_mm": round(mx, 4),
+                  "points": got, "skipped": skipped, "rms_mm": round(rms, 4),
+                  "max_mm": round(mx, 4),
                   "rms_limit_mm": lim, "ok": rms <= lim}
         _pending["head"] = result
         state.job.update({"message": "RMS %.3f mm%s" % (rms, "" if rms <= lim else " · 한계 초과"),
                           "result": {k: result[k] for k in ("rms_mm", "max_mm", "ok", "points",
-                                                            "rms_limit_mm", "size")}})
-        await push_log("헤드 보정 완료 · RMS %.3f · 최대 %.3f mm%s"
-                       % (rms, mx, "" if rms <= lim else " · 한계 %.2f 초과 · 다시 권장" % lim),
+                                                            "rms_limit_mm", "size", "skipped")}})
+        await push_log("헤드 보정 완료 · RMS %.3f · 최대 %.3f mm%s%s"
+                       % (rms, mx, "" if rms <= lim else " · 한계 %.2f 초과 · 다시 권장" % lim,
+                          "" if not skipped else " · 화면 끝 %d점 건너뜀" % len(skipped)),
                        "ok" if rms <= lim else "warn")
         await push_ack("head_calib", True, "", result=state.job["result"])
     except engine.Stopped:
@@ -601,6 +608,33 @@ async def tool_apply(method, name=None):
     await push_ack("calib_tool_apply", True, tool=name, d=d)
     await push_state()
     return True
+
+
+async def on_connect_check():
+    """연결 직후 위치 판단(photohome.on_connect). 이동 없이 한 장 찍어 판정한다.
+
+    헤드 보정이 유효할 때만 한다. 마커가 안 보이면 알리기만 하고 아무것도 움직이지
+    않는다. 허용 안 그대로 / 경고 안 자동 sp / 넘거나 원점 없음은 확인 후 sp(check 와 같다).
+    """
+    if not state.get("photohome.on_connect"):
+        return "skipped"
+    if not stagectl.ctl.connected or engine.busy() or state.stage.get("moving"):
+        return "skipped"
+    ok, why = calib_validity()
+    if not ok:
+        await push_log("연결 직후 위치 판단 건너뜀 · " + why)
+        return "skipped"
+    try:
+        r = await check(auto=False)
+    except stagectl.StageError as e:
+        await push_log("연결 직후 위치 판단 실패 · " + logger.short(e), "warn")
+        return "failed"
+    except Exception as e:                 # noqa: BLE001
+        logger.exc("연결 직후 위치 판단", e)
+        return "failed"
+    if r == "failed" and state.photohome.get("msg", "").startswith("헤드 마커 미검출"):
+        await push_log("헤드 마커 미검출 · 위치는 그대로 두었습니다", "warn")
+    return r
 
 
 def pending_tool():

@@ -24,7 +24,7 @@ import math
 import os
 import time
 
-from core import calib, flat, imgio, paths
+from core import calib, flat, imgio, paths, plate
 
 import logger
 import measure as measure_mod
@@ -214,16 +214,25 @@ async def _shoot_detect():
         if isinstance(stats, dict) and stats.get("retries"):
             await push_log("촬영 재시도 %d회 · 프레임 끊김 복구" % stats["retries"], "warn")
         await _log_capture_diag(stats.get("diag") if isinstance(stats, dict) else None)
+        await _log_timing(stats.get("timing") if isinstance(stats, dict) else None)
         if res is None:
             state.samples = []
             _clear_edits()
             state.calib = state.sensing = state.wafer = None
             state.markers = {}
-            need = int(state.get("calib.min_markers") or 3)
-            _phase("error", "판 마커 부족(%d개 미만) · 좌표 생성 불가" % need)
-            await push_log("판 마커 %d개 미만 · 좌표를 만들지 않습니다" % need, "err")
+            state.head_marker = stats.get("head_marker") if isinstance(stats, dict) else None
+            if fixed_mode():
+                why = (stats.get("calib_invalid") if isinstance(stats, dict) else "") or "판 보정 없음"
+                _phase("error", "판 보정 무효 · 다시 보정")
+                state.set_alarm("판 보정", "판 보정 무효 · 다시 보정")
+                await push_log("판 보정 무효 · %s · 좌표를 만들지 않습니다" % why, "err")
+            else:
+                need = int(state.get("calib.min_markers") or 3)
+                _phase("error", "판 마커 부족(%d개 미만) · 좌표 생성 불가" % need)
+                await push_log("판 마커 %d개 미만 · 좌표를 만들지 않습니다" % need, "err")
             return False
         _apply_sense(res)
+        state.head_marker = stats.get("head_marker") if isinstance(stats, dict) else None
         d = await vision.run_blocking(_save_seq, stats.get("raw", bgr), res,
                                       stats.get("images") or {})
         state.sequence["out_dir"] = d
@@ -242,6 +251,16 @@ async def _shoot_detect():
         logger.write("err", "촬영 실패 상세: %s: %s" % (type(e).__name__, e))
         await push_log("촬영 실패 · " + one, "err")
         return False
+
+
+async def _log_timing(t):
+    """촬영→검출 단계별 소요(고해상도에서 어디가 느린지 로그로 남긴다)."""
+    if not t:
+        return
+    sz = t.get("size") or [0, 0]
+    await push_log("소요 %dx%d · 촬영 %.2f s · 융합 %.2f s · 검출 %.2f s · 헤드 마커 %.2f s"
+                   % (sz[0], sz[1], t.get("capture_s", 0), t.get("fuse_s", 0),
+                      t.get("detect_s", 0), t.get("head_s", 0)))
 
 
 async def _log_capture_diag(diag):
@@ -294,10 +313,12 @@ def _apply_sense(res):
     cal, det = res["cal"], res["det"]
     remember_cal(cal)                      # 포인터 역변환에 같은 보정을 쓴다
     used = list(cal.get("used_ids") or [])
+    fixed = res.get("mode") == "fixed"
     state.calib = {
+        "mode": "fixed" if fixed else "markers",
         "refit": bool(res["refit"]),
         "used_ids": used,
-        "missing_ids": [i for i in sorted(calib.MARKER_MM) if i not in used],
+        "missing_ids": [] if fixed else [i for i in sorted(calib.MARKER_MM) if i not in used],
         "transform": cal.get("transform"),
         "corner_rms_mm": round(float(cal.get("corner_rms_mm", 0.0)), 3),
         "corner_max_mm": round(float(cal.get("corner_max_mm", 0.0)), 3),
@@ -305,7 +326,8 @@ def _apply_sense(res):
         "corners": len(cal.get("corners_px") or []),
     }
     u0, v0, u1, v1 = res["rect"]
-    state.sensing = {"rect": [int(u0), int(v0), int(u1), int(v1)]}
+    state.sensing = {"rect": [int(u0), int(v0), int(u1), int(v1)],
+                     "quad": res.get("quad")}
     w = det.wafer
     if w.found:
         cx, cy = w.center_px[0] + u0, w.center_px[1] + v0
@@ -317,6 +339,7 @@ def _apply_sense(res):
     # corners 는 numpy 배열이라 `or []` 로 기본값을 주면 "truth value is ambiguous"
     # 로 터진다. None 검사를 명시적으로 한다.
     state.markers = {}
+    state.set_alarm("판 보정", "")         # 이번 촬영은 좌표가 나왔다
     for i in used:
         q = (cal.get("markers") or {}).get(int(i), {}).get("corners")
         if q is None:
@@ -424,14 +447,31 @@ def remember_cal(d):
     _CAL_CACHE["d"] = d
 
 
+def fixed_mode():
+    return str(state.get("calib.mode") or "fixed") == "fixed"
+
+
+def fixed_cal():
+    """고정 보정의 현재 변환(판 보정이 유효할 때만, 아니면 None)."""
+    if not (state.plate or {}).get("valid"):
+        return None
+    return plate.current_cal()
+
+
 def _last_cal():
+    if fixed_mode():
+        return fixed_cal()                 # 저장한 판 보정이 곧 현재 보정이다
     if _CAL_CACHE["d"] is not None:
         return _CAL_CACHE["d"]
     return calib.load_matrix()
 
 
 def current_cal():
-    """이번 촬영의 보정(없으면 None). 촬영본 클릭 → mm 변환에 쓴다."""
+    """지금 쓰는 보정(없으면 None). 촬영본 클릭 → mm 변환에 쓴다.
+
+    markers: 이번 촬영의 마커 보정. fixed: 저장한 판 보정(촬영과 무관하게 같다)."""
+    if fixed_mode():
+        return fixed_cal()
     return _CAL_CACHE["d"]
 
 
@@ -611,12 +651,18 @@ def _edit_refusal(verb):
         return "busy", "순회 중 · %s 안 함" % verb
     if state.camera.get("capturing"):
         return "capturing", "촬영 중 · %s 안 함" % verb
-    if state.calib is None or state.sensing is None or _CAL_CACHE["d"] is None:
+    if state.calib is None or state.sensing is None or current_cal() is None:
         return "no_capture", "촬영 결과 없음 · 촬영 후 %s" % verb
     return None
 
 
 def _in_rect(u, v):
+    quad = state.sensing.get("quad")
+    if quad:                               # 고정 보정: 감지 영역은 사각형
+        import cv2
+        import numpy as np
+        return cv2.pointPolygonTest(np.asarray(quad, np.float32).reshape(-1, 1, 2),
+                                    (float(u), float(v)), False) >= 0
     u0, v0, u1, v1 = state.sensing["rect"]
     return u0 <= u <= u1 and v0 <= v <= v1
 
@@ -725,7 +771,7 @@ async def add_sample_px(u, v):
         return await _add_refused("bad_args", "좌표 오류 · 추가 안 함")
     if not _in_rect(u, v):
         return await _add_refused("outside", "감지영역 밖 · 추가 안 함")
-    X, Y = calib.px_to_mm(_CAL_CACHE["d"], u, v)
+    X, Y = calib.px_to_mm(current_cal(), u, v)
     why = _check_new(u, v, X, Y)
     if why:
         return await _add_refused(*why)
@@ -742,7 +788,7 @@ async def add_sample_here():
     if X is None or Y is None:
         return await _add_refused("bad_args", "현재 위치 모름 · 추가 안 함")
     X, Y = float(X), float(Y)
-    u, v = calib.mm_to_px(_CAL_CACHE["d"], X, Y)
+    u, v = calib.mm_to_px(current_cal(), X, Y)
     why = _check_new(u, v, X, Y)
     if why:
         return await _add_refused(*why)

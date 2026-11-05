@@ -43,6 +43,10 @@ class State:
         self.sensing = None                # {"rect":[u0,v0,u1,v1]}
         self.wafer = None                  # {"found","cx","cy","r_px","center_mm"}
         self.markers = {}                  # {id: [[u,v] x4]}
+        self.head_marker = None            # 촬영본의 헤드 마커 {"center","corners"} (표시용)
+        # 고정 보정(감지 영역 + 판 보정) 요약 - backend/platecal.py 가 채운다
+        self.plate = {"mode": "fixed", "valid": False, "reason": "판 보정 없음",
+                      "data": None, "shot": None}
         self.samples = []                  # 화면용 샘플 목록(늘 번호순)
         # 샘플 편집(수동 추가·삭제). 스택에 있는 것 = 지금 효력이 있는 편집이고
         # 되돌리기는 끝에서부터 뺀다. 항목 {"op":"add","no"} / {"op":"del","sample":dict}.
@@ -316,6 +320,8 @@ class State:
             "sensing": dict(self.sensing) if self.sensing else None,
             "wafer": dict(self.wafer) if self.wafer else None,
             "markers": {str(k): v for k, v in (self.markers or {}).items()},
+            "head_marker": dict(self.head_marker) if self.head_marker else None,
+            "plate": dict(self.plate),
             # 가동범위(지금 드라이버가 쓰는 값). 스테이지 맵의 축척과 조그 상한이 쓴다.
             "limits": {k: round(v, 1) for k, v in stage_mod.limits_mm().items()},
             # 서버가 지금 쓰는 마커 기준 좌표. settings 에 marker_mm_xy 가 없어도

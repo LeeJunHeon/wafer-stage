@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 
-from core import calib, camera, flat, imgio
+from core import calib, camera, flat, imgio, plate
 
 import logger
 
@@ -39,11 +39,11 @@ _ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vision")
 # 촬영마다 디스크를 건드리지 않기 위해서다 - 저장은 engine 이 seq 폴더에 따로 한다.
 _frame = {"id": None, "jpg": b"", "w": 0, "h": 0, "ts": 0.0}
 
+_aux = {"id": None, "jpg": b""}   # 보정 창이 따로 찍은 단발 촬영(촬영본 state.frame 과 별개)
+
 IMAGE_OVERRIDE = None          # --image 로 준 파일. 있으면 카메라 대신 이 파일을 쓴다
 
-# 미리보기 그림 크기·화질(화면 표시용 고정값 - 운용 값이 아니다).
-PREVIEW_W = 640
-PREVIEW_H = 360
+# 미리보기 화질(화면 표시용 고정값). 가로 폭은 설정 preview_max_w, 세로는 비율대로.
 PREVIEW_Q = 70
 # 주기·실패 허용·재개방 대기는 설정(preview_fps · cam_fail_limit · cam_reopen_s ·
 # cam_reopen_max_s)에서 매 루프 읽는다. 카메라를 못 열면 대기를 두 배씩 늘린다 -
@@ -72,9 +72,11 @@ def set_image_override(path):
 
 
 def frame_jpeg(fid):
-    if _frame["id"] != fid:
-        return None
-    return _frame["jpg"]
+    if _frame["id"] == fid:
+        return _frame["jpg"]
+    if _aux["id"] == fid:
+        return _aux["jpg"]
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -99,6 +101,7 @@ class CameraHolder:
         self.on_status = None              # fn(ok: bool|None, error: str)
         self._last_status = None
         self.last_size = None              # 마지막으로 받은 프레임 (w, h)
+        self.preview_size = None           # 미리보기 JPEG 크기 (w, h) - 원본보다 작다
 
     # ---- 상태 ----
     def _status(self, ok, err=""):
@@ -173,15 +176,18 @@ class CameraHolder:
         return self._jpg or None
 
     def _encode(self, bgr):
+        """미리보기 JPEG. 원본을 그대로 보내지 않고 preview_max_w 이하로 줄인다(비율 유지)."""
         h, w = bgr.shape[:2]
-        if w > PREVIEW_W:
-            small = cv2.resize(bgr, (PREVIEW_W, PREVIEW_H), interpolation=cv2.INTER_AREA)
-        else:
-            small = bgr
+        max_w = int(_p(self.params, "preview_max_w", 1280))
+        small = bgr
+        if max_w > 0 and w > max_w:
+            small = cv2.resize(bgr, (max_w, max(1, int(round(h * max_w / float(w))))),
+                               interpolation=cv2.INTER_AREA)
         ok, buf = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), PREVIEW_Q])
         if ok:
             self._jpg = buf.tobytes()
             self._jpg_ts = time.time()
+            self.preview_size = (int(small.shape[1]), int(small.shape[0]))
 
     def _loop(self):
         """grab() 은 쉬지 않고, 인코딩은 설정 주기(preview_fps)로.
@@ -258,6 +264,8 @@ class CameraHolder:
         self.params = dict(params or {})
         tries = 1 + max(0, int(_p(self.params, "capture_retries", 2)))
         wait_s = min(2.0, float(_p(self.params, "cam_reopen_s", 5.0)))
+        if int(_p(self.params, "width", 1280)) * int(_p(self.params, "height", 720)) > 4_000_000:
+            wait_s *= 2.0                  # 고해상도는 장치가 다시 자리 잡는 데 더 걸린다
         last = None
         for i in range(tries):
             with self.lock:
@@ -288,15 +296,27 @@ class CameraHolder:
 holder = CameraHolder()
 
 
-def _store(bgr):
+def _jpeg(bgr):
     ok, buf = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     if not ok:
         raise IOError("프레임 인코딩 실패")
+    return buf.tobytes()
+
+
+def _store(bgr):
+    jpg = _jpeg(bgr)
     h, w = bgr.shape[:2]
-    _frame.update({"id": "%d" % int(time.time() * 1000), "jpg": buf.tobytes(),
+    _frame.update({"id": "%d" % int(time.time() * 1000), "jpg": jpg,
                    "w": int(w), "h": int(h), "ts": time.time()})
     return {"id": _frame["id"], "ts": _frame["ts"], "w": _frame["w"], "h": _frame["h"],
             "url": "/frame/%s.jpg" % _frame["id"]}
+
+
+def store_aux(bgr):
+    """보정 창이 쓰는 단발 사진. 촬영본(state.frame)을 덮지 않는다."""
+    _aux.update({"id": "a%d" % int(time.time() * 1000), "jpg": _jpeg(bgr)})
+    h, w = bgr.shape[:2]
+    return {"id": _aux["id"], "w": int(w), "h": int(h), "url": "/frame/%s.jpg" % _aux["id"]}
 
 
 def _grab(params):
@@ -313,14 +333,22 @@ def _grab(params):
     return holder.capture_bracket(params)
 
 
-def _capture_sync(params):
-    """촬영 -> 평탄화 -> 보정·검출. (검출 이미지, frame_meta, sense 결과|None, stats).
+def calib_mode(params):
+    return str(((params or {}).get("calib") or {}).get("mode") or "fixed")
 
-    촬영 순서: [브라케팅·융합] -> 마커로 감지영역 -> [종이 기준 평탄화] -> 마커
-    재계산·검출. stats["images"] 에 raw.png 외에 남길 그림(fused.png, flat.png)을
-    담고, stats["diag"] 에 진단(종이 RGB·포화 비율·브라케팅)을 담는다.
+
+def _capture_sync(params):
+    """촬영 -> (평탄화) -> 보정·검출. (검출 이미지, frame_meta, sense 결과|None, stats).
+
+    markers: [브라케팅·융합] -> 마커로 감지영역 -> [종이 기준 평탄화] -> 마커 재계산·검출.
+    fixed:   [브라케팅·융합] -> 저장한 감지 영역 crop -> 검출 -> 저장한 판 보정으로 mm.
+             판 마커는 보지 않고 평탄화는 건너뛴다(종이 기준이 없다).
+    stats["images"] 에 raw.png 외에 남길 그림(fused.png, flat.png)을 담고, stats["diag"] 에
+    진단, stats["timing"] 에 단계별 소요(촬영·융합·검출 초)를 담는다.
     """
+    t0 = time.perf_counter()
     bgr, stats = _grab(params)
+    t_cap = time.perf_counter() - t0
     raw = stats.pop("raw", bgr)
     images = {}
     if stats.get("bracketed"):
@@ -333,42 +361,84 @@ def _capture_sync(params):
             "bracket_exposure": stats.get("bracket_exposure"),
             "bracket_notes": stats.get("bracket_notes"),
             "bracket_warning": stats.get("bracket_warning", "")}
+    fuse_s = float(stats.get("fuse_s") or 0.0)
+    timing = {"capture_s": round(max(0.0, t_cap - fuse_s), 3), "fuse_s": round(fuse_s, 3),
+              "detect_s": 0.0, "head_s": 0.0, "size": [int(bgr.shape[1]), int(bgr.shape[0])]}
+    fixed = calib_mode(params) == "fixed"
 
-    # 종이 기준 평탄화. 포화는 평탄화 '전' 이미지에서 잰다 - 나눗셈은 값을 줄일 뿐
-    # 잃은 정보를 되살리지 못한다.
-    flat_img, pre = calib.preprocess(bgr, params)
-    finfo = pre["flat"]
-    rect = pre["rect"]
-    diag.update({"flat_applied": bool(finfo.get("applied")),
-                 "flat_warning": finfo.get("warning", ""),
-                 "paper_frac": finfo.get("paper_frac"),
-                 "paper_rgb_before": finfo.get("paper_rgb_before"),
-                 "paper_rgb_after": finfo.get("paper_rgb_after"),
-                 "rect_sat_pct": (round(flat.saturation_frac(bgr, rect) * 100.0, 1)
-                                  if rect is not None else None)})
-    if finfo.get("applied"):
-        images["flat.png"] = flat_img
-    det_img = flat_img if finfo.get("applied") else bgr
+    if fixed:
+        # 평탄화는 종이 기준이라 고정 보정에는 기준이 없다.
+        flat_img, rect = bgr, None
+        diag.update({"flat_applied": False, "flat_warning": "평탄화 건너뜀 · 고정 보정",
+                     "paper_frac": None, "paper_rgb_before": None, "paper_rgb_after": None,
+                     "rect_sat_pct": None, "mode": "fixed"})
+    else:
+        # 종이 기준 평탄화. 포화는 평탄화 '전' 이미지에서 잰다 - 나눗셈은 값을 줄일 뿐
+        # 잃은 정보를 되살리지 못한다.
+        flat_img, pre = calib.preprocess(bgr, params)
+        finfo = pre["flat"]
+        rect = pre["rect"]
+        diag.update({"flat_applied": bool(finfo.get("applied")),
+                     "flat_warning": finfo.get("warning", ""),
+                     "paper_frac": finfo.get("paper_frac"),
+                     "paper_rgb_before": finfo.get("paper_rgb_before"),
+                     "paper_rgb_after": finfo.get("paper_rgb_after"),
+                     "rect_sat_pct": (round(flat.saturation_frac(bgr, rect) * 100.0, 1)
+                                      if rect is not None else None), "mode": "markers"})
+        if finfo.get("applied"):
+            images["flat.png"] = flat_img
+    det_img = flat_img if (not fixed and diag["flat_applied"]) else bgr
     meta = _store(det_img)
-    # 마커 재보정 실패(3개 미만)면 좌표를 만들지 않는다. 틀린 좌표로 스테이지를
-    # 움직이는 것보다 멈추는 것이 낫다.
+
     buf = io.StringIO()
     import contextlib
-    with contextlib.redirect_stdout(buf):
-        res = calib.sense(det_img, params, allow_fallback=False, save=True)
+
+    def log_line(t):
+        buf.write(t + "\n")
+
+    t1 = time.perf_counter()
+    if fixed:
+        d = plate.load()
+        ok, why = plate.validity(d, int(_p(params, "camera_index", 1)),
+                                 (bgr.shape[1], bgr.shape[0]))
+        if not ok:
+            res = None
+            stats["calib_invalid"] = why
+            log_line("판 보정 무효 · " + why + " · 좌표를 만들지 않음")
+        else:
+            res = plate.sense_fixed(det_img, params, d, log=log_line)
+            diag["rect_sat_pct"] = round(flat.saturation_frac(bgr, res["rect"]) * 100.0, 1)
+    else:
+        # 마커 재보정 실패(3개 미만)면 좌표를 만들지 않는다. 틀린 좌표로 스테이지를
+        # 움직이는 것보다 멈추는 것이 낫다.
+        with contextlib.redirect_stdout(buf):
+            res = calib.sense(det_img, params, allow_fallback=False, save=True)
+    timing["detect_s"] = round(time.perf_counter() - t1, 3)
     for line in buf.getvalue().splitlines():
         if line.strip():
             logger.write("info", line.rstrip())
     # 웨이퍼 안 포화 비율(평탄화 전 이미지). 검출이 찾은 타원을 쓴다.
     diag["wafer_sat_pct"] = None
-    if res is not None and res["det"].wafer.found:
+    if not fixed and res is not None and res["det"].wafer.found:
         w = res["det"].wafer
         u0, v0 = res["rect"][:2]
         diag["wafer_sat_pct"] = round(flat.wafer_saturation_frac(
             bgr, (w.center_px[0] + u0, w.center_px[1] + v0),
             w.major_px, w.minor_px, w.theta_deg) * 100.0, 1)
+
+    # 헤드 마커(표시용). 촬영본 위에 검출 표시를 그리는 데만 쓴다.
+    t2 = time.perf_counter()
+    try:
+        hm = plate.detect_head(bgr, params.get("photohome") or {})
+    except Exception:                  # noqa: BLE001
+        hm = None
+    timing["head_s"] = round(time.perf_counter() - t2, 3)
+    stats["head_marker"] = None if hm is None else {
+        "center": [round(hm[0], 1), round(hm[1], 1)],
+        "corners": [[round(float(a), 1), round(float(b), 1)] for a, b in hm[2]]}
     stats["images"] = images
     stats["diag"] = diag
+    stats["timing"] = timing
     stats["raw"] = raw
     return det_img, meta, res, stats
 
