@@ -321,6 +321,17 @@
         c ? ('마커 ' + c.used_ids.length + '개 · RMS ' + c.corner_rms_mm.toFixed(2) + ' mm') : '마커 방식');
       $('chipCalib').setAttribute('data-tip', '판 마커 방식의 보정입니다. 이번 촬영의 마커로 계산한 잔차(RMS)입니다.');
     }
+    // 카메라 이동 보정: 이동량(px · mm)을 보정 칩 툴팁에 덧붙이고, 경고 · 이동 큼이면 칩 색을 올린다
+    const cm = s.cam;
+    if (cm && pl.mode === 'fixed') {
+      const tipTxt = (chipEl) => { const t = chipEl.getAttribute('data-tip') || ''; return t.split(' 카메라 이동:')[0]; };
+      const el = $('chipCalib');
+      const line = cm.fail ? ' 카메라 이동: ' + cm.fail
+        : ' 카메라 이동: 기준 대비 ' + (+cm.shift_px).toFixed(1) + ' px (' + (+cm.shift_mm).toFixed(2) + ' mm) · 회전 ' + (+cm.theta_deg).toFixed(2) + '° · 정렬 잔차 ' + (+cm.resid).toFixed(2) + (cm.warn ? ' · ' + cm.warn : '');
+      el.setAttribute('data-tip', tipTxt(el) + line);
+      if (cm.fail) chip(el, 'bad', '카메라 이동 큼');
+      else if (cm.warn && !el.classList.contains('bad')) chip(el, 'warn', null);
+    }
     const ph = s.photohome || {};
     const hk = HOME[ph.status] || HOME.unknown;
     chip($('chipHome'), st.connected ? hk[1] : null,

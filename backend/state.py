@@ -43,6 +43,7 @@ class State:
                         "contact": None, "heater_on": False, "cooler_on": [], "target": None, "label": "",
                         "left_s": None, "tripped": "", "recording": False}
         self.tip_extra = {"angle_now": None, "tips_now": {}, "has_cal": False}
+        self.cam = None                    # 카메라 이동 보정 정보(이동 px · mm · 회전 · 잔차 · 경고) - 기준 없으면 None
         self.zones_fn = None               # engine.zones_view - 칸별 사진 px · 스테이지 mm 사각형 · 켜짐 · 샘플 수
         self.frame = None                  # {"id","ts","w","h","url"}
         self.calib = None                  # {"refit","used_ids",...}
@@ -332,6 +333,7 @@ class State:
             # 설정 창이 이 값으로 표를 채운다.
             "marker_mm": {str(k): [v[0], v[1]] for k, v in calib.MARKER_MM.items()},
             "measure": dict(self.measure),
+            "cam": self.cam,
             "zones": (self.zones_fn() if self.zones_fn else None),
             "samples": [dict(s) for s in self.samples],
             "tip": dict(tip_mod.tip_of(self.tool()), name=self.tool().get("name"),

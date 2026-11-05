@@ -146,10 +146,13 @@ def _chip(img, H, x, y, side_mm, rot_deg, color):
     cv2.fillConvexPoly(img, np.round(uv).astype(np.int32), color, lineType=cv2.LINE_AA)
 
 
-def render_plate(w, h, head_xy=None, params=None, seed=3, shift_mm=(0.0, 0.0)):
+def render_plate(w, h, head_xy=None, params=None, seed=3, shift_mm=(0.0, 0.0), chips=True, texture=False,
+                 samples_mm=None, extra_mm=(), blobs_mm=()):
     """BGR 판 장면. 회색 판 + 알려진 위치의 칩 9개 + 사각형 밖 물체 2개 (+ 헤드 마커).
 
     shift_mm: 칩 위치를 이만큼 옮긴다(샘플 위치를 바꿔 다시 찍는 검증용).
+    chips=False 면 빈 판(기준 사진용). texture=True 면 판에 고정된 긁힘 무늬(기준 정렬 · 차이 검출 검증용)를 더한다 - 촬영마다 다른 잡음과 달리 두 사진에 똑같다.
+    samples_mm = 칩 위치 목록 덮어쓰기, extra_mm = 더하는 칩, blobs_mm = 큰 얼룩(칩 크기 밖 · 기준 점검 검증용).
     돌려주는 것: (img, truth{"samples": [(X,Y)], "outside": [(X,Y)], "H": 3x3 mm→px}).
     """
     rng = np.random.default_rng(seed)
@@ -160,7 +163,21 @@ def render_plate(w, h, head_xy=None, params=None, seed=3, shift_mm=(0.0, 0.0)):
     # 판 밖 배경은 더 어둡게(레일 · 바닥), 새겨진 사각형 선은 얇은 짙은 선
     quad = np.array([project(H, a, b) for a, b in PLATE_QUAD_MM], np.float32)
     cv2.polylines(img, [np.round(quad).astype(np.int32)], True, (132, 132, 132), max(2, w // 1500))
-    for i, (x, y) in enumerate(PLATE_SAMPLES_MM):
+    if texture:
+        trng = np.random.default_rng(11)
+        for _k in range(160):
+            a = trng.uniform(25.0, 215.0, 2)
+            ang = trng.uniform(0, 2 * math.pi)
+            ln = trng.uniform(6.0, 30.0)
+            b = a + ln * np.array([math.cos(ang), math.sin(ang)])
+            p0, p1 = project(H, a[0], a[1]), project(H, b[0], b[1])
+            v = float(trng.uniform(-28.0, 28.0))
+            cv2.line(img, (int(p0[0]), int(p0[1])), (int(p1[0]), int(p1[1])), (150.0 + v, 150.0 + v, 150.0 + v), 1, cv2.LINE_AA)
+    for (bx, by) in blobs_mm:
+        pb = project(H, bx, by)
+        cv2.circle(img, (int(pb[0]), int(pb[1])), int(60 * w / 1280.0), (95, 100, 105), -1, cv2.LINE_AA)
+    pos = list(PLATE_SAMPLES_MM if samples_mm is None else samples_mm) + list(extra_mm)
+    for i, (x, y) in enumerate(pos if chips else []):
         sx, sy = x + shift_mm[0], y + shift_mm[1]
         col = [(70, 90, 150), (60, 110, 80), (140, 80, 70), (80, 80, 170)][i % 4]   # BGR 로 서로 다른 색
         _chip(img, H, sx, sy, 7.0 + (i % 3), 7.0 * i, col)
@@ -191,7 +208,7 @@ def render_plate(w, h, head_xy=None, params=None, seed=3, shift_mm=(0.0, 0.0)):
         out[diff] = mk[diff]
     out = cv2.GaussianBlur(out, (0, 0), 0.8 * w / 1280.0 if w > 1280 else 0.8)
     out = np.clip(out.astype(np.float32) + rng.normal(0.0, 2.0, out.shape), 0, 255).astype(np.uint8)
-    truth = {"samples": [(x + shift_mm[0], y + shift_mm[1]) for x, y in PLATE_SAMPLES_MM],
+    truth = {"samples": [(x + shift_mm[0], y + shift_mm[1]) for x, y in pos],
              "outside": list(PLATE_OUTSIDE_MM), "H": H, "quad_mm": list(PLATE_QUAD_MM)}
     return out, truth
 

@@ -2489,6 +2489,107 @@ async def zones_migrate_flow(c):
     check(any("쿨러 구역" in l["msg"] and "판 기준" in l["msg"] for l in c.logs) or True, "")
 
 
+# ---------------------------------------------------------------------------
+# 빈 판 기준 차이 검출 · 촬영마다 카메라 이동 보정 · 배치 자동 판단 (합성 판 장면: 고정 긁힘 무늬 + 칩)
+# ---------------------------------------------------------------------------
+REFSC = {}
+
+
+def prep_refscene(kind):
+    """합성 빈 판(기준) + 현재 사진(칩 + 카메라 이동 · 밝기 변화)과 plate_calib.json(참 보정). 반환: 현재 사진 경로.
+
+    kind: shift(이동 + 회전 + 밝기) | big(이동 큼) | check(기준에만 큰 얼룩) | grid(정렬 격자 3x3) | free(불규칙 배치) | extra(격자 + 격자 밖 칩 1개)
+    """
+    import cv2
+    import numpy as np
+    from core import plate as plate_mod
+    path = prep_fixed(1280, 960)                                    # 참 판 보정 · 감지 영역을 plate_calib.json 에 둔다
+    sc = _synth()
+    w, h = 1280, 960
+    blobs = [(70, 55), (100, 190), (150, 60), (190, 190), (120, 120), (60, 150), (180, 120), (150, 150)] if kind == "check" else ()
+    ref, _t0 = sc.render_plate(w, h, chips=False, texture=True, seed=5, blobs_mm=blobs)
+    samples = None
+    extra = ()
+    if kind == "grid":
+        samples = [p for i, p in enumerate(sc.PLATE_SAMPLES_MM) if i != 4]          # 격자인데 한 칸이 비었다(예측으로 채운다)
+    if kind == "free":
+        samples = [(60, 58), (58, 128), (88, 172), (112, 66), (125, 112), (138, 184), (172, 56), (184, 104), (150, 150)]
+    if kind == "extra":
+        extra = [(95.0, 95.0)]
+    cur, truth = sc.render_plate(w, h, chips=True, texture=True, seed=9, samples_mm=samples, extra_mm=extra)
+    dx, dy, th = {"shift": (9.0, -6.0, 0.4), "big": (60.0, 20.0, 0.0)}.get(kind, (0.0, 0.0, 0.0))
+    c = np.array([w / 2.0, h / 2.0])
+    M = cv2.getRotationMatrix2D((c[0], c[1]), th, 1.0)
+    M[0, 2] += dx
+    M[1, 2] += dy
+    cur = cv2.warpAffine(cur, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    if kind == "shift":
+        cur = np.clip(cur.astype(np.float32) * 0.97 - 5.0, 0, 255).astype(np.uint8)        # 밝기 변화
+    cv2.imwrite(path, cur)
+    d = plate_mod.load(os.path.join(DATA_DIR, "plate_calib.json"))
+    old_path = plate_mod.paths.PLATE_CALIB_PATH
+    plate_mod.paths.PLATE_CALIB_PATH = os.path.join(DATA_DIR, "plate_calib.json")     # 기준은 임시 데이터 폴더에만(실제 data/ 를 건드리지 않는다)
+    try:
+        plate_mod.save_ref(ref, {"exposure": -5.0, "wb_temperature": 5000}, 1, d["area"])
+    finally:
+        plate_mod.paths.PLATE_CALIB_PATH = old_path
+    REFSC.update({"truth": truth, "M": M, "area": d["area"], "H": truth["H"], "kind": kind})
+    return path
+
+
+def _ref_truth_err(c):
+    """샘플 X · Y 와 참 스테이지 좌표(= 판 장면 mm)의 최대 오차(각 샘플에서 가장 가까운 참값)."""
+    tr = REFSC["truth"]["samples"]
+    errs = []
+    for s in c.state["samples"]:
+        errs.append(min(((s["X"] - x) ** 2 + (s["Y"] - y) ** 2) ** 0.5 for x, y in tr))
+    return max(errs) if errs else 99.0
+
+
+def ref_flow(kind):
+    async def flow(c):
+        import numpy as np
+        check(c.state["settings"]["fixed"]["use_ref"] is True and c.state["settings"]["fixed"]["layout"] == "auto",
+              "기본: 빈 판 기준 사용 · 배치 자동")
+        c.logs.clear()
+        await c.send(cmd="capture")
+        ph = await c.wait_phase(("ready", "error"), 120)
+        st = c.state
+        msgs = [l["msg"] for l in c.logs]
+        if kind == "big":
+            check(ph == "error" and not st["samples"] and "카메라 이동 큼" in st["sequence"]["message"],
+                  "카메라 이동이 크면 좌표를 만들지 않는다 (%s · %s)" % (ph, st["sequence"]["message"]))
+            check(st["cam"] and st["cam"].get("shift_mm", 0) > 10, "이동량 표시 %s mm" % (st["cam"] or {}).get("shift_mm"))
+            return
+        check(ph == "ready", "촬영 (%s · %s)" % (ph, st["sequence"]["message"]))
+        check(any("검출 경로" in m and "빈 판 기준 차이" in m for m in msgs), "로그: 검출 경로 = 기준 차이 (%s)" % [m for m in msgs if "검출 경로" in m])
+        sm = st["samples"]
+        n_true = len(REFSC["truth"]["samples"])
+        if kind in ("shift", "free"):
+            check(len(sm) == n_true, "기준 차이로 칩 %d개 모두 (%d)" % (n_true, len(sm)))
+            check(_ref_truth_err(c) < 0.8, "좌표 정확도 최대 %.2f mm < 0.8" % _ref_truth_err(c))
+        if kind == "shift":
+            M = REFSC["M"]
+            ctr = np.mean(np.array(REFSC["area"]), axis=0)
+            exp_px = float(np.hypot(*(M[:, :2] @ ctr + M[:, 2] - ctr)))
+            exp_th = float(np.degrees(np.arctan2(M[1, 0], M[0, 0])))
+            cam = st["cam"]
+            check(cam and abs(cam["shift_px"] - exp_px) < 2.0 and abs(cam["theta_deg"] - exp_th) < 0.15,
+                  "카메라 이동 추정 %.1f px (기대 %.1f) · 회전 %.2f° (기대 %.2f)" % (cam["shift_px"], exp_px, cam["theta_deg"], exp_th))
+            check(any("카메라 이동" in m and "mm" in m for m in msgs), "이동량을 로그에 표시")
+            check(all(s["source"] != "predicted" for s in sm), "예측 샘플 없음")
+        if kind == "grid":
+            check(len(sm) == 9 and sum(1 for s in sm if s["source"] == "predicted") == 1 and all(s["weak"] for s in sm if s["source"] == "predicted"),
+                  "auto: 격자 판단 → 빈 칸 1곳을 예측(weak) (%s)" % [s["source"] for s in sm].count("predicted"))
+        if kind == "free":
+            check(not any(s["source"] == "predicted" for s in sm), "auto: 격자 못 넘으면 자유 배치 · 예측 없음")
+        if kind == "extra":
+            check(len(sm) == 10 and any("격자 밖 후보" in w for w in st["warnings"]), "격자 밖 후보도 샘플로 유지 · 경고 (%d개 · %s)" % (len(sm), st["warnings"]))
+        if kind == "check":
+            check(any("빈 판 기준 다시 촬영 권장" in w for w in st["warnings"]), "기준 점검 경고 (%s)" % st["warnings"])
+    return flow
+
+
 def _px_dir_deg(H, x=1.0, y=0.0):
     """스테이지 방향(x, y) 이 사진에서 가리키는 각도(도) - 참 호모그래피 H(mm→px) 의 미분."""
     sc = _synth()
@@ -3158,6 +3259,8 @@ def main():
         ZONES_P = dict(FIXED_P, calib={"mode": "fixed", "area_size_mm": [160.0, 160.0]},
                        relay={"items": relays_patch(tuple(range(1, 11)))},
                        recipe={"active": "Z", "items": [{"name": "Z", "steps": [{"type": "move_sample"}, {"type": "wait", "s": 4.0}]}]})
+        REF_P = dict(FIXED_P, calib={"mode": "fixed", "area_size_mm": [160.0, 160.0]})
+        REF_P["fixed"] = {"grid_rows": 3, "grid_cols": 3, "chip_mm": 10.0, "ref_check_blobs": 3, "cam_shift_warn_mm": 1.0}
         HEAD_P = {"calib": {"mode": "fixed"}, "width": 1280, "height": 720,
                   "photohome": {"on_connect": True, "settle_s": 0.2, "edge_margin_px": 5}}
         cases = [
@@ -3198,11 +3301,17 @@ def main():
             ("고정 보정 무효", lambda: prep_fixed(1280, 960, cal_size=(640, 480)), fixed_invalid_flow, None, FIXED_P),
             ("촬영 진행 표시", lambda: prep_fixed(1280, 960), capture_progress_flow, None, FIXED_P),
             *([("고정 환경 실장 사진", prep_real_fixed, fixed_real_flow, None,
-                {"calib": {"mode": "fixed", "est_mm_per_px": 0.151}, "width": 4080, "height": 3060,
+                {"calib": {"mode": "fixed", "est_mm_per_px": 0.151}, "fixed": {"use_ref": False}, "width": 4080, "height": 3060,
                  "preview_max_w": 1280, "photohome": {"before_capture": False}, "flow": {"capture_goto": False}}
                 )] if REAL.setdefault("scene", real_scene()) else []),
             ("공구 끝 표시", lambda: prep_fixed(1280, 960), tip_flow, None, TIP_PATCH),
             ("측정 과정", lambda: prep_fixed(1280, 960), process_flow, None, MEAS_P),
+            ("빈 판 기준 이동", lambda: prep_refscene("shift"), ref_flow("shift"), None, REF_P),
+            ("빈 판 기준 큰 이동", lambda: prep_refscene("big"), ref_flow("big"), None, REF_P),
+            ("빈 판 기준 점검", lambda: prep_refscene("check"), ref_flow("check"), None, REF_P),
+            ("빈 판 기준 격자", lambda: prep_refscene("grid"), ref_flow("grid"), None, REF_P),
+            ("빈 판 기준 자유", lambda: prep_refscene("free"), ref_flow("free"), None, REF_P),
+            ("빈 판 기준 격자 밖", lambda: prep_refscene("extra"), ref_flow("extra"), None, REF_P),
             ("쿨러 구역", lambda: prep_fixed(1280, 960), zones_flow(False), None, ZONES_P),
             ("쿨러 구역 90", lambda: prep_fixed_rot(True), zones_flow(True), None, dict(ZONES_P, width=960, height=1280)),
             ("쿨러 구역 이행", good, zones_migrate_flow, None, None,

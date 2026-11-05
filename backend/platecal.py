@@ -247,7 +247,7 @@ async def sample_calib(data):
         await push_ack("plate_sample_calib", False, "no_approx", [why])
         return False
     s = state.sample(no)
-    u, v = float(s["u"]), float(s["v"])
+    u, v = engine.to_ref(float(s["u"]), float(s["v"]))          # 보정점 px 는 기준 좌표(카메라가 움직였어도 같은 좌표계)
     x, y = float(state.stage["x_mm"]), float(state.stage["y_mm"])
     pred = plate.predict_mm(d, u, v)
     res_new = math.hypot(pred[0] - x, pred[1] - y) if pred is not None else None

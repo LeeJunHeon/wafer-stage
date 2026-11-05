@@ -23,7 +23,7 @@ import time
 import cv2
 import numpy as np
 
-from core import calib, detect, fixed_detect, labels, paths
+from core import calib, detect, fixed_detect, labels, paths, refdiff
 
 MIN_POINTS = 4
 MIN_AREA_FRAC = 0.01               # 감지 영역이 프레임의 1% 는 돼야 한다
@@ -361,11 +361,7 @@ def sense_fixed(bgr, params, d, log=print):
     calib.sense 와 같은 모양의 dict 를 돌려준다(cal, det, rows, rect, refit, vis_crop,
     info) + quad · scale · mm_per_px · timing. 판 마커는 보지 않는다.
     """
-    quad = np.asarray(d["area"], np.float64)
-    crop, valid, (u0, v0), quad_l = prep_crop(bgr, quad, d.get("exclude"))
-    ch, cw = crop.shape[:2]
-    u1, v1 = u0 + cw, v0 + ch
-
+    quad = np.asarray(d["area"], np.float64)               # 기준 좌표(기준 촬영 시점의 사진 좌표)로 정의돼 있다
     H = None if d.get("H") is None else np.asarray(d["H"], np.float64)
     cen = quad.mean(axis=0)
     if H is not None:
@@ -381,17 +377,40 @@ def sense_fixed(bgr, params, d, log=print):
             log("배율      : 예비값 %.5f mm/px (설정 calib.est_mm_per_px · 감지 영역 크기 없음)" % mm_px)
 
     use_fixed = str((params.get("fixed") or {}).get("detector", "fixed")) != "legacy"
+    # 빈 판 기준이 유효하면 기준 차이 경로(+ 카메라 이동 보정), 아니면 단일 사진 경로
+    ref_res, cam = None, None
+    path_note = "" if not use_fixed else "기준 없음"
     if use_fixed:
-        # 고정 환경 전용 검출기(core/fixed_detect.py). 작업 해상도 축소는 내부에서 한다.
+        ref_img, ref_why = ref_usable(params, d, (bgr.shape[1], bgr.shape[0]))
+        path_note = ref_why
+        if ref_img is None:
+            log("검출 경로  : 단일 사진 (빈 판 기준 %s)" % ref_why)
+            log("카메라 이동 보정 없음 · 빈 판 기준 필요")
+        else:
+            log("검출 경로  : 빈 판 기준 차이 + 카메라 이동 보정")
+            ref_res = ref_detect(bgr, ref_img, quad, d.get("exclude"), params, mm_px, log)
+            cam = ref_res["cam"]
+            if ref_res["fail"]:
+                log("카메라 이동 : " + ref_res["fail"])
+                return {"shift_fail": ref_res["fail"], "cam": cam}
+    if ref_res is not None:
+        crop, valid, (u0, v0), quad_l = ref_res["crop"], ref_res["valid"], ref_res["off"], ref_res["quad_l"]
+        area_cur = np.asarray(ref_res["area_cur"], np.float64)
+    else:
+        crop, valid, (u0, v0), quad_l = prep_crop(bgr, quad, d.get("exclude"))
+        area_cur = quad
+    ch, cw = crop.shape[:2]
+    u1, v1 = u0 + cw, v0 + ch
+    if use_fixed:
+        # 고정 환경 전용 검출기(core/fixed_detect.py · 기준 경로는 core/refdiff.py). 작업 해상도 축소는 내부에서 한다.
         s = 1.0
         small = crop
-        ref_crop, ref_note = None, ""
-        if bool((params.get("fixed") or {}).get("use_ref")):
-            ref_crop, ref_note = load_ref_crop(params, d, (u0, v0, u1, v1), crop)
-            log("빈 판 기준: %s" % (ref_note or "사용"))
         log("감지영역  : 사각형 (%d,%d)-(%d,%d)  %dx%d px  mm/px %.5f · 제외 영역 %d개"
             % (u0, v0, u1, v1, cw, ch, mm_px, len(d.get("exclude") or [])))
-        det = fixed_detect.detect(crop, params, mm_px, valid, ref=ref_crop, area_poly=quad_l, log=log)
+        if ref_res is not None:
+            det = ref_res["det"]
+        else:
+            det = fixed_detect.detect(crop, params, mm_px, valid, ref=None, area_poly=quad_l, log=log)
         det.wafer.mm_per_px = mm_px
         # 감지 영역 경계 밖이나 제외 영역에 중심이 있는 검출은 결과에서 뺀다(표시도 하지 않는다).
         inside, out = [], 0
@@ -460,9 +479,14 @@ def sense_fixed(bgr, params, d, log=print):
             x["vertices_px"] = [[int(round(a * inv)) + u0, int(round(b * inv)) + v0]
                                 for a, b in x["vertices_px"]]
     rows = []
+    Minv = None
+    if cam is not None:
+        Mf = np.asarray(cam["M"], np.float64)
+        Minv = np.linalg.inv(np.vstack([Mf, [0, 0, 1.0]]))[:2]      # 현재 → 기준 좌표
     for x in det.samples:
         u, v = float(x["x_px"]), float(x["y_px"])
-        mx, my = (None, None) if H is None else px_to_mm(H, u, v)
+        ur, vr = (u, v) if Minv is None else tuple(Minv[:, :2] @ np.array([u, v]) + Minv[:, 2])
+        mx, my = (None, None) if H is None else px_to_mm(H, ur, vr)        # 판 보정은 기준 좌표계
         rows.append((x["no"], u, v, mx, my))
 
     cal = None if H is None else cal_dict(d)
@@ -472,9 +496,9 @@ def sense_fixed(bgr, params, d, log=print):
             % (cal["n_points"], cal["corner_rms_mm"], cal["corner_max_mm"]),
             "sensing: quad %dx%d px  scale x%.3f" % (cw, ch, s)]
     return {"cal": cal, "det": det, "rows": rows, "rect": (u0, v0, u1, v1), "refit": False,
-            "vis_crop": vis, "info": info, "quad": [[float(a), float(b)] for a, b in quad],
+            "vis_crop": vis, "info": info, "quad": [[float(a), float(b)] for a, b in area_cur],
             "scale": s, "mm_per_px": mm_px, "detect_ms": det.detect_ms, "mode": "fixed",
-            "area_only": H is None}
+            "area_only": H is None, "cam": cam, "path": "ref" if ref_res is not None else "single", "path_note": path_note}
 
 
 # --------------------------------------------------------------------------
@@ -944,6 +968,70 @@ def ref_validity(meta, params, camera_index, size, area):
     if not ma or not area or np.abs(np.asarray(ma, np.float64) - np.asarray(area, np.float64)).max() > 1.0:
         return False, "감지 영역이 다름"
     return True, ""
+
+
+def ref_usable(params, d, camera_size):
+    """빈 판 기준이 지금 쓸 수 있는가: (기준 BGR | None, 사유). 설정 fixed.use_ref 가 꺼져 있거나 메타가 지금과 다르면 None."""
+    from core import imgio
+    if not bool(((params or {}).get("fixed") or {}).get("use_ref", True)):
+        return None, "설정에서 꺼짐"
+    meta = load_ref_meta()
+    ok, why = ref_validity(meta, params, (d or {}).get("camera_index", -1), camera_size, (d or {}).get("area"))
+    if not ok:
+        return None, why
+    ref = imgio.imread_u(ref_paths()[0])
+    if ref is None or [ref.shape[1], ref.shape[0]] != [int(camera_size[0]), int(camera_size[1])]:
+        return None, "기준 사진을 읽지 못함"
+    return ref, ""
+
+
+def ref_detect(cur, ref, area_ref, exclude_ref, params, mm_px, log=print):
+    """기준 차이 검출 한 번(촬영 · 회귀 공용). 감지 영역 · 제외 영역은 기준 좌표로 정의돼 있다고 보고 정렬 변환으로 현재 사진에 옮겨 쓴다.
+
+    반환 dict: fail(문구|None) · cam{M 2x3 기준→현재, dx, dy, theta_deg, shift_px, shift_mm, resid, warn} · det(FixedResult, crop 좌표) ·
+    crop · valid · off(u0, v0) · quad_l · area_cur · exclude_cur.
+    """
+    cfg = fixed_detect.cfg_of(params)
+    area_ref = np.asarray(area_ref, np.float64)
+    t0 = time.perf_counter()
+    A = refdiff.align(ref, cur)
+    c_ref = area_ref.mean(axis=0)
+    M = A["M"]
+    c_cur = M[:, :2] @ c_ref + M[:, 2]
+    shift_px = float(np.hypot(*(c_cur - c_ref)))
+    shift_mm = shift_px * mm_px
+    cam = {"has_ref": True, "M": [[float(v) for v in r] for r in M], "dx": round(A["dx"], 2), "dy": round(A["dy"], 2),
+           "theta_deg": round(A["theta_deg"], 3), "shift_px": round(shift_px, 1), "shift_mm": round(shift_mm, 2),
+           "resid": round(float(A["resid"]), 3), "warn": "", "ok": bool(A["ok"]), "time_ms": round((time.perf_counter() - t0) * 1000.0)}
+    log("카메라 이동 : 기준 → 현재 이동 %.1f px (%.2f mm) · 회전 %.3f° · 정렬 잔차 %.2f · %d ms"
+        % (shift_px, shift_mm, A["theta_deg"], A["resid"], cam["time_ms"]))
+    out = {"fail": None, "cam": cam}
+    if not A["ok"]:
+        out["fail"] = "카메라 이동 큼 · 기준 · 보정 다시 (정렬 실패 · %s)" % A["msg"]
+        return out
+    if shift_mm > float(cfg["cam_shift_max_mm"]):
+        out["fail"] = "카메라 이동 큼 · 기준 · 보정 다시 (%.1f mm > %g mm)" % (shift_mm, float(cfg["cam_shift_max_mm"]))
+        return out
+    warns = []
+    if shift_mm > float(cfg["cam_shift_warn_mm"]):
+        warns.append("카메라 이동 %.1f mm (경고 %g mm 초과) · 기준 · 보정 확인" % (shift_mm, float(cfg["cam_shift_warn_mm"])))
+    if A["resid"] > float(cfg["ref_check_resid"]):
+        warns.append("빈 판 기준 다시 촬영 권장 · 정렬 잔차 %.2f" % A["resid"])
+    area_cur = area_ref @ M[:, :2].T + M[:, 2]
+    exclude_cur = [(np.asarray(pl, np.float64) @ M[:, :2].T + M[:, 2]).tolist() for pl in (exclude_ref or [])]
+    crop, valid, (u0, v0), quad_l = prep_crop(cur, area_cur, exclude_cur)
+    ch, cw = crop.shape[:2]
+    ref_crop = refdiff.warp_ref_roi(ref, M, (u0, v0, u0 + cw, v0 + ch))
+    det = refdiff.detect_crop(crop, ref_crop, valid, mm_px, params, quad_l, log)
+    if det.diag.get("big_blobs", 0) > int(cfg["ref_check_blobs"]):
+        warns.append("빈 판 기준 다시 촬영 권장 · 칩 크기 밖 큰 차이 덩어리 %d개" % det.diag["big_blobs"])
+    for w_ in warns:
+        det.warnings.append(w_)
+        log("경고      : %s" % w_)
+    cam["warn"] = "; ".join(warns)
+    out.update({"det": det, "crop": crop, "valid": valid, "off": (u0, v0), "quad_l": quad_l, "area_cur": area_cur,
+                "exclude_cur": exclude_cur})
+    return out
 
 
 def load_ref_crop(params, d, rect, crop):

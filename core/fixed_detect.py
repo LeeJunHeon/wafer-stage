@@ -38,11 +38,25 @@ DEFAULTS = {
     "area_ratio": [0.25, 3.0],
     "work_long_px": 60,
     "chip_mm": 11.0,
-    "layout": "grid",
+    "layout": "auto",
+    "grid_min_ratio": 0.8,          # auto: 격자 인라이어 / 후보 이 비율 이상(그리고 인라이어 >= rows*cols*0.6)일 때만 격자 사용
     "grid_rows": 3,
     "grid_cols": 5,
     "emit_predicted": True,
-    "use_ref": False,
+    "use_ref": True,
+    # 빈 판 기준 차이 검출(core/refdiff.py)
+    "ref_seed": 5.0,                # 차이 d 이진화 임계
+    "ref_faint": 2.5,               # 약한 칩 재탐색(σ2 로 흐린 d) 임계
+    "ref_open": 5,
+    "ref_close": 9,
+    "ref_area_ratio": [0.35, 3.5],
+    "ref_min_solidity": 0.7,
+    "ref_max_aspect": 5.0,
+    "ref_edge_k": 0.4,              # 감지 영역 경계에서 칩 길이의 이 배 안에 닿은 후보는 버린다
+    "ref_check_blobs": 6,           # 기준 점검: 칩 크기 범위 밖 큰 차이 덩어리가 이보다 많으면 다시 촬영 권장
+    "ref_check_resid": 1.5,         # 기준 점검: 정렬 잔차가 이보다 크면 다시 촬영 권장
+    "cam_shift_warn_mm": 2.0,       # 카메라 이동 경고
+    "cam_shift_max_mm": 10.0,       # 이보다 크면 좌표를 만들지 않는다
 }
 MAD_FLOOR = 1.0            # 채널 잡음 σ 하한(8비트 Lab 양자화 한 단계)
 STRONG_SOLIDITY = 0.85     # 칩 크기 추정에 쓰는 후보의 볼록도
@@ -50,6 +64,29 @@ GRID_TOL = 0.25            # 격자 인라이어: 잔차 < 이 x 최소 간격
 TIGHTEN_K = (1.4, 1.8, 2.4, 3.2)   # 칸 재탐색의 마지막 단계: 후광으로 덩어리가 부푼 칩은 임계를 올려 핵만 잡는다
 WIN_K = 0.9                # 칸 창 반폭 = 칩 긴 변 x 이 값
 MIN_GRID_INLIERS = 6
+
+
+def Lw_real_tmp(L_orig, s_real):
+    """칩 긴 변(원본 px)을 작업 해상도 px 로."""
+    return L_orig * s_real
+
+
+def decide_grid(centers, cfg, area_poly=None):
+    """배치 판단. centers = 후보 중심(작업 좌표). 반환 (grid | None, 안내 문구).
+
+    layout auto: 격자 맞춤의 인라이어 비율(후보 대비)이 grid_min_ratio 이상이고 인라이어가 rows*cols*0.6 이상일 때만 격자를 쓴다.
+    grid 를 명시해도 이 조건을 못 넘으면 격자 예측(predicted)은 내지 않고 자유 배치로 돌아간다(경고)."""
+    layout = str(cfg["layout"])
+    if layout not in ("grid", "auto"):
+        return None, ""
+    rows, cols = int(cfg["grid_rows"]), int(cfg["grid_cols"])
+    g = fit_grid(centers, rows, cols, area_poly) if len(centers) >= 4 else None
+    need = rows * cols * 0.6
+    if g is not None and g["n_inl"] >= float(cfg["grid_min_ratio"]) * len(centers) and g["n_inl"] >= need:
+        return g, ""
+    why = "인라이어 %s/%d · 기준 비율 %.0f%% · 최소 %.0f" % ("-" if g is None else g["n_inl"], len(centers),
+                                                      float(cfg["grid_min_ratio"]) * 100, need)
+    return None, ("격자 맞춤 못 넘음(%s) · 자유 배치로 검출" % why)
 
 
 def cfg_of(params):
@@ -468,6 +505,19 @@ def detect(crop, params, mm_px, valid=None, ref=None, area_poly=None, log=print)
             % (len(strong), chip_mm, L_orig, s_real))
     Lw_real = L_est_orig * s_real                       # 작업 해상도에서의 칩 긴 변
     good = _good(cands)
+    # 감지 영역 경계(새겨진 선 · 레일)에서 칩 길이 x ref_edge_k 안에 닿은 후보는 칩이 아니다(격자 밖 제외 대신 쓰는 위치 기준)
+    if valid is not None and good:
+        dist = cv2.distanceTransform((v > 0).astype(np.uint8), cv2.DIST_L2, 3)
+        band = float(cfg["ref_edge_k"]) * Lw_real_tmp(L_est_orig, s_real)
+        keep = []
+        for c in good:
+            hh = c["hull"]
+            dmin = min(dist[min(max(int(y), 0), dist.shape[0] - 1), min(max(int(x), 0), dist.shape[1] - 1)] for x, y in hh)
+            if dmin >= band:
+                keep.append(c)
+        if len(keep) != len(good):
+            log("경계 근처  : 감지 영역 경계에서 칩 길이 x %.1f 안에 닿은 후보 %d개 뺌" % (float(cfg["ref_edge_k"]), len(good) - len(keep)))
+        good = keep
     log("1차 후보  : 연결요소 %d · 모양 통과 %d" % (len(cands), len(good)))
 
     # ---- 배치 ----
@@ -478,12 +528,14 @@ def detect(crop, params, mm_px, valid=None, ref=None, area_poly=None, log=print)
     if area_poly is not None:
         ap = (np.asarray(area_poly, np.float64) * s_real).astype(np.float32).reshape(-1, 1, 2)
     t0 = time.perf_counter()
-    if layout == "grid" and len(good) >= 4:
-        grid = fit_grid([(c["cx"], c["cy"]) for c in good], int(cfg["grid_rows"]), int(cfg["grid_cols"]), ap)
+    grid, why_grid = decide_grid([(c["cx"], c["cy"]) for c in good], cfg, ap)
     tm["grid"] = time.perf_counter() - t0
     if layout == "grid" and grid is None:
-        warnings.append("격자 맞춤 실패 · 자유 배치로 검출")
-        log("격자      : 맞춤 실패(후보 %d) → free" % len(good))
+        warnings.append(why_grid)
+    if grid is None and why_grid:
+        log("격자      : %s" % why_grid)
+    elif layout == "auto" and grid is None:
+        log("배치      : 자동 판단 → 자유 배치")
     elif grid is not None:
         log("격자      : %dx%d · 인라이어 %d/%d · 간격 %.1f px(원본) · 평균 잔차 %.2f px(작업)"
             % (grid["ni"], grid["nj"], grid["n_inl"], len(good), grid["spacing"] / s_real, grid["rms"]))
@@ -512,9 +564,8 @@ def detect(crop, params, mm_px, valid=None, ref=None, area_poly=None, log=print)
                 k = best[1]
                 if k not in det_by_slot or c["strength"] > det_by_slot[k]["strength"]:
                     det_by_slot[k] = c
-        dropped = len(good) - len(det_by_slot)
-        if dropped:
-            log("격자 밖   : 칸에 들지 않은 후보 %d개 제외" % dropped)
+        chosen = {id(c) for c in det_by_slot.values()}
+        extra = [c for c in good if id(c) not in chosen]
         half = WIN_K * Lw_real
         for key in sorted(slots, key=lambda kk: (kk[1], kk[0])):
             p = slots[key]
@@ -535,6 +586,11 @@ def detect(crop, params, mm_px, valid=None, ref=None, area_poly=None, log=print)
                 sm_ = _predicted_sample(p, grid["u"], Lw_real, exp_area, s_real, mm_px, W0, H0)
                 sm_["_slot"] = key
                 samples.append(sm_)
+        for c in extra:                      # 격자에 안 맞아도 모양 필터를 통과했으면 샘플로 낸다(경고)
+            samples.append(_make_sample(c, s_real, mm_px, "detected", False, W0, H0))
+        if extra:
+            warnings.append("격자 밖 후보 %d개 유지 · 확인 필요" % len(extra))
+            log("격자 밖   : 칸에 들지 않은 후보 %d개를 샘플로 유지" % len(extra))
         tm["local"] = time.perf_counter() - t0
         # 행 우선 정렬: 화면에서 더 세로인 격자축이 행
         u, vv = grid["u"], grid["v"]

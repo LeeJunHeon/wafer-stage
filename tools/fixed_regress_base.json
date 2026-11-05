@@ -22,5 +22,53 @@
   "miss": 0,
   "fp": 0,
   "nonpred_hit": 14
+ },
+ "seq_20261105_164243": {
+  "hit": 14,
+  "miss": 1,
+  "fp": 0,
+  "nonpred_hit": 14
+ },
+ "seq_20261105_164607": {
+  "hit": 14,
+  "miss": 1,
+  "fp": 0,
+  "nonpred_hit": 14
+ },
+ "seq_20261105_164719": {
+  "hit": 14,
+  "miss": 1,
+  "fp": 0,
+  "nonpred_hit": 14
+ },
+ "seq_20261105_164725": {
+  "hit": 14,
+  "miss": 1,
+  "fp": 0,
+  "nonpred_hit": 14
+ },
+ "seq_20261105_164243@ref": {
+  "hit": 15,
+  "miss": 0,
+  "fp": 0,
+  "nonpred_hit": 15
+ },
+ "seq_20261105_164607@ref": {
+  "hit": 15,
+  "miss": 0,
+  "fp": 0,
+  "nonpred_hit": 15
+ },
+ "seq_20261105_164719@ref": {
+  "hit": 15,
+  "miss": 0,
+  "fp": 0,
+  "nonpred_hit": 15
+ },
+ "seq_20261105_164725@ref": {
+  "hit": 15,
+  "miss": 0,
+  "fp": 0,
+  "nonpred_hit": 15
  }
 }

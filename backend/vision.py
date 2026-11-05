@@ -436,7 +436,15 @@ def _capture_sync(params):
             log_line("감지 영역 무효 · " + why + " · 검출 건너뜀")
         else:
             res = plate.sense_fixed(det_img, params, d, log=log_line)
-            diag["rect_sat_pct"] = round(flat.saturation_frac(bgr, res["rect"]) * 100.0, 1)
+            if res.get("shift_fail"):              # 카메라 이동 큼 · 정렬 실패 - 좌표를 만들지 않는다
+                stats["calib_invalid"] = res["shift_fail"]
+                stats["nocal"] = True
+                stats["cam"] = res.get("cam")
+                stats["cam_shift_fail"] = True
+                res = None
+            else:
+                stats["cam"] = res.get("cam")
+                diag["rect_sat_pct"] = round(flat.saturation_frac(bgr, res["rect"]) * 100.0, 1)
     else:
         # 마커 재보정 실패(3개 미만)면 좌표를 만들지 않는다. 틀린 좌표로 스테이지를
         # 움직이는 것보다 멈추는 것이 낫다.

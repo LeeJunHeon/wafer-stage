@@ -271,6 +271,10 @@ async def _shoot_detect():
                 why = (stats.get("calib_invalid") if isinstance(stats, dict) else "") or "감지 영역 없음"
                 missing = bool(isinstance(stats, dict) and stats.get("area_missing"))
                 msg = "감지 영역 없음 · 보정 → 감지 영역 지정" if missing else "판 보정 무효 · 다시 보정"
+                if isinstance(stats, dict) and stats.get("cam_shift_fail"):
+                    msg = "카메라 이동 큼 · 기준 · 보정 다시"
+                    _set_cam(dict(stats.get("cam") or {}, fail=True))
+                    state.cam = dict(state.cam or {}, fail=why)
                 _phase("error", msg)
                 _cap_fail(msg)
                 state.set_alarm("판 보정", msg)
@@ -287,6 +291,14 @@ async def _shoot_detect():
             return False
         _last_img["img"] = bgr
         _apply_sense(res)
+        if res.get("mode") == "fixed" and res.get("path"):
+            cam = res.get("cam")
+            if res["path"] == "ref" and cam:
+                await push_log("검출 경로 · 빈 판 기준 차이 + 카메라 이동 보정 · 이동 %.1f px (%.2f mm) · 회전 %.2f° · 정렬 잔차 %.2f"
+                               % (cam["shift_px"], cam["shift_mm"], cam["theta_deg"], cam["resid"]),
+                               "warn" if cam.get("warn") else "info")
+            else:
+                await push_log("검출 경로 · 단일 사진 · 카메라 이동 보정 없음 (빈 판 기준 %s)" % (res.get("path_note") or "필요"))
         if res.get("mode") == "fixed" and res.get("mm_per_px"):
             if res.get("area_only"):
                 await push_log("감지 영역 크기로 배율 %.4f mm/px (판 보정 전)" % res["mm_per_px"])
@@ -373,6 +385,7 @@ def target_in_range(sx, sy):
 
 def mmpx_at(u, v):
     """(u, v) 근처의 사진 px 당 mm. 보정이 있으면 그 국소 배율, 없으면(검출만) 감지 영역 크기 배율. 모르면 None."""
+    u, v = to_ref(u, v)
     cal = current_cal()
     if cal is not None and u is not None:
         try:
@@ -393,6 +406,7 @@ def jac_at(u, v, cal=None):
     cal = cal or current_cal()
     if cal is None or u is None:
         return None
+    u, v = to_ref(u, v)
     try:
         x0, y0 = calib.px_to_mm(cal, u, v)
         xu, yu = calib.px_to_mm(cal, u + 1.0, v)
@@ -537,7 +551,7 @@ def zones_view():
             cell = z["cells"][r * int(z["cols"]) + c]
             qp = zones_mod.cell_quad_plate(z, size, r, c)
             qpx = [plate.px_to_mm(Hinv, x, y) for x, y in qp]            # 판 mm → 사진 px
-            qst = None if Hs is None else [plate.px_to_mm(Hs, u, v) for u, v in qpx]
+            qst = None if Hs is None else [plate.px_to_mm(Hs, *to_ref(u, v)) for u, v in qpx]
             relay_on = bool(state.relays[int(cell["relay"]) - 1]["on"]) if 1 <= int(cell["relay"]) <= len(state.relays) else False
             out["cells"].append({
                 "row": r, "col": c, "cooler": int(cell["cooler"]), "relay": int(cell["relay"]),
@@ -572,6 +586,38 @@ async def set_sample_cooler(no, n):
 state.zones_fn = zones_view
 
 
+# ---- 촬영마다 카메라 이동 보정: 판 보정 · 감지 영역은 기준 좌표, 현재 사진은 정렬 변환 M(기준→현재)으로 옮긴다 ----
+_cam = {"M": None, "Minv": None}
+
+
+def _set_cam(cam):
+    """이번 촬영의 카메라 이동 정보(기준 없으면 None → 항등). 화면 state.cam 에도 둔다."""
+    import numpy as np
+    if cam and cam.get("M") and not cam.get("fail"):
+        M = np.asarray(cam["M"], np.float64)
+        _cam["M"] = M
+        _cam["Minv"] = np.linalg.inv(np.vstack([M, [0, 0, 1.0]]))[:2]
+    else:
+        _cam["M"] = _cam["Minv"] = None
+    state.cam = None if not cam else {k: v for k, v in cam.items() if k != "M"}
+
+
+def to_ref(u, v):
+    """현재 사진 좌표 → 기준 좌표(판 보정 · 보정점이 정의된 좌표계). 기준이 없으면 그대로."""
+    if _cam["Minv"] is None or u is None:
+        return u, v
+    m = _cam["Minv"]
+    return float(m[0, 0] * u + m[0, 1] * v + m[0, 2]), float(m[1, 0] * u + m[1, 1] * v + m[1, 2])
+
+
+def to_cur(u, v):
+    """기준 좌표 → 현재 사진 좌표."""
+    if _cam["M"] is None or u is None:
+        return u, v
+    m = _cam["M"]
+    return float(m[0, 0] * u + m[0, 1] * v + m[0, 2]), float(m[1, 0] * u + m[1, 1] * v + m[1, 2])
+
+
 def refresh_fit():
     """샘플마다 사진 배율(mmpx)과 공구 끝 맞음(fit: True 안 / False 벗어남 / None 검사 안 함)을 다시 계산한다.
     예측 샘플 · 윤곽 없는 수동 샘플은 검사하지 않는다."""
@@ -600,6 +646,7 @@ def refresh_sample_status():
 
 def _apply_sense(res):
     """calib.sense 결과를 화면 state 로 옮긴다."""
+    _set_cam(res.get("cam"))
     cal, det = res["cal"], res["det"]
     area_only = cal is None                # 검출만 모드: 판 보정이 없어 좌표가 없다
     if area_only:
@@ -774,6 +821,7 @@ def _update_pointer_px():
         return
     try:
         u, v = calib.mm_to_px(d, state.stage["x_mm"], state.stage["y_mm"])
+        u, v = to_cur(u, v)
         state.stage["u"], state.stage["v"] = round(u, 1), round(v, 1)
     except Exception:                      # noqa: BLE001
         state.stage["u"] = state.stage["v"] = None
@@ -1041,6 +1089,7 @@ def _xy(u, v):
     cal = current_cal()
     if cal is None:
         return None, None
+    u, v = to_ref(u, v)
     return calib.px_to_mm(cal, u, v)
 
 
@@ -1222,7 +1271,7 @@ def recalc_from_plate():
         return 0
     n = 0
     for s in state.samples:
-        X, Y = calib.px_to_mm(cal, s["u"], s["v"])
+        X, Y = calib.px_to_mm(cal, *to_ref(s["u"], s["v"]))
         s["X"], s["Y"] = round(float(X), 2), round(float(Y), 2)
         if s["status"] in ("nocoord", "wait", "skip"):
             s["status"] = "wait" if target_in_range(X, Y) else "skip"

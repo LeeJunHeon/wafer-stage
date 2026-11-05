@@ -65,17 +65,42 @@ def params_with(sets):
     return p
 
 
-def run_item(name, item, params, out_root):
+REF_PATH = None                     # --ref 로 바꿀 수 있는 빈 판 기준 사진(기본: 데이터 폴더의 plate_ref.png)
+
+
+def _item_params(item, params):
+    """정답 항목에 layout 이 있으면 그 배치로 판단한다."""
+    if item.get("layout"):
+        params = json.loads(json.dumps(params))
+        params.setdefault("fixed", {})["layout"] = item["layout"]
+    return params
+
+
+def run_item(name, item, params, out_root, mode="single"):
+    """mode = single(단일 사진 경로) | ref(빈 판 기준 차이 + 정렬). 반환: (점 [(u, v, source)], ms, FixedResult | None, 카메라 이동 dict | None)."""
     path = os.path.join(out_root, name, item["image"])
     bgr = imgio.imread_u(path)
     if bgr is None:
         raise IOError("사진 없음: %s" % path)
+    params = _item_params(item, params)
+    if mode == "ref":
+        ref = imgio.imread_u(REF_PATH or os.path.join(os.path.dirname(out_root), "plate_ref.png"))
+        if ref is None:
+            raise IOError("빈 판 기준 사진 없음: %s" % (REF_PATH or "data/plate_ref.png"))
+        t0 = time.perf_counter()
+        r = plate.ref_detect(bgr, ref, item["area"], item.get("exclude"), params, float(item["mm_per_px"]), log=lambda *_: None)
+        ms = (time.perf_counter() - t0) * 1000.0
+        if r["fail"]:
+            return [], ms, None, dict(r["cam"], fail=r["fail"])
+        u0, v0 = r["off"]
+        pts = [(s["x_px"] + u0, s["y_px"] + v0, s["source"]) for s in r["det"].samples]
+        return pts, ms, r["det"], r["cam"]
     crop, valid, (u0, v0), quad_l = plate.prep_crop(bgr, item["area"], item.get("exclude"))
     t0 = time.perf_counter()
     res = fd.detect(crop, params, float(item["mm_per_px"]), valid, area_poly=quad_l, log=lambda *_: None)
     ms = (time.perf_counter() - t0) * 1000.0
     pts = [(s["x_px"] + u0, s["y_px"] + v0, s["source"]) for s in res.samples]
-    return pts, ms, res
+    return pts, ms, res, None
 
 
 def match(truth_pts, det_pts, tol):
@@ -110,12 +135,19 @@ def score(name, item, pts):
             "nonpred_hit": nonpred_hit, "nonpred_out": nonpred}
 
 
-def evaluate(items, params, out_root, verbose=True):
+def evaluate(items, params, out_root, mode="single"):
+    """mode ref 는 layout 이 free 인 항목(기준 사진이 있는 촬영)만 돈다."""
     rows = {}
     for name, item in items.items():
-        pts, ms, _res = run_item(name, item, params, out_root)
+        if mode == "ref" and item.get("layout") != "free":
+            continue
+        pts, ms, _res, cam = run_item(name, item, params, out_root, mode)
         r = score(name, item, pts)
         r["ms"] = round(ms)
+        if cam:
+            r["shift_mm"] = cam.get("shift_mm")
+            r["resid"] = cam.get("resid")
+            r["fail"] = cam.get("fail")
         rows[name] = r
     return rows
 
@@ -133,6 +165,9 @@ def print_table(rows):
         tot["nh"] += r["nonpred_hit"]; tot["no"] += r["nonpred_out"]
     print("%-28s %2d/%-2d %5d %5d | %5d %5d %5d |      %2d  %2d |" %
           ("전체", tot["hit"], tot["n"], tot["miss"], tot["fp"], tot["d"], tot["l"], tot["p"], tot["nh"], tot["no"]))
+    shifts = [(n, r) for n, r in rows.items() if r.get("shift_mm") is not None]
+    for n, r in shifts:
+        print("  %-26s 카메라 이동 %.2f mm · 정렬 잔차 %.2f%s" % (n, r["shift_mm"], r["resid"], " · 실패 " + str(r["fail"]) if r.get("fail") else ""))
     return tot
 
 
@@ -143,6 +178,7 @@ def main():
     ap.add_argument("--loo", action="store_true")
     ap.add_argument("--set", action="append", default=[], help="fixed.seed=4.5 형식")
     ap.add_argument("--dir", default=None)
+    ap.add_argument("--ref", default=None, help="빈 판 기준 사진(기본: 데이터 폴더의 plate_ref.png)")
     a = ap.parse_args()
     root = _data_root()
     tdir = a.dir or os.path.join(root, "truth")
@@ -156,18 +192,28 @@ def main():
     params = params_with(a.set)
     if a.loo:
         return loo(items, params, out_root)
+    global REF_PATH
+    REF_PATH = a.ref
     rows = evaluate(items, params, out_root)
+    print("[단일 사진 경로]")
     tot = print_table(rows)
+    rows_ref = {}
+    if any(v.get("layout") == "free" for v in items.values()) and os.path.exists(REF_PATH or os.path.join(root, "plate_ref.png")):
+        rows_ref = evaluate(items, params, out_root, "ref")
+        print("\n[빈 판 기준 경로 · 자유 배치]")
+        print_table(rows_ref)
+    allrows = dict(rows)
+    allrows.update({n + "@ref": r for n, r in rows_ref.items()})
     if a.update:
         with open(BASE, "w", encoding="utf-8") as f:
-            json.dump({k: {x: r[x] for x in ("hit", "miss", "fp", "nonpred_hit")} for k, r in rows.items()}, f, ensure_ascii=False, indent=1)
+            json.dump({k: {x: r[x] for x in ("hit", "miss", "fp", "nonpred_hit")} for k, r in allrows.items()}, f, ensure_ascii=False, indent=1)
         print("기준 고정: %s" % BASE)
         return 0
     if os.path.exists(BASE):
         with open(BASE, encoding="utf-8") as f:
             base = json.load(f)
         worse = []
-        for k, r in rows.items():
+        for k, r in allrows.items():
             b = base.get(k)
             if b and (r["hit"] < b["hit"] or r["fp"] > b["fp"] or r["nonpred_hit"] < b.get("nonpred_hit", 0)):
                 worse.append("%s: 적중 %d→%d · 오검출 %d→%d · 비예측 적중 %d→%d"
@@ -207,7 +253,7 @@ def loo(items, params, out_root):
     def sc(name, combo):
         ck = (name, tuple(sorted(combo.items())))
         if ck not in cache:
-            pts, _ms, _r = run_item(name, items[name], _apply(params, combo), out_root)
+            pts, _ms, _r, _c = run_item(name, items[name], _apply(params, combo), out_root)
             r = score(name, items[name], pts)
             cache[ck] = r["hit"] * 10 - r["fp"] * 20 + r["nonpred_hit"]
         return cache[ck]
@@ -217,9 +263,9 @@ def loo(items, params, out_root):
     for held in items:
         rest = [k for k in items if k != held]
         best = max(combos, key=lambda c: (sum(sc(k, c) for k in rest), -sum(abs(c[k] - params["fixed"][k.split(".")[1]]) for k in keys)))
-        pts, _ms, _r = run_item(held, items[held], _apply(params, best), out_root)
+        pts, _ms, _r, _c = run_item(held, items[held], _apply(params, best), out_root)
         r = score(held, items[held], pts)
-        pts0, _ms0, _r0 = run_item(held, items[held], params, out_root)
+        pts0, _ms0, _r0, _c0 = run_item(held, items[held], params, out_root)
         r0 = score(held, items[held], pts0)
         print("%-28s | 적중 %2d 오검출 %d | 적중 %2d 오검출 %d | %s" %
               (held, r["hit"], r["fp"], r0["hit"], r0["fp"], best))
