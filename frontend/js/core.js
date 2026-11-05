@@ -297,8 +297,9 @@
     const pl = s.plate || {};
     if (pl.mode === 'fixed') {
       const pd = pl.data || {};
-      chip($('chipCalib'), pl.valid ? ((pd.res_limit_mm && pd.max_mm > pd.res_limit_mm) ? 'warn' : 'ok') : 'bad',
-        pl.valid ? ('고정 보정 · RMS ' + (+pd.rms_mm).toFixed(2) + ' mm') : (pd.n || pd.area ? '무효 · 다시 보정' : '미설정'));
+      chip($('chipCalib'), pl.valid ? ((pd.res_limit_mm && pd.max_mm > pd.res_limit_mm) ? 'warn' : 'ok') : (pl.area_ok ? 'warn' : 'bad'),
+        pl.valid ? ('고정 보정 · RMS ' + (+pd.rms_mm).toFixed(2) + ' mm')
+          : (pl.area_ok ? '검출만 · 판 보정 필요' : (pd.n || pd.area ? '무효 · 다시 보정' : '미설정')));
       $('chipCalib').setAttribute('data-tip', pl.valid
         ? ('고정 보정입니다. 판 보정 ' + (pd.created || '') + ' · ' + pd.n + '점 · RMS ' + (+pd.rms_mm).toFixed(3)
            + ' mm · 최대 ' + (+pd.max_mm).toFixed(3) + ' mm 입니다.')
@@ -461,8 +462,10 @@
     dis('btnCalib', !on, '서버 연결 끊김');
     dis('btnEstop', !on, '서버 연결 끊김');   // 비상정지는 항상 활성
     const hasSamples = !!(s && s.samples && s.samples.length);
-    dis('btnStart', !canMove || running || !hasSamples,
-        !hasSamples && canMove && !running ? '샘플 없음 · 촬영 · 검출 먼저' : moveWhy);
+    // 검출만 모드(판 보정 없음): 좌표 없는 샘플은 이동 · 순회 불가
+    const noCoord = !!(s && s.calib && s.calib.area_only);
+    dis('btnStart', !canMove || running || !hasSamples || noCoord,
+        noCoord ? '판 보정 필요' : (!hasSamples && canMove && !running ? '샘플 없음 · 촬영 · 검출 먼저' : moveWhy));
     dis('btnPause', !on || !(q.phase === 'running' || q.phase === 'paused'), '순회 중 아님');
     dis('btnNext', !on || q.phase !== 'waiting_confirm', '확인 대기 아님');
     dis('btnStop', !on || !running, '진행 중인 작업 없음');
@@ -470,17 +473,17 @@
     dis('btnNone', !on, '서버 연결 끊김');
     dis('selRecipe', !on || running, '순회 중에는 바꿀 수 없음');
     dis('btnRecipeEdit', !on || running, '순회 중에는 편집할 수 없음');
-    dis('btnGoto', !canMove || running || UI.selected == null,
-        UI.selected == null && canMove && !running ? '샘플 선택 필요' : moveWhy);
+    dis('btnGoto', !canMove || running || UI.selected == null || noCoord,
+        noCoord ? '판 보정 필요' : (UI.selected == null && canMove && !running ? '샘플 선택 필요' : moveWhy));
     dis('btnMeasureHere', !canMove || running, moveWhy);
     // 샘플 편집: 이번 촬영 결과가 있고 순회·촬영 중이 아닐 때만(서버도 같은 조건).
     const list = (s && s.samples) || [];
     const canEdit = on && !running && !!(s && s.calib);
-    dis('btnAddSample', !canEdit, running ? '순회 · 보정 중' : '촬영 결과 없음');
+    dis('btnAddSample', !canEdit || noCoord, noCoord ? '판 보정 필요' : (running ? '순회 · 보정 중' : '촬영 결과 없음'));
     dis('btnDelSample', !canEdit || UI.selected == null
         || !list.some(x => x.no === UI.selected), '샘플 선택 필요');
     dis('btnUndo', !on || running || !((s && s.edit && s.edit.undo) > 0), '되돌릴 편집 없음');
-    if (!canEdit && UI.setAddMode) UI.setAddMode(false);   // 잠기면 추가 모드도 끈다
+    if ((!canEdit || noCoord) && UI.setAddMode) UI.setAddMode(false);   // 잠기면 추가 모드도 끈다
     dis('viewLive', !on);
     dis('viewSnap', !on);
     dis('btnOpenDir', !on || !q.out_dir, '결과 폴더 없음');

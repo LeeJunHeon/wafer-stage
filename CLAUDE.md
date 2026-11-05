@@ -78,6 +78,10 @@
   좌표를 원본으로 되돌려 판 보정으로 mm. detect 는 철판 모드 기존 인자(surface=plate, plate_mm_per_px =
   국소 mm/px ÷ 축소 배율, marker_mm=0, plate_margin_pct=0)만 쓴다 — 검출 로직은 고치지 않았다.
   촬영마다 단계별(촬영·융합·검출·헤드 마커) 소요를 로그에 남긴다.
+  **검출만 모드**: 감지 영역만 유효하고 판 보정(H)이 없으면 calib.est_mm_per_px 로 검출하고 X/Y 는 None
+  (상태 nocoord, state.calib.area_only) — 이동·순회·클릭 추가는 거절("판 보정 필요"). 감지 영역도 없으면
+  검출 없이 data/out/<시각>_nocal/ 에 raw(+fused)만 저장. plate.validity(need_h) / area_validity 로 나뉜다.
+  맵은 fixed 에서 판 마커를 그리지 않고 area_mm(판 보정이 있을 때) 사각형을 점선으로.
   raw.png 는 첫 장(가장 밝으면서 포화되지 않은 장) 원본, fused.png·flat.png 를 같은
   폴더에 남긴다. 노출 목록은 자동(bracket_exposure 비움 = 기본): AE 끄고 종이(밝은 상위
   20%) 평균이 200~235 가 되게 한 단계씩 맞춘 첫 장 → 한 단계씩 내려 최대 3장, 장 평균

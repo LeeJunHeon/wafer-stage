@@ -113,10 +113,14 @@ def save(d, path=None):
     os.replace(tmp, path)
 
 
-def validity(d, camera_index, size):
-    """(유효한가, 사유). 카메라 번호·해상도가 저장 때와 같아야 한다."""
+def validity(d, camera_index, size, need_h=True):
+    """(유효한가, 사유). 카메라 번호·해상도가 저장 때와 같고 감지 영역이 있어야 한다.
+
+    need_h=True(기본)면 판 보정(H)까지 있어야 통과(좌표를 만들 수 있다). need_h=False 는
+    '감지 영역 유효' - 판 보정 없이 검출만 돌릴 수 있다(area_validity).
+    """
     if d is None:
-        return False, "판 보정 없음"
+        return False, "감지 영역 없음"
     if int(d.get("camera_index", -1)) != int(camera_index):
         return False, "카메라 번호가 보정 때와 다름"
     want = [int(size[0]), int(size[1])]
@@ -125,9 +129,14 @@ def validity(d, camera_index, size):
             "×".join(str(x) for x in d.get("size") or []), "×".join(str(x) for x in want))
     if not d.get("area"):
         return False, "감지 영역 없음"
-    if d.get("H") is None:
+    if need_h and d.get("H") is None:
         return False, "판 보정 없음"
     return True, ""
+
+
+def area_validity(d, camera_index, size):
+    """감지 영역 유효(카메라 번호 · 해상도 일치 + area 있음). 판 보정은 보지 않는다."""
+    return validity(d, camera_index, size, need_h=False)
 
 
 def summary(d):
@@ -137,7 +146,7 @@ def summary(d):
     return {"created": d.get("created"), "camera_index": d.get("camera_index"),
             "size": d.get("size"), "area": d.get("area"),
             "points": [dict(p) for p in d.get("points") or []],
-            "has_h": d.get("H") is not None, "rms_mm": d.get("rms_mm"),
+            "has_h": d.get("H") is not None, "area_mm": _area_mm(d), "rms_mm": d.get("rms_mm"),
             "max_mm": d.get("max_mm"), "res_limit_mm": d.get("res_limit_mm"),
             "n": len(d.get("points") or [])}
 
@@ -225,6 +234,13 @@ def local_mm_per_px(H, center):
     return math.sqrt(max(a * b, 1e-18))
 
 
+def _area_mm(d):
+    """감지 영역 꼭짓점의 스테이지 mm(맵 표시용). 판 보정이 없으면 None."""
+    if d.get("H") is None or not d.get("area"):
+        return None
+    return [[round(v, 2) for v in px_to_mm(d["H"], u, v_)] for u, v_ in d["area"]]
+
+
 def cal_dict(d):
     """calib.px_to_mm / mm_to_px 가 그대로 쓰는 변환 dict (engine · photohome 공용)."""
     H = np.asarray(d["H"], np.float64)
@@ -297,9 +313,12 @@ def sense_fixed(bgr, params, d, log=print):
         small = cv2.resize(crop, (max(8, int(round(cw * s))), max(8, int(round(ch * s)))),
                            interpolation=cv2.INTER_AREA)
 
-    H = np.asarray(d["H"], np.float64)
+    H = None if d.get("H") is None else np.asarray(d["H"], np.float64)
     cen = quad.mean(axis=0)
-    mm_px = local_mm_per_px(H, cen)               # 원본 px 당 mm
+    if H is not None:
+        mm_px = local_mm_per_px(H, cen)           # 원본 px 당 mm
+    else:                                         # 검출만 모드: 대략 배율(면적 필터에만 쓴다)
+        mm_px = float((params.get("calib") or {}).get("est_mm_per_px", 0.075))
     p = dict(params)
     # 검출 로직은 그대로: 철판 모드 + 스케일 폴백만 쓴다. marker_mm 0 = 마커 검출 끔.
     p.update({"surface": "plate", "marker_mm": 0, "plate_mm_per_px": mm_px / s,
@@ -346,14 +365,16 @@ def sense_fixed(bgr, params, d, log=print):
     rows = []
     for x in det.samples:
         u, v = float(x["x_px"]), float(x["y_px"])
-        mx, my = px_to_mm(H, u, v)
+        mx, my = (None, None) if H is None else px_to_mm(H, u, v)
         rows.append((x["no"], u, v, mx, my))
 
-    cal = cal_dict(d)
+    cal = None if H is None else cal_dict(d)
     info = ["samples: %d" % len(det.samples),
+            ("calib: NONE (detect only, est %.4f mm/px)" % mm_px) if cal is None else
             "calib: FIXED plate  %d pts  rms %.2f max %.2f mm"
             % (cal["n_points"], cal["corner_rms_mm"], cal["corner_max_mm"]),
             "sensing: quad %dx%d px  scale x%.3f" % (cw, ch, s)]
     return {"cal": cal, "det": det, "rows": rows, "rect": (u0, v0, u1, v1), "refit": False,
             "vis_crop": vis, "info": info, "quad": [[float(a), float(b)] for a, b in quad],
-            "scale": s, "mm_per_px": mm_px, "detect_ms": det.detect_ms, "mode": "fixed"}
+            "scale": s, "mm_per_px": mm_px, "detect_ms": det.detect_ms, "mode": "fixed",
+            "area_only": H is None}

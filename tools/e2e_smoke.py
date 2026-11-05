@@ -47,7 +47,8 @@ FAST_RECIPE = {"name": "기본", "steps": [
     {"type": "move_sample"}, {"type": "z", "target": "work"}, {"type": "wait", "s": 0.2},
     {"type": "measure"}, {"type": "z", "target": "top"}]}
 DEFAULT_PATCH = {"recipe": {"items": [FAST_RECIPE], "active": "기본"},
-                 "calib": {"mode": "markers"}}      # 판 마커 방식 케이스(기존) - 고정 보정은 케이스가 덮는다
+                 "calib": {"mode": "markers"},
+                 "width": 1280, "height": 720}      # 사용자 settings.json 의 해상도와 무관하게(합성 카메라 · 기존 케이스 전제)      # 판 마커 방식 케이스(기존) - 고정 보정은 케이스가 덮는다
 
 
 def deep_merge(base, over):
@@ -1717,7 +1718,7 @@ def _synth():
     return synth_cam
 
 
-def prep_fixed(w, h, cal_size=None):
+def prep_fixed(w, h, cal_size=None, with_h=True, with_area=True):
     """합성 장면 PNG 와 plate_calib.json 을 임시 데이터 폴더에 만든다. (장면 경로)"""
     import cv2
     from core import plate as plate_mod
@@ -1740,7 +1741,10 @@ def prep_fixed(w, h, cal_size=None):
     q, _why = plate_mod.check_quad(quad, (w, h))
     d.update({"area": q, "points": pts, "H": f["H"], "rms_mm": round(f["rms"], 4),
               "max_mm": round(f["max"], 4), "res_limit_mm": 1.0})
-    plate_mod.save(d, os.path.join(DATA_DIR, "plate_calib.json"))
+    if not with_h:
+        d.update({"points": [], "H": None, "rms_mm": None, "max_mm": None, "res_limit_mm": None})
+    if with_area:
+        plate_mod.save(d, os.path.join(DATA_DIR, "plate_calib.json"))
     return path
 
 
@@ -1890,6 +1894,90 @@ async def fixed_calib_flow(c):
           "경보 배너 '판 보정 무효 · 다시 보정'")
 
 
+async def fixed_area_only_flow(c):
+    """감지 영역만 있고 판 보정이 없으면: 검출만(좌표 없음) · 이동/순회/추가 거절 · 판 보정 적용 뒤 좌표."""
+    sc = _synth()
+    truth = FIXED["truth"]
+    w, h = FIXED["size"]
+    st = c.state
+    check(st["plate"]["area_ok"] and not st["plate"]["valid"], "감지 영역만 유효 (%s)" % st["plate"]["reason"])
+    check(not any(a["src"] == "판 보정" for a in st["alarms"]), "경보 배너 없음(주의 수준)")
+    c.logs.clear()
+    await c.send(cmd="capture")
+    ph = await c.wait_phase(("ready", "error"), 120)
+    st = c.state
+    check(ph == "ready" and len(st["samples"]) == len(truth["samples"]),
+          "검출만 · 샘플 %d개 (판 보정 있을 때와 같음 %d) %s %s" % (len(st["samples"]), len(truth["samples"]), ph, st["sequence"]["message"]))
+    check(all(s["X"] is None and s["Y"] is None and s["status"] == "nocoord" for s in st["samples"]),
+          "mm 좌표 None · 상태 nocoord")
+    check(all(s["u"] > 0 and s["verts"] for s in st["samples"]), "픽셀 좌표 · 윤곽은 정상")
+    check((st["calib"] or {}).get("area_only") is True, "state.calib.area_only")
+    check(any("판 보정 없음" in x for x in st["warnings"]), "주의 안내 한 줄 (%s)" % st["warnings"])
+    check(os.path.exists(os.path.join(st["sequence"]["out_dir"], "annotated.jpg")), "촬영본 · annotated 저장")
+    # 이동 · 순회 · 추가 거절
+    c.logs.clear()
+    await c.send(cmd="goto", no=st["samples"][0]["no"])
+    await c.pump(1.0)
+    check(any("판 보정 필요" in l["msg"] for l in c.logs) and not any(m.split(" ")[0] in _MOVES for m in _sent(c)),
+          "선택 샘플 이동 거절(판 보정 필요)")
+    c.acks.clear()
+    await c.send(cmd="run", mode="auto", confirm=True)
+    a = await wait_ack(c, "run")
+    check(bool(a) and not a["ok"] and any("판 보정 필요" in r for r in a.get("needs_confirm", [])),
+          "순회 시작 거절 (%s)" % (a or {}).get("needs_confirm"))
+    await c.send(cmd="sample_add", u=500, v=500)
+    a = await wait_ack(c, "sample_add")
+    check(bool(a) and not a["ok"] and a["reason"] == "no_calib", "촬영본 클릭 추가 거절 (%s)" % (a or {}).get("reason"))
+    # 판 보정 적용 → 다음 촬영부터 좌표
+    H = truth["H"]
+    pts = []
+    for x, y in sc.PLATE_CAL_MM:
+        u, v = sc.project(H, x, y)
+        pts.append({"x": x, "y": y, "u": round(u, 2), "v": round(v, 2)})
+    await c.send(cmd="plate_calib_apply", points=pts, size=[w, h])
+    a = await wait_ack(c, "plate_calib_apply")
+    check(bool(a) and a["ok"], "판 보정 적용")
+    await c.send(cmd="capture")
+    ph = await c.wait_phase(("ready", "error"), 120)
+    samples = c.state["samples"]
+    errs = [_nearest(samples, x, y)[1] for x, y in truth["samples"]] if samples and samples[0]["X"] is not None else [99]
+    check(ph == "ready" and len(samples) == 9 and max(errs) < 0.3 and not c.state["calib"]["area_only"],
+          "적용 뒤 촬영 · 좌표 생김 (최대 오차 %.3f)" % max(errs))
+    # 맵: fixed 에서는 판 마커 자리를 그리지 않고 감지 영역 사각형을 점선으로
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return
+    def look():
+        with sync_playwright() as pw:
+            b = pw.chromium.launch()
+            pg = b.new_page(viewport={"width": 1920, "height": 1040})
+            pg.goto("http://127.0.0.1:%d/" % c.port)
+            pg.wait_for_timeout(1500)
+            r = (pg.locator("#map .m-marker").count(), pg.locator("#map polygon.m-rect").count())
+            b.close()
+            return r
+    nm, nq = await asyncio.get_running_loop().run_in_executor(None, look)
+    check(nm == 0 and nq == 1, "맵: 판 마커 미표시(%d) · 감지 영역 점선 %d" % (nm, nq))
+
+
+async def fixed_nocal_flow(c):
+    """감지 영역도 없으면: 검출은 건너뛰되 촬영본은 data/out/<시각>_nocal/ 에 저장하고 화면에 띄운다."""
+    st = c.state
+    check(not st["plate"]["area_ok"], "감지 영역 없음")
+    c.logs.clear()
+    await c.send(cmd="capture")
+    ph = await c.wait_phase(("ready", "error"), 90)
+    st = c.state
+    check(ph == "error" and not st["samples"], "검출 건너뜀 (phase %s)" % ph)
+    check("감지 영역 없음 · 보정 → 감지 영역 지정" in st["sequence"]["message"], "상태 문구 (%s)" % st["sequence"]["message"])
+    check(bool(st["frame"]), "촬영본을 화면에 띄움(state.frame)")
+    out = os.path.join(DATA_DIR, "out")
+    nd = [n for n in os.listdir(out) if n.endswith("_nocal")]
+    check(bool(nd) and os.path.exists(os.path.join(out, nd[-1], "raw.png")), "nocal 폴더에 raw.png (%s)" % nd)
+    check(any("촬영본 저장" in l["msg"] for l in c.logs), "로그 한 줄")
+
+
 async def fixed_invalid_flow(c):
     """저장된 판 보정의 해상도가 촬영과 다르면: 촬영은 하되 좌표를 만들지 않는다."""
     st = c.state
@@ -1942,7 +2030,7 @@ def prep_head_calib():
     """합성 카메라의 참 호모그래피로 만든 헤드 보정(head_calib.json) - 격자 촬영 없이 유효한 보정을 둔다."""
     import numpy as np
     sc = _synth()
-    w, h = int(BASE_SETTINGS.get("width", 1280)), int(BASE_SETTINGS.get("height", 720))
+    w, h = 1280, 720                                   # DEFAULT_PATCH 의 해상도
     Hs = sc.true_homography(w, h)                      # 마커 평면 mm → px
     tr = np.array([[1.0, 0, -sc.HEAD_OFFSET_MM[0]], [0, 1.0, -sc.HEAD_OFFSET_MM[1]], [0, 0, 1.0]])
     H = tr @ np.linalg.inv(Hs)                         # px → 스테이지 XY(기준 포인터)
@@ -2055,7 +2143,7 @@ def main():
         SETTINGS_P = {"zz_unknown": {"keep": 1}}
         legacy = {k: v for k, v in BASE_SETTINGS.items()
                   if k not in ("tool", "recipe", "relay", "capture_xy", "focus_mode",
-                               "focus_sweep", "motion", "flow", "photohome")}
+                               "focus_sweep", "motion", "flow", "photohome", "calib")}
         legacy.update({"park_xy": [10, 20], "z_measure_mm": 33, "dwell_s": 7,
                        "autofocus": False, "focus": "auto", "zz_legacy": "keep",
                        "marker_mm_xy": {"0": [200, 161], "1": [201, 19], "2": [15, 160],
@@ -2099,6 +2187,9 @@ def main():
             ("공구 보정", good, tool_calib_flow, None, TOOLCAL_P),
             ("고정 보정 촬영", lambda: prep_fixed(1280, 960), fixed_flow, None, FIXED_P),
             ("고정 보정 판 보정", lambda: prep_fixed(1280, 960), fixed_calib_flow, None, FIXED_P),
+            ("고정 보정 검출만", lambda: prep_fixed(1280, 960, with_h=False), fixed_area_only_flow, None,
+             dict(FIXED_P, calib={"mode": "fixed", "est_mm_per_px": 0.2656})),
+            ("고정 보정 감지영역 없음", lambda: prep_fixed(1280, 960, with_area=False), fixed_nocal_flow, None, FIXED_P),
             ("고정 보정 무효", lambda: prep_fixed(1280, 960, cal_size=(640, 480)), fixed_invalid_flow, None, FIXED_P),
             ("고정 보정 4080", lambda: prep_fixed(4080, 3060), fixed_big_flow, None, FIXED_BIG_P),
             ("헤드 마커 연결 판단", lambda: (prep_head_calib() or good), head_connect_flow, SYNTH, HEAD_P),

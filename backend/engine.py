@@ -222,10 +222,16 @@ async def _shoot_detect():
             state.markers = {}
             state.head_marker = stats.get("head_marker") if isinstance(stats, dict) else None
             if fixed_mode():
-                why = (stats.get("calib_invalid") if isinstance(stats, dict) else "") or "판 보정 없음"
-                _phase("error", "판 보정 무효 · 다시 보정")
-                state.set_alarm("판 보정", "판 보정 무효 · 다시 보정")
-                await push_log("판 보정 무효 · %s · 좌표를 만들지 않습니다" % why, "err")
+                why = (stats.get("calib_invalid") if isinstance(stats, dict) else "") or "감지 영역 없음"
+                missing = bool(isinstance(stats, dict) and stats.get("area_missing"))
+                msg = "감지 영역 없음 · 보정 → 감지 영역 지정" if missing else "판 보정 무효 · 다시 보정"
+                _phase("error", msg)
+                state.set_alarm("판 보정", msg)
+                await push_log("%s · %s · 검출을 건너뜁니다" % (msg.split(" · ")[0], why), "err")
+                if isinstance(stats, dict) and stats.get("nocal"):
+                    nd = await vision.run_blocking(_save_nocal, stats.get("raw", bgr),
+                                                   stats.get("images") or {})
+                    await push_log("촬영본 저장 · %s" % os.path.basename(nd))
             else:
                 need = int(state.get("calib.min_markers") or 3)
                 _phase("error", "판 마커 부족(%d개 미만) · 좌표 생성 불가" % need)
@@ -238,7 +244,8 @@ async def _shoot_detect():
         state.sequence["out_dir"] = d
         state.sequence["used"] = False      # 새 촬영 - 아직 순회에 쓰지 않았다
         _edit_ctx["dir"] = d                # 이번 촬영의 편집본(samples_edit.json) 자리
-        _phase("ready", "검출 %d · 대기" % len(state.samples),
+        _phase("ready", ("검출 %d · 대기" if not (state.calib or {}).get("area_only")
+                         else "검출 %d · 판 보정 필요(좌표 없음)") % len(state.samples),
                done=0, total=len(state.samples), cur_no=None, elapsed_s=0)
         await push_log("검출 %d개 · 저장 %s" % (len(state.samples), os.path.basename(d)), "ok")
         return True
@@ -304,18 +311,22 @@ def target_in_range(sx, sy):
 def refresh_sample_status():
     """공구(오프셋)가 바뀌면 가동범위 밖(skip) 판정을 다시 한다. 대기·제외만 바꾼다."""
     for s in state.samples:
-        if s["status"] in ("wait", "skip"):
+        if s["status"] in ("wait", "skip") and s.get("X") is not None:
             s["status"] = "wait" if target_in_range(s["X"], s["Y"]) else "skip"
 
 
 def _apply_sense(res):
     """calib.sense 결과를 화면 state 로 옮긴다."""
     cal, det = res["cal"], res["det"]
-    remember_cal(cal)                      # 포인터 역변환에 같은 보정을 쓴다
+    area_only = cal is None                # 검출만 모드: 판 보정이 없어 좌표가 없다
+    if area_only:
+        cal = {}
+    else:
+        remember_cal(cal)                  # 포인터 역변환에 같은 보정을 쓴다
     used = list(cal.get("used_ids") or [])
     fixed = res.get("mode") == "fixed"
     state.calib = {
-        "mode": "fixed" if fixed else "markers",
+        "mode": "fixed" if fixed else "markers", "area_only": area_only,
         "refit": bool(res["refit"]),
         "used_ids": used,
         "missing_ids": [] if fixed else [i for i in sorted(calib.MARKER_MM) if i not in used],
@@ -329,7 +340,7 @@ def _apply_sense(res):
     state.sensing = {"rect": [int(u0), int(v0), int(u1), int(v1)],
                      "quad": res.get("quad")}
     w = det.wafer
-    if w.found:
+    if w.found and not area_only:
         cx, cy = w.center_px[0] + u0, w.center_px[1] + v0
         state.wafer = {"found": True, "cx": round(cx, 1), "cy": round(cy, 1),
                        "r_px": round(w.major_px / 2.0, 1),
@@ -356,10 +367,12 @@ def _apply_sense(res):
         state.samples.append({
             "no": s["no"], "shape": s.get("shape", ""),
             "u": float(s["x_px"]), "v": float(s["y_px"]),
-            "X": round(float(X), 2), "Y": round(float(Y), 2),
+            "X": None if X is None else round(float(X), 2),
+            "Y": None if Y is None else round(float(Y), 2),
             "verts": [[int(a), int(b)] for a, b in (s.get("vertices_px") or [])],
             "on": bool(old_on.get(s["no"], True)),
-            "status": "wait" if target_in_range(X, Y) else "skip",
+            "status": ("nocoord" if X is None else
+                       "wait" if target_in_range(X, Y) else "skip"),
             "value": None, "unit": None,
             "edge_completed": bool(s.get("edge_completed")),
             "edge_only": bool(s.get("edge_only")),
@@ -369,7 +382,20 @@ def _apply_sense(res):
             "manual": False,
         })
     state.next_no = max([s["no"] for s in state.samples], default=0) + 1
-    state.set_warnings(det.warnings)
+    state.set_warnings(list(det.warnings) + (["판 보정 없음 · 검출만 · 좌표 없음 · 보정 → 판 보정"]
+                                             if area_only else []))
+
+
+def _save_nocal(bgr, images):
+    """감지 영역이 없어 검출하지 못한 촬영본 - data/out/<시각>_nocal/ 에 raw(+fused)를 남긴다.
+    보정 창의 감지 영역 탭이 최근 촬영본(state.frame)으로 바로 쓴다."""
+    d = os.path.join(paths.OUT_DIR, time.strftime("%Y%m%d_%H%M%S") + "_nocal")
+    os.makedirs(d, exist_ok=True)
+    imgio.imwrite_u(os.path.join(d, "raw.png"), bgr)
+    if images.get("fused.png") is not None:
+        imgio.imwrite_u(os.path.join(d, "fused.png"), images["fused.png"])
+    logger.write("info", "감지 영역 없음 · 촬영본만 저장: %s" % d)
+    return d
 
 
 def _save_seq(bgr, res, images=None):
@@ -388,7 +414,8 @@ def _save_seq(bgr, res, images=None):
         imgio.imwrite_u(os.path.join(d, name), img)
     storage.atomic_write_json(
         os.path.join(d, "samples.json"),
-        [{"no": no, "u": round(u, 1), "v": round(v, 1), "X": round(x, 2), "Y": round(y, 2)}
+        [{"no": no, "u": round(u, 1), "v": round(v, 1),
+          "X": None if x is None else round(x, 2), "Y": None if y is None else round(y, 2)}
          for no, u, v, x, y in res["rows"]])
     return d
 
@@ -480,6 +507,9 @@ async def goto_sample(no):
     s = state.sample(no)
     if s is None:
         await push_log("#%s 는 이번 검출에 없습니다" % no, "warn")
+        return False
+    if s.get("X") is None:
+        await push_log("#%s · 판 보정 필요 · 좌표 없음" % no, "warn")
         return False
     px, py = state.stage_target(s["X"], s["Y"])
     t = state.tool()
@@ -651,7 +681,11 @@ def _edit_refusal(verb):
         return "busy", "순회 중 · %s 안 함" % verb
     if state.camera.get("capturing"):
         return "capturing", "촬영 중 · %s 안 함" % verb
-    if state.calib is None or state.sensing is None or current_cal() is None:
+    if state.calib is None or state.sensing is None:
+        return "no_capture", "촬영 결과 없음 · 촬영 후 %s" % verb
+    if current_cal() is None:
+        if state.calib.get("area_only"):
+            return "no_calib", "판 보정 필요 · %s 안 함" % verb
         return "no_capture", "촬영 결과 없음 · 촬영 후 %s" % verb
     return None
 
@@ -882,6 +916,8 @@ def run_refusal(rc=None):
         out.append("레시피 '%s' 오류 · %s" % (rc.get("name"), bad[0]))
     if recipe_mod.uses_z(rc) and not state.stage.get("homed_z"):
         out.append("Z 원점 없음 · Z 단계가 있는 레시피는 시작 안 함")
+    if any(s.get("X") is None for s in state.samples):
+        out.append("판 보정 필요 · 좌표 없는 샘플")
     if state.get("flow.require_fresh_capture") and state.sequence.get("used"):
         out.append("새 촬영 필요 · 이 촬영으로 이미 순회함")
     return out

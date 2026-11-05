@@ -34,10 +34,14 @@ def refresh_state():
     d = plate.load()
     ok, why = plate.validity(d, _cam_index(), _req_size())
     keep_shot = (state.plate or {}).get("shot")
-    state.plate = {"mode": mode, "valid": bool(ok), "reason": why,
+    area_ok, area_why = plate.area_validity(d, _cam_index(), _req_size())
+    state.plate = {"mode": mode, "valid": bool(ok), "area_ok": bool(area_ok), "reason": why,
                    "data": plate.summary(d), "shot": keep_shot}
-    if mode != "fixed" or ok:
+    if mode != "fixed" or ok or area_ok:
+        # 감지 영역만 유효하면 검출만 된다 - 경보가 아니라 주의 안내(칩 · 경고줄)로 알린다
         state.set_alarm("판 보정", "")
+    elif area_why.startswith("감지 영역 없음"):
+        state.set_alarm("판 보정", "감지 영역 없음 · 보정 → 감지 영역 지정")
     else:
         state.set_alarm("판 보정", "판 보정 무효 · 다시 보정")
     engine._update_pointer_px()
@@ -49,6 +53,8 @@ def chip_text():
     p = state.plate or {}
     if p.get("mode") != "fixed":
         return ""
+    if p.get("area_ok") and not p.get("valid"):
+        return "검출만 · 판 보정 필요"
     if not p.get("valid"):
         return "판 보정 무효"
     return "고정 보정 · RMS %.2f mm" % float((p.get("data") or {}).get("rms_mm") or 0.0)

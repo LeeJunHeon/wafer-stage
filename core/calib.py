@@ -834,7 +834,7 @@ def save_samples_image(bgr, res, params, outdir=None,
                       (0, 255, 255), 2)
     else:
         cv2.rectangle(img, (u0, v0), (u1 - 1, v1 - 1), (0, 255, 255), 2)   # 감지 영역
-    for i, p in (cal.get("pixels") or {}).items():
+    for i, p in ((cal or {}).get("pixels") or {}).items():
         cv2.drawMarker(img, (int(round(p[0])), int(round(p[1]))), (255, 128, 0),
                        cv2.MARKER_CROSS, 18, 2)
         cv2.putText(img, "id%s" % i, (int(p[0]) + 8, int(p[1]) - 8),
@@ -849,7 +849,10 @@ def save_samples_image(bgr, res, params, outdir=None,
     mmxy = {no: (mx, my) for no, _u, _v, mx, my in res["rows"]}
     for x in det.samples:
         mx, my = mmxy.get(x["no"], (0.0, 0.0))
-        t = "X%.1f Y%.1f" % (mx, my)
+        if mx is None:
+            t = "#%d" % x["no"]                 # 검출만 모드: 좌표 없음
+        else:
+            t = "X%.1f Y%.1f" % (mx, my)
         org = (int(round(x["x_px"])) + 8, int(round(x["y_px"])) + 16)
         cv2.putText(img, t, org, FONT, fs, (0, 0, 0), th + 2, cv2.LINE_AA)
         cv2.putText(img, t, org, FONT, fs, (255, 255, 255), th, cv2.LINE_AA)

@@ -6,7 +6,7 @@
   const SHAPE = { quad: '사각', triangle: '삼각' };
   const STATUS = {
     wait: '대기', moving: '이동', measuring: '측정',
-    done: '완료', skip: '제외', error: '오류',
+    done: '완료', skip: '제외', error: '오류', nocoord: '좌표 없음',
   };
 
   UI.select = function (no) {
@@ -82,7 +82,7 @@
 
       const cells = [
         sm.manual ? UI.EMPTY : (SHAPE[sm.shape] || sm.shape || ''),
-        sm.X.toFixed(1), sm.Y.toFixed(1),
+        sm.X == null ? UI.EMPTY : sm.X.toFixed(1), sm.Y == null ? UI.EMPTY : sm.Y.toFixed(1),
       ];
       cells.forEach((t, i) => {
         const td = document.createElement('td');

@@ -399,12 +399,14 @@ def _capture_sync(params):
     t1 = time.perf_counter()
     if fixed:
         d = plate.load()
-        ok, why = plate.validity(d, int(_p(params, "camera_index", 1)),
-                                 (bgr.shape[1], bgr.shape[0]))
+        ok, why = plate.area_validity(d, int(_p(params, "camera_index", 1)),
+                                      (bgr.shape[1], bgr.shape[0]))
         if not ok:
             res = None
             stats["calib_invalid"] = why
-            log_line("판 보정 무효 · " + why + " · 좌표를 만들지 않음")
+            stats["nocal"] = True
+            stats["area_missing"] = why.startswith("감지 영역 없음")
+            log_line("감지 영역 무효 · " + why + " · 검출 건너뜀")
         else:
             res = plate.sense_fixed(det_img, params, d, log=log_line)
             diag["rect_sat_pct"] = round(flat.saturation_frac(bgr, res["rect"]) * 100.0, 1)

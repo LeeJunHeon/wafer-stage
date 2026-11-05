@@ -260,7 +260,7 @@
     const c = s.calib;
     const fixed = c && c.mode === 'fixed';
     $('infoCal').textContent = c
-      ? (fixed ? ('고정 보정 · 오차 RMS ' + c.corner_rms_mm.toFixed(2) + ' · 최대 ' + c.corner_max_mm.toFixed(2) + ' mm')
+      ? (fixed && c.area_only ? '검출만 · 판 보정 필요' : fixed ? ('고정 보정 · 오차 RMS ' + c.corner_rms_mm.toFixed(2) + ' · 최대 ' + c.corner_max_mm.toFixed(2) + ' mm')
         : (c.used_ids.length + '마커 ' + c.corners + '점 · 오차 RMS '
          + c.corner_rms_mm.toFixed(2) + ' · 최대 ' + c.corner_max_mm.toFixed(2) + ' mm'
          + (c.missing_ids.length ? ' · id' + c.missing_ids.join(',') + ' 미검출' : '')))

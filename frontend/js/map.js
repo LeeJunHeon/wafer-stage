@@ -78,7 +78,15 @@
 
     // 마커 + 감지영역(마커 중심 바운딩)
     const mk = (s.settings || {}).marker_mm_xy || {};
-    const ids = Object.keys(mk);
+    const fixedMode = ((s.plate || {}).mode === 'fixed');
+    const ids = fixedMode ? [] : Object.keys(mk);   // 고정 보정에서는 판 마커 자리를 그리지 않는다
+    if (fixedMode) {
+      // 감지 영역이 판 보정으로 mm 변환되면 그 사각형을 점선으로
+      const am = ((s.plate || {}).data || {}).area_mm;
+      if (am && am.length === 4) {
+        g.appendChild(el('polygon', { class: 'm-rect', points: am.map(p => mx(p[1]) + ',' + my(p[0])).join(' ') }));
+      }
+    }
     if (ids.length) {
       const xs = ids.map(i => +mk[i][0]), ys = ids.map(i => +mk[i][1]);
       g.appendChild(el('rect', {
@@ -111,6 +119,7 @@
     // 샘플
     const q = s.sequence || {};
     (s.samples || []).forEach(sm => {
+      if (sm.X == null) return;            // 좌표 없는 샘플(검출만 모드)은 맵에 없다
       const cls = ['m-s'];
       if (!sm.on || sm.status === 'skip') cls.push('skip');
       if (sm.status === 'done') cls.push('done');

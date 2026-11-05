@@ -45,7 +45,7 @@ class State:
         self.markers = {}                  # {id: [[u,v] x4]}
         self.head_marker = None            # 촬영본의 헤드 마커 {"center","corners"} (표시용)
         # 고정 보정(감지 영역 + 판 보정) 요약 - backend/platecal.py 가 채운다
-        self.plate = {"mode": "fixed", "valid": False, "reason": "판 보정 없음",
+        self.plate = {"mode": "fixed", "valid": False, "area_ok": False, "reason": "감지 영역 없음",
                       "data": None, "shot": None}
         self.samples = []                  # 화면용 샘플 목록(늘 번호순)
         # 샘플 편집(수동 추가·삭제). 스택에 있는 것 = 지금 효력이 있는 편집이고
@@ -239,7 +239,7 @@ class State:
         rc = self.recipe(name)
         speed = float(self.get("motion.speed_pps") or 6000) / stage_mod.PPMM   # mm/s
         pts = [self.stage_target(s["X"], s["Y"]) for s in self.samples
-               if s.get("on") and s.get("status") not in ("skip", "done")]
+               if s.get("on") and s.get("status") not in ("skip", "done") and s.get("X") is not None]
         if len(pts) >= 2:
             dist = sum(((pts[i][0] - pts[i - 1][0]) ** 2 + (pts[i][1] - pts[i - 1][1]) ** 2) ** 0.5
                        for i in range(1, len(pts))) / (len(pts) - 1)
