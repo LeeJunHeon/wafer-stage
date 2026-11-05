@@ -80,7 +80,7 @@ DEFAULTS = {
     "merge_mm": 6.0,      # 이보다 가까운 덩어리는 한 샘플의 조각인지 검사한다
     "merge_solidity": 0.5,  # 합친 결과가 이만큼 볼록해야 실제로 합친다
     "sat_delta": 15,      # (legacy_seed 일 때만) 18 -> 15: 비스듬한 촬영에서 샘플 하나 더
-    "min_area_mm2": 3,
+    "min_area_mm2": 9,
     "max_area_mm2": 150,
     # 가장자리 마진. 6/3 은 웨이퍼 반지름의 9% 를 죽여서, 가장자리 가까이 놓인
     # 샘플이 통째로 버려졌다 (실촬영에서 14개 중 3개 손실). 실루엣 교집합이
@@ -157,7 +157,7 @@ DEFAULTS = {
     "marker_dict": "4X4_50",
     "surface": "auto",        # "wafer" | "plate" | "auto"
     "plate_mm_per_px": 0,     # 철판 모드 스케일. 0 = 미보정 (좌표가 픽셀 단위)
-    "plate_margin_pct": 2,    # 철판 모드 ROI 여백 (min(H,W) 대비 %)
+    "plate_margin_pct": 10,    # 철판 모드 ROI 여백 (min(H,W) 대비 %)
     # 경로: data_dir 은 코드 폴더 기준 상대경로, out_dir 은 data_dir 기준.
     # 실제 경로 계산은 paths.py 가 한다 (detect.py 는 파일을 직접 쓰지 않는다).
     "data_dir": "../data",

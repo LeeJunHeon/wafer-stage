@@ -40,15 +40,15 @@ from core import paths                                                        # 
 SRC = {"seq_20260909_150413": os.path.join(paths.OUT_DIR, "seq_20260909_150413", "raw.png"),
        "seq_20260909_150621": os.path.join(paths.OUT_DIR, "seq_20260909_150621", "raw.png")}
 DATA_DIR = None                     # 임시 데이터 폴더 (setup_data 가 채운다)
-BASE_SETTINGS = {}                  # 저장소 settings.json(사용자 설정) - 케이스 패치의 바탕
+BASE_SETTINGS = {}                  # 케이스 설정의 바탕 = 빈 dict(서버가 스키마 기본값을 채운다)
 
 # 모든 케이스에 얹는 패치: 기본 레시피의 대기를 0.2 s 로(순회가 빨리 끝나게).
 FAST_RECIPE = {"name": "기본", "steps": [
     {"type": "move_sample"}, {"type": "z", "target": "work"}, {"type": "wait", "s": 0.2},
     {"type": "measure"}, {"type": "z", "target": "top"}]}
 DEFAULT_PATCH = {"recipe": {"items": [FAST_RECIPE], "active": "기본"},
-                 "calib": {"mode": "markers"},
-                 "width": 1280, "height": 720}      # 사용자 settings.json 의 해상도와 무관하게(합성 카메라 · 기존 케이스 전제)      # 판 마커 방식 케이스(기존) - 고정 보정은 케이스가 덮는다
+                 "calib": {"mode": "markers"}}      # 기존 케이스는 판 마커 방식 - 고정 보정은 케이스가 덮는다
+SMALL = {"width": 1280, "height": 720}              # 합성 카메라 헤드 마커 케이스의 해상도(헤드 보정 1280x720)      # 판 마커 방식 케이스(기존) - 고정 보정은 케이스가 덮는다
 
 
 def deep_merge(base, over):
@@ -68,36 +68,16 @@ def relays_patch(enabled=(1, 2, 3), names=None, max_on=None):
              "max_on_s": max_on.get(i + 1, 0)} for i in range(10)]
 
 
-_SETTINGS_BAK = None
-
-
-def _backup_settings():
-    global _SETTINGS_BAK
-    with open(paths.SETTINGS_PATH, "rb") as f:
-        _SETTINGS_BAK = f.read()
-
-
-def _restore_settings():
-    """검증이 바꾼 settings.json 을 원래대로 되돌린다(저장소를 더럽히지 않는다)."""
-    if _SETTINGS_BAK is None:
-        return
-    with open(paths.SETTINGS_PATH, "wb") as f:
-        f.write(_SETTINGS_BAK)
-
-
 def setup_data():
     """임시 데이터 폴더를 만들고 검증용 사진 두 장을 복사한다.
 
     서버는 여기에만 쓴다(seq_* 폴더·calib_matrix.json·로그). 실제 data 폴더를
     검증 찌꺼기로 채우지 않기 위한 것이다.
     """
-    global DATA_DIR, BASE_SETTINGS
+    global DATA_DIR
     DATA_DIR = tempfile.mkdtemp(prefix="wafer_smoke_")
-    with open(paths.SETTINGS_PATH, encoding="utf-8") as f:
-        BASE_SETTINGS = json.load(f)
-    # settings.json 은 저장소 안에 있어 WAFER_STAGE_DATA 로 격리되지 않는다.
-    # settings_save·park_here 를 거치는 검증이 원본을 고치므로 백업해 둔다.
-    _backup_settings()
+    # 설정은 작업 폴더의 settings.json 을 읽지 않는다 - 케이스마다 임시 파일(WAFER_STAGE_SETTINGS)을
+    # 스키마 기본값(빈 파일) 위에 케이스 패치만 얹어 만든다.
     out = os.path.join(DATA_DIR, "out")
     for name, src in SRC.items():
         d = os.path.join(out, name)
@@ -441,7 +421,7 @@ async def z_flow(c):
 async def limits_flow(c):
     """설정의 limits 가 곧바로 조그 자르기·범위 검사에 반영되는지.
 
-    settings.json 은 케이스가 끝나면 _restore_settings 가 원래대로 돌린다.
+    (서버는 케이스별 임시 설정 파일을 쓰므로 저장소 settings.json 은 건드리지 않는다.)
     """
     lim = c.state["limits"]
     check(lim == {"x_max_mm": 247.6, "y_max_mm": 247.8, "z_max_mm": 45.0},
@@ -2030,7 +2010,7 @@ def prep_head_calib():
     """합성 카메라의 참 호모그래피로 만든 헤드 보정(head_calib.json) - 격자 촬영 없이 유효한 보정을 둔다."""
     import numpy as np
     sc = _synth()
-    w, h = 1280, 720                                   # DEFAULT_PATCH 의 해상도
+    w, h = 1280, 720                                   # SMALL 의 해상도
     Hs = sc.true_homography(w, h)                      # 마커 평면 mm → px
     tr = np.array([[1.0, 0, -sc.HEAD_OFFSET_MM[0]], [0, 1.0, -sc.HEAD_OFFSET_MM[1]], [0, 0, 1.0]])
     H = tr @ np.linalg.inv(Hs)                         # px → 스테이지 XY(기준 포인터)
@@ -2140,7 +2120,7 @@ def main():
         TOOL_P = {"tool": {"items": [POINTER, HEAT], "active": "히트건"}}
         CAPTURE_P = {"capture_xy": [10, 200], "flow": {"after_photo": True}}
         TOOLCAL_P = {"relay": {"items": relays_patch((1,))}}
-        SETTINGS_P = {"zz_unknown": {"keep": 1}}
+        SETTINGS_P = {"zz_unknown": {"keep": 1}, "de_floor": 8.0}
         legacy = {k: v for k, v in BASE_SETTINGS.items()
                   if k not in ("tool", "recipe", "relay", "capture_xy", "focus_mode",
                                "focus_sweep", "motion", "flow", "photohome", "calib")}
@@ -2153,7 +2133,7 @@ def main():
         FIXED_BIG_P = {"calib": {"mode": "fixed"}, "width": 4080, "height": 3060,
                        "detect_max_px": 1000, "preview_max_w": 1280,
                        "photohome": {"before_capture": False}, "flow": {"capture_goto": False}}
-        HEAD_P = {"calib": {"mode": "fixed"},
+        HEAD_P = {"calib": {"mode": "fixed"}, "width": 1280, "height": 720,
                   "photohome": {"on_connect": True, "settle_s": 0.2, "edge_margin_px": 5}}
         cases = [
             ("정상 흐름", good, main_flow, None, None),
@@ -2183,7 +2163,7 @@ def main():
             ("레시피", good, recipe_flow, None, RECIPE_P),
             ("공구 오프셋", good, tool_flow, None, TOOL_P),
             ("촬영 위치", good, capture_pos_flow, None, CAPTURE_P),
-            ("사진 호밍", good, photohome_flow, SYNTH, None),
+            ("사진 호밍", good, photohome_flow, SYNTH, SMALL),
             ("공구 보정", good, tool_calib_flow, None, TOOLCAL_P),
             ("고정 보정 촬영", lambda: prep_fixed(1280, 960), fixed_flow, None, FIXED_P),
             ("고정 보정 판 보정", lambda: prep_fixed(1280, 960), fixed_calib_flow, None, FIXED_P),
@@ -2227,7 +2207,6 @@ def main():
                         os.remove(os.path.join(DATA_DIR, _f))
             time.sleep(0.5)
     finally:
-        _restore_settings()
         shutil.rmtree(DATA_DIR, ignore_errors=True)
     print("")
     if FAIL:

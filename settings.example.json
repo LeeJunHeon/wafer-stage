@@ -1,0 +1,5 @@
+{
+  "camera_index": 1,
+  "serial_port": "COM7",
+  "calib": {"mode": "fixed"}
+}

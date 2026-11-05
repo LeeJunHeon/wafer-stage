@@ -84,16 +84,14 @@ class State:
         잘못된 설정 하나로 프로그램이 안 뜨면 고칠 화면도 못 연다.
         """
         got = safe_read_json(paths.SETTINGS_PATH)
+        existed = bool(got)
         if not got:
+            # settings.json 은 장비별 로컬 파일(git 제외)이다. 없으면 스키마 기본값으로 시작하고
+            # 설정 창에서 처음 저장할 때 만들어진다(commit).
             got = {}
-            try:
-                atomic_write_json(paths.SETTINGS_PATH,
-                                  schema.deep_merge(dict(detect.DEFAULTS), DEFAULT_APP))
-                logger.early("info", "settings.json 을 기본값으로 만들었습니다")
-            except OSError as e:
-                logger.early("warn", "settings.json 을 만들지 못했습니다: %s" % e)
+            logger.early("info", "settings.json 없음 · 스키마 기본값으로 시작")
         migrated, notes = schema.migrate(got)
-        for n in notes:
+        for n in (notes if existed else []):
             logger.early("info", "설정 이행 · " + n)
         merged = schema.deep_merge(DEFAULT_APP, migrated)
         v, errs, _w = schema.validate(merged)

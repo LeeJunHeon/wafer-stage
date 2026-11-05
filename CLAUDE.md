@@ -118,6 +118,10 @@
   비상정지 때 forget 을 보내 EEPROM 의 원점 기록도 지운다.
   끝단 이동(touch_end)과 원점 등록(set_origin)은 따로다. 축마다 따로 잡는다.
 - 메시지 계약(state/명령)은 README.md 에 표로 있다. 화면은 요청만 보내고 서버 state 가 와야 바뀐다.
+- **settings.json 은 장비별 로컬 파일(git 제외, .gitignore)**. 기본값은 스키마(settings_schema.py,
+  검출 파라미터는 detect.DEFAULTS)이고 파일이 없으면 기본값으로 시작, 설정 창 첫 저장 때 만들어진다.
+  예시는 settings.example.json. e2e_smoke(케이스마다 빈 설정 + 패치) · regress(기본값만, --settings 로 로컬 파일)는
+  로컬 파일에 의존하지 않는다.
 - **설정 스키마 규칙: 운용 값은 backend/settings_schema.py 에만 기본값을 둔다**(코드에 숫자를 박지
   않는다). 항목 = key(점 표기)·default·type·min/max·step·unit·tab·group·label·tip·apply·advanced·
   validate. state.DEFAULT_APP/APP_KEYS 는 스키마에서 만든다. 저장은 전부 검증 통과해야(부분 저장

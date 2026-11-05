@@ -9,7 +9,7 @@
 자동 측정 프로그램/
 ├── wafer_stage/            # 이 저장소 (코드만)
 │   ├── run.py              # 진입점 (루트의 유일한 .py)
-│   ├── settings.json       # 설정 값(기본값은 backend/settings_schema.py 가 단일 출처)
+│   ├── settings.example.json # 예시(실제 settings.json 은 장비별 로컬 파일 — git 제외, 없으면 스키마 기본값)
 │   ├── core/               # 장비·검출 핵심. 서버·화면을 모른다
 │   │   ├── paths.py        #   경로 정의 (코드와 데이터 분리)
 │   │   ├── imgio.py        #   한글 경로에서도 되는 이미지 입출력
@@ -59,6 +59,11 @@
     ├── plate_calib.json    #   고정 보정: 감지 영역 + 판 보정(카메라 번호 · 해상도 포함)
     └── calib_matrix.json   #   마지막 판 마커 보정
 ```
+
+**`settings.json` 은 장비별 로컬 파일**이다(git 추적 제외 · `.gitignore`). 없으면 스키마 기본값
+(`settings_schema.py` · 검출 파라미터는 `detect.DEFAULTS`)으로 시작하고, 설정 창에서 처음 저장할 때
+만들어진다. 예시는 `settings.example.json`. `tools/regress.py` · `tools/e2e_smoke.py` 는 이 파일에
+의존하지 않는다(regress 는 `--settings` 를 줄 때만 얹는다).
 
 `data` 위치는 `settings.json` 의 `data_dir` (기본 `../data`, wafer_stage 기준 상대경로).
 환경변수 `WAFER_STAGE_DATA` 가 있으면 그쪽이 우선한다 — `tools/e2e_smoke.py` 가

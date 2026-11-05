@@ -29,6 +29,18 @@ MATCH_MM = 8.0          # 이 안에 있으면 같은 샘플로 본다
 MATCH_PX = 30.0
 
 
+def _params():
+    """검출 파라미터 = detect.DEFAULTS + 스키마 기본값(로컬 settings.json 에 의존하지 않는다).
+    --settings 를 주면 로컬 settings.json 을 얹는다(옛 동작)."""
+    if "--settings" in sys.argv:
+        return calib.load_params()
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend"))
+    import settings_schema
+    p = dict(detect.DEFAULTS)
+    p.update(settings_schema.defaults())
+    return p
+
+
 def find_dirs(root):
     out = []
     for name in sorted(os.listdir(root)):
@@ -102,10 +114,11 @@ def compare(old, new, unit):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="검출 회귀 비교")
     ap.add_argument("--update", action="store_true", help="지금 결과로 저장값 갱신")
+    ap.add_argument("--settings", action="store_true", help="로컬 settings.json 의 검출 값을 얹어 돈다")
     ap.add_argument("--dir", help="이 폴더만 (기본: data/out 전부)")
     a = ap.parse_args(argv)
 
-    params = calib.load_params()
+    params = _params()
     dirs = [a.dir] if a.dir else find_dirs(paths.OUT_DIR)
     if not dirs:
         print("raw.png 이 있는 폴더가 없습니다: %s" % paths.OUT_DIR)
