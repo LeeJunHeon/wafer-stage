@@ -311,6 +311,57 @@ def _pick_near(cands, p, maxd):
 
 
 # --------------------------------------------------------------------------
+def search_near(w, d, valid, cfg, exp_area, p, Lw_real, half, maxd, first):
+    """p(작업 좌표) 둘레 창(반폭 half)에서 칩 하나를 다시 찾는다: 임계를 first + local_seeds + 올리는 단계로
+    차례로 → Lab Canny. 빈 칸 재탐색과 수동 지정 스냅이 같이 쓴다. 후보 dict | None."""
+    H1, W1 = d.shape[:2]
+    x0, y0 = int(max(0, p[0] - half)), int(max(0, p[1] - half))
+    x1, y1 = int(min(W1, p[0] + half)), int(min(H1, p[1] + half))
+    if x1 - x0 <= 8 or y1 - y0 <= 8:
+        return None
+    region = (x0, y0, x1, y1)
+    seed = float(cfg["seed"])
+    for th in list(first) + list(cfg["local_seeds"]) + [seed * k for k in TIGHTEN_K]:
+        m = (d > float(th)).astype(np.uint8) * 255
+        c = _pick_near(components(m, d, cfg, exp_area, region), p, maxd)
+        if c is not None:
+            return c
+    cm = _canny_mask(w, region, exp_area, cfg)
+    cm[valid[0:H1, 0:W1] == 0] = 0
+    return _pick_near(components(cm, d, cfg, exp_area, region), p, maxd)
+
+
+def snap(bgr, u, v, params, mm_px, chip_long_px=None):
+    """수동 지정 스냅: 클릭(u, v 원본 px) 주변(칩 길이 정도 반경)에서 칩을 찾아 샘플 dict(원본 px)로.
+    못 찾으면 None. mm_px = 원본 px 당 mm, chip_long_px = 칩 긴 변(px, 없으면 chip_mm 로 환산)."""
+    cfg = cfg_of(params)
+    L = float(chip_long_px) if chip_long_px else float(cfg["chip_mm"]) / max(mm_px, 1e-9)
+    Lw = float(cfg["work_long_px"])
+    s = min(1.0, Lw / L)
+    r = 2.5 * L
+    H0, W0 = bgr.shape[:2]
+    x0, y0 = int(max(0, u - r)), int(max(0, v - r))
+    x1, y1 = int(min(W0, u + r)), int(min(H0, v + r))
+    crop = bgr[y0:y1, x0:x1]
+    if crop.shape[0] < 16 or crop.shape[1] < 16:
+        return None
+    w = cv2.resize(crop, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 0.999 else crop
+    sw = w.shape[1] / float(crop.shape[1])
+    valid = np.full(w.shape[:2], 255, np.uint8)
+    k_bg = min(_odd(cfg["bg_k_chips"] * Lw), _odd(min(w.shape[:2]) - 2))
+    d, _sig = residual_d(w, valid, k_bg, float(cfg["blur_sigma"]))
+    exp_area = 0.35 * Lw * Lw
+    p = ((u - x0) * sw, (v - y0) * sw)
+    c = search_near(w, d, valid, cfg, exp_area, p, Lw, 0.9 * Lw, 0.9 * Lw, [float(cfg["seed"])])
+    if c is None:
+        return None
+    sm = _make_sample(c, sw, mm_px, "manual", False, crop.shape[1], crop.shape[0])
+    sm["x_px"] = round(sm["x_px"] + x0, 1)
+    sm["y_px"] = round(sm["y_px"] + y0, 1)
+    sm["vertices_px"] = [[a + x0, b + y0] for a, b in sm["vertices_px"]]
+    return sm
+
+
 def _make_sample(c, s, mm_px, source, weak, W, H, ox=0.0, oy=0.0):
     """작업 해상도 후보 → 원본 crop 해상도 샘플 dict(detect 호환)."""
     inv = 1.0 / s
@@ -470,23 +521,9 @@ def detect(crop, params, mm_px, valid=None, ref=None, area_poly=None, log=print)
             c = det_by_slot.get(key)
             src, weak = "detected", False
             if c is None:
-                x0, y0 = int(max(0, p[0] - half)), int(max(0, p[1] - half))
-                x1, y1 = int(min(W1, p[0] + half)), int(min(H1, p[1] + half))
-                if x1 - x0 > 8 and y1 - y0 > 8:
-                    region = (x0, y0, x1, y1)
-                    seed = float(cfg["seed"])
-                    for th in list(cfg["local_seeds"]) + [seed * k for k in TIGHTEN_K]:
-                        m = (d > float(th)).astype(np.uint8) * 255
-                        c = _pick_near(components(m, d, cfg, exp_area, region), p, 0.6 * Lw_real)
-                        if c is not None:
-                            src, weak = "local", True
-                            break
-                    if c is None:
-                        cm = _canny_mask(w, region, exp_area, cfg)
-                        cm[v[0:H1, 0:W1] == 0] = 0
-                        c = _pick_near(components(cm, d, cfg, exp_area, region), p, 0.6 * Lw_real)
-                        if c is not None:
-                            src, weak = "local", True
+                c = search_near(w, d, v, cfg, exp_area, p, Lw_real, half, 0.6 * Lw_real, [])
+                if c is not None:
+                    src, weak = "local", True
             if c is not None:
                 if src == "local":
                     n_local += 1

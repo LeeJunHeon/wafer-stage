@@ -77,6 +77,36 @@
 
   // ---------------- 공구 목록 ----------------
   const POINTER = '기준 포인터';
+  // 끝 모양(tip_*)이 없는 예전 공구는 이름별 기본값을 보여 준다(서버 core/tip.py 와 같은 값)
+  function tipDefaults(t) {
+    return t.name === POINTER ? { tip_shape: 'rect', tip_w_mm: 10, tip_h_mm: 2, tip_angle_deg: 90 }
+                              : { tip_shape: 'circle', tip_w_mm: 5, tip_h_mm: 5, tip_angle_deg: 0 };
+  }
+  function tipShape(t, item, ctx, rows) {
+    const d = tipDefaults(t);
+    const sel = h('select', { cls: 'in' });
+    [['rect', '사각'], ['circle', '원']].forEach(o => sel.appendChild(h('option', { value: o[0], text: o[1] })));
+    sel.value = t.tip_shape || d.tip_shape;
+    sel.addEventListener('change', () => {
+      Object.keys(d).forEach(k => { if (t[k] == null) t[k] = d[k]; });
+      t.tip_shape = sel.value;
+      if (sel.value === 'circle') t.tip_h_mm = t.tip_w_mm;
+      ctx.set(item.key, rows); ctx.rerender();
+    });
+    return sel;
+  }
+  function tcell(f, step, t, item, ctx, rows, p, off) {
+    const d = tipDefaults(t);
+    const inp = h('input', { type: 'number', cls: 'in num', step: step, value: t[f] != null ? t[f] : d[f],
+                             disabled: off ? 'disabled' : null,
+                             'data-tip': off ? '원은 지름(가로) 하나만 씁니다.' : null });
+    inp.addEventListener('input', () => {
+      Object.keys(d).forEach(k => { if (t[k] == null) t[k] = d[k]; });
+      t[f] = num(inp.value); ctx.set(item.key, rows);
+    });
+    markErr(inp, errCell(ctx, p + '.' + f));
+    return inp;
+  }
   E.tools = {
     render(el, item, ctx) {
       const rows = ctx.get(item.key) || [];
@@ -121,20 +151,26 @@
           h('td', {}, [nm]),
           h('td', {}, [cell('dx_mm', 0.01)]), h('td', {}, [cell('dy_mm', 0.01)]),
           h('td', {}, [cell('z_work_mm', 0.1)]),
+          h('td', {}, [tipShape(t, item, ctx, rows)]),
+          h('td', {}, [tcell('tip_w_mm', 0.1, t, item, ctx, rows, p)]),
+          h('td', {}, [tcell('tip_h_mm', 0.1, t, item, ctx, rows, p, t.tip_shape === 'circle')]),
+          h('td', {}, [tcell('tip_angle_deg', 1, t, item, ctx, rows, p, t.tip_shape === 'circle')]),
           h('td', {}, [note]),
           h('td', {}, [h('div', { cls: 'cellrow' }, [dup, del])]),
         ]));
       });
       el.appendChild(h('table', { cls: 'etable' }, [
         h('thead', {}, [h('tr', {}, [h('th', { text: '이름' }), h('th', { text: 'dX mm' }),
-          h('th', { text: 'dY mm' }), h('th', { text: '작업 높이 mm' }), h('th', { text: '메모' }),
+          h('th', { text: 'dY mm' }), h('th', { text: '작업 높이 mm' }), h('th', { text: '끝 모양' }), h('th', { text: '끝 가로 mm' }),
+          h('th', { text: '끝 세로 mm' }), h('th', { text: '각도 °' }), h('th', { text: '메모' }),
           h('th', { text: '' })])]),
         tb]));
       const add = h('button', { cls: 'btn sm', text: '공구 추가', 'data-tip': '새 공구를 목록 끝에 더합니다.',
         onclick: () => {
           let n = rows.length + 1, name = '공구 ' + n;
           while (rows.some(x => x.name === name)) { n += 1; name = '공구 ' + n; }
-          rows.push({ name: name, dx_mm: 0, dy_mm: 0, z_work_mm: 0, note: '' });
+          rows.push({ name: name, dx_mm: 0, dy_mm: 0, z_work_mm: 0, tip_shape: 'circle', tip_w_mm: 5, tip_h_mm: 5,
+                      tip_angle_deg: 0, note: '' });
           ctx.set(item.key, rows); ctx.rerender();
         } });
       el.appendChild(h('div', { cls: 'erow' }, [add,

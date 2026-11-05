@@ -71,7 +71,8 @@ def active_tool(values):
         if isinstance(t, dict) and t.get("name") == name:
             return t
     return items[0] if items and isinstance(items[0], dict) else {
-        "name": "기준 포인터", "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 0.0}
+        "name": "기준 포인터", "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 0.0,
+        "tip_shape": "rect", "tip_w_mm": 10.0, "tip_h_mm": 2.0, "tip_angle_deg": 90.0}
 
 
 def z_target_mm(step, values):

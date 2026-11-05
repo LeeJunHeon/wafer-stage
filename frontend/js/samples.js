@@ -48,11 +48,11 @@
       // No 칸: 번호 + 윤곽 보완 배지. 'E' 를 번호에 붙여 쓰면 번호의 일부로 읽힌다.
       const tdn = document.createElement('td');
       tdn.appendChild(document.createTextNode(String(sm.no)));
-      if (sm.manual) {
+      if (sm.manual || sm.source === 'manual') {
         const badge = document.createElement('span');
         badge.className = 'edgebadge man';
         badge.textContent = 'M';
-        badge.title = '수동 추가';
+        badge.title = sm.manual ? '수동 추가' : '손으로 옮긴 샘플';
         tdn.appendChild(badge);
       }
       if (sm.edge_completed) {
@@ -69,6 +69,14 @@
         badge.textContent = 'G';
         badge.title = '가장자리로만 찾음 · 확인 필요';
         tdn.appendChild(badge);
+      }
+      if (sm.fit === false) {
+        const badge = document.createElement('span');
+        badge.className = 'edgebadge weak';
+        badge.textContent = '핀 벗어남';
+        badge.title = '공구 끝 모양이 샘플 윤곽을 벗어남 · 순회 전에 확인을 받습니다';
+        tdn.appendChild(badge);
+        tr.classList.add('weak');
       }
       if (sm.source === 'local') {
         const badge = document.createElement('span');

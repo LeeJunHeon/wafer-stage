@@ -36,7 +36,8 @@ def refresh_state():
     keep_shot = (state.plate or {}).get("shot")
     area_ok, area_why = plate.area_validity(d, _cam_index(), _req_size())
     state.plate = {"mode": mode, "valid": bool(ok), "area_ok": bool(area_ok), "reason": why,
-                   "data": plate.summary(d), "shot": keep_shot, "ref": _ref_state(d)}
+                   "data": plate.summary(d), "shot": keep_shot, "ref": _ref_state(d),
+                   "size_warn": plate.area_size_warning(d, state.get("calib.area_size_mm")) if d else ""}
     if mode != "fixed" or ok or area_ok:
         # 감지 영역만 유효하면 검출만 된다 - 경보가 아니라 주의 안내(칩 · 경고줄)로 알린다
         state.set_alarm("판 보정", "")
@@ -173,6 +174,11 @@ async def calib_apply(data):
               "max_mm": round(f["max"], 4), "res_limit_mm": lim})
     plate.save(d)
     refresh_state()
+    n_re = engine.recalc_from_plate()
+    if n_re:
+        await push_log("판 보정 반영 · 편집한 샘플 포함 %d개의 mm 좌표 계산" % n_re, "ok")
+    if (state.plate or {}).get("size_warn"):
+        await push_log(state.plate["size_warn"], "warn")
     over = [i for i, p in enumerate(pts) if p["res_mm"] > lim]
     await push_log("판 보정 저장 · %d점 · RMS %.3f · 최대 %.3f mm%s · 다시 촬영하면 반영"
                    % (len(pts), f["rms"], f["max"],

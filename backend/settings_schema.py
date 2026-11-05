@@ -53,8 +53,10 @@ def _relays_default():
 def _tools_default(z_work=44.0):
     return [
         {"name": TOOL_POINTER, "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 0.0,
+         "tip_shape": "rect", "tip_w_mm": 10.0, "tip_h_mm": 2.0, "tip_angle_deg": 90.0,
          "note": "스테이지 좌표가 가리키는 점"},
         {"name": TOOL_HEATGUN, "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": float(z_work),
+         "tip_shape": "circle", "tip_w_mm": 5.0, "tip_h_mm": 5.0, "tip_angle_deg": 0.0,
          "note": "노즐이 비스듬해 가열 중심은 오프셋 보정으로 잡는다"},
     ]
 
@@ -282,8 +284,11 @@ ITEMS = [
 
     # ---------------- 공구 ----------------
     I("tool.items", _tools_default(), "list", "tool", "공구 목록", "공구",
-      "공구마다 오프셋(기준 포인터 대비)과 작업 높이입니다. 기준 포인터는 지울 수 없습니다.",
+      "공구마다 오프셋(기준 포인터 대비) · 작업 높이 · 끝 모양입니다. 끝 모양은 촬영본에 실제 크기로 그려지고 샘플 윤곽 안에 들어가는지 검사합니다(각도는 사진 기준: 0 = 긴 변이 사진 가로, 90 = 사진 세로). 기준 포인터는 지울 수 없습니다.",
       editor="tools", validate="tools", apply="다음 순회"),
+    I("tool.fit_margin_mm", 0.3, "float", "tool", "공구 목록", "끝 모양 맞음 여유",
+      "공구 끝 모양이 샘플 윤곽을 이만큼까지 벗어나는 것은 봐줍니다. 더 벗어나면 샘플에 핀 벗어남을 표시하고 순회 전에 확인을 받습니다.",
+      min=0, max=5, step=0.1, unit="mm", apply="즉시"),
     I("tool.active", TOOL_POINTER, "str", "tool", "공구 목록", "활성 공구",
       "순회와 샘플 이동이 오프셋을 적용할 공구입니다.",
       editor="tool_active", validate="tool_active", apply="다음 순회"),
@@ -333,7 +338,7 @@ ITEMS = [
       "고정 보정에서 감지 영역 경계에 이만큼보다 가까이 닿은 검출은 버립니다. 새겨진 선이나 경계 이음매가 칩으로 잡히는 것을 막습니다.",
       min=0, max=10, step=0.1, unit="mm", apply="다음 촬영"),
     I("calib.est_mm_per_px", 0.143, "float", "detect", "보정 방식", "대략 배율",
-      "판 보정 전 대략 배율입니다. 판 사각형 눈금 10 mm 간격의 픽셀 수로 잴 수 있습니다. 판 보정을 하면 보정값을 씁니다.",
+      "감지 영역이 없을 때만 쓰는 예비 배율입니다. 감지 영역이 있으면 감지 영역 실제 크기로, 판 보정을 하면 보정값을 씁니다.",
       min=0.005, max=1.0, step=0.001, unit="mm/px", apply="다음 촬영"),
     I("fixed.detector", "fixed", "enum", "detect", "고정 환경 검출", "검출기",
       "고정은 천장 고정 카메라 · 판 위 샘플 · 격자 배치 전용 검출기입니다. 기존은 웨이퍼·철판 일반 검출기입니다.",
@@ -385,6 +390,12 @@ ITEMS = [
     I("fixed.work_long_px", fd.DEFAULTS["work_long_px"], "int", "detect", "고정 환경 검출", "작업 칩 길이",
       "검출용으로 줄인 사진에서 칩 긴 변이 이 정도 픽셀이 되게 합니다.",
       min=20, max=300, step=5, unit="px", apply="다음 촬영", advanced=True, show_if={"calib.mode": "fixed"}),
+    I("calib.area_size_mm", [158.0, 158.0], "list", "detect", "보정 방식", "감지 영역 실제 크기",
+      "판에 새겨진 사각형의 실제 [가로, 세로] mm 입니다(15.8 × 15.8 cm). 판 보정 전에는 감지 영역 네 변의 픽셀 길이와 이 크기로 배율을 계산하고, 판 보정을 적용하면 변 길이가 이 크기와 2% 넘게 다른지 확인합니다.",
+      item="float", validate="area_size", apply="다음 촬영"),
+    I("sample_add.snap", True, "bool", "detect", "수동 지정", "클릭 스냅",
+      "샘플 추가 클릭 주변(칩 길이 정도 반경)에서 칩을 찾아 그 중심에 붙입니다. 못 찾으면 클릭한 자리 그대로 둡니다.",
+      apply="즉시"),
     I("detect_max_px", 2000, "int", "detect", "보정 방식", "검출 최대 변",
       "기존 검출기에서 감지 영역 crop 의 긴 변이 이보다 크면 줄여서 검출하고 좌표를 원본으로 되돌립니다. 0 이면 줄이지 않습니다. 고정 환경 검출기는 작업 칩 길이로 스스로 줄입니다.",
       min=0, max=8000, step=100, unit="px", apply="다음 촬영"),
@@ -620,6 +631,11 @@ def _v_seed_grow(key, v, values, errs, warns):
         errs[key] = "씨앗 임계(%g)보다 작아야 함" % seed
 
 
+def _v_area_size(key, v, values, errs, warns):
+    if len(v) != 2 or any(_num(x) is None or _num(x) <= 0 or _num(x) > 1000 for x in v):
+        errs[key] = "[가로, 세로] 0 초과 1000 mm 이하"
+
+
 def _v_tol_warn(key, v, values, errs, warns):
     w = _num(get_path(values, "photohome.warn_mm"))
     if w is not None and v >= w:
@@ -685,6 +701,17 @@ def _v_tools(key, v, values, errs, warns):
             x = _num(t.get(f))
             if x is None or abs(x) > 200:
                 errs["%s.%s" % (p, f)] = "-200~200 mm"
+        if t.get("tip_shape") not in (None, "rect", "circle"):
+            errs[p + ".tip_shape"] = "rect · circle 중 하나"
+        for f in ("tip_w_mm", "tip_h_mm"):
+            if f in t:
+                x = _num(t.get(f))
+                if x is None or x <= 0 or x > 100:
+                    errs["%s.%s" % (p, f)] = "0 초과 100 mm 이하"
+        if "tip_angle_deg" in t:
+            x = _num(t.get("tip_angle_deg"))
+            if x is None or abs(x) > 360:
+                errs[p + ".tip_angle_deg"] = "-360~360 도"
         z = _num(t.get("z_work_mm"))
         if z is None or z < 0 or z > zmax + 1e-9:
             errs[p + ".z_work_mm"] = "Z 가동범위 0~%g 밖" % zmax
@@ -751,7 +778,7 @@ def _v_recipe_active(key, v, values, errs, warns):
 VALIDATORS = {
     "xy_in_limits": _v_xy_in_limits, "seed_grow": _v_seed_grow, "tol_warn": _v_tol_warn,
     "head_id": _v_head_id, "jog_steps": _v_jog_steps, "touch_max": _v_touch_max,
-    "markers": _v_markers, "tools": _v_tools, "tool_active": _v_tool_active,
+    "markers": _v_markers, "area_size": _v_area_size, "tools": _v_tools, "tool_active": _v_tool_active,
     "relays": _v_relays, "recipes": _v_recipes, "recipe_active": _v_recipe_active,
 }
 

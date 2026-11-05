@@ -165,7 +165,13 @@
   .ov-sample.target { stroke: #ffa53a; stroke-width: calc(2.6px * var(--ovs, 1)); fill: rgba(255,165,58,.2); }
   .ov-sample.selected { stroke: #7fc8ff; stroke-width: calc(2.4px * var(--ovs, 1)); }
   .ov-num { font: 600 calc(12.5px * var(--ovs, 1)) var(--mono); fill: #fff; paint-order: stroke; stroke: #0e1418; stroke-width: calc(3px * var(--ovs, 1)); pointer-events: none; }
-  .ov-hit { fill: transparent; cursor: pointer; }
+  .ov-hit { fill: transparent; cursor: grab; }
+  .ov-tip { fill: rgba(255,255,255,.14); stroke: #ffe14a; stroke-width: calc(1.6px * var(--ovs, 1)); pointer-events: none; }
+  .ov-tip.bad { fill: rgba(255,70,70,.22); stroke: #ff4646; }
+  .ov-tip.ghost { stroke-dasharray: calc(5px * var(--ovs, 1)) calc(3px * var(--ovs, 1)); }
+  .ov-tip.ok { stroke: #35e07a; }
+  .ov-sample.bad { stroke: #ff4646; }
+  #cam.dragging .ov-hit { cursor: grabbing; }
   /* 수동 샘플: 중심의 작은 마름모. 상태 클래스(done·skip·target·selected)는 공통. */
   .ov-sample.manual { stroke-width: calc(2px * var(--ovs, 1)); }
   /* 추가 모드: 십자 커서 · hit 원 끔 · 윤곽/마름모 안(채움 없어도)만 선택 */

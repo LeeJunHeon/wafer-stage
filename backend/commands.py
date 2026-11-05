@@ -49,7 +49,7 @@ MOVING_BLOCKED = ("park", "goto", "return_origin", "jog", "touch_end",
 BUSY_BLOCKED = ("park", "goto", "return_origin", "jog", "park_here", "capture_here",
                 "touch_end", "set_origin", "stage_disconnect", "capture", "settings_save",
                 "settings_import", "sample_add", "sample_add_here", "sample_delete",
-                "sample_undo", "tool_select", "recipe_select", "photo_home",
+                "sample_undo", "sample_move", "tool_select", "recipe_select", "photo_home",
                 "photo_home_apply", "head_calib_start", "head_calib_apply",
                 "calib_marker_record", "calib_marker_apply", "calib_tool_record",
                 "calib_tool_heat", "calib_tool_mark", "calib_tool_apply",
@@ -463,6 +463,10 @@ async def _sample_delete(data):
     await engine.delete_sample(data.get("no"))
 
 
+async def _sample_move(data):
+    await engine.move_sample(data.get("no"), data.get("u"), data.get("v"))
+
+
 async def _sample_undo(_data):
     await engine.undo_edit()
 
@@ -867,6 +871,7 @@ _TABLE = {
     "capture_here": _capture_here,
     "return_origin": _return_origin,
     "capture": _capture,
+    "sample_move": _sample_move,
     "exposure_refind": _exposure_refind,
     "sample_add": _sample_add,
     "sample_add_here": _sample_add_here,

@@ -177,6 +177,7 @@
         text: 'RMS ' + (+P.fit.rms_mm).toFixed(3) + ' mm · 최대 ' + (+P.fit.max_mm).toFixed(3) + ' mm'
           + (over.length ? ' · 한계 ' + lim + ' mm 초과 ' + over.length + '점' : '') }));
     } else kids.push(h('div', { cls: 'note', text: '계산 중 · 점이 한 직선 위이면 계산되지 않습니다' }));
+    if (pl.size_warn) kids.push(h('div', { cls: 'warnline', text: pl.size_warn }));
     kids.push(h('div', { cls: 'row' }, [
       kit.btn('적용', () => UI.send({ cmd: 'plate_calib_apply', points: pts, size: sizeOf(fr) }),
         { sm: true, primary: fitOk, disabled: pts.length < 4 || !fr,

@@ -257,6 +257,49 @@ def local_mm_per_px(H, center):
     return math.sqrt(max(a * b, 1e-18))
 
 
+def area_side_px(quad):
+    """감지 영역 네 변의 픽셀 길이: (가로 평균, 세로 평균) = (위 · 아래 변, 왼 · 오른 변). 꼭짓점은 시계방향 정렬."""
+    q = order_quad(quad)
+    d = lambda a, b: float(np.hypot(*(q[a] - q[b])))            # noqa: E731
+    top, right, bottom, left = d(0, 1), d(1, 2), d(2, 3), d(3, 0)
+    return (top + bottom) / 2.0, (left + right) / 2.0
+
+
+def area_scale(quad, size_mm):
+    """감지 영역 실제 크기(가로 · 세로 mm)로 잰 배율. (mm/px, 가로 배율, 세로 배율) | None.
+    사각형 변의 가로 · 세로가 실제 가로 · 세로에 대응한다고 본다(정사각 판이면 어느 쪽이든 같다)."""
+    try:
+        wmm, hmm = float(size_mm[0]), float(size_mm[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if quad is None or len(quad) == 0 or wmm <= 0 or hmm <= 0:
+        return None
+    wpx, hpx = area_side_px(quad)
+    if wpx < 1 or hpx < 1:
+        return None
+    sx, sy = wmm / wpx, hmm / hpx
+    return math.sqrt(sx * sy), sx, sy
+
+
+def area_size_warning(d, size_mm):
+    """판 보정으로 잰 감지 영역 변 길이가 area_size_mm 와 2% 넘게 다르면 경고 한 줄, 아니면 ""."""
+    am = _area_mm(d)
+    if am is None:
+        return ""
+    q = np.asarray(order_quad(am))
+    ln = lambda a, b: float(np.hypot(*(q[a] - q[b])))           # noqa: E731
+    wmm, hmm = (ln(0, 1) + ln(2, 3)) / 2.0, (ln(1, 2) + ln(3, 0)) / 2.0
+    try:
+        w0, h0 = float(size_mm[0]), float(size_mm[1])
+    except (TypeError, ValueError, IndexError):
+        return ""
+    ew, eh = abs(wmm - w0) / w0, abs(hmm - h0) / h0
+    if max(ew, eh) <= 0.02:
+        return ""
+    return "감지 영역 크기 %.1f × %.1f mm · 설정 %.0f × %.0f mm 와 %.1f%% 다름 · 판 보정점 · 감지 영역 확인" % (
+        wmm, hmm, w0, h0, max(ew, eh) * 100.0)
+
+
 def _area_mm(d):
     """감지 영역 꼭짓점의 스테이지 mm(맵 표시용). 판 보정이 없으면 None."""
     if d.get("H") is None or not d.get("area"):
@@ -326,9 +369,14 @@ def sense_fixed(bgr, params, d, log=print):
     if H is not None:
         mm_px = local_mm_per_px(H, cen)           # 원본 px 당 mm
         log("배율      : 판 보정값 %.5f mm/px" % mm_px)
-    else:                                         # 검출만 모드: 대략 배율(면적 필터에만 쓴다)
-        mm_px = float((params.get("calib") or {}).get("est_mm_per_px", 0.143))
-        log("배율      : 대략값 %.5f mm/px (설정 calib.est_mm_per_px · 판 보정 전)" % mm_px)
+    else:                                         # 검출만 모드: 감지 영역 실제 크기로 배율(없으면 예비값)
+        asc = area_scale(quad, (params.get("calib") or {}).get("area_size_mm"))
+        if asc is not None:
+            mm_px = asc[0]
+            log("배율      : 감지 영역 크기로 배율 %.4f mm/px (가로 %.4f · 세로 %.4f · 판 보정 전)" % asc)
+        else:
+            mm_px = float((params.get("calib") or {}).get("est_mm_per_px", 0.143))
+            log("배율      : 예비값 %.5f mm/px (설정 calib.est_mm_per_px · 감지 영역 크기 없음)" % mm_px)
 
     use_fixed = str((params.get("fixed") or {}).get("detector", "fixed")) != "legacy"
     if use_fixed:

@@ -9,6 +9,7 @@ import os
 import time
 
 from core import calib, detect, paths
+from core import tip as tip_mod
 from core import stage as stage_mod
 
 import logger
@@ -326,6 +327,8 @@ class State:
             # 설정 창이 이 값으로 표를 채운다.
             "marker_mm": {str(k): [v[0], v[1]] for k, v in calib.MARKER_MM.items()},
             "samples": [dict(s) for s in self.samples],
+            "tip": dict(tip_mod.tip_of(self.tool()), name=self.tool().get("name"),
+                        margin_mm=float(self.get("tool.fit_margin_mm") or 0.0)),
             "edit": self.edit_summary(),
             "sequence": dict(self.sequence, estopped=_estopped()),
             "warnings": list(self.warnings),

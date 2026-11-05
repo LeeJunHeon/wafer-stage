@@ -144,6 +144,12 @@
 - 릴레이(relays.py): 펌웨어 RS 가 진실. 사용 안 함 켜기 거절 · 순회 중 수동 거절(전체 끄기만) ·
   정책 off|keep(비상정지·정지·오류·종료) · 비상정지는 '!' 와 같은 쓰기에 "r all 0" · 감시 시간 1/3
   주기 rs 하트비트(이동 중 제외) · max_on_s 초과 자동 끄기 + 경보 · "[!] 통신 끊김" 은 경보 배너.
+- **공구 끝 모양**(core/tip.py): 공구마다 tip_shape/tip_w_mm/tip_h_mm/tip_angle_deg(사진 기준, 0 = 긴 변이 사진 가로). 촬영본 [공구 끝]
+  토글이 순회 대상 샘플마다 실제 크기로 그리고(배율 = 판 보정 국소 배율 · 없으면 감지 영역 크기 배율 calib.area_size_mm), engine.refresh_fit
+  이 샘플별 fit(윤곽 안 = tool.fit_margin_mm 까지 허용)을 계산 — 벗어나면 "핀 벗어남" 배지 · needs_confirm. 예측 · 윤곽 없는 샘플은 검사 안 함.
+  수동 추가는 sample_add.snap 이면 fixed_detect.snap(빈 칸 재탐색 로직)으로 클릭 주변 칩 중심에 붙는다. 샘플 끌기 = sample_move
+  (편집 스택 op move · source manual · 되돌리기). **검출만 모드에서도 추가 · 이동은 픽셀 좌표로 된다**(mm · 이동 · 순회는 판 보정 뒤,
+  판 보정 적용 때 engine.recalc_from_plate 가 mm 계산).
 - 샘플 편집(engine add_sample_px·add_sample_here·delete_sample·undo_edit, 스택 state.edits):
   번호는 다시 매기지 않는다(지운 번호는 빈 번호, 추가는 state.next_no - 되돌려도 줄지 않음).
   변환은 이번 촬영 보정(_CAL_CACHE)으로만 - _last_cal() 은 옛 보정으로 떨어지므로 쓰지 않는다.

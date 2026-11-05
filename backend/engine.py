@@ -26,6 +26,7 @@ import time
 
 from core import calib, flat, imgio, paths, plate
 from core import camera as camera_core
+from core import fixed_detect, tip as tip_mod
 
 import logger
 import measure as measure_mod
@@ -176,6 +177,9 @@ CAPTURE_FLOW = [
 ]
 
 
+_last_img = {"img": None}          # 마지막 촬영의 검출 이미지(수동 지정 스냅이 쓴다)
+
+
 def _cap_progress(text):
     """촬영 스레드가 부르는 진행 문구. 상태 변경은 루프에서 하고 화면에 알린다."""
     def _go():
@@ -270,11 +274,13 @@ async def _shoot_detect():
                 _cap_fail("판 마커 부족 · 좌표 생성 불가")
                 await push_log("판 마커 %d개 미만 · 좌표를 만들지 않습니다" % need, "err")
             return False
+        _last_img["img"] = bgr
         _apply_sense(res)
         if res.get("mode") == "fixed" and res.get("mm_per_px"):
-            await push_log("검출 배율 %.4f mm/px · %s"
-                           % (res["mm_per_px"], "대략값(판 보정 전 · 설정 대략 배율)"
-                              if res.get("area_only") else "판 보정값"))
+            if res.get("area_only"):
+                await push_log("감지 영역 크기로 배율 %.4f mm/px (판 보정 전)" % res["mm_per_px"])
+            else:
+                await push_log("검출 배율 %.4f mm/px · 판 보정값" % res["mm_per_px"])
         state.head_marker = stats.get("head_marker") if isinstance(stats, dict) else None
         state.camera["cap_text"] = "저장 중"
         await push_state()
@@ -354,11 +360,43 @@ def target_in_range(sx, sy):
     return calib.in_range(px, py)
 
 
+def mmpx_at(u, v):
+    """(u, v) 근처의 사진 px 당 mm. 보정이 있으면 그 국소 배율, 없으면(검출만) 감지 영역 크기 배율. 모르면 None."""
+    cal = current_cal()
+    if cal is not None and u is not None:
+        try:
+            x0, y0 = calib.px_to_mm(cal, u, v)
+            xu, yu = calib.px_to_mm(cal, u + 1.0, v)
+            xv, yv = calib.px_to_mm(cal, u, v + 1.0)
+            a, b = math.hypot(xu - x0, yu - y0), math.hypot(xv - x0, yv - y0)
+            if a > 0 and b > 0:
+                return math.sqrt(a * b)
+        except Exception:                  # noqa: BLE001
+            pass
+    mp = (state.sensing or {}).get("mm_px")
+    return float(mp) if mp else None
+
+
+def refresh_fit():
+    """샘플마다 사진 배율(mmpx)과 공구 끝 맞음(fit: True 안 / False 벗어남 / None 검사 안 함)을 다시 계산한다.
+    예측 샘플 · 윤곽 없는 수동 샘플은 검사하지 않는다."""
+    t = tip_mod.tip_of(state.tool())
+    margin = float(state.get("tool.fit_margin_mm") or 0.0)
+    for s in state.samples:
+        mp = mmpx_at(s.get("u"), s.get("v"))
+        s["mmpx"] = None if not mp else round(mp, 5)
+        if not mp or s.get("source") == "predicted" or not s.get("verts"):
+            s["fit"] = None
+            continue
+        s["fit"] = tip_mod.fits(tip_mod.polygon(t, mp, s["u"], s["v"]), s["verts"], margin / mp)
+
+
 def refresh_sample_status():
     """공구(오프셋)가 바뀌면 가동범위 밖(skip) 판정을 다시 한다. 대기·제외만 바꾼다."""
     for s in state.samples:
         if s["status"] in ("wait", "skip") and s.get("X") is not None:
             s["status"] = "wait" if target_in_range(s["X"], s["Y"]) else "skip"
+    refresh_fit()
 
 
 def _apply_sense(res):
@@ -384,7 +422,9 @@ def _apply_sense(res):
     }
     u0, v0, u1, v1 = res["rect"]
     state.sensing = {"rect": [int(u0), int(v0), int(u1), int(v1)],
-                     "quad": res.get("quad")}
+                     "quad": res.get("quad"),
+                     "mm_px": res.get("mm_per_px") if fixed else None,
+                     "chip_px": (getattr(det, "diag", None) or {}).get("chip_long_px")}
     w = det.wafer
     if w.found and not area_only:
         cx, cy = w.center_px[0] + u0, w.center_px[1] + v0
@@ -429,6 +469,7 @@ def _apply_sense(res):
             "manual": False,
         })
     state.next_no = max([s["no"] for s in state.samples], default=0) + 1
+    refresh_fit()
     state.set_warnings(list(det.warnings) + (["판 보정 없음 · 검출만 · 좌표 없음 · 보정 → 판 보정"]
                                              if area_only else []))
 
@@ -719,7 +760,7 @@ def _clear_edits():
 
 
 def _source(s):
-    return "manual" if s.get("manual") else "detect"
+    return "manual" if (s.get("manual") or s.get("source") == "manual") else "detect"
 
 
 def _edit_refusal(verb):
@@ -730,11 +771,9 @@ def _edit_refusal(verb):
         return "capturing", "촬영 중 · %s 안 함" % verb
     if state.calib is None or state.sensing is None:
         return "no_capture", "촬영 결과 없음 · 촬영 후 %s" % verb
-    if current_cal() is None:
-        if state.calib.get("area_only"):
-            return "no_calib", "판 보정 필요 · %s 안 함" % verb
+    if current_cal() is None and not state.calib.get("area_only"):
         return "no_capture", "촬영 결과 없음 · 촬영 후 %s" % verb
-    return None
+    return None                            # 검출만 모드(판 보정 전)도 픽셀 좌표로 편집한다
 
 
 def _in_rect(u, v):
@@ -759,10 +798,13 @@ def _in_poly(u, v, verts):
     return inside
 
 
-def _overlap(u, v, X, Y):
-    """겹치는 기존 샘플 번호 또는 None. 중심 2.5 mm 안이거나 검출 윤곽 안."""
+def _overlap(u, v, skip_no=None):
+    """겹치는 기존 샘플 번호 또는 None. 중심 2.5 mm 안(픽셀 거리 x 배율)이거나 검출 윤곽 안."""
     for s in state.samples:
-        if math.hypot(s["X"] - X, s["Y"] - Y) <= EDIT_OVERLAP_MM:
+        if s["no"] == skip_no:
+            continue
+        mp = mmpx_at(u, v) or 0.15
+        if math.hypot(s["u"] - u, s["v"] - v) * mp <= EDIT_OVERLAP_MM:
             return s["no"]
         verts = s.get("verts") or []
         if len(verts) >= 3 and _in_poly(u, v, verts):
@@ -770,7 +812,15 @@ def _overlap(u, v, X, Y):
     return None
 
 
-def _add_now(u, v, X, Y):
+def _xy(u, v):
+    """(X, Y) mm — 판 보정이 없으면 (None, None)."""
+    cal = current_cal()
+    if cal is None:
+        return None, None
+    return calib.px_to_mm(cal, u, v)
+
+
+def _add_now(u, v, X, Y, snapped=None):
     """번호 → 목록 → 스택을 await 없이 한 번에. 명령마다 태스크라 사이에 await 가
     끼면 빠른 두 번 클릭이 같은 번호를 받는다."""
     no = state.next_no
@@ -778,18 +828,23 @@ def _add_now(u, v, X, Y):
     s = {
         "no": no, "shape": "",
         "u": round(float(u), 1), "v": round(float(v), 1),
-        "X": round(float(X), 2), "Y": round(float(Y), 2),
+        "X": None if X is None else round(float(X), 2),
+        "Y": None if Y is None else round(float(Y), 2),
         "verts": [],
         "on": True,
-        "status": "wait" if target_in_range(X, Y) else "skip",
+        "status": "nocoord" if X is None else ("wait" if target_in_range(X, Y) else "skip"),
         "value": None, "unit": None,
         "edge_completed": False, "edge_only": False, "weak": False,
         "strength": None, "area_mm2": None,
-        "manual": True,
+        "manual": True, "source": "manual",
     }
+    if snapped:                            # 스냅으로 칩 윤곽을 찾았다 - 윤곽 · 모양을 달아 맞음 검사가 된다
+        s.update({"shape": snapped.get("shape", ""), "verts": snapped.get("vertices_px") or [],
+                  "strength": snapped.get("strength"), "area_mm2": snapped.get("area_mm2")})
     state.samples.append(s)
     state.samples.sort(key=lambda x: x["no"])
     state.edits.append({"op": "add", "no": no})
+    refresh_fit()
     return s
 
 
@@ -797,9 +852,9 @@ def _check_new(u, v, X, Y):
     """추가 전 검사. 거절이면 (reason, 화면 문구), 통과면 None."""
     if not _in_rect(u, v):
         return "outside", "감지영역 밖 · 추가 안 함"
-    if not target_in_range(X, Y):
+    if X is not None and not target_in_range(X, Y):
         return "out_of_range", "가동범위 밖 · 추가 안 함"
-    hit = _overlap(u, v, X, Y)
+    hit = _overlap(u, v)
     if hit is not None:
         return "overlap", "#%s 과 겹침 · 추가 안 함" % hit
     return None
@@ -819,7 +874,8 @@ def _after_edit(kind, s, **extra):
             storage.atomic_write_json(
                 os.path.join(d, "samples_edit.json"),
                 [{"no": x["no"], "u": round(x["u"], 1), "v": round(x["v"], 1),
-                  "X": round(x["X"], 2), "Y": round(x["Y"], 2), "source": _source(x)}
+                  "X": None if x["X"] is None else round(x["X"], 2),
+                  "Y": None if x["Y"] is None else round(x["Y"], 2), "source": _source(x)}
                  for x in state.samples])
         except OSError as e:
             logger.write("warn", "samples_edit.json 저장 실패: %s" % e)
@@ -833,7 +889,8 @@ def _after_edit(kind, s, **extra):
 
 async def _added(s, via):
     _after_edit("add", s, via=via)
-    await push_log("수동 샘플 #%d 추가 · X%.1f Y%.1f" % (s["no"], s["X"], s["Y"]), "ok")
+    await push_log("수동 샘플 #%d 추가 · %s" % (s["no"], "X%.1f Y%.1f" % (s["X"], s["Y"])
+                                                if s["X"] is not None else "픽셀 좌표(판 보정 전)"), "ok")
     await push_state()                     # 샘플이 목록에 있는 state 가 ack 보다 먼저
     await push_ack("sample_add", True, no=s["no"])
     return True
@@ -852,11 +909,103 @@ async def add_sample_px(u, v):
         return await _add_refused("bad_args", "좌표 오류 · 추가 안 함")
     if not _in_rect(u, v):
         return await _add_refused("outside", "감지영역 밖 · 추가 안 함")
-    X, Y = calib.px_to_mm(current_cal(), u, v)
+    snapped = None
+    if bool(state.get("sample_add.snap", True)):
+        snapped = await _snap(u, v)
+        if snapped:
+            nu, nv = snapped["x_px"], snapped["y_px"]
+            mp = mmpx_at(u, v) or 0.0
+            await push_log("스냅 · 칩 중심으로 %.1f mm 이동" % (math.hypot(nu - u, nv - v) * mp), "ok")
+            u, v = nu, nv
+        else:
+            await push_log("스냅 · 칩을 못 찾음 · 클릭한 자리 그대로")
+    X, Y = _xy(u, v)
     why = _check_new(u, v, X, Y)
     if why:
         return await _add_refused(*why)
-    return await _added(_add_now(u, v, X, Y), "click")
+    return await _added(_add_now(u, v, X, Y, snapped), "click")
+
+
+async def _snap(u, v):
+    """클릭 주변 칩 찾기(fixed 모드 · 고정 환경 검출기일 때만). 샘플 dict | None."""
+    img = _last_img["img"]
+    mp = mmpx_at(u, v)
+    if img is None or not mp or not fixed_mode():
+        return None
+    if str((state.params.get("fixed") or {}).get("detector", "fixed")) == "legacy":
+        return None
+    try:
+        return await vision.run_blocking(fixed_detect.snap, img, u, v, state.params, mp,
+                                         (state.sensing or {}).get("chip_px"))
+    except Exception as e:                 # noqa: BLE001
+        logger.write("warn", "스냅 실패: %s" % e)
+        return None
+
+
+async def move_sample(no, u, v):
+    """샘플 중심을 (u, v)로 옮긴다(끌기). 편집 스택에 기록 · 되돌리기 가능 · source = manual."""
+    why = _edit_refusal("이동")
+    if why:
+        await push_log(why[1], "warn")
+        await push_ack("sample_move", False, why[0])
+        return False
+    try:
+        no, u, v = int(no), float(u), float(v)
+    except (TypeError, ValueError):
+        await push_ack("sample_move", False, "bad_args")
+        return False
+    s = state.sample(no)
+    if s is None or not (math.isfinite(u) and math.isfinite(v)):
+        await push_log("#%s 없음 · 이동 안 함" % no, "warn")
+        await push_ack("sample_move", False, "bad_args")
+        return False
+    if not _in_rect(u, v):
+        await push_log("감지영역 밖 · 이동 안 함", "warn")
+        await push_ack("sample_move", False, "outside")
+        return False
+    X, Y = _xy(u, v)
+    if X is not None and not target_in_range(X, Y):
+        await push_log("가동범위 밖 · 이동 안 함", "warn")
+        await push_ack("sample_move", False, "out_of_range")
+        return False
+    hit = _overlap(u, v, skip_no=no)
+    if hit is not None:
+        await push_log("#%s 과 겹침 · 이동 안 함" % hit, "warn")
+        await push_ack("sample_move", False, "overlap")
+        return False
+    keep = {k: s.get(k) for k in ("u", "v", "X", "Y", "status", "source")}
+    s.update({"u": round(u, 1), "v": round(v, 1),
+              "X": None if X is None else round(float(X), 2),
+              "Y": None if Y is None else round(float(Y), 2), "source": "manual"})
+    if s["X"] is None:
+        s["status"] = "nocoord"
+    elif s["status"] in ("wait", "skip", "nocoord"):
+        s["status"] = "wait" if target_in_range(s["X"], s["Y"]) else "skip"
+    state.edits.append({"op": "move", "no": no, "old": keep})
+    refresh_fit()
+    _after_edit("move", s)
+    await push_log("샘플 #%d 이동 · 중심 (%.0f, %.0f) px" % (no, s["u"], s["v"]), "ok")
+    await push_state()
+    await push_ack("sample_move", True, no=no)
+    return True
+
+
+def recalc_from_plate():
+    """판 보정이 새로 생기면(적용) 저장된 픽셀 좌표로 샘플 mm 를 계산한다(검출만 모드에서 편집한 것 포함).
+    반환: 계산한 샘플 수."""
+    cal = current_cal()
+    if cal is None or state.calib is None:
+        return 0
+    n = 0
+    for s in state.samples:
+        X, Y = calib.px_to_mm(cal, s["u"], s["v"])
+        s["X"], s["Y"] = round(float(X), 2), round(float(Y), 2)
+        if s["status"] in ("nocoord", "wait", "skip"):
+            s["status"] = "wait" if target_in_range(X, Y) else "skip"
+        n += 1
+    state.calib["area_only"] = False
+    refresh_fit()
+    return n
 
 
 async def add_sample_here():
@@ -865,6 +1014,8 @@ async def add_sample_here():
     why = _edit_refusal("추가")
     if why:
         return await _add_refused(*why)
+    if current_cal() is None:
+        return await _add_refused("no_calib", "판 보정 필요 · 추가 안 함")
     X, Y = state.stage["x_mm"], state.stage["y_mm"]
     if X is None or Y is None:
         return await _add_refused("bad_args", "현재 위치 모름 · 추가 안 함")
@@ -916,10 +1067,18 @@ async def undo_edit():
         s = s or {"no": e["no"], "u": None, "v": None, "X": None, "Y": None}
         _after_edit("undo", s, undo_of="add")
         await push_log("되돌리기 · #%d 추가 취소" % e["no"], "ok")
+    elif e["op"] == "move":
+        s = state.sample(e["no"])
+        if s is not None:
+            s.update(e["old"])
+            refresh_fit()
+            _after_edit("undo", s, undo_of="move")
+            await push_log("되돌리기 · #%d 이동 취소" % e["no"], "ok")
     else:
         s = e["sample"]
         state.samples.append(s)
         state.samples.sort(key=lambda x: x["no"])
+        refresh_fit()
         _after_edit("undo", s, undo_of="delete")
         await push_log("되돌리기 · #%d 복원" % s["no"], "ok")
     await push_state()
@@ -942,6 +1101,9 @@ def needs_confirm():
                 pct = 0.0
             if pct >= 50.0:
                 out.append("반사광 %.0f%% · 조명 확산 필요" % pct)
+    bad = [str(s["no"]) for s in state.samples if s.get("on") and s.get("fit") is False]
+    if bad:
+        out.append("공구 끝이 샘플 밖(핀 벗어남): #%s" % ", #".join(bad))
     c = state.calib or {}
     if c.get("missing_ids") and state.get("calib.confirm_3markers", True):
         out.append("마커 id%s 미검출 · %d점 보정(오차 ≈1 mm)"

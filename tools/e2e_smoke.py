@@ -47,6 +47,7 @@ FAST_RECIPE = {"name": "기본", "steps": [
     {"type": "move_sample"}, {"type": "z", "target": "work"}, {"type": "wait", "s": 0.2},
     {"type": "measure"}, {"type": "z", "target": "top"}]}
 DEFAULT_PATCH = {"recipe": {"items": [FAST_RECIPE], "active": "기본"},
+                 "tool": {"fit_margin_mm": 50.0},       # 공구 끝 맞음 검사는 전용 케이스만 본다(기존 흐름은 확인 없이 시작)
                  "calib": {"mode": "markers"}}      # 기존 케이스는 판 마커 방식 - 고정 보정은 케이스가 덮는다
 SMALL = {"width": 1280, "height": 720}              # 합성 카메라 헤드 마커 케이스의 해상도(헤드 보정 1280x720)      # 판 마커 방식 케이스(기존) - 고정 보정은 케이스가 덮는다
 
@@ -1971,7 +1972,7 @@ async def fixed_area_only_flow(c):
     check(all(s["u"] > 0 and s["verts"] for s in st["samples"]), "픽셀 좌표 · 윤곽은 정상")
     check((st["calib"] or {}).get("area_only") is True, "state.calib.area_only")
     check(any("판 보정 없음" in x for x in st["warnings"]), "주의 안내 한 줄 (%s)" % st["warnings"])
-    check(any("검출 배율" in l["msg"] and "대략값" in l["msg"] for l in c.logs), "배율 로그(대략값)")
+    check(any("감지 영역 크기로 배율" in l["msg"] for l in c.logs), "배율 로그(감지 영역 크기)")
     check(os.path.exists(os.path.join(st["sequence"]["out_dir"], "annotated.jpg")), "촬영본 · annotated 저장")
     # 이동 · 순회 · 추가 거절
     c.logs.clear()
@@ -1984,9 +1985,29 @@ async def fixed_area_only_flow(c):
     a = await wait_ack(c, "run")
     check(bool(a) and not a["ok"] and any("판 보정 필요" in r for r in a.get("needs_confirm", [])),
           "순회 시작 거절 (%s)" % (a or {}).get("needs_confirm"))
-    await c.send(cmd="sample_add", u=500, v=500)
+    # 검출만 모드에서도 추가 · 이동 · 되돌리기는 된다(픽셀 좌표) - mm · 이동 · 순회만 판 보정 뒤
+    pt = _free_px(c.state)
+    c.acks.clear()
+    await c.send(cmd="sample_add", u=pt[0], v=pt[1])
     a = await wait_ack(c, "sample_add")
-    check(bool(a) and not a["ok"] and a["reason"] == "no_calib", "촬영본 클릭 추가 거절 (%s)" % (a or {}).get("reason"))
+    await c.pump(0.4)
+    s_new = next((s for s in c.state["samples"] if a and s["no"] == a.get("no")), None)
+    check(bool(a) and a["ok"] and bool(s_new) and s_new["X"] is None and s_new["status"] == "nocoord"
+          and s_new["manual"], "검출만 모드 클릭 추가 · 픽셀 좌표 · nocoord (%s)" % (a or {}).get("reason"))
+    u_old, v_old = s_new["u"], s_new["v"]
+    await c.send(cmd="sample_move", no=s_new["no"], u=u_old + 30, v=v_old)
+    a = await wait_ack(c, "sample_move")
+    await c.pump(0.4)
+    s_mv = next(s for s in c.state["samples"] if s["no"] == s_new["no"])
+    check(bool(a) and a["ok"] and abs(s_mv["u"] - (u_old + 30)) < 0.2 and s_mv["source"] == "manual"
+          and s_mv["X"] is None, "샘플 이동 · source manual · 좌표 없음 (%s)" % (a or {}).get("reason"))
+    await c.send(cmd="sample_undo")
+    await c.pump(0.6)
+    s_bk = next(s for s in c.state["samples"] if s["no"] == s_new["no"])
+    check(abs(s_bk["u"] - u_old) < 0.2, "이동 되돌리기 (%.1f → %.1f)" % (s_mv["u"], s_bk["u"]))
+    await c.send(cmd="sample_move", no=s_new["no"], u=u_old + 30, v=v_old)
+    await wait_ack(c, "sample_move")
+    await c.pump(0.3)
     # 판 보정 적용 → 다음 촬영부터 좌표
     H = truth["H"]
     pts = []
@@ -1996,7 +2017,12 @@ async def fixed_area_only_flow(c):
     await c.send(cmd="plate_calib_apply", points=pts, size=[w, h])
     a = await wait_ack(c, "plate_calib_apply")
     check(bool(a) and a["ok"], "판 보정 적용")
-    await c.send(cmd="capture")
+    await c.pump(0.5)
+    s_re = next((s for s in c.state["samples"] if s["no"] == s_new["no"]), None)
+    check(bool(s_re) and s_re["X"] is not None and s_re["status"] in ("wait", "skip")
+          and not c.state["calib"]["area_only"],
+          "판 보정 적용 뒤 편집한 샘플의 mm 계산 (%s)" % ((s_re or {}).get("X"),))
+    await c.send(cmd="capture", confirm=True)
     ph = await c.wait_phase(("ready", "error"), 120)
     samples = c.state["samples"]
     errs = [_nearest(samples, x, y)[1] for x, y in truth["samples"]] if samples and samples[0]["X"] is not None else [99]
@@ -2077,6 +2103,104 @@ async def capture_progress_flow(c):
     check(any("노출" in l["msg"] for l in c.logs), "노출 다시 찾기 명령")
     # 실패 한 줄: 감지 영역 파일을 지워 무효로 만든 촬영 대신, 해상도 불일치는 별도 케이스가 본다.
     check(c.cap_errors == [], "정상 촬영은 실패 한 줄 없음")
+
+
+
+async def tip_flow(c):
+    """공구 끝 모양: state.tip · 샘플 mmpx/fit · 핀 벗어남 확인 · 공구 바꾸면 재검사 · 스냅 · 끌기 · 되돌리기 · 화면."""
+    sc = _synth()
+    st = c.state
+    check(st["tip"]["shape"] == "circle" and st["tip"]["w"] == 40 and abs(st["tip"]["margin_mm"] - 0.3) < 1e-9,
+          "state.tip (%s)" % st["tip"])
+    await c.send(cmd="capture")
+    ph = await c.wait_phase(("ready", "error"), 90)
+    sm = c.state["samples"]
+    check(ph == "ready" and len(sm) == 9, "촬영 · 샘플 9개 (%s %d)" % (ph, len(sm)))
+    check(all(s["mmpx"] and 0.2 < s["mmpx"] < 0.35 for s in sm), "샘플마다 mmpx (판 보정 국소 배율)")
+    check(all(s["fit"] is False for s in sm), "40 mm 원 끝: 전부 윤곽 밖 (%s)" % [s["fit"] for s in sm])
+    c.acks.clear()
+    await c.send(cmd="run", mode="auto")
+    a = await wait_ack(c, "run")
+    check(bool(a) and not a["ok"] and any("핀 벗어남" in r for r in a.get("needs_confirm", [])),
+          "순회 전 확인: 핀 벗어남 목록 (%s)" % (a or {}).get("needs_confirm"))
+    # 공구를 바꾸면 다시 검사
+    await c.send(cmd="tool_select", name="작은 핀")
+    await wait_ack(c, "tool_select")
+    await c.pump(0.5)
+    check(c.state["tip"]["w"] == 1.5 and all(s["fit"] is True for s in c.state["samples"]),
+          "작은 핀: 전부 안 (%s)" % [s["fit"] for s in c.state["samples"]])
+    # 스냅: 칩 하나를 지운 뒤 중심에서 12 px 어긋난 자리를 클릭 → 그 칩 중심에 붙는다
+    target = dict(c.state["samples"][4])
+    await c.send(cmd="sample_delete", no=target["no"])
+    await c.pump(0.6)
+    c.acks.clear()
+    c.logs.clear()
+    await c.send(cmd="sample_add", u=target["u"] + 12, v=target["v"] - 9)
+    a = await wait_ack(c, "sample_add")
+    await c.pump(0.5)
+    sn = next((s for s in c.state["samples"] if a and s["no"] == a.get("no")), None)
+    dist = ((sn["u"] - target["u"]) ** 2 + (sn["v"] - target["v"]) ** 2) ** 0.5 if sn else 99
+    check(bool(a) and a["ok"] and bool(sn) and dist < 4 and len(sn["verts"]) >= 3 and sn["manual"],
+          "스냅: 칩 중심에 붙음 · 윤곽 달림 (%.1f px)" % dist)
+    check(any("스냅" in l["msg"] and "mm 이동" in l["msg"] for l in c.logs), "스냅 이동 거리 로그")
+    # 스냅 끄면 클릭 자리 그대로
+    await c.send(cmd="settings_save", values={"sample_add": {"snap": False}})
+    await c.pump(0.6)
+    free = _free_px(c.state)
+    c.acks.clear()
+    await c.send(cmd="sample_add", u=free[0], v=free[1])
+    a = await wait_ack(c, "sample_add")
+    await c.pump(0.4)
+    s2 = next((s for s in c.state["samples"] if a and s["no"] == a.get("no")), None)
+    check(bool(a) and a["ok"] and bool(s2) and abs(s2["u"] - free[0]) < 0.2 and not s2["verts"] and s2["fit"] is None,
+          "스냅 끔: 클릭한 자리 · 윤곽 없음 · 검사 안 함")
+    # 끌기(이동) · 되돌리기: 검출 샘플을 옮기면 source manual, 윤곽은 남아 맞음 검사가 계속된다
+    mv = dict(c.state["samples"][0])
+    await c.send(cmd="sample_move", no=mv["no"], u=mv["u"] + 4, v=mv["v"] + 3)
+    a = await wait_ack(c, "sample_move")
+    await c.pump(0.4)
+    m1 = next(s for s in c.state["samples"] if s["no"] == mv["no"])
+    check(bool(a) and a["ok"] and m1["source"] == "manual" and abs(m1["u"] - mv["u"] - 4) < 0.2
+          and len(m1["verts"]) >= 3 and m1["fit"] is True, "이동: source manual · 윤곽 유지 · fit 유지")
+    with open(os.path.join(c.state["sequence"]["out_dir"], "samples_edit.json"), encoding="utf-8") as f:
+        je = json.load(f)
+    check(any(x["no"] == mv["no"] and x["source"] == "manual" for x in je), "samples_edit.json 에 이동 기록")
+    await c.send(cmd="sample_undo")
+    await c.pump(0.5)
+    m0 = next(s for s in c.state["samples"] if s["no"] == mv["no"])
+    check(abs(m0["u"] - mv["u"]) < 0.2 and m0["source"] != "manual", "이동 되돌리기")
+    # 겹침 · 감지영역 밖 이동 거절
+    other = c.state["samples"][1]
+    await c.send(cmd="sample_move", no=mv["no"], u=other["u"], v=other["v"])
+    a = await wait_ack(c, "sample_move")
+    check(bool(a) and not a["ok"] and a["reason"] == "overlap", "겹치는 자리로 이동 거절 (%s)" % (a or {}).get("reason"))
+    # 화면: 공구 끝 모양이 그려지고 벗어난 샘플은 경고 색
+    await c.send(cmd="tool_select", name="기준 포인터")
+    await c.pump(0.6)
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return
+
+    def look():
+        with sync_playwright() as pw:
+            b = pw.chromium.launch()
+            pg = b.new_page(viewport={"width": 1920, "height": 1040})
+            errs = []
+            pg.on("pageerror", lambda e: errs.append(str(e)))
+            pg.goto("http://127.0.0.1:%d/" % c.port)
+            pg.wait_for_timeout(1500)
+            n_tip = pg.locator("#ovTips polygon.ov-tip").count()
+            n_bad = pg.locator("#ovTips polygon.ov-tip.bad").count()
+            pg.screenshot(path=os.path.join(DATA_DIR, "tip_view.png"))
+            pg.click("#btnTip")
+            n_off = pg.locator("#ovTips polygon.ov-tip").count()
+            b.close()
+            return n_tip, n_bad, n_off, errs
+    n_tip, n_bad, n_off, errs = await asyncio.get_running_loop().run_in_executor(None, look)
+    on = sum(1 for s in c.state["samples"] if s["on"] and s.get("mmpx"))
+    check(n_tip == on and n_bad >= 1 and n_off == 0 and not errs,
+          "화면: 공구 끝 %d/%d · 경고색 %d · 토글 끄면 %d · 오류 %s" % (n_tip, on, n_bad, n_off, errs))
 
 
 async def fixed_big_flow(c):
@@ -2237,6 +2361,12 @@ def main():
         FIXED_BIG_P = {"calib": {"mode": "fixed"}, "fixed": {"layout": "free"}, "width": 4080, "height": 3060,
                        "detect_max_px": 1000, "preview_max_w": 1280,
                        "photohome": {"before_capture": False}, "flow": {"capture_goto": False}}
+        TIP_PATCH = dict(FIXED_P, tool={
+            "fit_margin_mm": 0.3, "active": "기준 포인터",
+            "items": [{"name": "기준 포인터", "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 0.0, "note": "",
+                       "tip_shape": "circle", "tip_w_mm": 40.0, "tip_h_mm": 40.0, "tip_angle_deg": 0.0},
+                      {"name": "작은 핀", "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 0.0, "note": "",
+                       "tip_shape": "circle", "tip_w_mm": 1.5, "tip_h_mm": 1.5, "tip_angle_deg": 0.0}]})
         HEAD_P = {"calib": {"mode": "fixed"}, "width": 1280, "height": 720,
                   "photohome": {"on_connect": True, "settle_s": 0.2, "edge_margin_px": 5}}
         cases = [
@@ -2272,7 +2402,7 @@ def main():
             ("고정 보정 촬영", lambda: prep_fixed(1280, 960), fixed_flow, None, FIXED_P),
             ("고정 보정 판 보정", lambda: prep_fixed(1280, 960), fixed_calib_flow, None, FIXED_P),
             ("고정 보정 검출만", lambda: prep_fixed(1280, 960, with_h=False), fixed_area_only_flow, None,
-             dict(FIXED_P, calib={"mode": "fixed", "est_mm_per_px": 0.2656})),
+             dict(FIXED_P, calib={"mode": "fixed", "area_size_mm": [160.0, 160.0]}, sample_add={"snap": False})),
             ("고정 보정 감지영역 없음", lambda: prep_fixed(1280, 960, with_area=False), fixed_nocal_flow, None, FIXED_P),
             ("고정 보정 무효", lambda: prep_fixed(1280, 960, cal_size=(640, 480)), fixed_invalid_flow, None, FIXED_P),
             ("촬영 진행 표시", lambda: prep_fixed(1280, 960), capture_progress_flow, None, FIXED_P),
@@ -2280,6 +2410,7 @@ def main():
                 {"calib": {"mode": "fixed", "est_mm_per_px": 0.151}, "width": 4080, "height": 3060,
                  "preview_max_w": 1280, "photohome": {"before_capture": False}, "flow": {"capture_goto": False}}
                 )] if REAL.setdefault("scene", real_scene()) else []),
+            ("공구 끝 표시", lambda: prep_fixed(1280, 960), tip_flow, None, TIP_PATCH),
             ("고정 보정 4080", lambda: prep_fixed(4080, 3060), fixed_big_flow, None, FIXED_BIG_P),
             ("헤드 마커 연결 판단", lambda: (prep_head_calib() or good), head_connect_flow, SYNTH, HEAD_P),
             ("헤드 마커 미검출", lambda: (prep_head_calib() or good), head_missing_flow,

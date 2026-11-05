@@ -481,11 +481,11 @@
     // 샘플 편집: 이번 촬영 결과가 있고 순회·촬영 중이 아닐 때만(서버도 같은 조건).
     const list = (s && s.samples) || [];
     const canEdit = on && !running && !!(s && s.calib);
-    dis('btnAddSample', !canEdit || noCoord, noCoord ? '판 보정 필요' : (running ? '순회 · 보정 중' : '촬영 결과 없음'));
+    dis('btnAddSample', !canEdit, running ? '순회 · 보정 중' : '촬영 결과 없음');
     dis('btnDelSample', !canEdit || UI.selected == null
         || !list.some(x => x.no === UI.selected), '샘플 선택 필요');
     dis('btnUndo', !on || running || !((s && s.edit && s.edit.undo) > 0), '되돌릴 편집 없음');
-    if ((!canEdit || noCoord) && UI.setAddMode) UI.setAddMode(false);   // 잠기면 추가 모드도 끈다
+    if (!canEdit && UI.setAddMode) UI.setAddMode(false);   // 잠기면 추가 모드도 끈다
     dis('viewLive', !on);
     dis('viewSnap', !on);
     dis('btnOpenDir', !on || !q.out_dir, '결과 폴더 없음');

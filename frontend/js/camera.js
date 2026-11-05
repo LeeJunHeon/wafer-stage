@@ -238,11 +238,12 @@
       if (UI.selected === sm.no) cls.push('selected');
       // 수동 샘플은 윤곽이 없다 - 중심에 작은 마름모(포인터 십자와 다른 모양).
       const D = 7 * K;
-      const pts = sm.manual
+      const pts = (sm.manual && !(sm.verts && sm.verts.length))
         ? [[sm.u, sm.v - D], [sm.u + D, sm.v], [sm.u, sm.v + D], [sm.u - D, sm.v]]
             .map(p => p.join(',')).join(' ')
         : (sm.verts || []).map(p => p.join(',')).join(' ');
-      if (sm.manual) cls.push('manual');
+      if (sm.manual && !(sm.verts && sm.verts.length)) cls.push('manual');
+      if (sm.fit === false) cls.push('bad');
       if (sm.source === 'predicted') {
         // 예측: 윤곽이 없다 - 점선 원
         const pc = el('circle', { class: 'ov-sample pred', cx: sm.u, cy: sm.v, r: 22 * K });
@@ -269,10 +270,21 @@
       });
       gs.appendChild(t);
       // 클릭 판정용(다각형이 얇아도 집히도록 원을 덮는다)
-      const hit = el('circle', { class: 'ov-hit', cx: sm.u, cy: sm.v, r: 16 * K });
+      const hit = el('circle', { class: 'ov-hit', cx: sm.u, cy: sm.v, r: 16 * K, 'data-no': sm.no });
       hit.addEventListener('click', () => UI.select(sm.no));
       gs.appendChild(hit);
     });
+
+    // ---- 공구 끝 모양(순회 대상 샘플마다 · 실제 크기 · 사진 기준 각도) ----
+    const gt = $('ovTips');
+    gt.textContent = '';
+    if (tipOn && !live && s.tip) {
+      (s.samples || []).forEach(sm => {
+        if (!sm.on || !sm.mmpx) return;
+        gt.appendChild(el('polygon', { class: 'ov-tip' + (sm.fit === false ? ' bad' : ''),
+                                       points: tipPoints(s.tip, sm.mmpx, sm.u, sm.v).map(p => p.join(',')).join(' ') }));
+      });
+    }
 
     // ---- 포인터(스테이지 현재 위치) ----
     // #ovPointer 는 SVG <g> 다. .hidden 프로퍼티는 HTMLElement 전용이라 여기서는
@@ -334,6 +346,120 @@
     const v = (ev.clientY - r.top - (r.height - f.h * k) / 2) / k;
     if (!(u >= 0 && v >= 0 && u <= f.w && v <= f.h)) return;   // 레터박스
     UI.send({ cmd: 'sample_add', u: Math.round(u * 10) / 10, v: Math.round(v * 10) / 10 });
+  });
+
+  // ---------------- 공구 끝 모양: 그리기 · 맞음 검사(core/tip.py 와 같은 식) ----------------
+  let tipOn = true;
+  try { tipOn = localStorage.getItem('tipOn') !== '0'; } catch (e) { /* 저장 못 해도 동작 */ }
+  function syncTipBtn() {
+    const b = $('btnTip');
+    b.setAttribute('aria-pressed', tipOn ? 'true' : 'false');
+    b.classList.toggle('on', tipOn);
+  }
+  syncTipBtn();
+  $('btnTip').onclick = () => {
+    tipOn = !tipOn;
+    try { localStorage.setItem('tipOn', tipOn ? '1' : '0'); } catch (e) { /* 무시 */ }
+    syncTipBtn();
+    UI.applyCamera(UI.state);
+  };
+
+  function tipPoints(tip, mmpx, cx, cy) {
+    const k = 1 / Math.max(mmpx, 1e-9);
+    const out = [];
+    if (tip.shape === 'circle') {
+      const r = tip.w * k / 2;
+      for (let i = 0; i < 24; i++) out.push([cx + r * Math.cos(2 * Math.PI * i / 24), cy + r * Math.sin(2 * Math.PI * i / 24)]);
+      return out;
+    }
+    const hw = tip.w * k / 2, hh = tip.h * k / 2, th = tip.angle * Math.PI / 180;
+    const c = Math.cos(th), sn = Math.sin(th);
+    [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].forEach(q => out.push([cx + q[0] * c - q[1] * sn, cy + q[0] * sn + q[1] * c]));
+    return out;
+  }
+  // 점에서 다각형까지 부호 있는 거리(안쪽 +, 바깥 -)
+  function signedDist(p, poly) {
+    let inside = false, best = Infinity;
+    for (let i = 0, n = poly.length; i < n; i++) {
+      const a = poly[i], b = poly[(i + 1) % n];
+      if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+      best = Math.min(best, Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy));
+    }
+    return inside ? best : -best;
+  }
+  function tipFits(pts, verts, marginPx) {
+    if (!verts || verts.length < 3) return null;
+    return pts.every(p => signedDist(p, verts) >= -marginPx);
+  }
+  function curMmpx(s, u, v) {
+    const sm = (s.samples || []).find(x => x.mmpx);
+    return (s.sensing && s.sensing.mm_px) || (sm && sm.mmpx) || null;
+  }
+  // 끌기 · 추가 모드 미리보기용 '유령' 공구 끝(맞음 검사 포함)
+  function drawGhost(u, v, verts) {
+    const g = $('ovTipHover');
+    g.textContent = '';
+    const s = UI.state || {};
+    const mp = curMmpx(s);
+    if (u == null || !s.tip || !mp) return;
+    const pts = tipPoints(s.tip, mp, u, v);
+    const f = tipFits(pts, verts, (s.tip.margin_mm || 0) / mp);
+    g.appendChild(el('polygon', { class: 'ov-tip ghost' + (f === false ? ' bad' : (f ? ' ok' : '')),
+                                  points: pts.map(p => p.join(',')).join(' ') }));
+  }
+  function eventPx(ev) {
+    const f = UI.state && UI.state.frame;
+    if (!f || !f.w || !f.h) return null;
+    const r = $('cam').getBoundingClientRect();
+    const k = Math.min(r.width / f.w, r.height / f.h);
+    const u = (ev.clientX - r.left - (r.width - f.w * k) / 2) / k;
+    const v = (ev.clientY - r.top - (r.height - f.h * k) / 2) / k;
+    return (u >= 0 && v >= 0 && u <= f.w && v <= f.h) ? [u, v] : null;
+  }
+  function sampleAt(u, v) {
+    return ((UI.state || {}).samples || []).find(x => x.verts && x.verts.length >= 3 && signedDist([u, v], x.verts) >= 0) || null;
+  }
+  // 추가 모드: 마우스를 따라 공구 끝 모양
+  $('cam').addEventListener('pointermove', (ev) => {
+    if (drag) return;
+    if (!addMode || live) { if (!drag) drawGhost(null); return; }
+    const p = eventPx(ev);
+    if (!p) { drawGhost(null); return; }
+    const sm = sampleAt(p[0], p[1]);
+    drawGhost(p[0], p[1], sm ? sm.verts : null);
+  });
+  $('cam').addEventListener('pointerleave', () => { if (!drag) drawGhost(null); });
+
+  // 끌어서 샘플 중심 이동(추가 모드가 아닐 때)
+  let drag = null;
+  $('cam').addEventListener('pointerdown', (ev) => {
+    const t = ev.target;
+    if (addMode || live || !t.classList || !t.classList.contains('ov-hit') || ev.button !== 0) return;
+    const sm = ((UI.state || {}).samples || []).find(x => String(x.no) === t.getAttribute('data-no'));
+    if (!sm) return;
+    drag = { no: sm.no, sm: sm, moved: false, u: sm.u, v: sm.v };
+    $('cam').setPointerCapture(ev.pointerId);
+    $('cam').classList.add('dragging');
+  });
+  window.addEventListener('pointermove', (ev) => {
+    if (!drag) return;
+    const p = eventPx(ev);
+    if (!p) return;
+    const K = Math.max(1, ((UI.state && UI.state.frame && UI.state.frame.w) || 1280) / 1280);
+    if (Math.hypot(p[0] - drag.sm.u, p[1] - drag.sm.v) > 4 * K) drag.moved = true;
+    if (!drag.moved) return;
+    drag.u = p[0]; drag.v = p[1];
+    drawGhost(p[0], p[1], drag.sm.verts);       // 끄는 동안에도 맞음 검사가 실시간
+  });
+  window.addEventListener('pointerup', () => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    $('cam').classList.remove('dragging');
+    drawGhost(null);
+    if (d.moved) UI.send({ cmd: 'sample_move', no: d.no, u: Math.round(d.u * 10) / 10, v: Math.round(d.v * 10) / 10 });
   });
 
   // 카메라 도구 버튼
