@@ -467,27 +467,23 @@
     if (!verts || verts.length < 3) return null;
     return pts.every(p => signedDist(p, verts) >= -marginPx);
   }
-  // 쿨러 구역 격자(옅게, 토글): 감지 영역 사각형을 rows x cols 로 나눈다(서버 engine.zone_of 와 같은 정렬)
+  // 쿨러 구역 격자(옅게, 토글): 서버가 판 사각형 mm 정의(cooler.zones)로 계산한 칸의 사진 px 사각형을 그린다(스테이지 맵과 같은 칸 · 번호).
   let zonesOn = false;
   function drawZones(s) {
     const g = $('ovZones');
     g.textContent = '';
-    const q = s.sensing && s.sensing.quad, z = (s.settings || {}).cooler && s.settings.cooler.zones;
-    if (!zonesOn || live || !q || q.length !== 4 || !z) return;
-    const sm = q.map(p => p[0] + p[1]), df = q.map(p => p[0] - p[1]);
-    const tl = q[sm.indexOf(Math.min.apply(null, sm))], br = q[sm.indexOf(Math.max.apply(null, sm))];
-    const tr = q[df.indexOf(Math.max.apply(null, df))], bl = q[df.indexOf(Math.min.apply(null, df))];
-    const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-    const line = (a, b) => g.appendChild(el('line', { class: 'ov-zone', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }));
-    for (let i = 1; i < z.rows; i++) line(lerp(tl, bl, i / z.rows), lerp(tr, br, i / z.rows));
-    for (let j = 1; j < z.cols; j++) line(lerp(tl, tr, j / z.cols), lerp(bl, br, j / z.cols));
+    const z = s.zones;
+    if (!zonesOn || live || !z || !z.has_area) return;
     const K = Math.max(1, ((s.frame && s.frame.w) || 1280) / 1280);
-    for (let i = 0; i < z.rows; i++) for (let j = 0; j < z.cols; j++) {
-      const top = lerp(lerp(tl, tr, (j + 0.5) / z.cols), lerp(bl, br, (j + 0.5) / z.cols), (i + 0.1) / z.rows);
-      const t = el('text', { class: 'ov-zone-lab', x: top[0], y: top[1] + 12 * K });
-      t.textContent = 'R' + z.relays[i * z.cols + j];
+    z.cells.forEach(c => {
+      const pts = c.quad_px.map(p => p.join(',')).join(' ');
+      g.appendChild(el('polygon', { class: 'ov-zone' + (c.on ? ' on' : ''), points: pts }));
+      const cx = c.quad_px.reduce((a, p) => a + p[0], 0) / 4, top = Math.min.apply(null, c.quad_px.map(p => p[1]));
+      const lx = Math.min.apply(null, c.quad_px.map(p => p[0])) + 6 * K, ly = top + 16 * K;
+      const t = el('text', { class: 'ov-zone-lab', x: cx, y: ly });
+      t.textContent = c.cooler + ' · R' + c.relay;
       g.appendChild(t);
-    }
+    });
   }
   function curMmpx(s, u, v) {
     const sm = (s.samples || []).find(x => x.mmpx);

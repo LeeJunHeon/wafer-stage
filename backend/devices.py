@@ -75,8 +75,9 @@ def heater_relay():
 
 
 def zone_relays():
-    z = state.get("cooler.zones") or {}
-    return [int(x) for x in (z.get("relays") or [])]
+    from core import zones as zones_mod
+    z, _ch = zones_mod.migrate(state.get("cooler.zones"))
+    return [int(x) for x in zones_mod.relays_of(z)]
 
 
 class TempSource:

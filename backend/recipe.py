@@ -364,8 +364,10 @@ def step_warnings(st, values, name, i):
 def zone_relay_list(values):
     z = (values or {}).get("cooler") or {}
     zz = z.get("zones") if isinstance(z, dict) else None
+    from core import zones as zones_mod
+    zz, _ch = zones_mod.migrate(zz)
     out = []
-    for n in (zz or {}).get("relays") or []:
+    for n in zones_mod.relays_of(zz):
         try:
             out.append(int(n))
         except (TypeError, ValueError):

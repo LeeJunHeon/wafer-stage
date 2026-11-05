@@ -28,8 +28,100 @@
     return e;
   };
 
-  // 맵 클릭 → 수동 이동 팝업의 절대 이동 칸을 채운다(이동은 그쪽에서 누른다).
+  // ---- 쿨러 구역: 판 사각형 위의 3x3 칸(서버가 판 보정으로 스테이지 mm 로 옮긴 사각형을 준다) ----
+  let zpop = null;                              // 열려 있는 칸 팝업 {i, vx, vy}
+  let zcache = [];                              // 화면 좌표 다각형(클릭 판정용)
+  function inPoly(x, y, poly) {
+    let inside = false;
+    for (let i = 0, n = poly.length; i < n; i++) {
+      const a = poly[i], b = poly[(i + 1) % n];
+      if ((a[1] > y) !== (b[1] > y) && x < (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+    }
+    return inside;
+  }
+  function drawZones(g, s) {
+    zcache = [];
+    const z = s.zones;
+    if (!z || !z.has_area) return;
+    if (!z.has_cal) {                           // 판 보정이 없으면 맵에는 그리지 않고 안내만(촬영본 오버레이는 감지 영역만으로 그린다)
+      g.appendChild(txt('m-note', M.ox + M.w / 2 - 54, M.oy + 14, '쿨러 구역 · 판 보정 필요'));
+      return;
+    }
+    const pts = [];                             // 샘플 · 포인터의 화면 좌표(라벨 회피용)
+    (s.samples || []).forEach(sm => { if (sm.X != null) pts.push([mx(sm.Y), my(sm.X)]); });
+    const st = s.stage || {};
+    if (st.connected && st.x_mm != null) pts.push([mx(st.y_mm), my(st.x_mm)]);
+    const act = z.active;
+    z.cells.forEach((c, i) => {
+      if (!c.quad_stage) return;
+      const poly = c.quad_stage.map(p => [mx(p[1]), my(p[0])]);
+      zcache[i] = poly;
+      const isAct = act && act[0] === c.row && act[1] === c.col;
+      g.appendChild(el('polygon', { class: 'm-zone' + (c.on ? ' on' : '') + (isAct ? ' active' : ''),
+                                    points: poly.map(p => p.join(',')).join(' ') }));
+      const xs = poly.map(p => p[0]), ys = poly.map(p => p[1]);
+      const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+      // 라벨: 칸 안쪽 귀퉁이 고정 위치 - 쿨러 번호(크게)는 왼쪽 위, 릴레이 · 샘플 수(작게)는 오른쪽 아래.
+      // 샘플 점(+번호) · 포인터와 겹치면 반대 귀퉁이로 옮긴다.
+      const hit = (p, w, h) => pts.some(q => q[0] + 16 > p[0] - 2 && q[0] - 7 < p[0] + w + 2 && q[1] + 7 > p[1] - 2 && q[1] - 13 < p[1] + h + 2);
+      const corners = (w, h) => ({ tl: [x0 + 4, y0 + 3], tr: [x1 - w - 4, y0 + 3], bl: [x0 + 4, y1 - h - 3], br: [x1 - w - 4, y1 - h - 3] });
+      const OPP = { tl: 'br', br: 'tl', tr: 'bl', bl: 'tr' };
+      const nw = 16, nh = 16, sw = 38, sh = 11;
+      let nk = 'tl';
+      const cn = corners(nw, nh);
+      for (const k of ['tl', 'br', 'tr', 'bl']) { if (!hit(cn[k], nw, nh)) { nk = k; break; } }
+      let sk = OPP[nk];
+      const cs = corners(sw, sh);
+      for (const k of [OPP[nk], nk === 'tl' ? 'bl' : 'tl', 'br', 'bl', 'tr', 'tl']) { if (k !== nk && !hit(cs[k], sw, sh)) { sk = k; break; } }
+      const tt = txt('m-zone-no', cn[nk][0], cn[nk][1] + 13, String(c.cooler));
+      const t1 = el('title', {}); t1.textContent = c.name + ' · R' + c.relay + (c.on ? ' 켜짐' : ' 꺼짐') + ' · 샘플 ' + c.count + '개';
+      tt.appendChild(t1);
+      g.appendChild(tt);
+      g.appendChild(txt('m-zone-sub', cs[sk][0], cs[sk][1] + 9, 'R' + c.relay + ' · ' + c.count));
+    });
+  }
+  function drawZonePop(g, s) {
+    if (!zpop || !s.zones || !s.zones.cells[zpop.i]) return;
+    const c = s.zones.cells[zpop.i];
+    const run = UI.isRunning(s);
+    const st = s.stage || {};
+    const can = !run && st.connected;
+    const w = 112, rows = can ? 3 : 2, h = 14 + rows * 18;
+    let x = Math.min(zpop.vx, 300 - w - 2), y = Math.min(zpop.vy, 264 - h - 2);
+    const box = el('g', { class: 'm-zpop' });
+    box.appendChild(el('rect', { class: 'm-zpop-bg', x: x, y: y, width: w, height: h, rx: 4 }));
+    box.appendChild(txt('m-zpop-t', x + 6, y + 12, c.name + ' · R' + c.relay + (c.on ? ' 켜짐' : ' 꺼짐')));
+    const btn = (label, yy, fn) => {
+      const b = el('g', { class: 'm-zpop-b' });
+      b.appendChild(el('rect', { x: x + 6, y: yy, width: w - 12, height: 15, rx: 3 }));
+      b.appendChild(txt('m-zpop-bt', x + 10, yy + 11, label));
+      b.addEventListener('click', (ev) => { ev.stopPropagation(); fn(); });
+      box.appendChild(b);
+    };
+    if (can) {
+      btn(c.on ? '끄기' : '켜기', y + 18, () => { UI.send({ cmd: 'relay_set', n: c.relay, on: !c.on }); zpop = null; UI.applyMap(UI.state); });
+      btn('설정 열기', y + 36, () => { zpop = null; UI.applyMap(UI.state); UI.openSettings('measure'); });
+    } else {
+      box.appendChild(txt('m-zpop-t', x + 6, y + 30, run ? '순회 중 · 정보만' : '스테이지 미연결'));
+      btn('닫기', y + 36 - 18 + 18, () => { zpop = null; UI.applyMap(UI.state); });
+    }
+    g.appendChild(box);
+  }
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && zpop) { zpop = null; if (UI.state) UI.applyMap(UI.state); } });
+
+  // 맵 클릭: 칸이면 작은 팝업(켜기/끄기 · 설정 열기, 순회 중이면 정보만) + 수동 이동 팝업의 절대 이동 칸을 채운다(이동은 그쪽에서 누른다).
   $('map').addEventListener('click', (ev) => {
+    {
+      const r0 = ev.currentTarget.getBoundingClientRect();
+      const k0 = Math.min(r0.width / 300, r0.height / 264);
+      const vx0 = (ev.clientX - r0.left - (r0.width - 300 * k0) / 2) / k0;
+      const vy0 = (ev.clientY - r0.top - (r0.height - 264 * k0) / 2) / k0;
+      const hit = zcache.findIndex(p => p && inPoly(vx0, vy0, p));
+      if (hit >= 0 && !(ev.target.classList && ev.target.classList.contains('m-s'))) {
+        zpop = (zpop && zpop.i === hit) ? null : { i: hit, vx: vx0, vy: vy0 };
+        if (UI.state) UI.applyMap(UI.state);
+      } else if (zpop) { zpop = null; if (UI.state) UI.applyMap(UI.state); }
+    }
     if (!UI.jogPickXY) return;
     const r = ev.currentTarget.getBoundingClientRect();
     // viewBox 300×264 를 preserveAspectRatio="meet" 로 그린다 - 실제 배치된
@@ -116,6 +208,8 @@
     const cxy = (s.settings || {}).capture_xy;
     if (cxy) g.appendChild(txt('m-park', mx(cxy[1]) + 2, my(cxy[0]) + 9, 'C'));
 
+    drawZones(g, s);
+
     // 샘플
     const q = s.sequence || {};
     (s.samples || []).forEach(sm => {
@@ -157,5 +251,6 @@
     } else {
       $('mapPos').textContent = UI.EMPTY;
     }
+    drawZonePop(g, s);
   };
 })();

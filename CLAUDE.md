@@ -148,7 +148,7 @@
   1점 오프셋 / 2점+ 닮음 / 4점+ 퍼짐 호모그래피. 같은 points 목록(src sample|click), 근사 상태는 순회 금지 · 샘플 이동은 확인. [이 자리로 보정]은 핀으로만(활성 공구가 핀이
   아니면 거절), 순회 중엔 일시정지에서만. 이상점(중앙값 n배) · 카메라 이동 의심(연속 2) 확인, 이력 plate_calib_history 20개.
 - **측정 과정**(backend/devices.py · engine 단계 실행기): 온도(TempSource) · 접촉(ContactSource) 드라이버 인터페이스 + 더미(열 모델 시뮬레이터, sim.time_scale 로 빠르게).
-  쿨러 구역(cooler.zones 3×3 → 샘플 cooler) · 레시피 단계 cooler/contact/wait_temp/heat/cool/repeat/log · 기록 CSV(sample_NN_log.csv). **안전 불변식**: X·Y 이동 전
+  쿨러 구역(cooler.zones = 판 사각형 mm 기준 3×3, core/zones.py → 샘플 cooler · 맵 · 촬영본 같은 정의) · 레시피 단계 cooler/contact/wait_temp/heat/cool/repeat/log · 기록 CSV(sample_NN_log.csv). **안전 불변식**: X·Y 이동 전
   히트건 꺼짐(engine._goto 강제) · 정지/오류/비상정지는 릴레이 정책과 무관하게 히트건 끔 · 과열 보호(heater.max_c · 센서 오류 연속)는 레시피와 무관. 실제 장비에서
   온도 드라이버가 더미면 가열/온도 단계 레시피는 시작 안 함. 활성 레시피 기본은 "기본", "가열 측정"은 임시값 예시(장비에서 측정 후 조정).
 - **촬영본 표시 규칙**: 라벨 한 벌(번호만, 좌표 숫자 없음) · 칩/윤곽/다른 라벨과 안 겹치게 바깥 빈 자리 + 지시선(core/labels.py = js placeLabels) · 윤곽 얇게 색은 상태에만 ·

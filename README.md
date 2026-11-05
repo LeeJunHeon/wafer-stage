@@ -761,9 +761,14 @@ python tools/flat_check.py ..\data\out\seq_XXXX --truth ..\data\out\seq_XXXX\sam
   명령 `di <pin>`(V12)이 필요하다 — 아직 펌웨어는 만들지 않았고 `stagectl.digital_read` 가 없으면 오류로 알린다, --dry 는 Z 로 흉내) · `manual`([접촉 확인]
   버튼, 명령 `contact_manual`) · `none`. `Measurer` 는 그대로(기록 구간에서 `measure.sample_period_s` 마다 `measure()` 호출). **시간 배율 `sim.time_scale`**:
   더미 열 모델과 새 단계의 시간을 빠르게(테스트용, 1 = 실시간). 실제 장비(--dry 아님)에서 온도 드라이버가 더미면 가열 · 온도 대기 단계가 있는 레시피는 시작하지 않는다.
-- **쿨러 구역**: `cooler.zones` = `{rows 3, cols 3, relays [1..9]}` — 감지 영역 사각형을 사진 기준 행 우선(위→아래 · 왼쪽→오른쪽)으로 나눈 칸마다 릴레이.
-  샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러(`sample.cooler` · `zone`, 목록 쿨러 열에서 샘플별 수동 변경 `sample_cooler`, 촬영본 [쿨러 구역] 토글로
-  구역 격자 표시). `cooler.mode`(`sample` = 그 샘플만 | `all` = 쿨러 단계에서 9개 전부), `cooler.keep_on`(샘플이 끝나도 켜 둠, 기본 켬 — 다음 샘플이
+- **쿨러 구역**(판 기준, `core/zones.py`): `cooler.zones` = `{rows 3, cols 3, row_edges, col_edges (mm, 0~area_size_mm · None = 등분), cells [{cooler 1~9(표시용), relay, name}]}`.
+  구역은 사진 분할이 아니라 **판 사각형 좌표(mm)** 로 정의한다(판 좌표계 = 감지 영역 꼭짓점 TL · TR · BR · BL 을 (0,0) · (W,0) · (W,H) · (0,H) 로 놓은 호모그래피).
+  판 mm → 사진 px 는 감지 영역 호모그래피, → 스테이지 mm 는 판 보정으로 변환한다(서버 `state.zones`: 칸마다 `quad_px` · `quad_stage` · 켜짐 · 샘플 수 · 현재 측정 칸).
+  샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러(`sample.cooler` = 릴레이 · `cooler_no` · `zone`, 목록 쿨러 열에서 수동 변경 `sample_cooler`).
+  **스테이지 맵**에 판 사각형 위 칸 경계 · 쿨러 번호(크게) · 릴레이/샘플 수(작게) · 켜짐 색을 그리고(판 보정이 없으면 "판 보정 필요" 안내), 측정 중 샘플의 칸은 테두리 강조,
+  칸을 누르면 팝업(켜기/끄기 · 설정 열기, 순회 중이면 정보만). 촬영본 [쿨러 구역] 토글도 같은 정의(번호 · 경계 일치). 설정 "측정 장비" 탭의 3×3 편집기: 칸 선택 →
+  쿨러 번호 · 릴레이 · 이름(릴레이 중복은 저장 거절), 경계 mm 입력 · 미리보기(촬영본 위)에서 끌기 · [등분으로], 릴레이를 지정하면 릴레이 탭에 "사용" · 이름 제안(확인).
+  예전 설정(`{rows, cols, relays}` 사진 분할)은 같은 rows · cols · 릴레이 배정의 판 기준 등분으로 이행한다. `cooler.mode`(`sample` = 그 샘플만 | `all` = 쿨러 단계에서 9개 전부), `cooler.keep_on`(샘플이 끝나도 켜 둠, 기본 켬 — 다음 샘플이
   다른 구역이면 다음 샘플의 쿨러 단계가 이전 쿨러를 끈다; 순회 종료 · 정지는 릴레이 정책). `heater.relay`(10) 는 레시피의 가열 단계만 켠다.
 - **레시피 단계**(값은 `recipe.py` 가 검증, 편집기 표 형식 그대로): `cooler {action on|off, target sample|all|n, n}` ·
   `contact {start_ref work|mm, start_mm, step_mm, max_ref work|mm, max_mm, press_mm, settle_s, on_fail stop|skip|confirm}`(work = 활성 공구 작업 높이에 더하는 mm;
@@ -882,7 +887,7 @@ settings.json 을 직접 편집한다(화면에 있던 `stat_seed` · `stat_grow
 | 측정 장비 | `temp.driver` · `temp.period_s` | dummy · 0.5 | s | 즉시 | 온도 드라이버 · 읽기 주기 |
 | 측정 장비 | `contact.driver` | dummy |  | 즉시 | 접촉 드라이버 dummy / measurer / di / manual / none |
 | 측정 장비 | `contact.di_pin` · `di_pullup` · `di_active_high` | 2 · 켬 · 끔 |  | 즉시 | 입력 핀 방식(펌웨어 V12 필요) |
-| 측정 장비 | `cooler.zones` | 3×3 · R1~R9 |  | 즉시 | 쿨러 구역(행 · 열 · 칸별 릴레이, 행 우선) |
+| 측정 장비 | `cooler.zones` | 3×3 등분 · R1~R9 |  | 즉시 | 쿨러 구역(판 기준 행 · 열 · 경계 mm · 칸별 쿨러 번호 · 릴레이 · 이름) |
 | 측정 장비 | `cooler.mode` · `cooler.keep_on` | sample · 켬 |  | 다음 순회 | 쿨러 켜는 범위 · 샘플이 끝나도 켜 둠 |
 | 측정 장비 | `heater.relay` · `heater.max_c` · `heater.sensor_fail_n` | 10 · 300 · 3 | °C | 즉시 | 히트건 릴레이 · 과열 보호 온도 · 센서 오류 허용 횟수 |
 | 측정 장비 | `measure.sample_period_s` | 0 | s | 다음 순회 | 기록 구간의 측정값 기록 주기(0 = 안 함) |

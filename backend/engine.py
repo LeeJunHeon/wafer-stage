@@ -459,35 +459,94 @@ def migrate_tip_angles():
     return [d[0] for d in done]
 
 
-def zone_of(u, v):
-    """감지 영역 사각형을 rows x cols 로 나눈 칸 (row, col) · 쿨러 릴레이 번호. 사진 기준 위→아래 · 왼쪽→오른쪽(행 우선)."""
+def _area_quad():
+    """구역 판정 · 표시에 쓰는 감지 영역(이번 촬영의 것, 없으면 저장된 것). 없으면 None."""
     q = (state.sensing or {}).get("quad")
-    z = state.get("cooler.zones") or {}
-    if not q or not z:
+    if q and len(q) == 4:
+        return q
+    d = plate.load()
+    ok, _w = plate.area_validity(d, int(state.get("camera_index") or 0),
+                                 (int(state.get("width") or 0), int(state.get("height") or 0)))
+    return d["area"] if ok else None
+
+
+def _size_mm():
+    v = state.get("calib.area_size_mm") or [154.0, 154.0]
+    try:
+        return float(v[0]), float(v[1])
+    except (TypeError, ValueError, IndexError):
+        return 154.0, 154.0
+
+
+def zone_of(u, v):
+    """샘플 중심(사진 px)이 속한 칸 (row, col, 릴레이 번호, 쿨러 번호) | None. 판 사각형 좌표(mm)로 판정한다."""
+    q = _area_quad()
+    if not q:
         return None
     try:
-        import cv2
-        import numpy as np
-        pts = np.asarray(q, np.float32).reshape(4, 2)
-        sm, df = pts.sum(axis=1), pts[:, 0] - pts[:, 1]
-        tl, br, tr, bl = pts[int(np.argmin(sm))], pts[int(np.argmax(sm))], pts[int(np.argmax(df))], pts[int(np.argmin(df))]
-        M = cv2.getPerspectiveTransform(np.float32([tl, tr, br, bl]), np.float32([[0, 0], [1, 0], [1, 1], [0, 1]]))
-        x, y = cv2.perspectiveTransform(np.float32([[[u, v]]]), M)[0][0]
-        rows, cols = int(z["rows"]), int(z["cols"])
-        r, c = min(rows - 1, max(0, int(y * rows))), min(cols - 1, max(0, int(x * cols)))
-        return r, c, int(z["relays"][r * cols + c])
+        from core import zones as zones_mod
+        z, _ch = zones_mod.migrate(state.get("cooler.zones"))
+        size = _size_mm()
+        Hp = plate.plate_homography(q, size)
+        x, y = plate.px_to_mm(Hp, float(u), float(v))
+        rc = zones_mod.cell_at(z, size, x, y)
+        if rc is None:
+            return None
+        cell = z["cells"][rc[0] * int(z["cols"]) + rc[1]]
+        return rc[0], rc[1], int(cell["relay"]), int(cell["cooler"])
     except Exception:                      # noqa: BLE001
         return None
 
 
 def assign_coolers():
-    """샘플마다 속한 구역의 쿨러 번호(cooler)와 칸(zone). 수동으로 바꾼 샘플(cooler_manual)은 건드리지 않는다."""
+    """샘플마다 속한 칸의 쿨러: cooler(릴레이 번호) · cooler_no(쿨러 번호) · zone [행, 열]. 수동 변경(cooler_manual)은 유지."""
     for s in state.samples:
         if s.get("cooler_manual"):
             continue
         r = zone_of(s.get("u"), s.get("v")) if s.get("u") is not None else None
         s["cooler"] = None if r is None else r[2]
+        s["cooler_no"] = None if r is None else r[3]
         s["zone"] = None if r is None else [r[0], r[1]]
+
+
+def zones_view():
+    """화면용 구역 보기(스냅샷에 실린다): 칸마다 사진 px 사각형 · 스테이지 mm 사각형(판 보정이 있을 때) · 릴레이 켜짐 · 샘플 수 · 현재 측정 칸."""
+    from core import zones as zones_mod
+    import numpy as np
+    z, _ch = zones_mod.migrate(state.get("cooler.zones"))
+    size = _size_mm()
+    q = _area_quad()
+    re, ce = zones_mod.edges_of(z, size)
+    out = {"rows": z["rows"], "cols": z["cols"], "size_mm": list(size), "row_edges": re, "col_edges": ce,
+           "has_area": bool(q), "has_cal": False, "cells": [], "active": None}
+    if not q:
+        return out
+    Hp = plate.plate_homography(q, size)
+    Hinv = np.linalg.inv(Hp)
+    cal = current_cal()
+    Hs = None if cal is None else np.asarray(cal["homography"], np.float64)
+    out["has_cal"] = Hs is not None
+    cur = state.sample(state.sequence.get("cur_no")) if state.sequence.get("cur_no") is not None else None
+    cur_zone = None if not cur or not cur.get("zone") else tuple(cur["zone"])
+    counts = {}
+    for sm in state.samples:
+        if sm.get("zone"):
+            counts[tuple(sm["zone"])] = counts.get(tuple(sm["zone"]), 0) + 1
+    for r in range(int(z["rows"])):
+        for c in range(int(z["cols"])):
+            cell = z["cells"][r * int(z["cols"]) + c]
+            qp = zones_mod.cell_quad_plate(z, size, r, c)
+            qpx = [plate.px_to_mm(Hinv, x, y) for x, y in qp]            # 판 mm → 사진 px
+            qst = None if Hs is None else [plate.px_to_mm(Hs, u, v) for u, v in qpx]
+            relay_on = bool(state.relays[int(cell["relay"]) - 1]["on"]) if 1 <= int(cell["relay"]) <= len(state.relays) else False
+            out["cells"].append({
+                "row": r, "col": c, "cooler": int(cell["cooler"]), "relay": int(cell["relay"]),
+                "name": str(cell.get("name") or "쿨러 %d" % int(cell["cooler"])),
+                "quad_px": [[round(u, 1), round(v, 1)] for u, v in qpx],
+                "quad_stage": None if qst is None else [[round(x, 2), round(y, 2)] for x, y in qst],
+                "on": relay_on, "count": counts.get((r, c), 0)})
+    out["active"] = None if cur_zone is None else list(cur_zone)
+    return out
 
 
 async def set_sample_cooler(no, n):
@@ -508,6 +567,9 @@ async def set_sample_cooler(no, n):
     await push_log("샘플 #%s 쿨러 R%s%s" % (no, s["cooler"], " (수동)" if s.get("cooler_manual") else ""))
     await push_state()
     return True
+
+
+state.zones_fn = zones_view
 
 
 def refresh_fit():

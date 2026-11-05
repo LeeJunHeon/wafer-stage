@@ -24,6 +24,7 @@ import math
 
 import recipe
 from core import fixed_detect as fd
+from core import zones as zones_mod
 
 TABS = [
     ("camera", "카메라"),
@@ -328,8 +329,8 @@ ITEMS = [
       "입력 핀의 내부 풀업 저항을 켭니다.", apply="즉시", show_if={"contact.driver": "di"}),
     I("contact.di_active_high", False, "bool", "measure", "접촉", "HIGH 가 접촉",
       "켜면 핀이 HIGH 일 때 접촉, 끄면 LOW 일 때 접촉입니다.", apply="즉시", show_if={"contact.driver": "di"}),
-    I("cooler.zones", {"rows": 3, "cols": 3, "relays": list(range(1, 10))}, "object", "measure", "쿨러 구역",
-      "쿨러 구역", "감지 영역을 행 × 열로 나눈 칸마다 쿨러 릴레이 번호입니다(행 우선, 사진 기준 위에서 아래 · 왼쪽에서 오른쪽). 샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러입니다.",
+    I("cooler.zones", zones_mod.default_zones(), "object", "measure", "쿨러 구역",
+      "쿨러 구역", "판 사각형 좌표(mm, 0~감지 영역 실제 크기)를 행 × 열로 나눈 칸마다 쿨러 번호(표시용) · 릴레이 번호 · 이름입니다(행 우선, 사진 기준 위에서 아래 · 왼쪽에서 오른쪽). 샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러입니다. 칸을 눌러 지정하고 경계는 mm 로 입력하거나 미리보기에서 끕니다.",
       editor="zones", validate="zones", apply="즉시"),
     I("cooler.mode", "sample", "enum", "measure", "쿨러 구역", "쿨러 켜는 범위",
       "샘플은 그 샘플의 쿨러만, 전부는 레시피의 쿨러 단계에서 9개 전부를 켭니다.",
@@ -597,6 +598,11 @@ def migrate(raw, fill=True):
     if fill and not has_path(s, "calib.mode"):
         set_path(s, "calib.mode", "fixed")
         notes.append("calib.mode 없음 → fixed (판 마커 없이 고정 보정)")
+    zz = get_path(s, "cooler.zones") if has_path(s, "cooler.zones") else None
+    if isinstance(zz, dict) and "cells" not in zz:
+        newz, _ch = zones_mod.migrate(zz)
+        set_path(s, "cooler.zones", newz)
+        notes.append("쿨러 구역 사진 분할 → 판 기준 등분 (%d×%d)" % (newz["rows"], newz["cols"]))
     if "capture_xy" not in s and isinstance(s.get("park_xy"), list):
         s["capture_xy"] = list(s["park_xy"])
     if s.get("wb_temperature") is None and "wb_temperature" in s:
@@ -708,31 +714,16 @@ def _v_area_size(key, v, values, errs, warns):
 
 
 def _v_zones(key, v, values, errs, warns):
-    if not isinstance(v, dict):
-        errs[key] = "형식 오류"
-        return
+    sz = get_path(values, "calib.area_size_mm") or [154.0, 154.0]
     try:
-        rows, cols = int(v.get("rows")), int(v.get("cols"))
-    except (TypeError, ValueError):
-        errs[key] = "행 · 열 숫자 필요"
-        return
-    if not (1 <= rows <= 6 and 1 <= cols <= 6):
-        errs[key] = "행 · 열 1~6"
-        return
-    rl = v.get("relays")
-    if not isinstance(rl, list) or len(rl) != rows * cols:
-        errs[key] = "릴레이 번호 %d개 필요(행 × 열)" % (rows * cols)
-        return
-    for x in rl:
-        try:
-            if not 1 <= int(x) <= N_RELAY:
-                raise ValueError
-        except (TypeError, ValueError):
-            errs[key] = "릴레이 번호 1~%d" % N_RELAY
-            return
+        size = (float(sz[0]), float(sz[1]))
+    except (TypeError, ValueError, IndexError):
+        size = (154.0, 154.0)
+    z, _ch = zones_mod.migrate(v)
     hr = _num(get_path(values, "heater.relay"))
-    if hr is not None and int(hr) in [int(x) for x in rl]:
-        errs[key] = "히트건 릴레이 R%d 는 쿨러로 쓸 수 없음" % int(hr)
+    e = zones_mod.validate(z, size, N_RELAY, None if hr is None else int(hr))
+    if e:
+        errs[key] = e
 
 
 def _v_tol_warn(key, v, values, errs, warns):

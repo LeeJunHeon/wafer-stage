@@ -116,7 +116,7 @@
       cs.className = 'in cooler';
       cs.setAttribute('data-tip', '이 샘플이 쓸 쿨러입니다. 자동은 샘플 중심이 속한 구역의 쿨러이고, 고르면 이 샘플만 바꿉니다.');
       const oa = document.createElement('option');
-      oa.value = '0'; oa.textContent = sm.cooler_manual ? '자동으로' : (sm.cooler ? 'R' + sm.cooler : UI.EMPTY);
+      oa.value = '0'; oa.textContent = sm.cooler_manual ? '자동으로' : (sm.cooler ? (sm.cooler_no ? sm.cooler_no + ' · R' + sm.cooler : 'R' + sm.cooler) : UI.EMPTY);
       cs.appendChild(oa);
       for (let n = 1; n <= 10; n++) {
         const o = document.createElement('option');

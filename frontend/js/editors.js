@@ -219,36 +219,204 @@
   E.tool_active = { render(el, item, ctx) { nameSelect(el, item, ctx, 'tool.items'); } };
   E.recipe_active = { render(el, item, ctx) { nameSelect(el, item, ctx, 'recipe.items'); } };
 
-  // ---------------- 쿨러 구역 ----------------
+  // ---------------- 쿨러 구역(판 사각형 mm 기준 3x3 칸) ----------------
+  let zSel = 0;                                  // 선택한 칸(행 우선 번호)
+  function zNorm(z) {                            // 예전 형식({rows, cols, relays})이면 새 형식으로(서버 core/zones.py migrate 와 같다)
+    z = z || {};
+    z.rows = z.rows || 3; z.cols = z.cols || 3;
+    const n = z.rows * z.cols;
+    if (!z.cells) {
+      const rl = z.relays || [];
+      z.cells = [];
+      for (let i = 0; i < n; i++) z.cells.push({ cooler: i + 1, relay: rl[i] || i + 1, name: '쿨러 ' + (i + 1) });
+      delete z.relays;
+    }
+    if (z.row_edges === undefined) z.row_edges = null;
+    if (z.col_edges === undefined) z.col_edges = null;
+    return z;
+  }
+  function zEdges(z, W, H) {
+    const eq = (n, T) => Array.from({ length: n + 1 }, (_, i) => T * i / n);
+    return [z.row_edges || eq(z.rows, H), z.col_edges || eq(z.cols, W)];
+  }
+  // 4점 호모그래피(JS): src → dst
+  function homog(src, dst) {
+    const A = [], b = [];
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = src[i], [u, v] = dst[i];
+      A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); b.push(u);
+      A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); b.push(v);
+    }
+    for (let c = 0; c < 8; c++) {                // 가우스 소거
+      let p = c;
+      for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+      [A[c], A[p]] = [A[p], A[c]]; [b[c], b[p]] = [b[p], b[c]];
+      for (let r = c + 1; r < 8; r++) {
+        const f = A[r][c] / A[c][c];
+        for (let k = c; k < 8; k++) A[r][k] -= f * A[c][k];
+        b[r] -= f * b[c];
+      }
+    }
+    const h = new Array(8);
+    for (let r = 7; r >= 0; r--) {
+      let t = b[r];
+      for (let k = r + 1; k < 8; k++) t -= A[r][k] * h[k];
+      h[r] = t / A[r][r];
+    }
+    return [[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1]];
+  }
+  function hApply(H, x, y) {
+    const w = H[2][0] * x + H[2][1] * y + H[2][2];
+    return [(H[0][0] * x + H[0][1] * y + H[0][2]) / w, (H[1][0] * x + H[1][1] * y + H[1][2]) / w];
+  }
+  function orderQuad(q) {                        // 사진 기준 TL · TR · BR · BL (서버 plate.order_quad 와 같다)
+    const cx = q.reduce((a, p) => a + p[0], 0) / 4, cy = q.reduce((a, p) => a + p[1], 0) / 4;
+    return q.slice().sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+  }
+
   E.zones = {
     render(el, item, ctx) {
-      const z = ctx.get(item.key) || { rows: 3, cols: 3, relays: [] };
+      const z = zNorm(ctx.get(item.key));
+      const sz = ctx.get('calib.area_size_mm') || [154, 154];
+      const W = +sz[0] || 154, H = +sz[1] || 154;
+      const n = z.rows * z.cols;
+      if (zSel >= n) zSel = 0;
+      const commit = () => ctx.set(item.key, z);
       const resize = () => {
-        const n = z.rows * z.cols;
-        while (z.relays.length < n) z.relays.push(Math.min(10, z.relays.length + 1));
-        z.relays.length = n;
+        while (z.cells.length < n) { const i = z.cells.length; z.cells.push({ cooler: Math.min(9, i + 1), relay: Math.min(10, i + 1), name: '쿨러 ' + Math.min(9, i + 1) }); }
+        z.cells.length = n;
       };
       const dim = (f, label) => {
         const inp = h('input', { type: 'number', cls: 'in num', min: 1, max: 6, step: 1, value: z[f] });
-        inp.addEventListener('change', () => { z[f] = Math.max(1, Math.min(6, Math.round(num(inp.value) || 1))); resize(); ctx.set(item.key, z); ctx.rerender(); });
+        inp.addEventListener('change', () => {
+          z[f] = Math.max(1, Math.min(6, Math.round(num(inp.value) || 1)));
+          z.row_edges = z.col_edges = null;      // 칸 수가 바뀌면 등분으로
+          resize(); commit(); ctx.rerender();
+        });
         return [h('span', { cls: 'note', text: label }), inp];
       };
-      el.appendChild(h('div', { cls: 'erow' }, dim('rows', '행').concat(dim('cols', '열'))));
-      const tb = h('tbody');
-      for (let r = 0; r < z.rows; r++) {
-        const tr = h('tr');
-        for (let c = 0; c < z.cols; c++) {
-          const k = r * z.cols + c;
-          const s = h('select', { cls: 'in' });
-          for (let n = 1; n <= 10; n++) s.appendChild(h('option', { value: n, text: 'R' + n }));
-          s.value = String(z.relays[k] || 1);
-          s.addEventListener('change', () => { z.relays[k] = +s.value; ctx.set(item.key, z); });
-          tr.appendChild(h('td', {}, [s]));
-        }
-        tb.appendChild(tr);
+      const bEq = h('button', { cls: 'btn sm', text: '등분으로', 'data-tip': '행 · 열 경계를 판 크기(' + W + ' × ' + H + ' mm)의 등분으로 되돌립니다.',
+        onclick: () => { z.row_edges = z.col_edges = null; commit(); ctx.rerender(); } });
+      el.appendChild(h('div', { cls: 'erow' }, dim('rows', '행').concat(dim('cols', '열')).concat([bEq,
+        h('span', { cls: 'note', text: '판 ' + W + ' × ' + H + ' mm (감지 영역 실제 크기)' })])));
+
+      // ---- 미리보기: 현재 촬영본(있으면) 위에 칸을 겹쳐 실제 쿨러 위치와 맞춰 본다 ----
+      const S = UI.state || {};
+      const area = ((S.plate || {}).data || {}).area;
+      const fr = S.frame || ((S.plate || {}).shot) || null;
+      const photo = !!(area && area.length === 4 && fr);
+      const NS = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(NS, 'svg');
+      svg.setAttribute('class', 'zoneprev');
+      let toView, fromView;
+      if (photo) {
+        const q = orderQuad(area);
+        const Hp = homog(q, [[0, 0], [W, 0], [W, H], [0, H]]);          // px → 판 mm
+        const Hi = homog([[0, 0], [W, 0], [W, H], [0, H]], q);          // 판 mm → px
+        toView = (x, y) => hApply(Hi, x, y);
+        fromView = (u, v) => hApply(Hp, u, v);
+        svg.setAttribute('viewBox', '0 0 ' + fr.w + ' ' + fr.h);
+        const im = document.createElementNS(NS, 'image');
+        im.setAttribute('href', fr.url); im.setAttribute('width', fr.w); im.setAttribute('height', fr.h);
+        svg.appendChild(im);
+      } else {
+        toView = (x, y) => [x + 10, y + 10];
+        fromView = (u, v) => [u - 10, v - 10];
+        svg.setAttribute('viewBox', '0 0 ' + (W + 20) + ' ' + (H + 20));
       }
-      el.appendChild(h('table', { cls: 'etable narrow' }, [tb]));
-      el.appendChild(h('div', { cls: 'note', text: '사진 기준 위→아래 · 왼쪽→오른쪽(행 우선). 샘플 중심이 속한 칸의 릴레이가 그 샘플의 쿨러입니다.' }));
+      const K = photo ? Math.max(1, fr.w / 1280) : W / 154;
+      const SE = (tag, at) => { const e = document.createElementNS(NS, tag); for (const k in at) e.setAttribute(k, at[k]); return e; };
+      const dragging = { kind: null, i: 0 };
+      const draw = () => {
+        Array.from(svg.querySelectorAll('.zd')).forEach(e => e.remove());
+        const [re, ce] = zEdges(z, W, H);
+        for (let r = 0; r < z.rows; r++) for (let c = 0; c < z.cols; c++) {
+          const idx = r * z.cols + c, cell = z.cells[idx] || {};
+          const ps = [[ce[c], re[r]], [ce[c + 1], re[r]], [ce[c + 1], re[r + 1]], [ce[c], re[r + 1]]].map(p => toView(p[0], p[1]));
+          const poly = SE('polygon', { class: 'zd zc' + (idx === zSel ? ' sel' : ''), points: ps.map(p => p.join(',')).join(' ') });
+          poly.addEventListener('click', () => { zSel = idx; ctx.rerender(); });
+          svg.appendChild(poly);
+          const cx = ps.reduce((a, p) => a + p[0], 0) / 4, cy = ps.reduce((a, p) => a + p[1], 0) / 4;
+          const t = SE('text', { class: 'zd zt', x: cx, y: cy, 'font-size': 14 * K }); t.textContent = cell.cooler || '';
+          svg.appendChild(t);
+          const t2 = SE('text', { class: 'zd zs', x: cx, y: cy + 14 * K, 'font-size': 10 * K }); t2.textContent = 'R' + (cell.relay || '');
+          svg.appendChild(t2);
+        }
+        // 끌 수 있는 경계선(바깥 경계는 고정)
+        const line = (kind, i, a, b) => {
+          const p0 = toView(a[0], a[1]), p1 = toView(b[0], b[1]);
+          const ln = SE('line', { class: 'zd zl drag', x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1] });
+          ln.addEventListener('pointerdown', (ev) => { dragging.kind = kind; dragging.i = i; svg.setPointerCapture(ev.pointerId); ev.preventDefault(); });
+          svg.appendChild(ln);
+        };
+        for (let c = 1; c < z.cols; c++) line('col', c, [ce[c], 0], [ce[c], H]);
+        for (let r = 1; r < z.rows; r++) line('row', r, [0, re[r]], [W, re[r]]);
+      };
+      svg.addEventListener('pointermove', (ev) => {
+        if (!dragging.kind) return;
+        const rc = svg.getBoundingClientRect(), vb = svg.viewBox.baseVal;
+        const vx = vb.x + (ev.clientX - rc.left) / rc.width * vb.width, vy = vb.y + (ev.clientY - rc.top) / rc.height * vb.height;
+        const [px, py] = fromView(vx, vy);
+        const [re, ce] = zEdges(z, W, H);
+        if (dragging.kind === 'col') { const a = ce.slice(); a[dragging.i] = Math.round(Math.max(a[dragging.i - 1] + 1, Math.min(a[dragging.i + 1] - 1, px)) * 10) / 10; z.col_edges = a; }
+        else { const a = re.slice(); a[dragging.i] = Math.round(Math.max(a[dragging.i - 1] + 1, Math.min(a[dragging.i + 1] - 1, py)) * 10) / 10; z.row_edges = a; }
+        commit(); draw();
+        const inp = el.querySelector('[data-edge="' + dragging.kind + dragging.i + '"]');
+        if (inp) inp.value = (dragging.kind === 'col' ? z.col_edges : z.row_edges)[dragging.i];
+      });
+      svg.addEventListener('pointerup', () => { dragging.kind = null; });
+      draw();
+      el.appendChild(svg);
+      el.appendChild(h('div', { cls: 'note', text: photo ? '현재 촬영본 위에 칸을 겹쳐 보입니다. 노란 경계선을 끌어 실제 쿨러 위치에 맞춥니다.' : '촬영본 · 감지 영역이 없어 판 사각형(mm)만 보입니다. 보정 창에서 감지 영역을 지정하고 촬영하면 사진 위에 겹쳐 보입니다.' }));
+
+      // ---- 경계(mm) 입력 ----
+      const [re0, ce0] = zEdges(z, W, H);
+      const edgeIn = (kind, i, val) => {
+        const inp = h('input', { type: 'number', cls: 'in num', step: 0.1, value: Math.round(val * 100) / 100, 'data-edge': kind + i });
+        inp.addEventListener('change', () => {
+          const [re, ce] = zEdges(z, W, H);
+          const a = (kind === 'col' ? ce : re).slice();
+          a[i] = Math.max(a[i - 1] + 1, Math.min(a[i + 1] - 1, num(inp.value)));
+          if (kind === 'col') z.col_edges = a; else z.row_edges = a;
+          commit(); ctx.rerender();
+        });
+        return inp;
+      };
+      const ce = [h('span', { cls: 'note', text: '열 경계 mm' })];
+      for (let c = 1; c < z.cols; c++) ce.push(edgeIn('col', c, ce0[c]));
+      const rr = [h('span', { cls: 'note', text: '행 경계 mm' })];
+      for (let r = 1; r < z.rows; r++) rr.push(edgeIn('row', r, re0[r]));
+      el.appendChild(h('div', { cls: 'erow' }, ce));
+      el.appendChild(h('div', { cls: 'erow' }, rr));
+
+      // ---- 선택한 칸: 쿨러 번호 · 릴레이 번호 · 이름 ----
+      const cell = z.cells[zSel] || z.cells[0];
+      const relays = ctx.get('relay.items') || [];
+      const selCo = h('select', { cls: 'in' });
+      for (let k = 1; k <= 9; k++) selCo.appendChild(h('option', { value: k, text: String(k) }));
+      selCo.value = String(cell.cooler);
+      selCo.addEventListener('change', () => { cell.cooler = +selCo.value; commit(); ctx.rerender(); });
+      const selRe = h('select', { cls: 'in' });
+      for (let k = 1; k <= 10; k++) selRe.appendChild(h('option', { value: k, text: 'R' + k + ' ' + ((relays[k - 1] || {}).name || '') + ((relays[k - 1] || {}).enabled ? '' : ' (사용 안 함)') }));
+      selRe.value = String(cell.relay);
+      const nmIn = h('input', { type: 'text', cls: 'in', value: cell.name || '', maxlength: 20 });
+      nmIn.addEventListener('change', () => { cell.name = nmIn.value; commit(); ctx.rerender(); });
+      const dup = z.cells.findIndex((c, i) => i !== zSel && c.relay === cell.relay);
+      selRe.addEventListener('change', () => {
+        const r = +selRe.value;
+        cell.relay = r; commit();
+        // 릴레이 탭 연동: 구역에 지정된 릴레이를 '사용'으로 표시(확인) · 이름을 구역 이름으로 제안
+        const it = relays[r - 1];
+        if (it && (!it.enabled || it.name === 'R' + r)) {
+          UI.confirm('릴레이 R' + r + ' 을 쿨러 칸 "' + (cell.name || '쿨러 ' + cell.cooler) + '" 용으로 사용 지정하고, 이름을 "' + (cell.name || '쿨러 ' + cell.cooler) + '" 로 합니다.', '릴레이 연동').then(ok => {
+            if (ok) { it.enabled = true; if (it.name === 'R' + r) it.name = cell.name || ('쿨러 ' + cell.cooler); ctx.set('relay.items', relays); }
+            ctx.rerender();
+          });
+        } else ctx.rerender();
+      });
+      el.appendChild(h('div', { cls: 'erow' }, [h('span', { cls: 'note', text: '선택한 칸 ' + (Math.floor(zSel / z.cols) + 1) + '행 ' + (zSel % z.cols + 1) + '열' }),
+        h('span', { cls: 'note', text: '쿨러' }), selCo, h('span', { cls: 'note', text: '릴레이' }), selRe, h('span', { cls: 'note', text: '이름' }), nmIn]));
+      if (dup >= 0) el.appendChild(h('div', { cls: 'warnline', text: '릴레이 R' + cell.relay + ' 가 칸 ' + (dup + 1) + ' 과 중복 · 저장이 거절됩니다' }));
       markErr(el, errCell(ctx, item.key));
     },
   };

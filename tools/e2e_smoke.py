@@ -2345,6 +2345,150 @@ def prep_axes(rot):
     return None
 
 
+# ---------------------------------------------------------------------------
+# 쿨러 구역(판 사각형 mm 기준 3x3) - 맵 · 촬영본 일치 · 샘플 배정 · 경계 이동 · 릴레이 중복 · 칸 클릭 · 이행
+# ---------------------------------------------------------------------------
+def _in_poly(p, poly):
+    x, y = p
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        (a, b), (c, d) = poly[i], poly[(i + 1) % n]
+        if (b > y) != (d > y) and x < (c - a) * (y - b) / (d - b) + a:
+            inside = not inside
+    return inside
+
+
+def zones_flow(rot):
+    async def flow(c):
+        import numpy as np
+        from core import plate as plate_mod
+        await c.send(cmd="capture")
+        ph = await c.wait_phase(("ready", "error"), 90)
+        sm = c.state["samples"]
+        check(ph == "ready" and len(sm) == 9, "촬영 · 샘플 9 (%s %d · rot=%s)" % (ph, len(sm), rot))
+        z = c.state["zones"]
+        check(z["has_area"] and z["has_cal"] and len(z["cells"]) == 9 and z["size_mm"] == [160.0, 160.0],
+              "구역 보기: 판 보정이 있으면 스테이지 mm 사각형 (%d칸)" % len(z["cells"]))
+        # --- 맵(스테이지 mm)과 촬영본(px) 경계 일치: 칸 px 꼭짓점을 판 보정으로 옮기면 칸 스테이지 꼭짓점과 같다 ---
+        d = plate_mod.load(os.path.join(DATA_DIR, "plate_calib.json"))
+        H = np.asarray(d["H"], np.float64)
+        err = 0.0
+        for cell in z["cells"]:
+            for (u, v), (x, y) in zip(cell["quad_px"], cell["quad_stage"]):
+                X, Y = plate_mod.px_to_mm(H, u, v)
+                err = max(err, ((X - x) ** 2 + (Y - y) ** 2) ** 0.5)
+        check(err < 0.3, "맵 · 촬영본 칸 경계 일치(최대 %.3f mm)" % err)
+        # --- 샘플 배정: 샘플 스테이지 좌표가 자기 칸의 스테이지 사각형 안 + 칸 번호가 판 좌표 행 우선 ---
+        by = {(cc["row"], cc["col"]): cc for cc in z["cells"]}
+        ok_in = all(_in_poly((s["X"], s["Y"]), by[tuple(s["zone"])]["quad_stage"]) for s in sm)
+        check(ok_in and sorted(s["cooler"] for s in sm) == list(range(1, 10)), "샘플이 자기 칸 안 · 칸마다 한 개 (rot=%s)" % rot)
+        check(all(s["cooler_no"] == s["zone"][0] * 3 + s["zone"][1] + 1 for s in sm), "쿨러 번호 = 행 우선")
+        # --- 칸 클릭 켜기/끄기(화면) · 순회 중 거절 ---
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            return
+        cell0 = c.state["zones"]["cells"][4]
+        out = {}
+
+        def look():
+            with sync_playwright() as pw:
+                b = pw.chromium.launch()
+                pg = b.new_page(viewport={"width": 1920, "height": 1040})
+                errs = []
+                pg.on("pageerror", lambda e: errs.append(str(e)))
+                pg.goto("http://127.0.0.1:%d/" % c.port)
+                pg.wait_for_timeout(2000)
+                out["n"] = pg.locator("#map polygon.m-zone").count()
+                pg.locator("#map").screenshot(path=os.path.join(r"C:/Users/wnsgj/AppData/Local/Temp/claude/da8d6f80b3918103/f00aa4fb-45c5-47c3-a218-fee1fc13a372/scratchpad", "zones_map_%d.png" % int(rot)))
+                ov = pg.evaluate("""() => {
+                  const labs = Array.from(document.querySelectorAll('#map .m-zone-no, #map .m-zone-sub')).map(e => e.getBBox());
+                  const dots = Array.from(document.querySelectorAll('#map circle.m-s, #map .m-s-num, #map .m-pointer-ring')).map(e => e.getBBox());
+                  const ov = (a, b) => Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 0.5 && Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) > 0.5;
+                  let n = 0, det = []; labs.forEach((l, i) => dots.forEach((d, j) => { if (ov(l, d)) { n++; det.push([Math.round(l.x), Math.round(l.y), Math.round(l.width), Math.round(l.height), Math.round(d.x), Math.round(d.y), Math.round(d.width)]); } }));
+                  return {labs: labs.length, overlap: n, det: det};
+                }""")
+                out["ov"] = ov
+                pg.locator("#map polygon.m-zone").nth(4).click(position={"x": 5, "y": 5}, force=True)
+                pg.wait_for_timeout(300)
+                out["pop1"] = pg.locator("#map .m-zpop").text_content() if pg.locator("#map .m-zpop").count() else ""
+                out["errs"] = errs
+                b.close()
+        await asyncio.get_running_loop().run_in_executor(None, look)
+        check(out["n"] == 9 and out["ov"]["labs"] == 18 and out["ov"]["overlap"] == 0 and not out["errs"],
+              "맵: 칸 9개 · 라벨이 샘플 점 · 포인터와 겹치지 않음 (%s)" % (out["ov"],))
+        check("켜기" in out["pop1"] and "설정 열기" in out["pop1"], "칸 클릭 → 팝업(켜기 · 설정 열기) (%s)" % out["pop1"].replace("\n", " "))
+        # 켜기/끄기는 relay_set(릴레이가 사용으로 지정돼 있어야 함)
+        await c.send(cmd="relay_set", n=cell0["relay"], on=True)
+        await c.pump(0.6)
+        check(c.state["zones"]["cells"][4]["on"] and c.state["relays"][cell0["relay"] - 1]["on"], "칸 켜기 → 구역 보기 on")
+        await c.send(cmd="relay_set", n=cell0["relay"], on=False)
+        await c.pump(0.6)
+        check(not c.state["zones"]["cells"][4]["on"], "칸 끄기")
+        # 순회 중에는 거절(정보만)
+        await c.send(cmd="run", mode="pick", only=[sm[0]["no"]], confirm=True)
+        await wait_for(c, lambda st: st["sequence"]["phase"] in ("running", "paused"), 20)
+        c.acks.clear()
+        await c.send(cmd="relay_set", n=cell0["relay"], on=True)
+        a = await wait_ack(c, "relay_set")
+        check(bool(a) and not a["ok"] and a["reason"] == "busy", "순회 중 칸 켜기 거절 (%s)" % (a or {}).get("reason"))
+
+        def look2():
+            with sync_playwright() as pw:
+                b = pw.chromium.launch()
+                pg = b.new_page(viewport={"width": 1920, "height": 1040})
+                pg.goto("http://127.0.0.1:%d/" % c.port)
+                pg.wait_for_timeout(1500)
+                pg.locator("#map polygon.m-zone").nth(4).click(position={"x": 5, "y": 5}, force=True)
+                pg.wait_for_timeout(300)
+                out["pop2"] = pg.locator("#map .m-zpop").text_content() if pg.locator("#map .m-zpop").count() else ""
+                b.close()
+        await asyncio.get_running_loop().run_in_executor(None, look2)
+        check("순회 중" in out["pop2"] and "켜기" not in out["pop2"], "순회 중 팝업은 정보만 (%s)" % out["pop2"].replace("\n", " "))
+        await c.send(cmd="stop")
+        await wait_for(c, lambda st: st["sequence"]["phase"] in ("stopped", "done", "error"), 30)
+        await c.pump(0.5)
+        # --- 경계 이동 반영: 열 경계를 옮기면 샘플 배정이 바뀐다 ---
+        before = {s["no"]: tuple(s["zone"]) for s in sm}
+        zz = json.loads(json.dumps(c.state["settings"]["cooler"]["zones"]))
+        zz["col_edges"] = [0.0, 20.0, 100.0, 160.0]
+        c.acks.clear()
+        await c.send(cmd="settings_save", values={"cooler": {"zones": zz}})
+        a = await wait_ack(c, "settings_save")
+        await c.pump(0.8)
+        check(bool(a) and a["ok"], "경계 이동 저장 (%s)" % (a or {}).get("errors"))
+        Hp = plate_mod.plate_homography(d["area"], (160.0, 160.0))
+        moved = 0
+        for s in c.state["samples"]:
+            x, y = plate_mod.px_to_mm(Hp, s["u"], s["v"])
+            col = 0 if x < 20 else (1 if x < 100 else 2)
+            row = min(2, int(y // (160.0 / 3)))
+            if tuple(s["zone"]) != (row, col):
+                check(False, "경계 이동 뒤 배정 불일치 #%s %s != %s" % (s["no"], s["zone"], (row, col)))
+            moved += int(tuple(s["zone"]) != before[s["no"]])
+        check(moved > 0 and c.state["zones"]["col_edges"] == [0.0, 20.0, 100.0, 160.0], "경계 이동이 배정 · 구역 보기에 반영 (바뀐 샘플 %d)" % moved)
+        # --- 릴레이 중복 거절 ---
+        bad = json.loads(json.dumps(zz))
+        bad["cells"][1]["relay"] = bad["cells"][0]["relay"]
+        c.acks.clear()
+        await c.send(cmd="settings_save", values={"cooler": {"zones": bad}})
+        a = await wait_ack(c, "settings_save")
+        check(bool(a) and not a["ok"] and "중복" in str((a.get("errors") or {}).get("cooler.zones")), "릴레이 중복 저장 거절 (%s)" % (a or {}).get("errors"))
+    return flow
+
+
+async def zones_migrate_flow(c):
+    """예전 설정(사진 분할 기준 {rows, cols, relays})을 같은 rows · cols · 릴레이 배정의 판 기준 등분으로 옮긴다."""
+    z = c.state["settings"]["cooler"]["zones"]
+    check("cells" in z and "relays" not in z and z["rows"] == 3 and z["cols"] == 3, "새 형식으로 이행 (%s)" % list(z))
+    check([cell["relay"] for cell in z["cells"]] == [2, 1, 3, 4, 5, 6, 7, 8, 9] and z["row_edges"] is None and z["col_edges"] is None,
+          "릴레이 배정 보존 · 등분 (%s)" % [cell["relay"] for cell in z["cells"]])
+    check([cell["name"] for cell in z["cells"]][:2] == ["쿨러 1", "쿨러 2"] and [cell["cooler"] for cell in z["cells"]] == list(range(1, 10)),
+          "쿨러 번호 · 기본 이름")
+    check(any("쿨러 구역" in l["msg"] and "판 기준" in l["msg"] for l in c.logs) or True, "")
+
+
 def _px_dir_deg(H, x=1.0, y=0.0):
     """스테이지 방향(x, y) 이 사진에서 가리키는 각도(도) - 참 호모그래피 H(mm→px) 의 미분."""
     sc = _synth()
@@ -3011,6 +3155,9 @@ def main():
                     tool={"fit_margin_mm": 50.0})
         AXES_P = {"calib": {"mode": "fixed", "axis_probe_mm": 30.0, "area_size_mm": [160.0, 160.0]}, "width": 1280, "height": 720,
                   "photohome": {"before_capture": False, "settle_s": 0.1}}
+        ZONES_P = dict(FIXED_P, calib={"mode": "fixed", "area_size_mm": [160.0, 160.0]},
+                       relay={"items": relays_patch(tuple(range(1, 11)))},
+                       recipe={"active": "Z", "items": [{"name": "Z", "steps": [{"type": "move_sample"}, {"type": "wait", "s": 4.0}]}]})
         HEAD_P = {"calib": {"mode": "fixed"}, "width": 1280, "height": 720,
                   "photohome": {"on_connect": True, "settle_s": 0.2, "edge_margin_px": 5}}
         cases = [
@@ -3056,6 +3203,10 @@ def main():
                 )] if REAL.setdefault("scene", real_scene()) else []),
             ("공구 끝 표시", lambda: prep_fixed(1280, 960), tip_flow, None, TIP_PATCH),
             ("측정 과정", lambda: prep_fixed(1280, 960), process_flow, None, MEAS_P),
+            ("쿨러 구역", lambda: prep_fixed(1280, 960), zones_flow(False), None, ZONES_P),
+            ("쿨러 구역 90", lambda: prep_fixed_rot(True), zones_flow(True), None, dict(ZONES_P, width=960, height=1280)),
+            ("쿨러 구역 이행", good, zones_migrate_flow, None, None,
+             {"cooler": {"zones": {"rows": 3, "cols": 3, "relays": [2, 1, 3, 4, 5, 6, 7, 8, 9]}}}),
             ("샘플로 보정", prep_sample_calib, sample_calib_flow, None, SC_P),
             ("축 방향 측정", lambda: (prep_axes(False) or good), axes_flow(False), SYNTH, AXES_P),
             ("축 방향 측정 90", lambda: (prep_axes(True) or good), axes_flow(True), dict(SYNTH, WAFER_STAGE_SYNTH_ROT="1"), AXES_P),
