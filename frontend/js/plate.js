@@ -12,7 +12,7 @@
   const NS = 'http://www.w3.org/2000/svg';
   const K = () => UI.calibKit;
 
-  const P = { mode: 'area', zoom: 1, quad: [], quadDirty: false, pts: [], sel: null, pend: null,
+  const P = { mode: 'area', zoom: 1, quad: [], quadDirty: false, excl: [], exclCur: [], exclDirty: false, pts: [], sel: null, pend: null,
               recFor: null, fit: null, src: 'auto', inited: false, created: null, v: 0, sig: '', hint: '',
               last: null, fitTimer: null };
 
@@ -37,6 +37,8 @@
     const d = plateState().data;
     P.quad = d && d.area ? d.area.map(p => p.slice()) : [];
     P.pts = d && d.points ? d.points.map(p => ({ x: p.x, y: p.y, u: p.u, v: p.v })) : [];
+    P.excl = d && d.exclude ? d.exclude.map(q => q.map(p => p.slice())) : [];
+    P.exclCur = []; P.exclDirty = false;
     P.quadDirty = false; P.sel = null; P.pend = null; P.recFor = null; P.fit = null;
     P.inited = true;
     requestFit();
@@ -109,6 +111,27 @@
           { sm: true, primary: nq === 4 && P.quadDirty, disabled: nq !== 4 || !fr,
             tip: '이 사각형을 감지 영역으로 저장합니다. 검출은 이 사각형 안만 봅니다.' })])]));
 
+    // 제외 영역 · 빈 판 기준
+    const ref = pl.ref || {};
+    const refTxt = !ref.exists ? '빈 판 기준 없음'
+      : (ref.valid ? '빈 판 기준 유효 · ' + (ref.time || '') + (ref.use ? ' · 사용 중' : ' · 설정에서 꺼짐')
+        : '빈 판 기준 무효 · ' + (ref.reason || ''));
+    left.appendChild(kit.card(5, '제외 영역 · 빈 판 기준', null, [
+      h('div', { cls: 'note', text: '헤드 · 기판처럼 감지 영역 안에 걸리는 물체를 가립니다. 사진에서 꼭짓점을 차례로 클릭하고 [영역 닫기].' }),
+      h('div', { cls: 'row' }, [
+        h('span', { cls: 'mono nowrap', text: '저장 ' + ((cur.exclude || []).length) + '개 · 초안 ' + P.excl.length + '개' + (P.exclCur.length ? ' · 그리는 중 ' + P.exclCur.length + '점' : '') + (P.exclDirty ? ' · 미적용' : '') })]),
+      h('div', { cls: 'row' }, [
+        kit.btn('영역 닫기', () => { if (P.exclCur.length >= 3) { P.excl.push(P.exclCur); P.exclCur = []; P.exclDirty = true; bump(); } },
+          { sm: true, disabled: P.exclCur.length < 3, tip: '그리던 점들을 다각형 하나로 닫아 제외 영역에 넣습니다.' }),
+        kit.btn('점 취소', () => { P.exclCur.pop(); bump(); }, { sm: true, disabled: !P.exclCur.length, tip: '마지막으로 찍은 점을 지웁니다.' }),
+        kit.btn('마지막 영역 삭제', () => { P.excl.pop(); P.exclDirty = true; bump(); }, { sm: true, disabled: !P.excl.length, tip: '초안의 마지막 제외 영역을 지웁니다.' }),
+        kit.btn('적용', () => UI.send({ cmd: 'plate_exclude_apply', polys: P.excl, size: sizeOf(fr) }),
+          { sm: true, primary: P.exclDirty, disabled: !fr || !P.exclDirty, tip: '제외 영역을 저장합니다. 다음 촬영부터 검출 전에 가려집니다.' })]),
+      h('div', { cls: ref.exists && ref.valid ? 'okline' : 'note', text: refTxt }),
+      h('div', { cls: 'row' }, [
+        kit.btn('빈 판 기준 촬영', () => UI.send({ cmd: 'plate_ref_shot' }),
+          { sm: true, disabled: kit.busy() || !areaSaved, tip: '샘플을 치운 빈 판을 한 장 찍어 기준 사진으로 저장합니다(노출 · 화이트밸런스도 기록). 설정의 빈 판 기준 사용을 켜야 쓰입니다.' })])]));
+
     // 3. 판 보정점
     const rec = P.sel != null && P.pts[P.sel];
     left.appendChild(kit.card(3, '판 보정점', sts[2], [
@@ -168,6 +191,7 @@
 
   function hintText(fr) {
     if (!fr) return '촬영본이 없습니다 · 단발 촬영 또는 촬영 후 열기';
+    if (P.mode === 'excl') return '제외할 물체의 꼭짓점을 차례로 클릭 · 3점 이상이면 [영역 닫기]';
     if (P.mode === 'area') return P.quad.length < 4 ? '모서리 ' + (P.quad.length + 1) + '번째를 클릭' : '모서리 4개 · 끌어서 수정 후 [적용]';
     if (P.sel != null) return '점 #' + (P.sel + 1) + ' 선택 · 사진을 클릭하면 이 점의 위치가 바뀝니다(미세 이동은 화살표)';
     return P.pend ? '같은 점을 사진에서 클릭' : '[위치 기록] 뒤 사진에서 같은 점 클릭';
@@ -176,7 +200,7 @@
   function buildBar(fr) {
     const bar = h('div', { cls: 'platebar' });
     const seg = h('div', { cls: 'seg segsm' });
-    [['area', '감지 영역 클릭'], ['pair', '판 보정점 클릭']].forEach(o => {
+    [['area', '감지 영역 클릭'], ['pair', '판 보정점 클릭'], ['excl', '제외 영역 클릭']].forEach(o => {
       const inp = h('input', { type: 'radio', name: 'platemode', value: o[0] });
       inp.checked = P.mode === o[0];
       inp.addEventListener('change', () => { P.mode = o[0]; P.hint = ''; bump(); });
@@ -252,6 +276,7 @@
       if (!(p[0] >= 0 && p[1] >= 0 && p[0] <= fr.w && p[1] <= fr.h)) return;
       const u = round1(p[0]), v = round1(p[1]);
       P.last = [u, v]; P.hint = '';
+      if (P.mode === 'excl') { P.exclCur.push([u, v]); bump(); return; }
       if (P.mode === 'area') {
         if (P.quad.length >= 4) { P.hint = '모서리는 4개 · 점을 끌어 고치거나 [지우기]'; bump(); return; }
         P.quad.push([u, v]); P.quadDirty = true; bump(); return;
@@ -288,6 +313,9 @@
       const t = el('text', { x: q[0] + 9 * k, y: q[1] - 9 * k, 'font-size': fs }); t.textContent = String(i + 1);
       svg.appendChild(t);
     });
+    P.excl.forEach(poly => svg.appendChild(el('polygon', { class: 'px', points: poly.map(q => q.join(',')).join(' ') })));
+    if (P.exclCur.length >= 2) svg.appendChild(el('polyline', { class: 'pxc', points: P.exclCur.map(q => q.join(',')).join(' ') }));
+    P.exclCur.forEach(q => svg.appendChild(el('circle', { class: 'pxv', cx: q[0], cy: q[1], r: 4 * k })));
     const lim = g('calib.residual_limit_mm') || 1.0;
     const comp = complete();
     P.pts.forEach((p, i) => {
@@ -319,6 +347,11 @@
     } else if (of === 'plate_calib_apply') {
       if (msg.ok) { P.sig = ''; UI.alert('판 보정 저장 · RMS ' + (+msg.rms_mm).toFixed(3) + ' mm · 최대 ' + (+msg.max_mm).toFixed(3) + ' mm' + ((msg.over || []).length ? '\n한계 초과 ' + msg.over.length + '점' : '') + '\n다시 촬영하면 반영됩니다.', '판 보정'); }
       else UI.alert((msg.needs_confirm || []).join('\n') || '저장하지 않았습니다', '판 보정');
+    } else if (of === 'plate_exclude_apply') {
+      if (msg.ok) { P.sig = ''; P.exclDirty = false; }
+      else UI.alert((msg.needs_confirm || []).join('\n') || '저장하지 않았습니다', '제외 영역');
+    } else if (of === 'plate_ref_shot') {
+      if (!msg.ok) UI.alert((msg.needs_confirm || []).join('\n') || '촬영하지 못했습니다', '빈 판 기준');
     } else if (of === 'plate_area_apply') {
       if (msg.ok) { P.sig = ''; }
       else UI.alert((msg.needs_confirm || []).join('\n') || '저장하지 않았습니다', '감지 영역');

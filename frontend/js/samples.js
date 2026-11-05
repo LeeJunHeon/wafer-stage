@@ -70,7 +70,20 @@
         badge.title = '가장자리로만 찾음 · 확인 필요';
         tdn.appendChild(badge);
       }
-      if (sm.weak) {
+      if (sm.source === 'local') {
+        const badge = document.createElement('span');
+        badge.className = 'edgebadge only';
+        badge.textContent = '+';
+        badge.title = '보완 · 격자 칸에서 낮은 기준으로 다시 찾음 · 확인 필요';
+        tdn.appendChild(badge);
+      } else if (sm.source === 'predicted') {
+        const badge = document.createElement('span');
+        badge.className = 'edgebadge weak';
+        badge.textContent = '예측';
+        badge.title = '윤곽을 못 찾아 격자 예측 위치로 낸 샘플 · 확인 필요';
+        tdn.appendChild(badge);
+      }
+      if (sm.weak && sm.source !== 'predicted') {
         const badge = document.createElement('span');
         badge.className = 'edgebadge weak';
         badge.textContent = '?';

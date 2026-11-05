@@ -423,6 +423,7 @@ def _apply_sense(res):
             "edge_completed": bool(s.get("edge_completed")),
             "edge_only": bool(s.get("edge_only")),
             "weak": bool(s.get("weak")),
+            "source": s.get("source") or "detected",
             "strength": s.get("strength"),
             "area_mm2": s.get("area_mm2"),
             "manual": False,

@@ -213,6 +213,19 @@
 - EEPROM 매직 POSA(V10 부터, V11 도 같음 · 형식은 V9 와 같음). V9 이하 기록은 '기록 없음' 으로 읽힌다.
 - 주의: pyserial 의 `timeout` 에 값을 대입할 때마다 포트가 재설정된다 — 매 읽기마다 대입하면 들어오던 응답이 사라진다(core/stage.py `_readline` 주석).
 
+## 고정 환경 검출기 (core/fixed_detect.py — fixed 모드 기본, 2026-11-05)
+- fixed 모드 검출은 `core/fixed_detect.py`(설정 fixed.detector = fixed | legacy). **core/detect.py 는 markers 모드 전용**으로
+  유지하고 고치지 않는다(아래 "검출 파이프라인"은 detect.py 의 것).
+- 파이프라인: Lab 채널별 (가우시안 σ1.5 → 채널 − medianBlur(칩 긴 변 ×3)) 잔차 → 채널 강건 z(MAD×1.4826, MAD 하한 1.0) →
+  d=√Σz² > seed 4.5 → open/close → 연결요소 → 모양 필터(면적 · 볼록도 · 종횡비 · 최소외접사각형 채움률) → 칩 크기 자동 추정 후
+  재검출 → 3x5 격자 RANSAC + 최소제곱으로 15칸 예측 → 빈 칸만 칸 창에서 낮은 기준 재탐색 → Lab Canny → 예측 위치(weak).
+  샘플 `source` = detected | local | predicted(weak → 확인 모드). 제외 영역(plate_calib.json `exclude`) · 빈 판 기준(선택 · 미검증).
+- **튜닝 규칙이 바뀌었다**: 이 모듈은 특정 사진 오버피팅 금지 대신 **실제 운용 환경 사진(data/truth)에 맞춰 튜닝**한다. 단 여러 장으로
+  검증하고 `python tools/fixed_regress.py`(기준보다 나쁘면 exit 1) · `--loo`(한 장 빼고 맞춘 값으로 뺀 장 채점)로 한 장 과적합을
+  확인한다. 정답은 앱의 샘플 편집 → `tools/make_truth.py`. 파라미터는 전부 스키마(fixed.*, 검출 탭 고급).
+- 운용 카메라 기본(스키마): 4080×3060 MJPG · 노출 -5 고정 · 화이트밸런스 5000 K 고정 · 브라케팅 끔 · 초점 고정. 근거: 밝은 노출일수록
+  회색 칩이 판에 묻혀 나빠지고(종이 249 의 140936 최악, 어두운 140835 최선) 화이트밸런스 미고정이면 색이 초록 · 노랑으로 흔들린다.
+
 ## 검출 파이프라인 (검증 완료·고정. 순서 바꾸지 말 것)
 무채색 마스크(채도 상한을 훑어 후보 경쟁) → OPEN → 최대 연결요소 → 구멍 메우기 → CLOSE → 광선 스캔 → fitEllipse.
 색 후보와 엣지 후보를 '지지율 × 링 대비' 로 경쟁시켜 원판을 고른다. ROI = 축소 타원 ∩ 침식 볼록껍질 ∩ 직선 컷.
@@ -276,8 +289,8 @@ surface 모드 wafer/plate/auto. 검출 로직을 고치면 반드시 `python to
 ## 작업 규칙
 - 하드웨어 실행은 사용자가 한 단계씩. 코드는 요청 범위만.
 - 화면은 HTML(서버가 상태의 주인). cv2.imshow 금지. 오프라인 납품 전제 — 웹폰트·CDN 금지(맑은 고딕·Consolas), 자산 URL 에 ?v=버전.
-- 오프라인 재현 스위치(--image) 필수. 특정 사진에 오버피팅 금지 — tools/regress.py 로 전체 회귀.
-- 검출 로직 수정 금지(요청된 소규모 수정만). 땜질 대신 근본적 해결.
+- 오프라인 재현 스위치(--image) 필수. detect.py 는 특정 사진 오버피팅 금지 — tools/regress.py 로 전체 회귀(fixed 검출기는 위 "고정 환경 검출기" 규칙).
+- core/detect.py 수정 금지(요청된 소규모 수정만). fixed 모드 검출기(core/fixed_detect.py)는 data/truth 회귀로 튜닝. 땜질 대신 근본적 해결.
 - 운용 값은 settings_schema 에만(위 설정 스키마 규칙). 새 설정은 스키마 항목으로 더하고 README 설정 표를 갱신한다.
 - md 문서는 README.md·CLAUDE.md 둘뿐. 프롬프트 사본·작업 기록 만들지 않는다.
 - 상세 기록은 Obsidian 01_Projects/Auto_Measurement_Program 에 사용자가 관리.

@@ -243,7 +243,11 @@
             .map(p => p.join(',')).join(' ')
         : (sm.verts || []).map(p => p.join(',')).join(' ');
       if (sm.manual) cls.push('manual');
-      if (pts) {
+      if (sm.source === 'predicted') {
+        // 예측: 윤곽이 없다 - 점선 원
+        const pc = el('circle', { class: 'ov-sample pred', cx: sm.u, cy: sm.v, r: 22 * K });
+        gs.appendChild(pc);
+      } else if (pts) {
         const pg = el('polygon', { class: cls.join(' '), points: pts });
         // 추가 모드에서만 선택을 받는다(평소에는 위의 hit 원이 받는다).
         pg.addEventListener('click', (e) => {
@@ -255,7 +259,7 @@
       }
       const t = el('text', { class: 'ov-num', x: sm.u + 8 * K, y: sm.v - 6 * K });
       t.textContent = sm.no + (sm.manual ? 'M' : '') + (sm.edge_completed ? 'E' : '')
-        + (sm.edge_only ? 'G' : '') + (sm.weak ? '?' : '');
+        + (sm.edge_only ? 'G' : '') + (sm.source === 'local' ? '+' : '') + ((sm.weak || sm.source === 'predicted') ? '?' : '');
       // 추가 모드에서는 번호 라벨도 그 샘플 선택이다(hit 원이 꺼져 있어 라벨 클릭이
       // 사진으로 빠지면 작은 칩 옆에 수동 샘플이 생긴다). 평소에는 CSS 가 막는다.
       t.addEventListener('click', (e) => {

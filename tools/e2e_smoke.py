@@ -1736,6 +1736,76 @@ def prep_fixed(w, h, cal_size=None, with_h=True, with_area=True):
     return path
 
 
+REAL = {}
+
+
+def real_scene():
+    """실장 사진(data/truth + data/out)이 있으면 (사진 경로, 정답 항목) - 없으면 None(케이스 건너뜀)."""
+    import glob
+    from core import paths
+    root = os.path.dirname(paths.OUT_DIR)
+    name = "seq_20261105_140835"
+    try:
+        with open(os.path.join(root, "truth", "truth_20261105.json"), encoding="utf-8") as f:
+            item = json.load(f)[name]
+    except (OSError, KeyError, ValueError):
+        return None
+    img = os.path.join(root, "out", name, item["image"])
+    return (img, item) if os.path.exists(img) else None
+
+
+def prep_real_fixed():
+    from core import plate as plate_mod
+    img, item = REAL["scene"]
+    d = plate_mod.new_record(1, item["size"])
+    d["area"] = item["area"]
+    plate_mod.save(d, os.path.join(DATA_DIR, "plate_calib.json"))
+    return img
+
+
+async def fixed_real_flow(c):
+    """실장 사진 · 고정 환경 검출기: 격자 3x5 · source 표시 · 제외 영역 저장 · 빈 판 기준 저장."""
+    img, item = REAL["scene"]
+    truth = [(s["u"], s["v"]) for s in item["samples"]]
+    check(c.state["settings"]["fixed"]["detector"] == "fixed", "검출기 기본 fixed")
+    c.logs.clear()
+    await c.send(cmd="capture")
+    ph = await c.wait_phase(("ready", "error"), 180)
+    st = c.state
+    sm = st["samples"]
+    check(ph == "ready" and len(sm) == 15, "격자 15칸 (%s · %d개)" % (ph, len(sm)))
+    check(all(s.get("source") in ("detected", "local", "predicted") for s in sm), "source 필드")
+    hit = sum(1 for t in truth if min(((s["u"] - t[0]) ** 2 + (s["v"] - t[1]) ** 2) ** 0.5 for s in sm) < 17)
+    check(hit >= 14, "정답 근처 %d/15" % hit)
+    check(sum(1 for s in sm if s["source"] == "detected") >= 12, "검출 12개 이상 (%s)" % [s["source"] for s in sm].count("detected"))
+    check(all(s["weak"] for s in sm if s["source"] == "predicted"), "예측은 약함 표시")
+    check(any(l["msg"].startswith("소요 ") for l in c.logs), "소요 로그")
+    c.logs.clear()
+    # 제외 영역: 감지 영역 구석의 작은 다각형 저장 → 상태 · 다음 촬영 반영(샘플 수 불변)
+    a = item["area"]
+    poly = [[a[2][0] - 60, a[2][1] - 60], [a[2][0] - 10, a[2][1] - 60], [a[2][0] - 10, a[2][1] - 10]]
+    c.acks.clear()
+    await c.send(cmd="plate_exclude_apply", polys=[poly], size=item["size"])
+    ack = await wait_ack(c, "plate_exclude_apply")
+    check(bool(ack) and ack["ok"], "제외 영역 저장 ack")
+    await c.pump(0.5)
+    check(len(c.state["plate"]["data"]["exclude"]) == 1, "state.plate.data.exclude 1개")
+    await c.send(cmd="plate_exclude_apply", polys=[[[1, 1], [2, 2]]], size=item["size"])
+    ack = await wait_ack(c, "plate_exclude_apply")
+    check(bool(ack) and not ack["ok"], "점 3개 미만 거절")
+    await c.send(cmd="capture", confirm=True)
+    ph = await c.wait_phase(("ready", "error"), 180)
+    check(ph == "ready" and len(c.state["samples"]) == 15, "제외 영역 적용 촬영 · 15칸 유지")
+    # 빈 판 기준 저장(--image 라 같은 사진) · 상태
+    c.acks.clear()
+    await c.send(cmd="plate_ref_shot")
+    ack = await wait_ack(c, "plate_ref_shot")
+    check(bool(ack) and ack["ok"], "빈 판 기준 저장")
+    await c.pump(0.5)
+    ref = c.state["plate"]["ref"]
+    check(ref["exists"] and ref["valid"], "빈 판 기준 유효 (%s)" % ref)
+
+
 def _nearest(samples, x, y):
     best = min(samples, key=lambda s: (s["X"] - x) ** 2 + (s["Y"] - y) ** 2)
     return best, ((best["X"] - x) ** 2 + (best["Y"] - y) ** 2) ** 0.5
@@ -2162,9 +2232,9 @@ def main():
                        "autofocus": False, "focus": "auto", "zz_legacy": "keep",
                        "marker_mm_xy": {"0": [200, 161], "1": [201, 19], "2": [15, 160],
                                         "3": [15, 20]}})
-        FIXED_P = {"calib": {"mode": "fixed"}, "width": 1280, "height": 960, "preview_max_w": 640,
+        FIXED_P = {"calib": {"mode": "fixed"}, "fixed": {"layout": "free"}, "width": 1280, "height": 960, "preview_max_w": 640,
                    "photohome": {"before_capture": False}, "flow": {"capture_goto": False}}
-        FIXED_BIG_P = {"calib": {"mode": "fixed"}, "width": 4080, "height": 3060,
+        FIXED_BIG_P = {"calib": {"mode": "fixed"}, "fixed": {"layout": "free"}, "width": 4080, "height": 3060,
                        "detect_max_px": 1000, "preview_max_w": 1280,
                        "photohome": {"before_capture": False}, "flow": {"capture_goto": False}}
         HEAD_P = {"calib": {"mode": "fixed"}, "width": 1280, "height": 720,
@@ -2206,6 +2276,10 @@ def main():
             ("고정 보정 감지영역 없음", lambda: prep_fixed(1280, 960, with_area=False), fixed_nocal_flow, None, FIXED_P),
             ("고정 보정 무효", lambda: prep_fixed(1280, 960, cal_size=(640, 480)), fixed_invalid_flow, None, FIXED_P),
             ("촬영 진행 표시", lambda: prep_fixed(1280, 960), capture_progress_flow, None, FIXED_P),
+            *([("고정 환경 실장 사진", prep_real_fixed, fixed_real_flow, None,
+                {"calib": {"mode": "fixed", "est_mm_per_px": 0.151}, "width": 4080, "height": 3060,
+                 "preview_max_w": 1280, "photohome": {"before_capture": False}, "flow": {"capture_goto": False}}
+                )] if REAL.setdefault("scene", real_scene()) else []),
             ("고정 보정 4080", lambda: prep_fixed(4080, 3060), fixed_big_flow, None, FIXED_BIG_P),
             ("헤드 마커 연결 판단", lambda: (prep_head_calib() or good), head_connect_flow, SYNTH, HEAD_P),
             ("헤드 마커 미검출", lambda: (prep_head_calib() or good), head_missing_flow,

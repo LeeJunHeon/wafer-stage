@@ -53,7 +53,8 @@ BUSY_BLOCKED = ("park", "goto", "return_origin", "jog", "park_here", "capture_he
                 "photo_home_apply", "head_calib_start", "head_calib_apply",
                 "calib_marker_record", "calib_marker_apply", "calib_tool_record",
                 "calib_tool_heat", "calib_tool_mark", "calib_tool_apply",
-                "plate_shot", "plate_area_apply", "plate_calib_apply")
+                "plate_shot", "plate_area_apply", "plate_calib_apply",
+                "plate_exclude_apply", "plate_ref_shot")
 # 샘플 추가 둘은 결과를 ack{of:"sample_add"} 로 돌려준다(화면이 새 번호를 선택한다).
 SAMPLE_ADD_CMDS = ("sample_add", "sample_add_here")
 # 순회 중 거절을 ack 로도 알려야 하는 명령(화면이 결과를 기다린다)
@@ -780,6 +781,14 @@ async def _plate_area_apply(data):
     await platecal.area_apply(data)
 
 
+async def _plate_exclude_apply(data):
+    await platecal.exclude_apply(data)
+
+
+async def _plate_ref_shot(_data):
+    await platecal.ref_shot()
+
+
 async def _calib_tool_mark(data):
     await photohome.tool_mark(data.get("u"), data.get("v"))
 
@@ -900,6 +909,8 @@ _TABLE = {
     "plate_calib_fit": _plate_calib_fit,
     "plate_calib_apply": _plate_calib_apply,
     "plate_area_apply": _plate_area_apply,
+    "plate_exclude_apply": _plate_exclude_apply,
+    "plate_ref_shot": _plate_ref_shot,
     "calib_tool_apply": _calib_tool_apply,
     "dry_slip": _dry_slip,
     "dry_stall": _dry_stall,

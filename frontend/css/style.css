@@ -160,6 +160,7 @@
   .ov-marker-label { font: 600 calc(14px * var(--ovs, 1)) var(--mono); fill: #2f8cff; paint-order: stroke; stroke: #0e1418; stroke-width: calc(3px * var(--ovs, 1)); }
   .ov-sample { fill: rgba(60,220,110,.10); stroke: #35e07a; stroke-width: calc(1.6px * var(--ovs, 1)); }
   .ov-sample.done { fill: rgba(60,220,110,.30); }
+  .ov-sample.pred { fill: none; stroke: #ffa53a; stroke-dasharray: calc(4px * var(--ovs, 1)) calc(3px * var(--ovs, 1)); }
   .ov-sample.skip { stroke: #9aa7b2; fill: none; stroke-dasharray: 3 3; }
   .ov-sample.target { stroke: #ffa53a; stroke-width: calc(2.6px * var(--ovs, 1)); fill: rgba(255,165,58,.2); }
   .ov-sample.selected { stroke: #7fc8ff; stroke-width: calc(2.4px * var(--ovs, 1)); }
@@ -491,6 +492,9 @@
   .plateinner svg { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
   .plateview .pq { fill: rgba(255,212,0,.07); stroke: #ffd400; vector-effect: non-scaling-stroke; stroke-width: 1.2; }
   .plateview .pv { fill: #ffd400; stroke: #0e1418; vector-effect: non-scaling-stroke; stroke-width: 1; cursor: grab; }
+  .plateview .px { fill: rgba(255,59,59,.16); stroke: #ff3b3b; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; stroke-width: 1.4; }
+  .plateview .pxc { fill: none; stroke: #ff9a3b; vector-effect: non-scaling-stroke; stroke-width: 1.4; }
+  .plateview .pxv { fill: #ff9a3b; stroke: #0e1418; vector-effect: non-scaling-stroke; stroke-width: 1; }
   .plateview .pp { stroke: #35e0e0; vector-effect: non-scaling-stroke; stroke-width: 1.4; fill: none; }
   .plateview .pp.sel { stroke: #ff3b3b; }
   .plateview .pp.bad { stroke: #ff3b3b; stroke-dasharray: 3 2; }

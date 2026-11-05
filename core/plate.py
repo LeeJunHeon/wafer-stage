@@ -23,7 +23,7 @@ import time
 import cv2
 import numpy as np
 
-from core import calib, detect, paths
+from core import calib, detect, fixed_detect, paths
 
 MIN_POINTS = 4
 MIN_AREA_FRAC = 0.01               # 감지 영역이 프레임의 1% 는 돼야 한다
@@ -148,6 +148,7 @@ def summary(d):
             "points": [dict(p) for p in d.get("points") or []],
             "has_h": d.get("H") is not None, "area_mm": _area_mm(d), "rms_mm": d.get("rms_mm"),
             "max_mm": d.get("max_mm"), "res_limit_mm": d.get("res_limit_mm"),
+            "exclude": [[[float(a), float(b)] for a, b in poly] for poly in d.get("exclude") or []],
             "n": len(d.get("points") or [])}
 
 
@@ -191,6 +192,28 @@ def crop_rect(quad, shape):
     u1 = min(w, int(math.ceil(Q[:, 0].max())) + 1)
     v1 = min(h, int(math.ceil(Q[:, 1].max())) + 1)
     return u0, v0, u1, v1
+
+
+def prep_crop(bgr, quad, exclude=None):
+    """감지 영역 crop 준비. (crop, valid, (u0, v0), quad_local).
+
+    바깥(사각형 밖 · 제외 영역 안)은 안쪽 판의 중앙 색으로 채워 평평하게 만든다 - 검출이 볼 것이 없다.
+    valid 는 검출 대상(사각형 안 · 제외 영역 밖) 255 마스크. exclude = [[[u,v]..], ..] 원본 px 다각형.
+    """
+    Q = np.asarray(quad, np.float64)
+    u0, v0, u1, v1 = crop_rect(Q, bgr.shape)
+    crop = bgr[v0:v1, u0:u1].copy()
+    ch, cw = crop.shape[:2]
+    valid = np.zeros((ch, cw), np.uint8)
+    cv2.fillConvexPoly(valid, np.round(Q - [u0, v0]).astype(np.int32), 255)
+    for poly in (exclude or []):
+        if len(poly) >= 3:
+            cv2.fillPoly(valid, [np.round(np.asarray(poly, np.float64) - [u0, v0]).astype(np.int32)], 0)
+    inside = valid > 0
+    if inside.any():
+        fill = np.median(crop[inside].reshape(-1, 3), axis=0)
+        crop[~inside] = fill.astype(np.uint8)
+    return crop, valid, (u0, v0), Q - [u0, v0]
 
 
 # --------------------------------------------------------------------------
@@ -279,7 +302,7 @@ def new_record(camera_index, size, old=None):
          "rms_mm": None, "max_mm": None, "res_limit_mm": None}
     if old and int(old.get("camera_index", -1)) == int(camera_index) \
             and [int(x) for x in old.get("size") or []] == d["size"]:
-        for k in ("area", "points", "H", "rms_mm", "max_mm", "res_limit_mm"):
+        for k in ("area", "points", "H", "rms_mm", "max_mm", "res_limit_mm", "exclude"):
             d[k] = old.get(k)
     return d
 
@@ -294,24 +317,9 @@ def sense_fixed(bgr, params, d, log=print):
     info) + quad · scale · mm_per_px · timing. 판 마커는 보지 않는다.
     """
     quad = np.asarray(d["area"], np.float64)
-    u0, v0, u1, v1 = crop_rect(quad, bgr.shape)
-    crop = bgr[v0:v1, u0:u1].copy()
+    crop, valid, (u0, v0), quad_l = prep_crop(bgr, quad, d.get("exclude"))
     ch, cw = crop.shape[:2]
-    mask = np.zeros((ch, cw), np.uint8)
-    cv2.fillConvexPoly(mask, np.round(quad - [u0, v0]).astype(np.int32), 255)
-    inside = mask > 0
-    if inside.any():
-        # 사각형 밖은 안쪽 판의 중앙 색으로 채워 평평하게 만든다 - 검출이 볼 것이 없다.
-        fill = np.median(crop[inside].reshape(-1, 3), axis=0)
-        crop[~inside] = fill.astype(np.uint8)
-
-    maxpx = int(params.get("detect_max_px", 2000) or 0)
-    s = 1.0
-    small = crop
-    if maxpx > 0 and max(ch, cw) > maxpx:
-        s = maxpx / float(max(ch, cw))
-        small = cv2.resize(crop, (max(8, int(round(cw * s))), max(8, int(round(ch * s)))),
-                           interpolation=cv2.INTER_AREA)
+    u1, v1 = u0 + cw, v0 + ch
 
     H = None if d.get("H") is None else np.asarray(d["H"], np.float64)
     cen = quad.mean(axis=0)
@@ -321,34 +329,57 @@ def sense_fixed(bgr, params, d, log=print):
     else:                                         # 검출만 모드: 대략 배율(면적 필터에만 쓴다)
         mm_px = float((params.get("calib") or {}).get("est_mm_per_px", 0.143))
         log("배율      : 대략값 %.5f mm/px (설정 calib.est_mm_per_px · 판 보정 전)" % mm_px)
-    p = dict(params)
-    # 검출 로직은 그대로: 철판 모드 + 스케일 폴백만 쓴다. marker_mm 0 = 마커 검출 끔.
-    p.update({"surface": "plate", "marker_mm": 0, "plate_mm_per_px": mm_px / s,
-              "plate_margin_pct": 0})
-    log("감지영역  : 사각형 (%d,%d)-(%d,%d)  %dx%d px  축소 x%.3f → %dx%d px  mm/px %.5f"
-        % (u0, v0, u1, v1, cw, ch, s, small.shape[1], small.shape[0], mm_px / s))
-    det = detect.detect(small, p)
-    det.warnings = [w for w in det.warnings if not any(w.startswith(q) for q in _QUIET_WARN)]
-    det.wafer.mm_per_px = mm_px / s
 
-    # 사각형 경계에 닿거나 밖인 검출은 버린다. 안쪽 중앙값으로 채운 바깥과의 이음매나 새겨진
-    # 사각형의 선이 칩처럼 잡히기 때문이다. 버린 뒤 번호를 1부터 다시 매긴다(그림도 그 번호로).
-    margin_px = float(params.get("calib", {}).get("area_margin_mm", 1.0)) / max(mm_px / s, 1e-9)
-    q_small = ((quad - [u0, v0]) * s).astype(np.float32).reshape(-1, 1, 2)
-    kept, dropped = [], 0
-    for x in det.samples:
-        pts = x.get("vertices_px") or [[x["x_px"], x["y_px"]]]
-        dmin = min(cv2.pointPolygonTest(q_small, (float(a), float(b)), True) for a, b in pts)
-        dc = cv2.pointPolygonTest(q_small, (float(x["x_px"]), float(x["y_px"])), True)
-        if dmin < margin_px or dc < margin_px:
-            dropped += 1
-            continue
-        kept.append(x)
-    if dropped:
-        log("경계    : 감지 영역 경계에 닿거나 밖인 검출 %d개 제외" % dropped)
-    for i, x in enumerate(kept, 1):
-        x["no"] = i
-    det.samples = kept
+    use_fixed = str((params.get("fixed") or {}).get("detector", "fixed")) != "legacy"
+    if use_fixed:
+        # 고정 환경 전용 검출기(core/fixed_detect.py). 작업 해상도 축소는 내부에서 한다.
+        s = 1.0
+        small = crop
+        ref_crop, ref_note = None, ""
+        if bool((params.get("fixed") or {}).get("use_ref")):
+            ref_crop, ref_note = load_ref_crop(params, d, (u0, v0, u1, v1), crop)
+            log("빈 판 기준: %s" % (ref_note or "사용"))
+        log("감지영역  : 사각형 (%d,%d)-(%d,%d)  %dx%d px  mm/px %.5f · 제외 영역 %d개"
+            % (u0, v0, u1, v1, cw, ch, mm_px, len(d.get("exclude") or [])))
+        det = fixed_detect.detect(crop, params, mm_px, valid, ref=ref_crop, area_poly=quad_l, log=log)
+        det.wafer.mm_per_px = mm_px
+        kept = det.samples
+    else:
+        maxpx = int(params.get("detect_max_px", 2000) or 0)
+        s = 1.0
+        small = crop
+        if maxpx > 0 and max(ch, cw) > maxpx:
+            s = maxpx / float(max(ch, cw))
+            small = cv2.resize(crop, (max(8, int(round(cw * s))), max(8, int(round(ch * s)))),
+                               interpolation=cv2.INTER_AREA)
+        p = dict(params)
+        # 검출 로직은 그대로: 철판 모드 + 스케일 폴백만 쓴다. marker_mm 0 = 마커 검출 끔.
+        p.update({"surface": "plate", "marker_mm": 0, "plate_mm_per_px": mm_px / s,
+                  "plate_margin_pct": 0})
+        log("감지영역  : 사각형 (%d,%d)-(%d,%d)  %dx%d px  축소 x%.3f → %dx%d px  mm/px %.5f"
+            % (u0, v0, u1, v1, cw, ch, s, small.shape[1], small.shape[0], mm_px / s))
+        det = detect.detect(small, p)
+        det.warnings = [w for w in det.warnings if not any(w.startswith(q) for q in _QUIET_WARN)]
+        det.wafer.mm_per_px = mm_px / s
+
+        # 사각형 경계에 닿거나 밖인 검출은 버린다. 안쪽 중앙값으로 채운 바깥과의 이음매나 새겨진
+        # 사각형의 선이 칩처럼 잡히기 때문이다. 버린 뒤 번호를 1부터 다시 매긴다(그림도 그 번호로).
+        margin_px = float(params.get("calib", {}).get("area_margin_mm", 1.0)) / max(mm_px / s, 1e-9)
+        q_small = ((quad - [u0, v0]) * s).astype(np.float32).reshape(-1, 1, 2)
+        kept, dropped = [], 0
+        for x in det.samples:
+            pts = x.get("vertices_px") or [[x["x_px"], x["y_px"]]]
+            dmin = min(cv2.pointPolygonTest(q_small, (float(a), float(b)), True) for a, b in pts)
+            dc = cv2.pointPolygonTest(q_small, (float(x["x_px"]), float(x["y_px"])), True)
+            if dmin < margin_px or dc < margin_px:
+                dropped += 1
+                continue
+            kept.append(x)
+        if dropped:
+            log("경계    : 감지 영역 경계에 닿거나 밖인 검출 %d개 제외" % dropped)
+        for i, x in enumerate(kept, 1):
+            x["no"] = i
+        det.samples = kept
 
     vis = detect.annotate(small, det, ())
     if s != 1.0:
@@ -380,3 +411,84 @@ def sense_fixed(bgr, params, d, log=print):
             "vis_crop": vis, "info": info, "quad": [[float(a), float(b)] for a, b in quad],
             "scale": s, "mm_per_px": mm_px, "detect_ms": det.detect_ms, "mode": "fixed",
             "area_only": H is None}
+
+
+# --------------------------------------------------------------------------
+# 빈 판 기준 사진 (선택 · 미검증) - 배경을 medianBlur 대신 이 사진으로 쓴다
+# --------------------------------------------------------------------------
+def ref_paths():
+    base = os.path.dirname(_path())
+    return os.path.join(base, "plate_ref.png"), os.path.join(base, "plate_ref.json")
+
+
+def save_ref(bgr, params, camera_index, area):
+    """빈 판 사진 + 메타(카메라 번호 · 해상도 · 노출 · 화이트밸런스 · 감지 영역)."""
+    from core import imgio
+    png, meta = ref_paths()
+    os.makedirs(os.path.dirname(png), exist_ok=True)
+    imgio.imwrite_u(png, bgr)
+    m = {"camera_index": int(camera_index), "size": [int(bgr.shape[1]), int(bgr.shape[0])],
+         "exposure": float(params.get("exposure") or 0), "wb_temperature": int(params.get("wb_temperature") or 0),
+         "area": None if not area else [[float(a), float(b)] for a, b in area],
+         "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    with open(meta, "w", encoding="utf-8") as f:
+        json.dump(m, f, ensure_ascii=False, indent=1)
+    return m
+
+
+def load_ref_meta():
+    try:
+        with open(ref_paths()[1], encoding="utf-8") as f:
+            m = json.load(f)
+        return m if isinstance(m, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def ref_validity(meta, params, camera_index, size, area):
+    """(유효한가, 사유). 카메라 번호 · 해상도 · 노출 · 화이트밸런스 · 감지 영역이 촬영 때와 같아야 한다."""
+    if not meta:
+        return False, "빈 판 기준 없음"
+    if int(meta.get("camera_index", -1)) != int(camera_index):
+        return False, "카메라 번호가 다름"
+    if [int(x) for x in meta.get("size") or []] != [int(size[0]), int(size[1])]:
+        return False, "해상도가 다름"
+    if abs(float(meta.get("exposure") or 0) - float(params.get("exposure") or 0)) > 1e-6:
+        return False, "노출이 다름"
+    if int(meta.get("wb_temperature") or 0) != int(params.get("wb_temperature") or 0):
+        return False, "화이트밸런스가 다름"
+    ma = meta.get("area")
+    if not ma or not area or np.abs(np.asarray(ma, np.float64) - np.asarray(area, np.float64)).max() > 1.0:
+        return False, "감지 영역이 다름"
+    return True, ""
+
+
+def load_ref_crop(params, d, rect, crop):
+    """유효한 빈 판 기준이면 감지 영역 crop 에 맞춘 기준 crop(위상 상관으로 작은 이동 보정). (이미지|None, 메모)."""
+    from core import imgio
+    meta = load_ref_meta()
+    size = (int(d.get("size", [0, 0])[0]), int(d.get("size", [0, 0])[1]))
+    ok, why = ref_validity(meta, params, d.get("camera_index", -1), size, d.get("area"))
+    if not ok:
+        return None, "무효 · %s · medianBlur 로" % why
+    ref = imgio.imread_u(ref_paths()[0])
+    if ref is None or [ref.shape[1], ref.shape[0]] != list(size):
+        return None, "무효 · 기준 사진을 읽지 못함 · medianBlur 로"
+    u0, v0, u1, v1 = rect
+    rc = ref[v0:v1, u0:u1].copy()
+    if rc.shape != crop.shape:
+        return None, "무효 · 크기 불일치 · medianBlur 로"
+    g1 = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    g2 = cv2.cvtColor(rc, cv2.COLOR_BGR2GRAY)
+    k = 0.25
+    a = cv2.resize(g1, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
+    b = cv2.resize(g2, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
+    (dx, dy), _resp = cv2.phaseCorrelate(np.float32(b), np.float32(a))
+    dx, dy = dx / k, dy / k
+    note = "사용 · 이동 보정 %.1f, %.1f px" % (dx, dy)
+    if abs(dx) > 60 or abs(dy) > 60:
+        return None, "무효 · 이동이 너무 큼(%.0f, %.0f px) · medianBlur 로" % (dx, dy)
+    if abs(dx) > 0.5 or abs(dy) > 0.5:
+        M = np.float32([[1, 0, dx], [0, 1, dy]])
+        rc = cv2.warpAffine(rc, M, (rc.shape[1], rc.shape[0]), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    return rc, note

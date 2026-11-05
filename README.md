@@ -42,6 +42,8 @@
 │   ├── tools/              # 개발·검증용. 프로그램 실행에는 필요 없다
 │   │   ├── regress.py      #   지금까지 찍은 사진 전부로 검출 회귀
 │   │   ├── flat_check.py   #   평탄화 전·후 검출 비교 (raw.png 들로)
+│   │   ├── fixed_regress.py #  고정 환경 검출기(core/fixed_detect.py) 회귀 · 튜닝 (data/truth 정답)
+│   │   ├── make_truth.py   #   앱에서 고친 촬영(samples_edit.json)을 정답 파일로 내보내기
 │   │   ├── cam_probe.py    #   카메라 포맷·해상도 실측 (카메라 필요)
 │   │   ├── e2e_smoke.py    #   하드웨어 없이 전 흐름 검증
 │   │   └── synth_cam.py    #   사진 호밍 검증용 합성 카메라(--dry)
@@ -101,6 +103,8 @@ python -m core.calib fit            # 마커로 보정해 data/calib_matrix.json
 python -m core.calib samples        # 촬영 → 검출 → 기계좌표 표
 python -m core.calib check --save   # 저장된 보정과 지금 사진 비교
 python tools/regress.py             # data/out 의 사진 전부로 검출 회귀 (개수 줄면 exit 1)
+python tools/fixed_regress.py       # 고정 환경 검출기 회귀(data/truth, config=ceiling) · --all · --update · --loo · --set fixed.seed=4
+python tools/make_truth.py DIR      # 앱에서 고친 촬영 폴더 → data/truth/<폴더>.json
 python tools/e2e_smoke.py           # 서버를 띄워 capture→run→done 전 흐름 검증
 python tools/flat_check.py DIR ...  # raw.png 에 평탄화만 적용해 전·후 검출 개수·경고 비교
 python tools/flat_check.py DIR --mode all   # 통계 경로만 / 엣지 제안만 기여를 나란히 (stat|edge)
@@ -224,6 +228,50 @@ python tools/cam_probe.py           # 카메라가 실제로 내보내는 포맷
   촬영본에서 같은 점 클릭(1~8배 확대, 선택한 점은 0.5 px 씩 미세 이동). [감지 영역 꼭짓점을
   보정점으로 쓰기]는 꼭짓점 픽셀을 점 목록에 넣어 두고 [위치 기록]만 하게 한다 ④ 표(번호 · X · Y ·
   u · v · 잔차 · 삭제)에서 RMS · 최대 확인 후 [적용]. 클릭 좌표는 원본 해상도 기준이다.
+
+### 고정 환경 검출기 (`core/fixed_detect.py`, fixed 모드 기본)
+
+`core/detect.py`(웨이퍼 · 철판 일반 검출, 검증 완료)는 **markers 모드 전용**으로 그대로 두고, fixed 모드는
+설정 `fixed.detector`(`fixed` 기본 | `legacy` = 기존 `detect.detect`)로 고른다. 운용 환경(천장 고정 카메라 ·
+알루미늄 판 · 3x5 배치)에 맞춰 **실제 촬영 사진(data/truth 정답) 회귀로 튜닝**한다 — 한 장에 맞추지 않도록
+여러 장 · `--loo` 로 확인한다. 회색 · 반투명 칩은 판과 색 · 밝기가 거의 같고 판 긁힘이 많아 기준을 낮추면
+긁힘이 잡힌다. 밝은 노출일수록 나쁘다(종이 249 의 140936) — 그래서 운용 카메라 기본이 **노출 -5 고정 ·
+화이트밸런스 5000 K 고정**이다(미고정이면 색이 초록 · 노랑으로 흔들린다).
+
+1. Lab 채널별 잔차 = 가우시안(`fixed.blur_sigma` 1.5) 블러 − medianBlur(칩 긴 변 × `fixed.bg_k_chips` 3) →
+   채널 강건 z(중앙값 · MAD×1.4826, MAD 하한 1.0 = 8비트 Lab 양자화 한 단계 — 하한이 없으면 밝은 사진에서
+   MAD 0 이 되어 전부 잡음) → `d = √Σz²`. 검출용으로 칩 긴 변이 `fixed.work_long_px`(60) 가 되게 줄여서 한다.
+2. `d > fixed.seed`(4.5) → open 3×3 → close 5×5 → 연결요소 → 모양 필터(면적 `fixed.area_ratio` 0.25~3배 ·
+   볼록도 ≥ `fixed.min_solidity` 0.75 · 종횡비 ≤ `fixed.max_aspect` 4.5 · 최소외접사각형 채움률 ≥
+   `fixed.min_fill` 0.45 — 긁힘 제거).
+3. 칩 크기: 1차 검출의 강한 후보(볼록도 > 0.85) 긴 변 중앙값으로 자동 추정해 그 크기로 다시 맞춘다. 추정이
+   실패하면 `fixed.chip_mm`(11 mm)을 배율로 환산한다.
+4. 배치 사전정보(`fixed.layout` `grid` 기본 | `free`, `fixed.grid_rows` 3 · `fixed.grid_cols` 5): 후보 중심으로
+   격자(아핀 `o + i·u + j·v`, 정수 인덱스)를 RANSAC 으로 맞추고 최소제곱으로 정련해 15칸 위치를 예측한다.
+   방향(가로 · 세로)과 약간의 회전 · 원근은 허용. 인라이어가 부족하면 free 로 떨어지고 경고 한 줄. 칸에 들지
+   않은 후보는 버린다. 빈 칸은 칸 창(칩 긴 변 ±0.9배) 안에서 낮은 기준(`fixed.local_seeds` 3.5 → 2.8 → 2.2,
+   이어 임계를 올려 후광으로 부푼 덩어리의 핵만 잡는 단계)으로 다시 찾고, 그래도 없으면 같은 창에서 Lab
+   Canny(L 10/30 · a·b 4/12) 닫기 · 채우기, 그래도 없으면 예측 위치로 샘플을 낸다(`fixed.emit_predicted`).
+5. 출력 샘플은 기존 dict 와 호환(`x_px` `y_px` `vertices_px` `shape` `area_mm2` `weak` `strength`) +
+   **`source`** = `detected`(검출 · 실선) | `local`(보완 · 실선 + `+`, weak) | `predicted`(예측 · 점선 원 + `?`,
+   weak). 보완 · 예측은 확인 모드에서 사람이 본다(기존 weak 처리와 같다). 샘플 번호는 행 우선.
+6. **제외 영역**: 감지 영역 안에 걸리는 헤드 · 기판 등을 가리는 다각형(원본 px, `plate_calib.json` 의 `exclude`).
+   보정 창 감지 영역 · 판 보정 탭의 [제외 영역 클릭] → [영역 닫기] → [적용]. 검출 전에 판 색으로 칠하고 d 를
+   0 으로 둔다. **빈 판 기준(선택 · 미검증)**: [빈 판 기준 촬영]이 `data/plate_ref.png` + `plate_ref.json`(카메라
+   번호 · 해상도 · 노출 · 화이트밸런스 · 감지 영역)을 저장하고, 설정 `fixed.use_ref` 가 켜져 있고 메타가
+   현재와 같으면 배경을 medianBlur 대신 그 사진으로 쓴다(작은 이동은 위상 상관으로 맞춤). 다르면 무효로
+   표시하고 medianBlur 로 되돌아간다.
+7. 로그: 칩 크기 추정값 · 격자 인라이어 수 · source 별 개수 · 단계별 시간(잔차 · 격자 · 재탐색).
+
+**정답 파일(`data/truth/*.json`)**: `{ "<폴더명>": { "image": "raw.png|fused.png", "size": [w,h], "samples":
+[{"u","v","how"}], "area": [[u,v]×4], "mm_per_px": 근사, "chip_long_px": 근사, "config": "ceiling"|"motor" } }`
+(`how` = detected / local / grid / edited). 폴더는 `data/out/<폴더명>/` 에 있어야 한다. `tools/make_truth.py DIR` 가
+앱의 샘플 편집(추가 · 삭제)으로 고친 `samples_edit.json` 을 이 형식으로 내보낸다(감지 영역은 그 촬영 때의
+`plate_calib.json`, 배율은 판 보정 또는 `calib.est_mm_per_px`). **회귀 `tools/fixed_regress.py`**: 항목마다
+감지 영역 crop → `fixed_detect` → 정답과 min(2.5 mm, 칩 긴 변 × 0.35) 안 가까운 순 1:1 매칭 → 사진별 · 전체
+적중 / 놓침 / 오검출 · source 별 표. `--update` 로 기준(`tools/fixed_regress_base.json`)을 고정하고 나빠지면
+exit 1. `--loo` 는 한 장씩 빼고 나머지로 `fixed.seed` · `fixed.min_fill` · `fixed.min_solidity` 격자를 맞춘 값으로
+뺀 장을 채점해 기본값과 비교한다(과적합 확인). `--set fixed.seed=4` 로 파라미터를 덮어 시험한다.
 
 ### 촬영 순서 (한쪽에서 강한 빛이 들어오는 환경 대응)
 
@@ -678,8 +726,8 @@ settings.json 을 직접 편집한다(화면에 있던 `stat_seed` · `stat_grow
 | 카메라 | `width` | 4080 | px | 재연결 | 가로 해상도(기본 4:3 전체 센서) |
 | 카메라 | `height` | 3060 | px | 재연결 | 세로 해상도 · [최대 해상도로] 버튼(4080×3060 · MJPG) |
 | 카메라 | `fourcc` | MJPG |  | 재연결 | 영상 포맷 |
-| 카메라 | `wb_temperature` | 0 | K | 재연결 | 화이트밸런스 |
-| 카메라 | `exposure` | 0 |  | 재연결 | 노출 |
+| 카메라 | `wb_temperature` | 5000 | K | 재연결 | 화이트밸런스(운용 고정 · [운용 기본값으로] 버튼이 아래 값들을 한 번에 채움) |
+| 카메라 | `exposure` | -5 |  | 재연결 | 노출(운용 고정, 0 = 첫 촬영 자동 노출 값을 세션 동안 재사용 · [노출 다시 찾기]) |
 | 카메라 | `focus_mode` | fixed |  | 재연결 | 초점 모드(고정 — 자동초점 헌팅 방지) |
 | 카메라 | `focus_sweep` | 켬 |  | 재연결 | 초점 스윕(고정 모드에서 열 때 가장 선명한 값으로) |
 | 카메라 | `focus` | -1 |  | 재연결 | 고정 초점값 |
@@ -762,6 +810,17 @@ settings.json 을 직접 편집한다(화면에 있던 `stat_seed` · `stat_grow
 | 검출 | `marker_mm_xy` | 표 |  | 다음 촬영 | 판 마커 좌표 (markers 모드에서만 보임) |
 | 검출 | `calib.min_markers` | 3 |  | 다음 촬영 | 판 마커 최소 개수 (markers 모드에서만 보임) |
 | 검출 | `calib.confirm_3markers` | 켬 |  | 다음 순회 | 마커 3개면 확인 (markers 모드에서만 보임) |
+| 검출 | `fixed.detector` | fixed |  | 다음 촬영 | 고정 환경 검출기 `fixed` 또는 기존 `legacy` (fixed 모드에서만 보임) |
+| 검출 | `fixed.layout` | grid |  | 다음 촬영 | 배치 `grid`(격자 사전정보) 또는 `free` |
+| 검출 | `fixed.grid_rows` · `fixed.grid_cols` | 3 · 5 |  | 다음 촬영 | 격자 행 · 열 수(화면 가로 · 세로 어느 쪽이든) |
+| 검출 | `fixed.emit_predicted` | 켬 |  | 다음 촬영 | 끝까지 못 찾은 칸도 예측 위치로 샘플(weak, `source=predicted`) |
+| 검출 | `fixed.chip_mm` | 11.0 | mm | 다음 촬영 | 예상 칩 긴 변(자동 추정 실패 시 배율로 환산) |
+| 검출 | `fixed.use_ref` | 끔 |  | 다음 촬영 | 빈 판 기준 사진을 배경으로 사용(미검증) |
+| 검출(고급) | `fixed.seed` | 4.5 |  | 다음 촬영 | 검출 임계 d |
+| 검출(고급) | `fixed.local_seeds` | [3.5, 2.8, 2.2] |  | 다음 촬영 | 빈 칸 재탐색 임계 |
+| 검출(고급) | `fixed.bg_k_chips` · `fixed.blur_sigma` | 3.0 · 1.5 |  | 다음 촬영 | 배경 커널(칩 길이 배) · 블러 σ |
+| 검출(고급) | `fixed.min_solidity` · `fixed.max_aspect` · `fixed.min_fill` | 0.75 · 4.5 · 0.45 |  | 다음 촬영 | 모양 필터 |
+| 검출(고급) | `fixed.area_ratio` · `fixed.work_long_px` | [0.25, 3.0] · 60 |  | 다음 촬영 | 면적 범위(예상 칩 배) · 검출용 칩 긴 변 |
 | 고급 | `origin_gap_mm` | 2.0 | mm | 즉시 | 원점 이격 |
 | 고급 | `file_log` | 켬 |  | 즉시 | 파일 로그 |
 

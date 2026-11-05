@@ -36,7 +36,7 @@ def refresh_state():
     keep_shot = (state.plate or {}).get("shot")
     area_ok, area_why = plate.area_validity(d, _cam_index(), _req_size())
     state.plate = {"mode": mode, "valid": bool(ok), "area_ok": bool(area_ok), "reason": why,
-                   "data": plate.summary(d), "shot": keep_shot}
+                   "data": plate.summary(d), "shot": keep_shot, "ref": _ref_state(d)}
     if mode != "fixed" or ok or area_ok:
         # 감지 영역만 유효하면 검출만 된다 - 경보가 아니라 주의 안내(칩 · 경고줄)로 알린다
         state.set_alarm("판 보정", "")
@@ -46,6 +46,17 @@ def refresh_state():
         state.set_alarm("판 보정", "판 보정 무효 · 다시 보정")
     engine._update_pointer_px()
     return ok
+
+
+def _ref_state(d):
+    """빈 판 기준 상태(화면 표시용): {exists, valid, reason, time}."""
+    meta = plate.load_ref_meta()
+    if not meta:
+        return {"exists": False, "valid": False, "reason": "없음", "time": None, "use": bool(state.get("fixed.use_ref"))}
+    size = _req_size()
+    ok, why = plate.ref_validity(meta, state.params, _cam_index(), size, (d or {}).get("area"))
+    return {"exists": True, "valid": bool(ok), "reason": why, "time": meta.get("time"),
+            "use": bool(state.get("fixed.use_ref"))}
 
 
 def chip_text():
@@ -169,6 +180,62 @@ async def calib_apply(data):
                    "ok" if not over else "warn")
     await push_ack("plate_calib_apply", True, "", rms_mm=round(f["rms"], 4),
                    max_mm=round(f["max"], 4), over=over)
+    await push_state()
+    return True
+
+
+async def exclude_apply(data):
+    """[적용] - 제외 영역 다각형 목록 저장(감지 영역 안에 걸리는 헤드 · 기판 등을 가린다). 빈 목록 = 모두 지움."""
+    size = _size_arg(data)
+    polys = []
+    for i, poly in enumerate(data.get("polys") or []):
+        try:
+            pts = [(float(a), float(b)) for a, b in poly]
+        except (TypeError, ValueError):
+            await push_ack("plate_exclude_apply", False, "invalid", ["제외 영역 %d · 값 오류" % (i + 1)])
+            return False
+        if len(pts) < 3 or not all(math.isfinite(t) and 0 <= t <= m for p in pts for t, m in zip(p, size)):
+            await push_ack("plate_exclude_apply", False, "invalid", ["제외 영역 %d · 점 3개 이상 · 촬영본 안" % (i + 1)])
+            return False
+        polys.append([[round(a, 1), round(b, 1)] for a, b in pts])
+    d = plate.load()
+    if d is None or [int(x) for x in d.get("size") or []] != [int(size[0]), int(size[1])]:
+        d = plate.new_record(_cam_index(), size, d)
+    d["exclude"] = polys
+    plate.save(d)
+    refresh_state()
+    await push_log("제외 영역 저장 · %d개 · 다시 촬영하면 반영" % len(polys), "ok")
+    await push_ack("plate_exclude_apply", True, "", n=len(polys))
+    await push_state()
+    return True
+
+
+async def ref_shot():
+    """[빈 판 기준 촬영] - 샘플을 치운 빈 판을 한 장 찍어 기준으로 저장(브라케팅 없음)."""
+    if engine.busy() or state.camera.get("capturing"):
+        await push_ack("plate_ref_shot", False, "busy", ["순회 · 촬영 중"])
+        return False
+    d = plate.load()
+    if not d or not d.get("area"):
+        await push_ack("plate_ref_shot", False, "invalid", ["감지 영역 먼저 지정"])
+        return False
+    try:
+        bgr = await vision.single_shot(state.params)
+    except Exception as e:                 # noqa: BLE001
+        one = logger.short(e)
+        logger.write("err", "빈 판 기준 촬영 실패 상세: %s" % e)
+        await push_log("빈 판 기준 촬영 실패 · " + one, "err")
+        await push_ack("plate_ref_shot", False, "error", [one])
+        return False
+    size = (int(bgr.shape[1]), int(bgr.shape[0]))
+    if [int(x) for x in d.get("size") or []] != list(size):
+        await push_ack("plate_ref_shot", False, "invalid", ["감지 영역과 해상도가 다름 · 감지 영역 다시 지정"])
+        return False
+    await vision.run_blocking(plate.save_ref, bgr, state.params, _cam_index(), d["area"])
+    refresh_state()
+    await push_log("빈 판 기준 저장 · %d×%d · 노출 %s · 화이트밸런스 %s"
+                   % (size[0], size[1], state.get("exposure"), state.get("wb_temperature")), "ok")
+    await push_ack("plate_ref_shot", True, "")
     await push_state()
     return True
 

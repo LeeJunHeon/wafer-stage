@@ -56,6 +56,8 @@ def load_saved(d):
     if os.path.exists(p):
         with open(p, "r", encoding="utf-8") as f:
             arr = json.load(f)
+        if any(s.get("X") is None for s in arr):
+            return None, "fixed"           # 고정 보정 촬영(좌표 없음 · fixed 검출기) - fixed_regress.py 가 본다
         return [(s["no"], float(s["X"]), float(s["Y"])) for s in arr], "mm"
     p = os.path.join(d, "result.json")
     if os.path.exists(p):
@@ -129,6 +131,9 @@ def main(argv=None):
     worse = 0
     for d in dirs:
         old, unit = load_saved(d)
+        if unit == "fixed":
+            print("%-24s 건너뜀 · 고정 보정 촬영(tools/fixed_regress.py 대상)" % os.path.basename(d))
+            continue
         new, unit2, how = run_one(d, params)
         name = os.path.basename(d)
         if new is None:
