@@ -216,7 +216,7 @@
   // ---------------- 헤더 ----------------
   // 색만으로 상태를 알리지 않는다(색각 이상·모니터 편차). 글자를 함께 바꾼다.
   const PILL = {
-    idle: ['대기', ''], ready: ['준비', 'ready'], capturing: ['촬영', 'running'],
+    idle: ['대기', ''], ready: ['준비', 'ready'], capturing: ['촬영 중', 'running'],
     running: ['순회', 'running'], paused: ['일시정지', 'paused'],
     waiting_confirm: ['확인 대기', 'waiting'], parking: ['정리', 'running'],
     done: ['완료', 'ready'], stopped: ['정지', 'stopped'], error: ['오류', 'error'],
@@ -448,7 +448,9 @@
       e.disabled = !!v;
       why(e, v ? reason : '');
     };
-    dis('btnCapture', !on || running, running ? '순회 · 보정 중' : '서버 연결 끊김');
+    const capBusy = !!(s && s.camera && s.camera.capturing);
+    dis('btnCapture', !on || running, capBusy ? '촬영 중' : (running ? '순회 · 보정 중' : '서버 연결 끊김'));
+    $('btnCapture').classList.toggle('busy', capBusy);
     dis('btnPark', !canMove || running, moveWhy);
     dis('btnJog', !on, '서버 연결 끊김');   // 팝업은 열리고, 안에서 다시 잠근다
     dis('btnPhotoHome', !on || !st.connected || running || !!st.moving,

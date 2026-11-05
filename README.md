@@ -117,7 +117,7 @@ python tools/cam_probe.py           # 카메라가 실제로 내보내는 포맷
 |---|---|
 | `version` | `{name, version, build}` |
 | `stage` | `connected, port, homed_x, homed_y, homed_z, x_mm, y_mm, z_mm, u, v, moving, dirty, needs_home, last_error` |
-| `camera` | `index, ok, last_error, capturing, preview` |
+| `camera` | `index, ok, last_error, capturing, preview, cap_text, cap_error` — `cap_text` 는 촬영 중 서버가 단계마다 푸시하는 진행 문구("촬영 위치로 이동 중" · "촬영 중 · 노출 맞춤" · "촬영 중 · 프레임 2/3" · "합치는 중" · "검출 중" · "저장 중"), `cap_error` 는 실패 한 줄 `{id, text}`(화면이 id 가 새로울 때 2.8초 보임) |
 | `plate` | 고정 보정: `{mode, valid, reason, data{created, camera_index, size, area[4×(u,v)], points[{x,y,u,v,res_mm}], has_h, rms_mm, max_mm, res_limit_mm, n}, shot}` — `valid` 는 카메라 번호 · 해상도가 저장 때와 같고 감지 영역 · 판 보정이 다 있을 때. `shot` 은 보정 창 단발 촬영 `{id, w, h, url}` |
 | `head_marker` | 촬영본에서 찾은 헤드 마커 `{center, corners[4]}`(표시용) 또는 null |
 | `sensing` | `{rect, quad}` — `quad` 는 고정 보정의 감지 영역 사각형(촬영본 px), `rect` 는 그것을 감싸는 영역 |
@@ -232,7 +232,17 @@ python tools/cam_probe.py           # 카메라가 실제로 내보내는 포맷
 오차 RMS 0.73 · 최대 2.21 mm). 그래서 촬영은 아래 순서로 간다(`backend/vision.py
 _capture_sync`).
 
-1. **노출 브라케팅 + 융합** (`core/camera.py capture_bracket`, 설정 `bracket` 기본 켬)
+0. **고정 노출 한 장이 기본이다**(설정 `bracket` 기본 끔 — 함체 안 조명이 일정하고 감지 영역 포화가
+   0.0% 라 브라케팅이 필요 없다. 2026-11-05 실장 4080×3060: 브라케팅 촬영 17.7 s + 융합 4.8 s).
+   `exposure` 가 0 이면 첫 촬영에서 자동 노출이 수렴하기를 기다려 그 값을 읽어 고정하고(카메라 번호 ·
+   해상도가 같은 동안) 이후 촬영은 노출 탐색 없이 그 값을 재사용한다. 설정 카메라 탭 `exposure` 옆
+   **[노출 다시 찾기]**(명령 `exposure_refind`)가 저장값을 버려 다음 촬영이 다시 맞춘다. 값을 읽지 못하면
+   자동 노출을 유지한다. 프레임은 `capture_frames`(기본 3)장 중 가장 선명한 장, 못 받으면 받은 만큼으로 진행하고
+   로그에 "프레임 요청 n · 받음 m". 소요는 노출 · 안정 대기 · 프레임 · 융합 · 검출 · 헤드 마커 · 저장을 초 단위로
+   로그에 남긴다. 예상(장비 확인 전): 노출 재사용 시 안정 대기 0.4 + 프레임 3장 ≈ 1 s 안팎, 검출은 `detect_max_px`
+   로 줄인 크기 기준 약 1.8 s(실측) → 촬영→검출 수 초 이내.
+1. **노출 브라케팅 + 융합** (`core/camera.py capture_bracket`, 설정 `bracket` 을 켠 경우. fixed 에서는 융합을 감지 영역
+   사각형(+여백)에만 하고 헤드 마커는 첫 장 원본으로 검출한다)
    — 자동 노출을 끄고 노출을 바꿔 가며 받아 Mertens 방식으로 융합한다
    (노출시간을 몰라도 되는 방식). 노출 목록은 밝기를 보며 정한다(`bracket_exposure`
    가 비어 있을 때 = 기본): 첫 장은 종이(밝은 상위 20% 화소) 평균이 200~235 가 되도록
@@ -678,8 +688,8 @@ settings.json 을 직접 편집한다(화면에 있던 `stat_seed` · `stat_grow
 | 카메라 (고급) | `af_min_wait_s` | 0.5 | s | 다음 촬영 | 자동 초점 최소 대기 |
 | 카메라 (고급) | `focus_step` | 15 |  | 재연결 | 스윕 간격 |
 | 카메라 (고급) | `focus_settle_s` | 0.35 | s | 재연결 | 스윕 안정 대기 |
-| 카메라 | `capture_frames` | 15 |  | 다음 촬영 | 촬영 프레임 수 |
-| 카메라 | `bracket` | 켬 |  | 다음 촬영 | 노출 브라케팅 |
+| 카메라 | `capture_frames` | 3 |  | 다음 촬영 | 촬영 프레임 수 |
+| 카메라 | `bracket` | 끔 |  | 다음 촬영 | 노출 브라케팅 — 끄면 고정 노출 한 장(처음 찾은 노출 재사용 · [노출 다시 찾기]) |
 | 카메라 | `bracket_exposure` | [] |  | 다음 촬영 | 브라케팅 노출 목록 |
 | 카메라 | `bracket_settle_s` | 0.4 | s | 다음 촬영 | 브라케팅 안정 대기 |
 | 카메라 | `flat_field` | 켬 |  | 다음 촬영 | 조명 평탄화 |
@@ -746,7 +756,7 @@ settings.json 을 직접 편집한다(화면에 있던 `stat_seed` · `stat_grow
 | 검출 | `calib.mode` | fixed |  | 다음 촬영 | 보정 방식(고정 / 판 마커). 없는 예전 설정은 fixed 로 이행하고 로그에 한 줄 |
 | 검출 | `calib.residual_limit_mm` | 1.0 | mm | 다음 촬영 | 판 보정 잔차 한계(초과 점 빨간 표시) |
 | 검출 | `calib.area_margin_mm` | 1.0 | mm | 다음 촬영 | 감지 영역 경계 여유(닿은 검출 버림) |
-| 검출 | `calib.est_mm_per_px` | 0.075 | mm/px | 다음 촬영 | 대략 배율 — 판 보정 전 검출 확인용(면적 필터에만 씀) |
+| 검출 | `calib.est_mm_per_px` | 0.143 | mm/px | 다음 촬영 | 대략 배율 — 판 보정 전 대략 배율(판 사각형 눈금 10 mm 간격의 픽셀 수로 잴 수 있음, 면적 필터에만 씀). 판 보정을 하면 보정값을 씀. 검출 때 쓴 배율과 출처(대략값/판 보정값)를 로그 한 줄로 남김 |
 | 검출 | `detect_max_px` | 2000 | px | 다음 촬영 | 검출 최대 변(crop 이 크면 줄여 검출 후 원본 좌표로 복원. 0 = 줄이지 않음) |
 | 검출 | `marker_mm` | 30.0 | mm | 다음 촬영 | 판 마커 크기 (markers 모드에서만 보임) |
 | 검출 | `marker_mm_xy` | 표 |  | 다음 촬영 | 판 마커 좌표 (markers 모드에서만 보임) |

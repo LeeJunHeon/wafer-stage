@@ -111,6 +111,8 @@ class Client:
         self.acks = []
         self.logs = []
         self.closed = False            # 서버가 스스로 끝났다(종료 명령)
+        self.cap_texts = []            # 촬영 중 받은 진행 문구(순서대로, 연속 중복 제외)
+        self.cap_errors = []           # 받은 촬영 실패 한 줄
 
     async def pump(self, seconds=0.0):
         """들어오는 메시지를 지정 시간 동안(또는 한 번) 처리한다.
@@ -134,6 +136,12 @@ class Client:
             m = json.loads(raw)
             if m.get("type") == "state":
                 self.state = m
+                cam = m.get("camera") or {}
+                t = cam.get("cap_text")
+                if cam.get("capturing") and t and (not self.cap_texts or self.cap_texts[-1] != t):
+                    self.cap_texts.append(t)
+                if cam.get("cap_error") and cam["cap_error"] not in self.cap_errors:
+                    self.cap_errors.append(cam["cap_error"])
             elif m.get("type") == "ack":
                 self.acks.append(m)
             elif m.get("type") == "log":
@@ -1893,6 +1901,7 @@ async def fixed_area_only_flow(c):
     check(all(s["u"] > 0 and s["verts"] for s in st["samples"]), "픽셀 좌표 · 윤곽은 정상")
     check((st["calib"] or {}).get("area_only") is True, "state.calib.area_only")
     check(any("판 보정 없음" in x for x in st["warnings"]), "주의 안내 한 줄 (%s)" % st["warnings"])
+    check(any("검출 배율" in l["msg"] and "대략값" in l["msg"] for l in c.logs), "배율 로그(대략값)")
     check(os.path.exists(os.path.join(st["sequence"]["out_dir"], "annotated.jpg")), "촬영본 · annotated 저장")
     # 이동 · 순회 · 추가 거절
     c.logs.clear()
@@ -1973,6 +1982,31 @@ async def fixed_invalid_flow(c):
     check(any(a["src"] == "판 보정" for a in st["alarms"]), "경보 유지")
     check(any("판 보정 무효" in l["msg"] for l in c.logs), "로그 '판 보정 무효'")
     check("판 보정 무효" in st["sequence"]["message"], "상태 문구 (%s)" % st["sequence"]["message"])
+
+
+async def capture_progress_flow(c):
+    """촬영 진행 문구(서버가 단계별로 푸시) · 고정 노출 기본 · 소요 세분화 · 실패 한 줄 · 노출 다시 찾기."""
+    s = c.state["settings"]
+    check(s["bracket"] is False and s["capture_frames"] == 3, "기본: 브라케팅 끔 · 프레임 3 (%s · %s)" % (s["bracket"], s["capture_frames"]))
+    check(abs(s["calib"]["est_mm_per_px"] - 0.143) < 1e-9, "대략 배율 기본 0.143")
+    c.logs.clear()
+    c.cap_texts.clear()
+    await c.send(cmd="capture")
+    ph = await c.wait_phase(("ready", "error"), 90)
+    check(ph == "ready", "촬영 완료 (%s)" % ph)
+    check("검출 중" in c.cap_texts and any(t in ("저장 중",) for t in c.cap_texts),
+          "진행 문구 순서 (%s)" % c.cap_texts)
+    check(not c.state["camera"]["capturing"] and not c.state["camera"].get("cap_text"), "완료 뒤 막 조건 해제")
+    tl = _timing_line(c)
+    check(tl is not None and all(k in tl for k in ("노출", "안정 대기", "프레임", "융합", "검출", "헤드 마커", "저장")),
+          "소요 세분화 로그 (%s)" % tl)
+    check(any("검출 배율" in l["msg"] and "판 보정값" in l["msg"] for l in c.logs), "배율 로그(판 보정값)")
+    c.logs.clear()
+    await c.send(cmd="exposure_refind")
+    await c.pump(0.6)
+    check(any("노출" in l["msg"] for l in c.logs), "노출 다시 찾기 명령")
+    # 실패 한 줄: 감지 영역 파일을 지워 무효로 만든 촬영 대신, 해상도 불일치는 별도 케이스가 본다.
+    check(c.cap_errors == [], "정상 촬영은 실패 한 줄 없음")
 
 
 async def fixed_big_flow(c):
@@ -2171,6 +2205,7 @@ def main():
              dict(FIXED_P, calib={"mode": "fixed", "est_mm_per_px": 0.2656})),
             ("고정 보정 감지영역 없음", lambda: prep_fixed(1280, 960, with_area=False), fixed_nocal_flow, None, FIXED_P),
             ("고정 보정 무효", lambda: prep_fixed(1280, 960, cal_size=(640, 480)), fixed_invalid_flow, None, FIXED_P),
+            ("촬영 진행 표시", lambda: prep_fixed(1280, 960), capture_progress_flow, None, FIXED_P),
             ("고정 보정 4080", lambda: prep_fixed(4080, 3060), fixed_big_flow, None, FIXED_BIG_P),
             ("헤드 마커 연결 판단", lambda: (prep_head_calib() or good), head_connect_flow, SYNTH, HEAD_P),
             ("헤드 마커 미검출", lambda: (prep_head_calib() or good), head_missing_flow,

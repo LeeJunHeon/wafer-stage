@@ -30,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import cv2
 
 from core import calib, camera, flat, imgio, plate
+from core import camera as camera_core
 
 import logger
 
@@ -288,9 +289,10 @@ class CameraHolder:
         """미리보기와 같은 카메라 객체로 한 장. 미리보기가 꺼져 있으면 여기서 연다."""
         return self._retrying(params, lambda cam: cam.capture_best())
 
-    def capture_bracket(self, params):
-        """노출 브라케팅 촬영(camera.capture_bracket). 미리보기와 같은 객체·lock."""
-        return self._retrying(params, lambda cam: cam.capture_bracket())
+    def capture_bracket(self, params, crop=None):
+        """노출 브라케팅 촬영(camera.capture_bracket - bracket 이 꺼져 있으면 고정 노출 1장).
+        미리보기와 같은 객체·lock. crop 은 융합할 사각형(원본 px)."""
+        return self._retrying(params, lambda cam: cam.capture_bracket(crop))
 
 
 holder = CameraHolder()
@@ -319,6 +321,27 @@ def store_aux(bgr):
     return {"id": _aux["id"], "w": int(w), "h": int(h), "url": "/frame/%s.jpg" % _aux["id"]}
 
 
+def _prog(text):
+    camera_core._prog(text)
+
+
+def _fuse_crop(params):
+    """fixed 에서 융합할 사각형(원본 px): 저장한 감지 영역의 바깥 사각형 + 여백. 없으면 None."""
+    if calib_mode(params) != "fixed":
+        return None
+    try:
+        d = plate.load()
+        quad = (d or {}).get("area")
+        if not quad:
+            return None
+        us = [float(p[0]) for p in quad]
+        vs = [float(p[1]) for p in quad]
+        pad = 0.05 * max(max(us) - min(us), max(vs) - min(vs)) + 16.0
+        return (min(us) - pad, min(vs) - pad, max(us) + pad, max(vs) + pad)
+    except Exception:              # noqa: BLE001 - 크롭은 속도 최적화일 뿐, 실패하면 전체 융합
+        return None
+
+
 def _grab(params):
     """검출에 쓸 이미지 한 장. --image 면 그 파일(브라케팅 없음), 아니면 카메라.
 
@@ -330,7 +353,7 @@ def _grab(params):
         if bgr is None:
             raise IOError("이미지를 열 수 없습니다: %s" % IMAGE_OVERRIDE)
         return bgr, {"source": IMAGE_OVERRIDE, "bracketed": False, "raw": bgr}
-    return holder.capture_bracket(params)
+    return holder.capture_bracket(params, _fuse_crop(params))
 
 
 def calib_mode(params):
@@ -362,7 +385,10 @@ def _capture_sync(params):
             "bracket_notes": stats.get("bracket_notes"),
             "bracket_warning": stats.get("bracket_warning", "")}
     fuse_s = float(stats.get("fuse_s") or 0.0)
+    tm = stats.get("tm") or {}
     timing = {"capture_s": round(max(0.0, t_cap - fuse_s), 3), "fuse_s": round(fuse_s, 3),
+              "expo_s": tm.get("expo", 0.0), "settle_s": tm.get("settle", 0.0),
+              "frames_s": tm.get("frames", 0.0),
               "detect_s": 0.0, "head_s": 0.0, "size": [int(bgr.shape[1]), int(bgr.shape[0])]}
     fixed = calib_mode(params) == "fixed"
 
@@ -397,6 +423,7 @@ def _capture_sync(params):
         buf.write(t + "\n")
 
     t1 = time.perf_counter()
+    _prog("검출 중")
     if fixed:
         d = plate.load()
         ok, why = plate.area_validity(d, int(_p(params, "camera_index", 1)),
@@ -431,7 +458,7 @@ def _capture_sync(params):
     # 헤드 마커(표시용). 촬영본 위에 검출 표시를 그리는 데만 쓴다.
     t2 = time.perf_counter()
     try:
-        hm = plate.detect_head(bgr, params.get("photohome") or {})
+        hm = plate.detect_head(raw, params.get("photohome") or {})   # 첫 장 원본(융합 안 한 장)
     except Exception:                  # noqa: BLE001
         hm = None
     timing["head_s"] = round(time.perf_counter() - t2, 3)
@@ -466,7 +493,7 @@ def _single_sync(params):
             raise IOError("이미지를 열 수 없습니다: %s" % IMAGE_OVERRIDE)
         return bgr
     img, _st = holder.capture_best(dict(params, capture_frames=min(
-        5, int(_p(params, "capture_frames", 15)))))
+        5, int(_p(params, "capture_frames", 3)))))
     return img
 
 

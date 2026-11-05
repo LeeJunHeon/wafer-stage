@@ -134,6 +134,15 @@
   .camlegend { display: flex; gap: 14px; padding: 4px 12px 6px; font-size: 11px; color: var(--dim); border-top: 1px solid var(--line); }
   .camlegend .sp { flex: 1; }
   .capturing { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(14,20,24,.6); color: #fff; font-weight: 600; letter-spacing: .3px; }
+  .capbox { display: grid; justify-items: center; gap: 10px; padding: 18px 32px; text-align: center; }
+  .capmsg { font-size: 30px; line-height: 1.2; }
+  .capsec { font-size: 18px; font-family: var(--mono); color: #cfd8e2; }
+  .capturing.err { background: rgba(60,12,16,.72); }
+  .capturing.err .capmsg { color: #ffb3b6; font-size: 24px; }
+  .capturing.err .capspin { display: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .capspin { width: 34px; height: 34px; border: 4px solid rgba(255,255,255,.28); border-top-color: #fff; border-radius: 50%; animation: spin .9s linear infinite; }
+  .btn.busy::before { content: ""; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: spin .9s linear infinite; }
   .ov-rect { fill: none; stroke: #ffd400; stroke-width: calc(2px * var(--ovs, 1)); stroke-dasharray: calc(8px * var(--ovs, 1)) calc(6px * var(--ovs, 1)); }
   .ov-quad { fill: none; stroke: #ffd400; stroke-width: calc(1.2px * var(--ovs, 1)); }
   .ov-head { fill: rgba(255,120,200,.12); stroke: #ff78c8; stroke-width: calc(1.6px * var(--ovs, 1)); }

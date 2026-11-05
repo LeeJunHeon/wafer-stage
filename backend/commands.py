@@ -11,7 +11,7 @@ import asyncio
 import os
 import time
 
-from core import paths
+from core import camera as camera_core, paths
 
 import engine
 import logger
@@ -434,6 +434,12 @@ async def _capture_here(_data):
     await push_state()
 
 
+async def _exposure_refind(data):
+    had = camera_core.reset_exposure()
+    await push_log("노출 다시 찾기 · 다음 촬영에서 자동 노출로 맞춤" if had
+                   else "저장된 노출 없음 · 다음 촬영에서 맞춤")
+
+
 async def _capture(data):
     # 편집은 그 촬영에만 속한다. 새로 찍으면 사라지므로 남아 있으면 먼저 묻는다.
     n = len(state.edits)
@@ -852,6 +858,7 @@ _TABLE = {
     "capture_here": _capture_here,
     "return_origin": _return_origin,
     "capture": _capture,
+    "exposure_refind": _exposure_refind,
     "sample_add": _sample_add,
     "sample_add_here": _sample_add_here,
     "sample_delete": _sample_delete,

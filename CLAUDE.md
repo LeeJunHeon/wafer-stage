@@ -77,7 +77,12 @@
   저장한 감지 영역 사각형을 crop(밖은 안쪽 판 색으로 채움) → 긴 변이 detect_max_px 보다 크면 줄여 검출 →
   좌표를 원본으로 되돌려 판 보정으로 mm. detect 는 철판 모드 기존 인자(surface=plate, plate_mm_per_px =
   국소 mm/px ÷ 축소 배율, marker_mm=0, plate_margin_pct=0)만 쓴다 — 검출 로직은 고치지 않았다.
-  촬영마다 단계별(촬영·융합·검출·헤드 마커) 소요를 로그에 남긴다.
+  **fixed 기본은 고정 노출 1장**(bracket 끔 — 함체 안 조명이 일정하고 감지 영역 포화 0%). exposure 0 이면 첫 촬영에서
+  자동 노출 수렴값을 읽어 세션 동안 재사용(설정 [노출 다시 찾기] = 명령 exposure_refind). 브라케팅을 켜도 융합은 감지 영역
+  crop 에만, 헤드 마커는 첫 장 원본으로. capture_frames 기본 3, 못 받으면 받은 만큼 진행("요청 n · 받음 m").
+  촬영마다 단계별(노출·안정 대기·프레임·융합·검출·헤드 마커·저장) 소요를 로그에 남긴다.
+  촬영 진행은 서버가 state.camera.cap_text 로 푸시(화면이 추측하지 않음), 실패는 cap_error{id,text} — 카메라 패널 막 +
+  상단 상태 필 "촬영 중" + [촬영 · 검출] 비활성·스피너. calib.est_mm_per_px 기본 0.143(판 사각형 눈금 10 mm ≈ 70 px).
   **검출만 모드**: 감지 영역만 유효하고 판 보정(H)이 없으면 calib.est_mm_per_px 로 검출하고 X/Y 는 None
   (상태 nocoord, state.calib.area_only) — 이동·순회·클릭 추가는 거절("판 보정 필요"). 감지 영역도 없으면
   검출 없이 data/out/<시각>_nocal/ 에 raw(+fused)만 저장. plate.validity(need_h) / area_validity 로 나뉜다.

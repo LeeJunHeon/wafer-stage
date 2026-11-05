@@ -35,6 +35,33 @@ BRACKET_MAX_SHOTS = 3        # 융합할 최대 장 수
 BRACKET_DARK_MEAN = 25.0     # 장 전체 평균이 이보다 어두우면 검은 사진 - 버리고 멈춘다
 PAPER_LO, PAPER_HI = 200.0, 235.0   # 첫 장에서 종이(밝은 상위 20%) 평균의 목표 범위
 
+# 고정 노출 한 장(브라케팅 끔) - 처음 찾은 노출을 세션 동안 재사용한다.
+# key = (카메라 번호, 가로, 세로). 설정 화면의 [노출 다시 찾기] 가 비운다.
+_EXPO = {"key": None, "value": None}
+EXPO_CONVERGE_S = 1.0        # 자동 노출이 수렴하기를 기다리는 시간(고해상도는 두 배)
+EXPO_CONVERGE_READS = 6      # 수렴 중 버리는 프레임 수 상한(고해상도는 절반)
+HIRES_PIXELS = 4_000_000     # 이 이상이면 고해상도(프레임이 느리고 첫 장이 늦다)
+
+# 촬영 진행 알림(문구 하나). backend 가 스레드 안전한 함수를 꽂는다. 없으면 무시.
+progress_hook = None
+
+
+def _prog(text):
+    fn = progress_hook
+    if fn is not None:
+        try:
+            fn(text)
+        except Exception:      # noqa: BLE001 - 진행 표시가 촬영을 깨면 안 된다
+            pass
+
+
+def reset_exposure():
+    """저장해 둔 고정 노출을 버린다. 다음 촬영이 자동 노출로 다시 찾는다."""
+    had = _EXPO["value"] is not None
+    _EXPO["key"] = None
+    _EXPO["value"] = None
+    return had
+
 
 def focus_score(bgr_or_gray):
     """라플라시안 분산. 클수록 선명. 절대값은 의미 없고 상대 비교용."""
@@ -134,6 +161,8 @@ class Camera:
     def __init__(self, params):
         self.p = params
         self.cap = None
+        self._tm = {}              # 단계별 소요(초): expo · settle · frames
+        self._quiet = False        # True 면 프레임 진행 문구를 내지 않는다(브라케팅이 따로 낸다)
         self.info = {
             "index": int(params.get("camera_index", 1)),
             "backend": None,
@@ -320,16 +349,26 @@ class Camera:
 
         AF 를 껐어도 흔들림/노출 변동이 남아 있으므로 단발 촬영에서도 필요하다.
         """
-        n = int(n or self.p.get("capture_frames", 15))
+        n = int(n or self.p.get("capture_frames", 3))
         if wait_af and use_autofocus(self.p):
             self.wait_autofocus()
         frames, scores = [], []
-        for _ in range(n):
+        t_fr = time.perf_counter()
+        quiet = bool(getattr(self, "_quiet", False))
+        # 고해상도는 프레임이 늦고 끊긴다 - 못 받으면 한 번 더 기다린다(해상도에 맞춰).
+        retry_wait = 0.25 * (2.0 if self.hires() else 1.0)
+        for i in range(n):
+            if not quiet:
+                _prog("촬영 중 · 프레임 %d/%d" % (i + 1, n))
             f = self.read()
+            if f is None:
+                time.sleep(retry_wait)
+                f = self.read()
             if f is None:
                 continue
             frames.append(f)
             scores.append(focus_score(f))
+        self._tm["frames"] = self._tm.get("frames", 0.0) + (time.perf_counter() - t_fr)
         if not frames:
             raise CameraError("촬영 중 프레임을 한 장도 받지 못했습니다.")
         # 가장 선명한 장이 '마지막 몇 장' 안에 있고 편차가 크면, AF 가 아직
@@ -340,6 +379,7 @@ class Camera:
             return self.capture_best(n, retry=False, wait_af=False)
         i = int(np.argmax(scores))
         stats = {
+            "frames_requested": n,
             "frames_grabbed": len(frames),
             "chosen_focus_score": round(scores[i], 1),
             "focus_min": round(float(np.min(scores)), 1),
@@ -349,6 +389,71 @@ class Camera:
         return frames[i], stats
 
     # ------------------------------------------------------------------
+    def hires(self):
+        """고해상도(4백만 화소 초과)인가. 프레임 대기 · 수렴 대기를 두 배로 잡는 기준."""
+        return (int(self.p.get("width", 1280)) * int(self.p.get("height", 720))) > HIRES_PIXELS
+
+    def _fixed_exposure(self):
+        """고정 노출 한 장용 노출 맞춤. (문구, 걸린 초)를 돌려준다.
+
+        설정 exposure 가 0 이 아니면 그 값. 0 이면 처음 한 번 자동 노출이 수렴하기를 기다려
+        그 값을 읽어 고정하고(_EXPO), 이후 촬영은 그 값을 그대로 쓴다. 값을 읽지 못하면
+        (드라이버가 0 을 돌려줌) 자동 노출을 켠 채로 둔다 - 틀린 값으로 고정하는 것보다 낫다.
+        """
+        t0 = time.perf_counter()
+        exp = self.p.get("exposure", 0)
+        try:
+            exp = float(exp or 0)
+        except (TypeError, ValueError):
+            exp = 0.0
+        if exp != 0:
+            self._set_auto_exposure(False)
+            self.cap.set(cv2.CAP_PROP_EXPOSURE, exp)
+            return "노출 고정 %g (설정)" % exp, time.perf_counter() - t0
+        key = (int(self.p.get("camera_index", 1)), int(self.p.get("width", 1280)),
+               int(self.p.get("height", 720)))
+        if _EXPO["key"] == key and _EXPO["value"] is not None:
+            self._set_auto_exposure(False)
+            self.cap.set(cv2.CAP_PROP_EXPOSURE, float(_EXPO["value"]))
+            return "노출 재사용 %g" % _EXPO["value"], time.perf_counter() - t0
+        # 처음: 자동 노출을 켜고 수렴을 기다린 뒤 값을 읽는다.
+        self._set_auto_exposure(True)
+        scale = 2.0 if self.hires() else 1.0
+        t_end = time.monotonic() + EXPO_CONVERGE_S * scale
+        for _ in range(max(2, int(EXPO_CONVERGE_READS / scale))):
+            self.read()
+            if time.monotonic() >= t_end:
+                break
+        time.sleep(max(0.0, t_end - time.monotonic()))
+        self.read()
+        v = float(self.cap.get(cv2.CAP_PROP_EXPOSURE) or 0.0)
+        if v == 0.0:
+            return "노출 값을 읽지 못함 · 자동 노출 유지", time.perf_counter() - t0
+        self._set_auto_exposure(False)
+        self.cap.set(cv2.CAP_PROP_EXPOSURE, v)
+        _EXPO["key"], _EXPO["value"] = key, v
+        return "노출 찾음 %g · 이후 재사용" % v, time.perf_counter() - t0
+
+    def capture_fixed(self):
+        """고정 노출 1장(브라케팅 끔). (이미지, stats). 노출은 _fixed_exposure."""
+        self._tm = {}
+        _prog("촬영 중 · 노출 맞춤")
+        if use_autofocus(self.p):
+            self.wait_autofocus()
+        note, dt = self._fixed_exposure()
+        self._tm["expo"] = dt
+        # 노출을 바꾼 직후의 옛 장을 버린다(드라이버 큐). 저해상도는 대기를 절반으로.
+        t_s = time.perf_counter()
+        settle = float(self.p.get("bracket_settle_s", BRACKET_SETTLE_S) or 0)
+        time.sleep(settle * (1.0 if self.hires() else 0.5))
+        for _ in range(2):
+            self.read()
+        self._tm["settle"] = time.perf_counter() - t_s
+        f, st = self.capture_best(retry=False, wait_af=False)
+        st.update({"bracketed": False, "raw": f, "expo_note": note})
+        st["tm"] = {k: round(v, 3) for k, v in self._tm.items()}
+        return f, st
+
     def _set_auto_exposure(self, on):
         be = self.info.get("backend")
         if on:
@@ -366,14 +471,19 @@ class Camera:
 
     def _shoot_at(self, exposure, settle):
         """노출을 넣고 settle 만큼 기다린 뒤 큐에 남은 옛 장을 버리고 한 장(가장 선명한 장)."""
+        t0 = time.perf_counter()
         self.cap.set(cv2.CAP_PROP_EXPOSURE, float(exposure))
+        self._tm["expo"] = self._tm.get("expo", 0.0) + (time.perf_counter() - t0)
+        t1 = time.perf_counter()
         time.sleep(settle)
         for _ in range(BRACKET_DISCARD):
             self.read()
-        f, st = self.capture_best(retry=False, wait_af=False)
+        self._tm["settle"] = self._tm.get("settle", 0.0) + (time.perf_counter() - t1)
+        f, st = self.capture_best(n=min(2, int(self.p.get("capture_frames", 3) or 3)),
+                                  retry=False, wait_af=False)
         return f, st
 
-    def capture_bracket(self):
+    def capture_bracket(self, crop=None):
         """노출 브라케팅 촬영. (검출에 쓸 이미지, stats).
 
         settings "bracket" 이 켜져 있으면 자동 노출을 끄고 노출을 바꿔 가며 여러 장을
@@ -389,16 +499,20 @@ class Camera:
              버리고 멈춘다. 최대 BRACKET_MAX_SHOTS 장.
         "bracket_exposure" 에 값을 적어 두면 그 목록을 그대로 쓴다(수동 지정).
 
+        crop = (x0, y0, x1, y1) 이면 융합을 그 사각형에만 한다(고해상도에서 전체 융합이
+        느리다). 돌려주는 이미지는 원본 크기 그대로 - 첫 장에 융합한 crop 을 붙인다.
+        bracket 설정이 꺼져 있으면 capture_fixed(고정 노출 1장)로 간다.
+
         stats["raw"] 는 첫 장(가장 밝으면서 포화되지 않은 장 - raw.png 로 남길 것),
         stats["bracketed"] 는 실제로 융합했는지, stats["bracket_exposure"] 와
         stats["bracket_means"] 는 실제로 쓴 노출값과 장별 평균 밝기다.
         카메라가 노출 지시를 무시하면(장별 밝기 차 < 10) 경고를 남기고 단일
         촬영으로 되돌아간다. 장이 2장 미만이어도 마찬가지다.
         """
-        if not bool(self.p.get("bracket", True)):
-            f, st = self.capture_best()
-            st.update({"bracketed": False, "raw": f})
-            return f, st
+        if not bool(self.p.get("bracket", False)):
+            return self.capture_fixed()
+        self._tm = {}
+        self._quiet = True
         manual = self.p.get("bracket_exposure") or []
         try:
             manual = [float(v) for v in manual]
@@ -409,6 +523,7 @@ class Camera:
         if use_autofocus(self.p):
             self.wait_autofocus()
         frames, means, exposures, shots, notes = [], [], [], [], []
+        _prog("촬영 중 · 노출 맞춤")
         self._set_auto_exposure(False)
         try:
             if manual:
@@ -449,6 +564,7 @@ class Camera:
                     shots.append({"exposure": e, "mean": round(m, 1),
                                   "focus": st.get("chosen_focus_score")})
         finally:
+            self._quiet = False
             self._restore_exposure()
 
         stats = {"bracketed": False, "bracket_exposure": exposures,
@@ -459,15 +575,29 @@ class Camera:
             stats["bracket_warning"] = "브라케팅 장이 2장 미만 · 단일 촬영"
             f, st = self.capture_best()
             st.update(stats, raw=f)
+            st["tm"] = {k: round(v, 3) for k, v in self._tm.items()}
             return f, st
         if max(means) - min(means) < BRACKET_MIN_DIFF:
             stats["bracket_warning"] = "노출이 바뀌지 않음 · 브라케팅을 건너뜁니다"
             f, st = self.capture_best()
             st.update(stats, raw=f)
+            st["tm"] = {k: round(v, 3) for k, v in self._tm.items()}
             return f, st
+        _prog("합치는 중")
         t_fuse = time.perf_counter()
-        fused = fuse_exposures(frames)
+        fused = None
+        if crop is not None:
+            h, w = frames[0].shape[:2]
+            x0, y0 = max(0, int(crop[0])), max(0, int(crop[1]))
+            x1, y1 = min(w, int(crop[2])), min(h, int(crop[3]))
+            if x1 - x0 >= 16 and y1 - y0 >= 16 and (x1 - x0) * (y1 - y0) < 0.9 * w * h:
+                fused = frames[0].copy()
+                fused[y0:y1, x0:x1] = fuse_exposures([f[y0:y1, x0:x1] for f in frames])
+                stats["fuse_crop"] = [x0, y0, x1, y1]
+        if fused is None:
+            fused = fuse_exposures(frames)
         stats["fuse_s"] = round(time.perf_counter() - t_fuse, 3)
+        stats["tm"] = {k: round(v, 3) for k, v in self._tm.items()}
         stats["bracketed"] = True
         stats["bracket_frames"] = list(frames)     # 장별 원본(진단용 저장)
         stats["chosen_focus_score"] = focus_score(fused)

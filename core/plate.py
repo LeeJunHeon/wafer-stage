@@ -317,8 +317,10 @@ def sense_fixed(bgr, params, d, log=print):
     cen = quad.mean(axis=0)
     if H is not None:
         mm_px = local_mm_per_px(H, cen)           # 원본 px 당 mm
+        log("배율      : 판 보정값 %.5f mm/px" % mm_px)
     else:                                         # 검출만 모드: 대략 배율(면적 필터에만 쓴다)
-        mm_px = float((params.get("calib") or {}).get("est_mm_per_px", 0.075))
+        mm_px = float((params.get("calib") or {}).get("est_mm_per_px", 0.143))
+        log("배율      : 대략값 %.5f mm/px (설정 calib.est_mm_per_px · 판 보정 전)" % mm_px)
     p = dict(params)
     # 검출 로직은 그대로: 철판 모드 + 스케일 폴백만 쓴다. marker_mm 0 = 마커 검출 끔.
     p.update({"surface": "plate", "marker_mm": 0, "plate_mm_per_px": mm_px / s,

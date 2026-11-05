@@ -199,6 +199,7 @@
       // 스키마가 정한 한 번에 바꾸기(예: 최대 해상도). 저장은 따로 눌러야 적용된다.
       fc.appendChild(h('button', { cls: 'btn sm', text: it.action.label, 'data-tip': it.action.tip || null,
         onclick: () => {
+          if (it.action.cmd) { UI.send({ cmd: it.action.cmd }); return; }
           Object.keys(it.action.set).forEach(k => setP(S.form, k, it.action.set[k]));
           Object.keys(it.action.set).forEach(k => { const o = items().find(x => x.key === k); if (o) changed(o); });
           render();

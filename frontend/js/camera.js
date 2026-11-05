@@ -80,6 +80,40 @@
     return e;
   }
 
+  // 촬영 막: 서버가 준 진행 문구(cap_text)를 그대로 보이고 경과 초만 화면이 센다.
+  // 실패(cap_error)는 id 가 새로울 때 한 번 2.8초 보인 뒤 사라진다.
+  let capT0 = 0, capTimer = null, capErrId = null, capErrTimer = null;
+  function capSecs() {
+    $('capSec').textContent = capT0 ? (((Date.now() - capT0) / 1000).toFixed(1) + ' 초') : '';
+  }
+  function renderCapture(cam) {
+    const box = $('capturing');
+    if (cam.capturing) {
+      if (capErrTimer) { clearTimeout(capErrTimer); capErrTimer = null; }
+      if (!capT0) { capT0 = Date.now(); capTimer = setInterval(capSecs, 200); }
+      box.classList.remove('err');
+      $('capMsg').textContent = cam.cap_text || '촬영 중';
+      capSecs();
+      box.hidden = false;
+      return;
+    }
+    if (capTimer) { clearInterval(capTimer); capTimer = null; }
+    capT0 = 0;
+    const e = cam.cap_error;
+    if (capErrId === null) capErrId = e ? e.id : 0;      // 새로고침으로 들어왔을 때 옛 오류는 보이지 않는다
+    if (e && e.id !== capErrId) {
+      capErrId = e.id;
+      box.classList.add('err');
+      $('capMsg').textContent = e.text;
+      $('capSec').textContent = '';
+      box.hidden = false;
+      if (capErrTimer) clearTimeout(capErrTimer);
+      capErrTimer = setTimeout(() => { box.hidden = true; box.classList.remove('err'); capErrTimer = null; }, 2800);
+    } else if (!capErrTimer) {
+      box.hidden = true;
+    }
+  }
+
   UI.applyCamera = function (s) {
     if (!s) return;
     retime();
@@ -100,7 +134,7 @@
       lastFrameId = null;
     }
     const cam = s.camera || {};
-    $('capturing').hidden = !cam.capturing;
+    renderCapture(cam);
     // 보여 줄 그림이 없을 때 검은 화면만 두지 않는다. 미리보기인데 카메라가 안
     // 열렸으면 그 사유를, 촬영본인데 아직 안 찍었으면 '촬영 없음' 을 띄운다.
     const q0 = s.sequence || {};

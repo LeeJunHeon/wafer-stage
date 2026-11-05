@@ -25,6 +25,7 @@ import os
 import time
 
 from core import calib, flat, imgio, paths, plate
+from core import camera as camera_core
 
 import logger
 import measure as measure_mod
@@ -33,7 +34,7 @@ import relays
 import stagectl
 import storage
 import vision
-from connection import push_ack, push_log, push_state
+from connection import push_ack, push_log, push_state, run_on_loop
 from state import state
 
 _task = None                      # 진행 중인 순회 태스크
@@ -148,6 +149,8 @@ async def _cap_goto():
     if (state.stage["x_mm"] is None or abs(state.stage["x_mm"] - px) > 0.05
             or abs(state.stage["y_mm"] - py) > 0.05):
         await push_log("촬영 위치로 X%.1f Y%.1f" % (px, py))
+        state.camera["cap_text"] = "촬영 위치로 이동 중"
+        await push_state()
         await _goto(px, py, no="capture")
     return True
 
@@ -173,11 +176,30 @@ CAPTURE_FLOW = [
 ]
 
 
+def _cap_progress(text):
+    """촬영 스레드가 부르는 진행 문구. 상태 변경은 루프에서 하고 화면에 알린다."""
+    def _go():
+        if state.camera.get("capturing"):
+            state.camera["cap_text"] = str(text)
+            return push_state()
+    run_on_loop(_go)
+
+
+camera_core.progress_hook = _cap_progress
+
+
+def _cap_fail(msg):
+    """촬영 실패 한 줄 - 화면이 막 위에 2~3초 보여 준다(id 로 한 번만)."""
+    state.camera["cap_error"] = {"id": int(time.time() * 1000), "text": str(msg)}
+
+
 async def capture():
     if busy():
         await push_log("순회 중에는 촬영할 수 없습니다", "warn")
         return False
     state.camera["capturing"] = True
+    state.camera["cap_text"] = "촬영 준비"
+    state.camera["cap_error"] = None
     _phase("capturing", "촬영")
     await push_state()
     try:
@@ -193,11 +215,13 @@ async def capture():
         one = logger.short(e)
         state.stage["last_error"] = one
         _phase("error", "촬영 전 이동 실패 · " + one)
+        _cap_fail("촬영 전 이동 실패 · " + one)
         logger.write("err", "촬영 전 이동 실패 상세: %s" % e)
         await push_log("촬영 전 이동 실패 · " + one, "err")
         return False
     finally:
         state.camera["capturing"] = False
+        state.camera["cap_text"] = ""
         await push_state()
 
 
@@ -208,14 +232,21 @@ async def _shoot_detect():
         state.camera["last_error"] = ""
         state.frame = meta
         if isinstance(stats, dict) and "chosen_focus_score" in stats:
+            req, got = stats.get("frames_requested"), stats.get("frames_grabbed", 0)
+            if req and got < req:
+                await push_log("프레임 요청 %d · 받음 %d · 받은 만큼으로 진행" % (req, got), "warn")
             await push_log("촬영 완료 · %d프레임 중 선명도 %.0f"
-                           % (stats.get("frames_grabbed", 0),
-                              stats.get("chosen_focus_score", 0)))
+                           % (got, stats.get("chosen_focus_score", 0)))
+        if isinstance(stats, dict) and stats.get("expo_note"):
+            await push_log("노출 · " + stats["expo_note"])
+        if isinstance(stats, dict) and stats.get("fuse_crop"):
+            await push_log("융합 범위 · 감지 영역 %s" % (stats["fuse_crop"],))
         if isinstance(stats, dict) and stats.get("retries"):
             await push_log("촬영 재시도 %d회 · 프레임 끊김 복구" % stats["retries"], "warn")
         await _log_capture_diag(stats.get("diag") if isinstance(stats, dict) else None)
-        await _log_timing(stats.get("timing") if isinstance(stats, dict) else None)
+        timing = stats.get("timing") if isinstance(stats, dict) else None
         if res is None:
+            await _log_timing(timing)
             state.samples = []
             _clear_edits()
             state.calib = state.sensing = state.wafer = None
@@ -226,6 +257,7 @@ async def _shoot_detect():
                 missing = bool(isinstance(stats, dict) and stats.get("area_missing"))
                 msg = "감지 영역 없음 · 보정 → 감지 영역 지정" if missing else "판 보정 무효 · 다시 보정"
                 _phase("error", msg)
+                _cap_fail(msg)
                 state.set_alarm("판 보정", msg)
                 await push_log("%s · %s · 검출을 건너뜁니다" % (msg.split(" · ")[0], why), "err")
                 if isinstance(stats, dict) and stats.get("nocal"):
@@ -235,12 +267,23 @@ async def _shoot_detect():
             else:
                 need = int(state.get("calib.min_markers") or 3)
                 _phase("error", "판 마커 부족(%d개 미만) · 좌표 생성 불가" % need)
+                _cap_fail("판 마커 부족 · 좌표 생성 불가")
                 await push_log("판 마커 %d개 미만 · 좌표를 만들지 않습니다" % need, "err")
             return False
         _apply_sense(res)
+        if res.get("mode") == "fixed" and res.get("mm_per_px"):
+            await push_log("검출 배율 %.4f mm/px · %s"
+                           % (res["mm_per_px"], "대략값(판 보정 전 · 설정 대략 배율)"
+                              if res.get("area_only") else "판 보정값"))
         state.head_marker = stats.get("head_marker") if isinstance(stats, dict) else None
+        state.camera["cap_text"] = "저장 중"
+        await push_state()
+        t_sv = time.perf_counter()
         d = await vision.run_blocking(_save_seq, stats.get("raw", bgr), res,
                                       stats.get("images") or {})
+        if timing is not None:
+            timing["save_s"] = round(time.perf_counter() - t_sv, 3)
+        await _log_timing(timing)
         state.sequence["out_dir"] = d
         state.sequence["used"] = False      # 새 촬영 - 아직 순회에 쓰지 않았다
         _edit_ctx["dir"] = d                # 이번 촬영의 편집본(samples_edit.json) 자리
@@ -255,6 +298,7 @@ async def _shoot_detect():
         state.camera["ok"] = False
         state.camera["last_error"] = one
         _phase("error", "촬영 실패 · " + one)
+        _cap_fail("촬영 실패 · " + one)
         logger.write("err", "촬영 실패 상세: %s: %s" % (type(e).__name__, e))
         await push_log("촬영 실패 · " + one, "err")
         return False
@@ -265,9 +309,11 @@ async def _log_timing(t):
     if not t:
         return
     sz = t.get("size") or [0, 0]
-    await push_log("소요 %dx%d · 촬영 %.2f s · 융합 %.2f s · 검출 %.2f s · 헤드 마커 %.2f s"
-                   % (sz[0], sz[1], t.get("capture_s", 0), t.get("fuse_s", 0),
-                      t.get("detect_s", 0), t.get("head_s", 0)))
+    await push_log("소요 %dx%d · 촬영 %.2f s (노출 %.2f · 안정 대기 %.2f · 프레임 %.2f) · 융합 %.2f s"
+                   " · 검출 %.2f s · 헤드 마커 %.2f s · 저장 %.2f s"
+                   % (sz[0], sz[1], t.get("capture_s", 0), t.get("expo_s", 0),
+                      t.get("settle_s", 0), t.get("frames_s", 0), t.get("fuse_s", 0),
+                      t.get("detect_s", 0), t.get("head_s", 0), t.get("save_s", 0)))
 
 
 async def _log_capture_diag(diag):

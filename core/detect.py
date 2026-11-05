@@ -40,14 +40,14 @@ DEFAULTS = {
     "focus_step": 15,     # 초점 스윕 간격 (굵게 훑은 뒤 1/4 간격으로 다시 훑는다)
     "focus_settle_s": 0.35,
     "exposure": 0,
-    "capture_frames": 15,
+    "capture_frames": 3,
     # 화이트밸런스 색온도(CAP_PROP_WB_TEMPERATURE). AUTO_WB 는 끄는데 값을 안 주면
     # 카메라 기본값으로 돌아 종이가 초록끼를 띤다. null/0 = 건드리지 않음.
     "wb_temperature": None,
     # 노출 브라케팅(core/camera.py capture_bracket). 자동 노출을 끄고 노출을 바꿔 가며
     # 받아 Mertens 융합한다. bracket_exposure 가 비어 있으면(기본) 밝기를 보며 자동으로
     # 정한다(종이 200~235 인 첫 장 -> 한 단계씩 내려 최대 3장). 값을 적으면 그 목록.
-    "bracket": True,
+    "bracket": False,
     "bracket_exposure": [],
     "bracket_settle_s": 0.4,
     # 종이 기준 조명 평탄화(core/flat.py). 감지영역 안 종이를 흰색 기준으로 삼아
