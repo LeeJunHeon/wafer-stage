@@ -65,6 +65,7 @@ def params_with(sets):
     return p
 
 
+TRUTH_DIR = None                    # 정답 폴더(항목의 ref 상대 경로 기준)
 REF_PATH = None                     # --ref 로 바꿀 수 있는 빈 판 기준 사진(기본: 데이터 폴더의 plate_ref.png)
 
 
@@ -84,9 +85,12 @@ def run_item(name, item, params, out_root, mode="single"):
         raise IOError("사진 없음: %s" % path)
     params = _item_params(item, params)
     if mode == "ref":
-        ref = imgio.imread_u(REF_PATH or os.path.join(os.path.dirname(out_root), "plate_ref.png"))
+        # 항목의 "ref"(정답 폴더 기준 상대 경로)가 있으면 그 사진으로 기준을 고정한다. 없으면 --ref 또는 data/plate_ref.png(읽기만 한다).
+        ref_path = os.path.join(TRUTH_DIR, item["ref"]) if (item.get("ref") and TRUTH_DIR) else (
+            REF_PATH or os.path.join(os.path.dirname(out_root), "plate_ref.png"))
+        ref = imgio.imread_u(ref_path)
         if ref is None:
-            raise IOError("빈 판 기준 사진 없음: %s" % (REF_PATH or "data/plate_ref.png"))
+            raise IOError("빈 판 기준 사진 없음: %s" % ref_path)
         t0 = time.perf_counter()
         r = plate.ref_detect(bgr, ref, item["area"], item.get("exclude"), params, float(item["mm_per_px"]), log=lambda *_: None)
         ms = (time.perf_counter() - t0) * 1000.0
@@ -192,13 +196,14 @@ def main():
     params = params_with(a.set)
     if a.loo:
         return loo(items, params, out_root)
-    global REF_PATH
+    global REF_PATH, TRUTH_DIR
     REF_PATH = a.ref
+    TRUTH_DIR = tdir
     rows = evaluate(items, params, out_root)
     print("[단일 사진 경로]")
     tot = print_table(rows)
     rows_ref = {}
-    if any(v.get("layout") == "free" for v in items.values()) and os.path.exists(REF_PATH or os.path.join(root, "plate_ref.png")):
+    if any(v.get("layout") == "free" for v in items.values()) and (any(v.get("ref") for v in items.values()) or os.path.exists(REF_PATH or os.path.join(root, "plate_ref.png"))):
         rows_ref = evaluate(items, params, out_root, "ref")
         print("\n[빈 판 기준 경로 · 자유 배치]")
         print_table(rows_ref)

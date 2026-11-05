@@ -240,7 +240,7 @@
 - **빈 판 기준 경로가 기본**(core/refdiff.py, fixed.use_ref 기본 켬): 기준(data/plate_ref.png)을 현재 사진에 정렬(고역 → 위상 상관 → ECC 유클리드) → Lab 채널 차이(완만한 성분 제거 · 강건 z · d) → close → 구멍 메우기 → open →
   모양 필터 → 경계 근처 제외 → 약한 칩 재탐색(σ2 · 닫힌 테두리). 정렬 변환 M 으로 **카메라 이동 보정**: 판 보정 · 감지 영역 · 제외 영역 = 기준 좌표, 현재 사진은 M 으로 옮겨 쓴다(engine.to_ref/to_cur,
   state.cam, 경고 2 mm · 거부 10 mm). 기준이 없으면 단일 사진 경로(fixed_detect) · 보정 없음(로그). 배치 fixed.layout 기본 auto(인라이어 비율 ≥ 0.8 & ≥ rows×cols×0.6 일 때만 격자), 격자 밖 후보는 버리지 않고 경고.
-  회귀: tools/fixed_regress.py 가 두 정답 파일 · 두 경로(단일/기준)를 채점. 합성 e2e 는 임시 데이터 폴더에만 기준을 쓴다(실제 data/ 를 건드리지 않는다).
+  회귀: tools/fixed_regress.py 가 두 정답 파일 · 두 경로(단일/기준)를 채점. 정답 항목의 "ref"(정답 폴더 기준 상대 경로, 예: data/truth/ref/plate_ref_20261105_164640.png)로 기준 사진을 고정한다(실제 data/plate_ref* 는 읽기만). 합성 e2e 는 임시 데이터 폴더에만 기준을 쓴다(실제 data/ 를 건드리지 않는다).
 - **튜닝 규칙이 바뀌었다**: 이 모듈은 특정 사진 오버피팅 금지 대신 **실제 운용 환경 사진(data/truth)에 맞춰 튜닝**한다. 단 여러 장으로
   검증하고 `python tools/fixed_regress.py`(기준보다 나쁘면 exit 1) · `--loo`(한 장 빼고 맞춘 값으로 뺀 장 채점)로 한 장 과적합을
   확인한다. 정답은 앱의 샘플 편집 → `tools/make_truth.py`. 파라미터는 전부 스키마(fixed.*, 검출 탭 고급).
