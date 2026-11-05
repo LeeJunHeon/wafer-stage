@@ -60,6 +60,8 @@ def render(params, true_xy, seed=None):
     w = int(params.get("width", 1280))
     h = int(params.get("height", 720))
     ph = params.get("photohome") or {}
+    if os.environ.get("WAFER_STAGE_SYNTH_HEAD_OFF"):
+        true_xy = None                      # 검증용: 헤드 마커가 안 보이는 장면
     rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:h, 0:w]
     base = 120.0 + 25.0 * (xx / max(w, 1)) - 15.0 * (yy / max(h, 1))
@@ -91,6 +93,96 @@ def render(params, true_xy, seed=None):
     img = cv2.GaussianBlur(img.astype(np.float32), (0, 0), 0.7)
     img = img + rng.normal(0.0, 2.5, img.shape)
     return np.clip(img, 0, 255).astype(np.uint8)
+
+
+# --------------------------------------------------------------------------
+# 고정 보정용 판 장면(알려진 호모그래피 · 알려진 샘플 위치)
+# --------------------------------------------------------------------------
+PLATE_QUAD_MM = [(40.0, 40.0), (40.0, 200.0), (200.0, 200.0), (200.0, 40.0)]   # 새겨진 사각형
+PLATE_CAL_MM = [(40.0, 40.0), (40.0, 200.0), (200.0, 200.0), (200.0, 40.0), (120.0, 120.0)]
+PLATE_SAMPLES_MM = [(70.0, 70.0), (70.0, 120.0), (70.0, 170.0),
+                    (120.0, 70.0), (120.0, 120.0), (120.0, 170.0),
+                    (170.0, 70.0), (170.0, 120.0), (170.0, 170.0)]
+PLATE_OUTSIDE_MM = [(15.0, 100.0), (212.0, 150.0)]       # 사각형 밖 물체(무시돼야 한다)
+
+
+def plate_homography(w, h):
+    """판 평면 스테이지 mm(X, Y) → px. 4080x3060 에서 약 12 px/mm. 1.8° 회전 + 약한 원근.
+
+    u 는 Y 가 커질수록 왼쪽, v 는 X 가 커질수록 위(맵과 같은 배치).
+    """
+    s = 12.0 * (w / 4080.0)
+    th = math.radians(1.8)
+    c, si = math.cos(th), math.sin(th)
+    A = np.array([[0.0, -s], [-s, 0.0]])
+    R = np.array([[c, -si], [si, c]])
+    M = R @ A
+    t = np.array([w * 0.82, h * 0.88])
+    H = np.array([[M[0, 0], M[0, 1], t[0]],
+                  [M[1, 0], M[1, 1], t[1]],
+                  [1.5e-6 * 4080.0 / w, -2.0e-6 * 4080.0 / w, 1.0]])
+    return H
+
+
+def _chip(img, H, x, y, side_mm, rot_deg, color):
+    th = math.radians(rot_deg)
+    pts = []
+    for dx, dy in [(-1, -1), (1, -1), (1, 1), (-1, 1)]:
+        px, py = dx * side_mm / 2.0, dy * side_mm / 2.0
+        pts.append((x + px * math.cos(th) - py * math.sin(th),
+                    y + px * math.sin(th) + py * math.cos(th)))
+    uv = np.array([project(H, a, b) for a, b in pts], np.float32)
+    cv2.fillConvexPoly(img, np.round(uv).astype(np.int32), color, lineType=cv2.LINE_AA)
+
+
+def render_plate(w, h, head_xy=None, params=None, seed=3, shift_mm=(0.0, 0.0)):
+    """BGR 판 장면. 회색 판 + 알려진 위치의 칩 9개 + 사각형 밖 물체 2개 (+ 헤드 마커).
+
+    shift_mm: 칩 위치를 이만큼 옮긴다(샘플 위치를 바꿔 다시 찍는 검증용).
+    돌려주는 것: (img, truth{"samples": [(X,Y)], "outside": [(X,Y)], "H": 3x3 mm→px}).
+    """
+    rng = np.random.default_rng(seed)
+    H = plate_homography(w, h)
+    yy, xx = np.mgrid[0:h, 0:w]
+    base = 150.0 + 14.0 * (xx / max(w, 1)) - 10.0 * (yy / max(h, 1))
+    img = np.repeat(base[:, :, None], 3, axis=2).astype(np.float32)
+    # 판 밖 배경은 더 어둡게(레일 · 바닥), 새겨진 사각형 선은 얇은 짙은 선
+    quad = np.array([project(H, a, b) for a, b in PLATE_QUAD_MM], np.float32)
+    cv2.polylines(img, [np.round(quad).astype(np.int32)], True, (132, 132, 132), max(2, w // 1500))
+    for i, (x, y) in enumerate(PLATE_SAMPLES_MM):
+        sx, sy = x + shift_mm[0], y + shift_mm[1]
+        col = [(70, 90, 150), (60, 110, 80), (140, 80, 70), (80, 80, 170)][i % 4]   # BGR 로 서로 다른 색
+        _chip(img, H, sx, sy, 7.0 + (i % 3), 7.0 * i, col)
+    for (x, y) in PLATE_OUTSIDE_MM:
+        _chip(img, H, x, y, 9.0, 20.0, (60, 70, 160))
+    out = np.clip(img, 0, 255).astype(np.uint8)
+    # 판 마커(id0~3)가 화면에 있어도 고정 보정은 무시해야 한다 - 사각형 밖 네 모서리 쪽에 붙인다
+    for mid, (mx, my) in enumerate([(10.0, 20.0), (10.0, 225.0), (212.0, 20.0), (212.0, 225.0)]):
+        n = 18.0
+        mk = _marker_img(mid, "4X4_50", 120)
+        mk = cv2.cvtColor(cv2.copyMakeBorder(mk, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=255),
+                          cv2.COLOR_GRAY2BGR)
+        q = n * (144 / 120.0) / 2.0
+        src = np.float32([[0, 0], [143, 0], [143, 143], [0, 143]])
+        dst = np.float32([project(H, mx + q, my + q), project(H, mx + q, my - q),
+                          project(H, mx - q, my - q), project(H, mx - q, my + q)])
+        P = cv2.getPerspectiveTransform(src, dst)
+        cv2.warpPerspective(mk, P, (w, h), dst=out, flags=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_TRANSPARENT)
+    # 헤드 마커는 별도 평면(판보다 높다) - 기존 합성기를 그대로 쓴다
+    if head_xy is not None:
+        p = dict(params or {}, width=w, height=h)
+        mk = render(p, head_xy, seed=seed)
+        # 마커 타일만 겹친다(배경 그라데이션은 버린다): 합성기 배경과 다른 화소만 복사
+        bg = render(p, None, seed=seed)
+        diff = np.abs(mk.astype(np.int16) - bg.astype(np.int16)).sum(axis=2) > 30
+        diff = cv2.dilate(diff.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+        out[diff] = mk[diff]
+    out = cv2.GaussianBlur(out, (0, 0), 0.8 * w / 1280.0 if w > 1280 else 0.8)
+    out = np.clip(out.astype(np.float32) + rng.normal(0.0, 2.0, out.shape), 0, 255).astype(np.uint8)
+    truth = {"samples": [(x + shift_mm[0], y + shift_mm[1]) for x, y in PLATE_SAMPLES_MM],
+             "outside": list(PLATE_OUTSIDE_MM), "H": H, "quad_mm": list(PLATE_QUAD_MM)}
+    return out, truth
 
 
 def _selftest():

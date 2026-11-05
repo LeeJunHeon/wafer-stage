@@ -10,8 +10,13 @@
 - 호밍 센서는 물리적으로 없앴다(V10 의 hs/hw 는 V11 에서 제거). 원점은 **사진 호밍**이 기본:
   Z 모터 윗면의 헤드 마커(ArUco id 10 · 40 mm)를 천장 카메라로 찍어 실제 XY 를 재고 sp 로 맞춘다.
   끝단 밀기 · 수동 원점 등록은 보조. Z 원점은 지금처럼 위쪽 하드스톱(끝단 이동 + 등록).
-- 카메라는 천장 고정(작업영역을 수직으로 본다). 카메라 위치가 바뀌면 판 마커 좌표를 다시 잡는다
-  (보정 창 → 판 마커). USB 케이블이 불안정 — 촬영 재시도 · 미리보기 재개방으로 견딘다.
+- 카메라는 천장 고정(작업영역을 수직으로 본다). **판 마커 없이 고정 보정(`calib.mode = fixed`)이 기본이다**
+  (2026-11-05): 마커는 Z 모터 윗면의 헤드 마커(id 10) 하나뿐, 감지 영역은 판에 새겨진 사각형으로
+  고정(촬영본 픽셀 사각형), 좌표는 한 번 저장한 판 보정(픽셀 → 스테이지 XY 호모그래피, 점 4개 이상)
+  으로 낸다. 카메라를 옮기거나 해상도를 바꾸면 다시 보정(보정 창 → 감지 영역 · 판 보정). 카메라 번호 ·
+  해상도가 저장 때와 다르면 무효 → 촬영은 하되 좌표를 만들지 않고 경보 배너. 예전 판 마커 4개 방식은
+  `calib.mode = markers` 로 코드 그대로 남아 있다. USB 케이블이 불안정 — 촬영 재시도 · 미리보기
+  재개방으로 견딘다(고해상도는 첫 프레임 대기 · 재시도 간격을 늘린다).
 - Z 축에 히트건(노즐이 비스듬해 가열 지점이 노즐 바로 아래가 아님). 공구는 바뀐다는 전제 —
   공구마다 오프셋(dx, dy)과 작업 높이. 스테이지 좌표 P = 기준 포인터가 가리키는 점, 공구 끝 = P + d,
   샘플 S 를 겨냥하려면 P = S − d, 가동범위 검사는 P 로.
@@ -27,14 +32,15 @@
 서버가 상태의 주인이고 화면은 HTML 이다. 가스 센서 프로그램(Gas_Sensor_Measurment_System\Program)과 같은 골격.
 - run.py: 진입점. 루트에 있는 유일한 .py (`python run.py [--dry] [--image P] [--no-window] [--port N]`)
 - core/: 장비·검출 핵심(검증 끝난 모듈, API 유지). 서버·화면을 모른다.
-  paths.py imgio.py camera.py detect.py calib.py stage.py
+  paths.py imgio.py camera.py detect.py calib.py plate.py stage.py   (plate.py = 고정 보정: 감지 영역 + 판 보정 + 검출 호출)
   CLI: `python -m core.calib fit|samples|check` · `python -m core.stage st|mx|my|save`
 - backend/: server.py(FastAPI·라우트·/ws·lifespan·CLI) window.py connection.py state.py
   settings_schema.py(운용 설정 스키마) recipe.py(레시피 단계) relays.py photohome.py(사진 호밍·보정)
+  platecal.py(고정 보정 명령: 감지 영역 · 판 보정 · 단발 촬영)
   commands.py engine.py stagectl.py vision.py measure.py loops.py logger.py storage.py version.py
   backend 안끼리는 `import engine` 처럼 이름으로, core 는 `from core import calib` 로 부른다.
 - frontend/: index.html · css/style.css · js/{core,camera,map,samples,sequence,jog,relays,editors,
-  settings,calib,app}.js (core.js 가 UI.h · 창 체계를 먼저 정의한다)
+  settings,calib,plate,app}.js (core.js 가 UI.h · 창 체계를 먼저 정의한다)
   화면은 1920×1040 고정 캔버스(fit() 로 축소, 페이지 스크롤 없음). ISA-101 계열 배색
   (무채색 바탕, 색은 상태에만), 상단 상태줄·경보 배너·하단 명령, 스테이지 맵으로
   기계 위치를 보여준다. 단계(1·2·3) 표시는 쓰지 않는다 — 반복 운전 프로그램이다.
@@ -64,9 +70,14 @@
   연속 실패 cam_fail_limit 면 닫고 cam_reopen_s(두 배씩, 최대 cam_reopen_max_s) 뒤 다시 연다.
   촬영 실패는 닫고 다시 열어 capture_retries 번까지 다시 찍는다. 단발 촬영(vision.single_shot)은
   사진 호밍·헤드 보정·확인 촬영용(브라케팅·검출 없음).
-- 촬영 순서(vision._capture_sync): [노출 브라케팅 → Mertens 융합](camera.capture_bracket,
+- 촬영 순서: [노출 브라케팅 → Mertens 융합](camera.capture_bracket,
   설정 bracket/bracket_exposure/bracket_settle_s) → 마커로 감지영역 → [종이 기준 조명
   평탄화](core/flat.py, 설정 flat_field) → 마커 재계산·검출은 평탄화본으로.
+  **fixed 에서는** 마커·평탄화를 건너뛴다(종이 기준이 없다 — 로그 "평탄화 건너뜀 · 고정 보정"): 융합본에서
+  저장한 감지 영역 사각형을 crop(밖은 안쪽 판 색으로 채움) → 긴 변이 detect_max_px 보다 크면 줄여 검출 →
+  좌표를 원본으로 되돌려 판 보정으로 mm. detect 는 철판 모드 기존 인자(surface=plate, plate_mm_per_px =
+  국소 mm/px ÷ 축소 배율, marker_mm=0, plate_margin_pct=0)만 쓴다 — 검출 로직은 고치지 않았다.
+  촬영마다 단계별(촬영·융합·검출·헤드 마커) 소요를 로그에 남긴다.
   raw.png 는 첫 장(가장 밝으면서 포화되지 않은 장) 원본, fused.png·flat.png 를 같은
   폴더에 남긴다. 노출 목록은 자동(bracket_exposure 비움 = 기본): AE 끄고 종이(밝은 상위
   20%) 평균이 200~235 가 되게 한 단계씩 맞춘 첫 장 → 한 단계씩 내려 최대 3장, 장 평균
@@ -95,6 +106,9 @@
   다른 평면이라 전용 호모그래피) → 실제 XY. d < 허용(0.3) 그대로 / ~경고(5) 자동 sp / 넘거나 원점
   없음이면 확인 후 sp(서버가 잰 값, 120초 · 이동 없을 때만). sp 뒤 save · reset_estop(원점 복구 수단).
   카메라 번호·해상도·마커 번호가 보정 때와 다르면 무효 → 막는다. 촬영 전 자동 확인은 경고만.
+  판 마커와 무관(헤드 마커 하나로 동작). 마커가 화면 가장자리(photohome.edge_margin_px, 0 = 짧은 변의 3%)에
+  걸치면 결과를 쓰지 않고 경고, 헤드 보정 격자 점 중 그런 점은 건너뛴다. photohome.on_connect(기본 켬):
+  연결 직후 헤드 보정이 유효하면 이동 없이 한 장 찍어 같은 판정 규칙으로 위치를 판단(마커 안 보이면 알리기만).
 - 수동 원점(보조)은 사람이 축별로 잡는다: 끝단 이동(touch_end, 밀기만) → set_origin(origin_gap_mm 이격 후 z).
   원점은 축마다 따로다(HX/HY). 가동범위를 벗어나면 펌웨어가 그 축 원점을 푼다.
   비상정지 때 forget 을 보내 EEPROM 의 원점 기록도 지운다.
@@ -154,13 +168,17 @@
   파킹·촬영 위치·순회). Z 원점이 없으면 경고만 하고 X·Y 만 간다(z 단계 레시피는 시작 거절).
   수동 조그는 Z 를 올리지 않는다.
 - 리밋 스위치 없음 → 소프트 리밋 + EEPROM 위치 기억
-- 카메라: 천장 고정(2026-11 이전), USB index 1, 1280×720, 작업영역 전체를 수직으로 본다. USB 케이블
-  불안정(납땜 수리 중) — 촬영 재시도 · 미리보기 재개방. 위치가 바뀌었으니 판 마커 좌표·헤드 보정을 다시 잡는다
-  해상도·포맷(width/height/fourcc)은 설정 창에서 고른다. 카메라는 못 하는 요청을 조용히
+- 카메라: 천장 고정(이전보다 90° 돌린 방향, 2026-11-05), USB index 1, **기본 4080×3060 MJPG**(4:3 = 센서 전체
+  화각, 윈도우 카메라 앱과 같다. 실측 detail: 1280×720 0.7~0.9 / 2560×1440 2.98 / 3840×2160 2.8 /
+  4080×3060 1.8~2.4 / 8160×6120 0.67 = 보간이라 쓰지 않는다. 16:9 모드는 위아래가 잘려 화면 위 끝의 헤드
+  마커가 잘린다). 초점은 고정 + 스윕(자동초점 헌팅 방지). USB 케이블 불안정 — 촬영 재시도 · 미리보기
+  재개방. 위치가 바뀌었으니 판 보정(감지 영역 포함)·헤드 보정을 다시 잡는다.
+  해상도·포맷(width/height/fourcc)은 설정 창에서 고른다([최대 해상도로] 버튼). 미리보기는 원본을 줄여
+  (preview_max_w) 보내지만 촬영·마커 검출·판 보정 클릭 좌표는 원본 해상도 기준이다. 카메라는 못 하는 요청을 조용히
   가까운 값으로 바꾸므로 열 때마다 실제 포맷을 로그에 남기고 다르면 경고한다
   (camera.format_text/format_mismatch). 표기 화소 수(5000만)는 보간이라 믿지 말고
   tools/cam_probe.py 의 detail 지표(1/2 축소→복원 RMS)로 실측해서 정한다.
-- 판 마커: ArUco DICT_4X4_50 30mm, id0~id3 을 베이스에 부착. 중심 기계좌표는 settings.json 의
+- 판 마커(**markers 모드 전용** — fixed 에서는 붙이지 않고 화면에 있어도 무시): ArUco DICT_4X4_50 30mm, id0~id3 을 베이스에 부착. 중심 기계좌표는 settings.json 의
   marker_mm_xy(옛 실측 id3 (15,20) / id2 (15,160) / id1 (201,19) / id0 (201,160) — 카메라 이전 뒤
   보정 창 → 판 마커로 기준 포인터를 맞춰 다시 기록)
 - 헤드 마커: ArUco id 10 · 40mm(설정 photohome.*), Z 모터 윗면. 판 마커 번호와 겹치면 저장 거절
@@ -194,7 +212,12 @@
 면적 임계는 mm². 실패해서 반복 금지: CLOSE 먼저 / 배경 블러 커널=샘플 크기 / Otsu / top-hat / 꼭짓점 수로 모양 거르기 / 화면 밖 광선 끝점 / 이미지 위 한글 / 오버레이 패널 크기 상수 / 채널 잡음 하한 0.5(a·b 가 양자화돼 MAD 0 → 옅은 색조 전부 검출) / 연결요소를 처음부터 L 부호로 분리(배경과 밝기가 같은 칩이 화소 부호 잡음으로 조각남 - 142900 D 소실) / 엣지 제안의 직선성 문턱만으로 얼룩 거르기(얼룩 0.87 vs 칩 0.86~0.95 겹침 - 면적 하한·사다리 폴백으로 거른다) / 엣지 제안에서 Canny 사다리 전부 돌리기(느슨한 문턱이 얼룩 둘레를 닫는다).
 surface 모드 wafer/plate/auto. 검출 로직을 고치면 반드시 `python tools/regress.py` 로 개수 회귀를 본다(브라케팅 촬영은 fused.png 로 돈다). 회귀 기준은 개수가 아니라 '맞는 자리': `tools/flat_check.py DIR --truth <143334 samples.json>`(입력은 fused.png, 없으면 raw.png. flat.png 는 이중 평탄화라 안 쓴다. 같은 폴더 정답이면 px, 아니면 mm 로 2.5mm) - 143334 는 16/16·오검출 0 을 지켜야 하고, 143454·142900 은 적중 15·오검출 0 목표(2026-09-21: 15·0, 14·0 - 142900 의 A 는 d² 6 으로 grow 아래). 경로별 기여는 `--mode all`.
 
-## 보정 (core/calib.py)
+## 보정 (core/plate.py = 고정 · core/calib.py = 판 마커)
+- **고정 보정(기본)**: data/plate_calib.json = 감지 영역 사각형(촬영본 px) + 판 보정 점·H(카메라 번호 · 해상도
+  포함). 판 보정 점 4개 미만(또는 한 직선)은 적용 거절, 잔차 한계(calib.residual_limit_mm) 초과 점은 빨간
+  표시. 샘플 좌표 · 수동 추가 · 맵 포인터 · 공구 오프셋 방법 2 모두 이 판 보정으로 변환(engine.current_cal —
+  fixed 에서는 _CAL_CACHE 대신 저장한 판 보정). 사각형 경계(calib.area_margin_mm)에 닿은 검출은 버린다.
+- 아래는 markers 모드:
 - 촬영마다 그 프레임의 마커로 다시 보정한다. 카메라 고정이 흔들려 촬영 사이에 1~2° 돌아간다(13분 사이 2.3°, 작업영역에서 최대 11mm 차이).
 - 마커 중심 최소제곱 어파인으로 모서리를 mm 에 배정한 뒤, 모서리 전부(4마커 16점 / 3마커 12점)로 호모그래피. 잔차 RMS 0.14~0.24mm.
 - 감지영역 = 마커 사각형(3개면 네 번째 꼭짓점을 A+C−B 로 보완). detect 는 이 영역만 본다 — 전체 프레임을 넣으면 레일·모터를 원판으로 오검출한다.

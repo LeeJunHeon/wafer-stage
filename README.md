@@ -16,7 +16,8 @@
 │   │   ├── camera.py       #   카메라 열기·초점·단발 촬영·노출 브라케팅 융합
 │   │   ├── flat.py         #   종이 기준 조명 평탄화 + 포화 진단
 │   │   ├── detect.py       #   원판/샘플 검출 엔진
-│   │   ├── calib.py        #   픽셀 <-> 기계좌표 보정 + 감지영역 + 검출 호출
+│   │   ├── calib.py        #   픽셀 <-> 기계좌표 보정 + 감지영역 + 검출 호출 (판 마커 방식)
+│   │   ├── plate.py        #   고정 보정: 감지 영역 사각형 + 판 보정 호모그래피 + 검출 호출
 │   │   └── stage.py        #   펌웨어 V11 시리얼 드라이버 (+ --dry 펌웨어 흉내)
 │   ├── backend/            # 서버
 │   │   ├── server.py       #   FastAPI · 라우트 · /ws · lifespan · CLI
@@ -27,6 +28,7 @@
 │   │   ├── recipe.py       #   측정 순서(레시피) 단계 정의·검증·예상 시간
 │   │   ├── relays.py       #   릴레이 10개 · 정책 · 하트비트 · 통신 감시 경보
 │   │   ├── photohome.py    #   사진 호밍(헤드 마커) · 헤드/판 마커/공구 오프셋 보정
+│   │   ├── platecal.py     #   고정 보정 명령: 감지 영역 · 판 보정 · 단발 촬영
 │   │   ├── commands.py     #   화면 명령 처리
 │   │   ├── engine.py       #   촬영 흐름 · 레시피 순회 엔진(안전 불변식)
 │   │   ├── stagectl.py     #   core.stage 를 단일 워커 스레드에서 asyncio 로
@@ -36,7 +38,7 @@
 │   │   └── logger.py storage.py version.py
 │   ├── frontend/           # index.html · css/style.css
 │   │                       # js/{core,camera,map,samples,sequence,jog,relays,
-│   │                       #     editors,settings,calib,app}.js
+│   │                       #     editors,settings,calib,plate,app}.js
 │   ├── tools/              # 개발·검증용. 프로그램 실행에는 필요 없다
 │   │   ├── regress.py      #   지금까지 찍은 사진 전부로 검출 회귀
 │   │   ├── flat_check.py   #   평탄화 전·후 검출 비교 (raw.png 들로)
@@ -54,6 +56,7 @@
     ├── settings_backup/    #   설정 저장 직전본(최근 20개)
     ├── settings_export/    #   설정 내보내기 사본
     ├── head_calib.json     #   헤드 마커 보정(사진 호밍)
+    ├── plate_calib.json    #   고정 보정: 감지 영역 + 판 보정(카메라 번호 · 해상도 포함)
     └── calib_matrix.json   #   마지막 판 마커 보정
 ```
 
@@ -66,7 +69,9 @@
 흉내 낼 펌웨어 버전과 '원점 없는 상태로 시작'. `WAFER_STAGE_SETTINGS` 는 settings.json
 대신 쓸 설정 파일(스모크가 케이스마다 임시 파일을 넘긴다 — 저장소 settings.json 을 건드리지
 않는다), `WAFER_STAGE_DRY_CAMERA=synth` 는 단발 촬영(사진 호밍·헤드 보정)을 합성 카메라로
-바꾼다(`tools/synth_cam.py`).
+바꾼다(`tools/synth_cam.py` — 4080×3060 도 만든다. `WAFER_STAGE_SYNTH_HEAD_OFF=1` 은 헤드 마커가 안
+보이는 장면). 고정 보정 검증은 `synth_cam.render_plate` 가 알려진 호모그래피 · 알려진 샘플 위치로
+만든 판 장면을 `--image` 로 준다.
 
 ## 실행
 
@@ -108,6 +113,10 @@ python tools/cam_probe.py           # 카메라가 실제로 내보내는 포맷
 | `version` | `{name, version, build}` |
 | `stage` | `connected, port, homed_x, homed_y, homed_z, x_mm, y_mm, z_mm, u, v, moving, dirty, needs_home, last_error` |
 | `camera` | `index, ok, last_error, capturing, preview` |
+| `plate` | 고정 보정: `{mode, valid, reason, data{created, camera_index, size, area[4×(u,v)], points[{x,y,u,v,res_mm}], has_h, rms_mm, max_mm, res_limit_mm, n}, shot}` — `valid` 는 카메라 번호 · 해상도가 저장 때와 같고 감지 영역 · 판 보정이 다 있을 때. `shot` 은 보정 창 단발 촬영 `{id, w, h, url}` |
+| `head_marker` | 촬영본에서 찾은 헤드 마커 `{center, corners[4]}`(표시용) 또는 null |
+| `sensing` | `{rect, quad}` — `quad` 는 고정 보정의 감지 영역 사각형(촬영본 px), `rect` 는 그것을 감싸는 영역 |
+| `calib` | `{mode: fixed\|markers, used_ids, missing_ids, corner_rms_mm, corner_max_mm, …}` — fixed 에서는 마커 항목이 비어 있다 |
 | `log_file` | 오늘 로그 파일 이름(상태줄에 표시) |
 | `stage.jog_mode_x` `jog_mode_y` `jog_mode_z` | 축별 `abs`(원점 있음) / `rel`(원점 없음·비상정지 뒤) |
 | `stage.fw` | 펌웨어 버전(`V8` … `V11`). 앱은 V11 을 쓴다 |
@@ -165,13 +174,44 @@ python tools/cam_probe.py           # 카메라가 실제로 내보내는 포맷
 | `GET /` | 콘솔 화면 |
 | `GET /health` | `{ok, version}` |
 | `GET /frame/<id>.jpg` | 마지막 촬영본 (검출 결과를 그릴 바탕) |
-| `GET /preview.jpg` | 미리보기 최신 한 장(640×360). 없으면 204 |
+| `GET /preview.jpg` | 미리보기 최신 한 장(가로 `preview_max_w` 이하로 줄인 비율 유지 JPEG). 없으면 204 |
 | `POST /estop` | 비상정지 우회로 — WebSocket 이 막혀도 도착한다 |
 | `GET /settings/schema` | 설정 스키마 + 현재값 + 기본값(설정 화면이 이것으로 그려진다) |
 
 미리보기는 서버 기동과 함께 설정 주기(`preview_fps`, 기본 4 fps)로 돈다. 카메라 장치는 한 번에 한 곳만 열 수
 있으므로 미리보기와 촬영이 같은 객체를 lock 으로 나눠 쓴다 — 촬영 때 닫았다 다시
 열지 않는다. `--image` 로 띄우면 그 사진이 미리보기로 나온다(카메라를 열지 않는다).
+
+### 고정 보정 (`calib.mode = fixed`, 기본)
+
+판 마커(id0~3)는 붙이지 않는다. 카메라는 천장에 고정이고 샘플은 판에 새겨진 사각형 안에만 놓이므로
+**감지 영역은 고정**이고 좌표는 **한 번 저장한 판 보정**으로 낸다(카메라를 옮기거나 해상도를 바꾸면
+다시). 판 마커 검출 · "마커 부족" 판정 · 마커 3개 확인은 하지 않고, 판 마커가 화면에 있어도
+무시한다. 마커는 Z 모터 윗면의 헤드 마커(id 10) 하나뿐이다. 예전 방식은 `calib.mode = markers`
+로 그대로 남아 있다.
+
+- **감지 영역** — 촬영본 픽셀 좌표의 볼록 사각형(네 꼭짓점). `data/plate_calib.json`(카메라 번호 ·
+  해상도와 함께). 검출은 사각형을 감싸는 영역만 잘라(crop) 사각형 밖을 안쪽 판 색으로 채워 평평하게
+  만든 뒤 `detect` 에 넣고, 결과 픽셀 좌표는 원본 프레임 좌표로 되돌려 저장 · 표시한다. 사각형
+  경계 `calib.area_margin_mm` 안에 닿은 검출(새겨진 선 · 경계 이음매)은 버리고 번호를 1부터 다시 매긴다.
+- **판 보정** — (촬영본 픽셀 → 스테이지 XY, 기준 포인터 기준) 호모그래피, 점 4개 이상(권장 5~9)
+  최소제곱. 점별 잔차 · RMS · 최대를 보이고 한계(`calib.residual_limit_mm`) 초과 점은 빨갛게 표시.
+  4점 미만(또는 한 직선 위)은 적용을 거절한다. 샘플 좌표 · 수동 추가(촬영본 클릭) · 맵 포인터 ·
+  공구 오프셋 방법 2(자국 클릭)가 모두 이 판 보정으로 변환한다.
+- **검출 스케일** — `detect` 는 고치지 않았다. 철판 모드(`surface=plate`)의 기존 인자만 쓴다:
+  `plate_mm_per_px` = 감지 영역 중심에서 호모그래피의 국소 mm/px ÷ 축소 배율, `marker_mm=0`(마커 끔),
+  `plate_margin_pct=0`. `detect_max_px` 보다 crop 의 긴 변이 크면 줄여서 검출하고 좌표 · 배율을
+  원본으로 되돌린다.
+- **무효 처리** — 카메라 번호 · 해상도가 저장 때와 다르면 감지 영역 · 판 보정이 무효다. 촬영은 하되
+  좌표를 만들지 않고 경보 배너 "판 보정 무효 · 다시 보정"을 띄운다.
+- **평탄화** — 종이 기준이라 고정 보정에서는 기준이 없다. 건너뛰고 "평탄화 건너뜀 · 고정 보정"을
+  로그에 남긴다. 브라케팅 · 융합은 그대로다.
+- **소요 시간** — 촬영마다 "소요 W×H · 촬영 · 융합 · 검출 · 헤드 마커"(초)를 로그에 남긴다.
+- **보정 창 → 감지 영역 · 판 보정 탭** — ① 촬영본(최근 촬영본 또는 단발 촬영) ② 네 모서리 클릭 →
+  사각형 미리보기 → 꼭짓점 끌기 → [적용] ③ 점마다 기준 포인터를 판 위 표시점에 맞춰 [위치 기록] +
+  촬영본에서 같은 점 클릭(1~8배 확대, 선택한 점은 0.5 px 씩 미세 이동). [감지 영역 꼭짓점을
+  보정점으로 쓰기]는 꼭짓점 픽셀을 점 목록에 넣어 두고 [위치 기록]만 하게 한다 ④ 표(번호 · X · Y ·
+  u · v · 잔차 · 삭제)에서 RMS · 최대 확인 후 [적용]. 클릭 좌표는 원본 해상도 기준이다.
 
 ### 촬영 순서 (한쪽에서 강한 빛이 들어오는 환경 대응)
 
@@ -193,7 +233,7 @@ _capture_sync`).
    것 — "노출이 바뀌지 않음 · 브라케팅을 건너뜁니다" 경고 뒤 단일 촬영으로 돌아간다(2장
    미만이어도 같다). 실제로 쓴 노출값과 장별 평균은 로그에 남는다. `--image` 는 브라케팅
    없이 그 사진이다.
-2. **마커 → 감지영역** (`calib.preprocess`).
+2. **마커 → 감지영역** (`calib.preprocess`). 고정 보정은 이 단계 없이 저장한 감지 영역을 쓴다.
 3. **종이 기준 조명 평탄화** (`core/flat.py flatten`, 설정 `flat_field` 기본 켬) — 감지영역
    안에서 포화되지 않고(<250) 충분히 밝은 화소를 종이 후보로 두고, 채널별 2차 다항식
    조명면을 반복 최소제곱(잔차 큰 화소 버리고 다시 맞추기 ×3)으로 맞춘다. 웨이퍼·칩·
@@ -313,8 +353,9 @@ d² 중앙값 6 < grow 12, B(702,277)는 엣지 지지율 0.65·직선성 0.76·
 잰다 — 나눗셈은 잃은 정보를 되살리지 못한다). 웨이퍼 포화가 10% 를 넘으면
 "반사광으로 정보가 사라진 영역 N% · 노출을 더 낮추거나 편광 필터가 필요합니다" 경고.
 
-카메라 설정(설정 창): `width`·`height`·`fourcc`(MJPG/YUY2 — 요청값. 해상도를 올리면
-촬영과 검출이 느려진다) · `wb_temperature`(화이트밸런스 색온도, 0 = 카메라 기본.
+카메라 설정(설정 창): `width`·`height`·`fourcc`(MJPG/YUY2 — 요청값. 기본 4080×3060 MJPG = 4:3 전체 센서
+화각이고 윈도우 카메라 앱과 같다. 8160×6120 은 보간이고 16:9 모드는 위아래가 잘려 화면 위 끝의
+헤드 마커가 잘린다. 설정 창 [최대 해상도로] 버튼이 이 값으로 채운다. 올리면 촬영과 검출이 느려진다) · `wb_temperature`(화이트밸런스 색온도, 0 = 카메라 기본.
 AUTO_WB 는 끄는데 값을 안 주면 종이가 초록끼를 띤다) · `exposure`(0 = 자동, 값을 주면
 `auto_exposure` 가 꺼지고 그 노출로 고정). 저장하면 카메라를 다시 연다.
 `bracket*`·`flat_field`·초점 모드/스윕·촬영 프레임 수·재시도도 설정 창 카메라 탭에 있다.
@@ -477,7 +518,10 @@ Z 를 내린 채 조금씩 민다).
    정책 기본은 비상정지·정지·오류·종료 때 전부 끄기. 조작 열 릴레이 패널에서 켜고 꺼 본다
 4. **원점(임시)** — 헤드 보정 전이므로 수동 이동 → [원점 잡기]로 X·Y·Z 등록
 5. **촬영 위치** — 히트건이 웨이퍼를 가리지 않는 좌측 끝 쪽으로 옮겨 [현재 위치를 촬영 위치로]
-6. **판 마커 좌표** — [보정] → 판 마커: id0~3 마다 기준 포인터를 마커 중심에 맞춰 [기록] → [적용]
+6. **카메라 · 감지 영역 · 판 보정**(고정 보정) — [설정] → 카메라: [최대 해상도로](4080×3060) · 초점 고정 → 저장 →
+   [촬영] → [보정] → 감지 영역 · 판 보정: 새겨진 사각형 네 모서리 클릭 → [적용], 점마다 포인터를 표시점에
+   맞춰 [위치 기록] + 사진에서 클릭(4점 이상) → RMS 확인 → [적용]. (예전 판 마커 방식은 보정 방식을
+   `판 마커` 로 바꾸고 [보정] → 판 마커: id0~3 마다 기준 포인터를 마커 중심에 맞춰 [기록] → [적용])
 7. **헤드 마커 부착 · 보정** — Z 모터 윗면에 헤드 마커(id 10 · 40 mm)를 붙이고 [보정] → 헤드 마커
    → [보정 시작] → 잔차 RMS 가 한계(0.5 mm) 안이면 [적용]
 8. **사진 호밍** — 조작 열 [사진 호밍]. 칩이 `위치 확인 정상` 이 되는지 확인
@@ -528,6 +572,11 @@ Z 를 내린 채 조금씩 민다).
 | `photo_home` | 지금 자리에서 헤드 마커로 위치 확인 → `ack{ok, reason: ok\|corrected\|failed\|needs_confirm, d_mm, measured?, recorded?}` |
 | `photo_home_apply` | 확인 요구된 결과를 적용(서버가 잰 값으로 sp + save, 120초 안 · 그 사이 이동 없음) |
 | `head_calib_start` `head_calib_apply` | 헤드 마커 보정 실행(격자) → `ack{of:"head_calib", result}` / 결과 저장(data/head_calib.json) |
+| `plate_shot` | 보정 창 단발 촬영(브라케팅 · 검출 없음) → `ack{of:"plate_shot", frame{id,w,h,url}}`, `state.plate.shot` |
+| `plate_pos` | `[위치 기록]` — 지금 스테이지 XY → `ack{of:"plate_pos", x, y}` (원점 · 연결 필요) |
+| `plate_calib_fit` | `points[{x,y,u,v}], size[w,h]` — 저장 없이 잔차 계산 → `ack{res[], rms_mm, max_mm, over[], res_limit_mm}` (4점 미만 `reason:"min_points"`) |
+| `plate_calib_apply` | 같은 인자 — 4점 이상이면 판 보정 저장(`data/plate_calib.json`) → `ack{rms_mm, max_mm, over[]}`, 4점 미만 · 한 직선은 `ack{ok:false, reason:"min_points"}` |
+| `plate_area_apply` | `quad[4×(u,v)], size[w,h]` — 감지 영역 저장. 볼록 · 프레임 안 · 최소 넓이가 아니면 `ack{ok:false, reason:"invalid"}` (카메라 · 해상도가 다르면 기존 판 보정 점은 버린다) |
 | `calib_marker_record` `calib_marker_apply` | `id` — 지금 위치를 판 마커 좌표 후보로 기록 → `ack{new, old, diff_mm}` / 저장 |
 | `calib_tool_record` | `which:"A"\|"B"` — 방법 1 기록 → `ack{result:{A, B, d1}}` |
 | `calib_tool_heat` | `n, s, z_mm` — 방법 2 단독 가열(지금 위치 = P0) → `ack{result:{P0}}` |
@@ -604,12 +653,13 @@ settings.json 을 직접 편집한다(화면에 있던 `stat_seed` · `stat_grow
 | 탭 | 키 | 기본값 | 단위 | 적용 | 뜻 |
 |---|---|---|---|---|---|
 | 카메라 | `camera_index` | 1 |  | 재연결 | 카메라 번호 |
-| 카메라 | `width` | 1280 | px | 재연결 | 가로 해상도 |
-| 카메라 | `height` | 720 | px | 재연결 | 세로 해상도 |
+| 카메라 | `width` | 4080 | px | 재연결 | 가로 해상도(기본 4:3 전체 센서) |
+| 카메라 | `height` | 3060 | px | 재연결 | 세로 해상도 · [최대 해상도로] 버튼(4080×3060 · MJPG) |
 | 카메라 | `fourcc` | MJPG |  | 재연결 | 영상 포맷 |
 | 카메라 | `wb_temperature` | 0 | K | 재연결 | 화이트밸런스 |
 | 카메라 | `exposure` | 0 |  | 재연결 | 노출 |
-| 카메라 | `focus_mode` | auto |  | 재연결 | 초점 모드 |
+| 카메라 | `focus_mode` | fixed |  | 재연결 | 초점 모드(고정 — 자동초점 헌팅 방지) |
+| 카메라 | `focus_sweep` | 켬 |  | 재연결 | 초점 스윕(고정 모드에서 열 때 가장 선명한 값으로) |
 | 카메라 | `focus` | -1 |  | 재연결 | 고정 초점값 |
 | 카메라 | `focus_sweep` | 끔 |  | 재연결 | 초점 스윕 |
 | 카메라 (고급) | `af_settle_s` | 5.0 | s | 다음 촬영 | 자동 초점 대기 최대 |
@@ -623,6 +673,8 @@ settings.json 을 직접 편집한다(화면에 있던 `stat_seed` · `stat_grow
 | 카메라 | `flat_field` | 켬 |  | 다음 촬영 | 조명 평탄화 |
 | 카메라 | `capture_retries` | 2 |  | 다음 촬영 | 촬영 재시도 |
 | 카메라 | `preview_fps` | 4.0 | fps | 즉시 | 미리보기 주기 |
+| 카메라 | `preview_max_w` | 1280 | px | 즉시 | 미리보기 최대 가로(촬영 · 검출 · 클릭 좌표는 원본 해상도) |
+| 카메라 (고급) | `cam_first_frame_s` | 5.0 | s | 즉시 | 첫 프레임 대기(4백만 화소 초과는 두 배) |
 | 카메라 | `cam_fail_limit` | 3 |  | 즉시 | 연속 실패 허용 |
 | 카메라 | `cam_reopen_s` | 5.0 | s | 즉시 | 재개방 대기 |
 | 카메라 (고급) | `cam_reopen_max_s` | 30.0 | s | 즉시 | 재개방 대기 최대 |
@@ -656,6 +708,8 @@ settings.json 을 직접 편집한다(화면에 있던 `stat_seed` · `stat_grow
 | 사진 호밍 | `photohome.dict` | 4X4_50 |  | 즉시 | 마커 사전 |
 | 사진 호밍 | `photohome.tol_mm` | 0.3 | mm | 즉시 | 허용 오차 |
 | 사진 호밍 | `photohome.warn_mm` | 5.0 | mm | 즉시 | 경고 오차 |
+| 사진 호밍 | `photohome.on_connect` | 켬 |  | 재연결 | 연결 직후 위치 판단(이동 없이 한 장. 헤드 보정이 유효할 때만) |
+| 사진 호밍 | `photohome.edge_margin_px` | 0 | px | 즉시 | 헤드 마커 화면 끝 여백(0 = 프레임 짧은 변의 3%) |
 | 사진 호밍 | `photohome.before_capture` | 켬 |  | 다음 촬영 | 촬영 전 자동 확인 |
 | 사진 호밍 | `photohome.after_move` | 끔 |  | 다음 순회 | 샘플 이동 후 재확인 |
 | 사진 호밍 | `photohome.after_move_fail` | stop |  | 다음 순회 | 재확인 실패 시 |
@@ -677,10 +731,14 @@ settings.json 을 직접 편집한다(화면에 있던 `stat_seed` · `stat_grow
 | 측정 순서 | `measure.driver` | dummy |  | 다음 순회 | 계측기 드라이버 |
 | 검출 | `stat_seed` | 25.0 | d² | 다음 촬영 | 검출 씨앗 임계 |
 | 검출 | `stat_grow` | 12.0 | d² | 다음 촬영 | 검출 확장 임계 |
-| 검출 | `marker_mm` | 30.0 | mm | 다음 촬영 | 판 마커 크기 |
-| 검출 | `marker_mm_xy` | 표 |  | 다음 촬영 | 판 마커 좌표 |
-| 검출 | `calib.min_markers` | 3 |  | 다음 촬영 | 판 마커 최소 개수 |
-| 검출 | `calib.confirm_3markers` | 켬 |  | 다음 순회 | 마커 3개면 확인 |
+| 검출 | `calib.mode` | fixed |  | 다음 촬영 | 보정 방식(고정 / 판 마커). 없는 예전 설정은 fixed 로 이행하고 로그에 한 줄 |
+| 검출 | `calib.residual_limit_mm` | 1.0 | mm | 다음 촬영 | 판 보정 잔차 한계(초과 점 빨간 표시) |
+| 검출 | `calib.area_margin_mm` | 1.0 | mm | 다음 촬영 | 감지 영역 경계 여유(닿은 검출 버림) |
+| 검출 | `detect_max_px` | 2000 | px | 다음 촬영 | 검출 최대 변(crop 이 크면 줄여 검출 후 원본 좌표로 복원. 0 = 줄이지 않음) |
+| 검출 | `marker_mm` | 30.0 | mm | 다음 촬영 | 판 마커 크기 (markers 모드에서만 보임) |
+| 검출 | `marker_mm_xy` | 표 |  | 다음 촬영 | 판 마커 좌표 (markers 모드에서만 보임) |
+| 검출 | `calib.min_markers` | 3 |  | 다음 촬영 | 판 마커 최소 개수 (markers 모드에서만 보임) |
+| 검출 | `calib.confirm_3markers` | 켬 |  | 다음 순회 | 마커 3개면 확인 (markers 모드에서만 보임) |
 | 고급 | `origin_gap_mm` | 2.0 | mm | 즉시 | 원점 이격 |
 | 고급 | `file_log` | 켬 |  | 즉시 | 파일 로그 |
 
@@ -717,9 +775,16 @@ Z 축 고정부(Z 모터 윗면 — 높이가 변하지 않는 곳)에 ArUco 마
   허용 오차(0.3 mm) 안이면 그대로, 허용~경고(5 mm)면 `sp` 로 자동 보정 + 로그, 경고 초과 또는
   원점 없음이면 대화상자로 차이를 보여 주고 확인 뒤 `sp`(서버가 잰 값으로 · 그 사이 이동이 없을 때만).
   `sp` 뒤 save. 결과는 상단 '위치 확인' 칩(미확인 / 정상 / 보정됨 / 실패).
-- 마커가 안 보이면 "헤드 마커 미검출 · 수동 이동으로 시야 안에".
+- 마커가 안 보이면 "헤드 마커 미검출 · 수동 이동으로 시야 안에". 판 마커와 무관하다 — 고정 보정에서 판 마커 없이
+  헤드 마커 하나로 촬영 전 확인 · 사진 호밍 · 헤드 보정이 된다.
+- **화면 끝**: 헤드 마커가 화면 가장자리(`photohome.edge_margin_px`, 0 이면 짧은 변의 3%) 안쪽에 걸치면
+  결과를 쓰지 않고 "헤드 마커가 화면 끝 · 안쪽으로 이동"을 알린다. 헤드 보정 격자 점 중 마커가
+  가장자리에 걸리는 점은 건너뛰고(보정 결과 `skipped`) 4점 미만이 되면 실패한다.
+- **연결 직후**(`photohome.on_connect`, 기본 켬): 스테이지를 연결하면 헤드 보정이 유효할 때 이동 없이 한
+  장 찍어 위치를 판단한다(판정 규칙은 위와 같다 — 허용 안 그대로 / 경고 안 자동 sp / 넘거나 원점 없음은
+  확인 후 sp). 마커가 안 보이면 "헤드 마커 미검출"만 알리고 아무것도 움직이지 않는다.
 - 촬영 전 자동 확인(기본 켬): 촬영 위치에 도착하면 확인한다. 확인이 필요해도 묻지 않고 경고만
-  남기고 촬영은 한다(검출 좌표는 판 마커 기준이라 촬영 자체는 안전하다).
+  남기고 촬영은 한다(검출 좌표는 판 보정 · 판 마커 기준이라 촬영 자체는 안전하다).
 - 샘플 이동 후 재확인(기본 끔): 도착 후 한 장 → 허용 오차를 넘으면 한 번 바로잡고 다시 이동,
   그래도 넘으면 설정대로 정지(기본) 또는 경고 후 계속.
 
