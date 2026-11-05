@@ -39,6 +39,10 @@ class State:
                       "fw": "", "last_error": ""}
         self.camera = {"index": self.settings.get("camera_index", 1), "ok": None,
                        "last_error": "", "capturing": False, "preview": False}
+        self.measure = {"temp": None, "temp_ok": True, "temp_driver": "dummy", "contact_driver": "dummy",
+                        "contact": None, "heater_on": False, "cooler_on": [], "target": None, "label": "",
+                        "left_s": None, "tripped": "", "recording": False}
+        self.tip_extra = {"angle_now": None, "tips_now": {}, "has_cal": False}
         self.frame = None                  # {"id","ts","w","h","url"}
         self.calib = None                  # {"refit","used_ids",...}
         self.sensing = None                # {"rect":[u0,v0,u1,v1]}
@@ -249,7 +253,7 @@ class State:
         has_confirm = any((st or {}).get("type") == "confirm" for st in rc.get("steps") or [])
         return {"recipe": rc.get("name"), "sample_s": round(per, 1),
                 "total_s": round(per * len(pts), 1), "n": len(pts),
-                "confirm": has_confirm, "relays": recipe_mod.relays_used(rc)}
+                "confirm": has_confirm, "relays": recipe_mod.relays_used(rc, self.settings)}
 
     def set_alarm(self, src, text):
         """경보 배너 항목(출처마다 하나). text 가 비면 지운다."""
@@ -326,9 +330,10 @@ class State:
             # 서버가 지금 쓰는 마커 기준 좌표. settings 에 marker_mm_xy 가 없어도
             # 설정 창이 이 값으로 표를 채운다.
             "marker_mm": {str(k): [v[0], v[1]] for k, v in calib.MARKER_MM.items()},
+            "measure": dict(self.measure),
             "samples": [dict(s) for s in self.samples],
             "tip": dict(tip_mod.tip_of(self.tool()), name=self.tool().get("name"),
-                        margin_mm=float(self.get("tool.fit_margin_mm") or 0.0)),
+                        margin_mm=float(self.get("tool.fit_margin_mm") or 0.0), **self.tip_extra),
             "edit": self.edit_summary(),
             "sequence": dict(self.sequence, estopped=_estopped()),
             "warnings": list(self.warnings),

@@ -32,6 +32,7 @@ TABS = [
     ("photohome", "사진 호밍"),
     ("tool", "공구"),
     ("relay", "릴레이"),
+    ("measure", "측정 장비"),
     ("recipe", "측정 순서"),
     ("detect", "검출"),
     ("advanced", "고급"),
@@ -53,11 +54,11 @@ def _relays_default():
 def _tools_default(z_work=44.0):
     return [
         {"name": TOOL_POINTER, "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 0.0,
-         "tip_shape": "rect", "tip_w_mm": 10.0, "tip_h_mm": 2.0, "tip_angle_deg": 90.0,
-         "note": "스테이지 좌표가 가리키는 점"},
+         "tip_shape": "rect", "tip_w_mm": 10.0, "tip_h_mm": 2.0, "tip_angle_deg": None,
+         "tip_angle_img_deg": 90.0, "note": "스테이지 좌표가 가리키는 점"},
         {"name": TOOL_HEATGUN, "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": float(z_work),
-         "tip_shape": "circle", "tip_w_mm": 5.0, "tip_h_mm": 5.0, "tip_angle_deg": 0.0,
-         "note": "노즐이 비스듬해 가열 중심은 오프셋 보정으로 잡는다"},
+         "tip_shape": "circle", "tip_w_mm": 5.0, "tip_h_mm": 5.0, "tip_angle_deg": None,
+         "tip_angle_img_deg": 0.0, "note": "노즐이 비스듬해 가열 중심은 오프셋 보정으로 잡는다"},
     ]
 
 
@@ -284,7 +285,7 @@ ITEMS = [
 
     # ---------------- 공구 ----------------
     I("tool.items", _tools_default(), "list", "tool", "공구 목록", "공구",
-      "공구마다 오프셋(기준 포인터 대비) · 작업 높이 · 끝 모양입니다. 끝 모양은 촬영본에 실제 크기로 그려지고 샘플 윤곽 안에 들어가는지 검사합니다(각도는 사진 기준: 0 = 긴 변이 사진 가로, 90 = 사진 세로). 기준 포인터는 지울 수 없습니다.",
+      "공구마다 오프셋(기준 포인터 대비) · 작업 높이 · 끝 모양입니다. 끝 모양은 촬영본에 실제 크기로 그려지고 샘플 윤곽 안에 들어가는지 검사합니다(각도는 스테이지 기준: 0 = 긴 변이 스테이지 X 축, 90 = Y 축 — 카메라 방향이 바뀌어도 실물 방향이 그대로입니다. 판 보정이 없을 때만 사진 기준 예비값 tip_angle_img_deg 를 씁니다). 기준 포인터는 지울 수 없습니다.",
       editor="tools", validate="tools", apply="다음 순회"),
     I("tool.fit_margin_mm", 0.3, "float", "tool", "공구 목록", "끝 모양 맞음 여유",
       "공구 끝 모양이 샘플 윤곽을 이만큼까지 벗어나는 것은 봐줍니다. 더 벗어나면 샘플에 핀 벗어남을 표시하고 순회 전에 확인을 받습니다.",
@@ -309,8 +310,72 @@ ITEMS = [
       "펌웨어가 이 시간 동안 명령을 못 받으면 릴레이를 전부 끕니다. 0 이면 끕니다.",
       min=0, max=600000, step=500, unit="ms"),
 
+    # ---------------- 측정 장비 (온도 · 접촉 · 쿨러 · 히트건) ----------------
+    I("temp.driver", "dummy", "enum", "measure", "온도", "온도 드라이버",
+      "온도 읽기 방식입니다. 더미는 열 모델 시뮬레이터입니다(실장치는 미정 — 계측기 · 아두이노 아날로그 입력 · 별도 시리얼 중 하나를 붙일 자리). 실제 장비에서 더미로는 가열 단계가 실행되지 않습니다.",
+      options=[{"value": "dummy", "label": "더미(시뮬레이터)"}], apply="즉시"),
+    I("temp.period_s", 0.5, "float", "measure", "온도", "읽기 주기",
+      "온도를 읽어 그래프 · 기록에 남기는 주기입니다.", min=0.05, max=10, step=0.05, unit="s", apply="즉시"),
+    I("contact.driver", "dummy", "enum", "measure", "접촉", "접촉 드라이버",
+      "접촉 확인 방식입니다. 더미는 Z 가 시뮬레이터 접촉 높이 이상이면 접촉, 계측기는 계측기가 돌려주고, 입력 핀은 아두이노 디지털 입력(펌웨어 V12 의 읽기 명령 필요), 수동은 [접촉 확인] 버튼입니다.",
+      options=[{"value": "dummy", "label": "더미"}, {"value": "measurer", "label": "계측기"},
+               {"value": "di", "label": "입력 핀"}, {"value": "manual", "label": "수동"},
+               {"value": "none", "label": "사용 안 함"}], apply="즉시"),
+    I("contact.di_pin", 2, "int", "measure", "접촉", "입력 핀 번호",
+      "접촉 신호를 읽는 아두이노 디지털 핀 번호입니다(입력 핀 방식).", min=0, max=99, step=1, apply="즉시",
+      show_if={"contact.driver": "di"}),
+    I("contact.di_pullup", True, "bool", "measure", "접촉", "내부 풀업",
+      "입력 핀의 내부 풀업 저항을 켭니다.", apply="즉시", show_if={"contact.driver": "di"}),
+    I("contact.di_active_high", False, "bool", "measure", "접촉", "HIGH 가 접촉",
+      "켜면 핀이 HIGH 일 때 접촉, 끄면 LOW 일 때 접촉입니다.", apply="즉시", show_if={"contact.driver": "di"}),
+    I("cooler.zones", {"rows": 3, "cols": 3, "relays": list(range(1, 10))}, "object", "measure", "쿨러 구역",
+      "쿨러 구역", "감지 영역을 행 × 열로 나눈 칸마다 쿨러 릴레이 번호입니다(행 우선, 사진 기준 위에서 아래 · 왼쪽에서 오른쪽). 샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러입니다.",
+      editor="zones", validate="zones", apply="즉시"),
+    I("cooler.mode", "sample", "enum", "measure", "쿨러 구역", "쿨러 켜는 범위",
+      "샘플은 그 샘플의 쿨러만, 전부는 레시피의 쿨러 단계에서 9개 전부를 켭니다.",
+      options=[{"value": "sample", "label": "그 샘플만"}, {"value": "all", "label": "전부"}], apply="다음 순회"),
+    I("cooler.keep_on", True, "bool", "measure", "쿨러 구역", "샘플이 끝나도 켜 둠",
+      "켜면 샘플이 끝나도 쿨러를 그대로 둡니다(다음 샘플이 같은 구역이면 그대로, 다르면 다음 샘플의 쿨러 단계가 바꿉니다). 순회 종료 · 정지 때는 릴레이 정책을 따릅니다.",
+      apply="다음 순회"),
+    I("heater.relay", 10, "int", "measure", "히트건", "히트건 릴레이",
+      "히트건 전원 릴레이 번호입니다. 이 릴레이는 레시피의 가열 단계만 켭니다.", min=1, max=10, step=1,
+      apply="다음 순회"),
+    I("heater.max_c", 300.0, "float", "measure", "히트건", "과열 보호 온도",
+      "히트건이 켜진 동안 온도가 이 값을 넘으면 즉시 끄고 순회를 중단합니다.", min=30, max=600, step=5, unit="°C",
+      apply="즉시"),
+    I("heater.sensor_fail_n", 3, "int", "measure", "히트건", "센서 오류 허용 횟수",
+      "히트건이 켜진 동안 온도 센서 오류가 이만큼 연속되면 즉시 끄고 순회를 중단합니다.", min=1, max=100, step=1,
+      apply="즉시"),
+    I("measure.sample_period_s", 0.0, "float", "measure", "기록", "측정값 기록 주기",
+      "기록 구간에서 이 주기로 계측기 측정을 불러 기록합니다. 0 이면 기록 구간 중에는 측정하지 않습니다.",
+      min=0, max=3600, step=0.5, unit="s", apply="다음 순회"),
+    I("sim.time_scale", 1.0, "float", "measure", "시뮬레이터(테스트용)", "시간 배율",
+      "더미 열 모델과 접촉 · 온도 대기 · 가열 · 기록 단계의 시간을 이 배율로 빠르게 합니다(검증용, 1 = 실시간).",
+      min=0.1, max=1000, step=0.5, apply="즉시", advanced=True),
+    I("sim.ambient_c", 25.0, "float", "measure", "시뮬레이터(테스트용)", "주변 온도",
+      "열 모델의 주변 온도입니다.", min=-20, max=80, step=1, unit="°C", apply="즉시", advanced=True),
+    I("sim.heater_c", 320.0, "float", "measure", "시뮬레이터(테스트용)", "히트건 도달 온도",
+      "히트건이 계속 켜져 있을 때 열 모델이 향하는 온도입니다.", min=30, max=800, step=10, unit="°C", apply="즉시",
+      advanced=True),
+    I("sim.cooler_c", 5.0, "float", "measure", "시뮬레이터(테스트용)", "쿨러 도달 온도",
+      "쿨러가 켜져 있을 때 열 모델이 향하는 온도입니다.", min=-50, max=60, step=1, unit="°C", apply="즉시",
+      advanced=True),
+    I("sim.tau_heat_s", 15.0, "float", "measure", "시뮬레이터(테스트용)", "가열 시간 상수",
+      "히트건에 대한 지수 응답의 시간 상수입니다.", min=0.5, max=600, step=0.5, unit="s", apply="즉시", advanced=True),
+    I("sim.tau_cool_s", 25.0, "float", "measure", "시뮬레이터(테스트용)", "냉각 시간 상수",
+      "쿨러에 대한 지수 응답의 시간 상수입니다.", min=0.5, max=600, step=0.5, unit="s", apply="즉시", advanced=True),
+    I("sim.tau_amb_s", 120.0, "float", "measure", "시뮬레이터(테스트용)", "자연 냉각 시간 상수",
+      "아무것도 안 켰을 때 주변 온도로 돌아가는 시간 상수입니다.", min=1, max=3600, step=5, unit="s", apply="즉시",
+      advanced=True),
+    I("sim.noise_c", 0.2, "float", "measure", "시뮬레이터(테스트용)", "잡음",
+      "읽은 온도에 더하는 가우시안 잡음의 표준편차입니다.", min=0, max=5, step=0.1, unit="°C", apply="즉시",
+      advanced=True),
+    I("sim.contact_z_mm", 44.0, "float", "measure", "시뮬레이터(테스트용)", "접촉 Z",
+      "더미 접촉 드라이버가 접촉이라고 보는 Z 높이(이 값 이상)입니다.", min=0, max=100, step=0.1, unit="mm",
+      apply="즉시", advanced=True),
+
     # ---------------- 측정 순서 ----------------
-    I("recipe.items", [recipe.default_recipe()], "list", "recipe", "레시피", "레시피",
+    I("recipe.items", [recipe.default_recipe(), recipe.default_heat_recipe()], "list", "recipe", "레시피", "레시피",
       "샘플마다 실행할 단계 순서입니다. 첫 단계는 샘플 위로 이동입니다.",
       editor="recipes", validate="recipes", apply="다음 순회"),
     I("recipe.active", recipe.DEFAULT_NAME, "str", "recipe", "레시피", "활성 레시피",
@@ -636,6 +701,34 @@ def _v_area_size(key, v, values, errs, warns):
         errs[key] = "[가로, 세로] 0 초과 1000 mm 이하"
 
 
+def _v_zones(key, v, values, errs, warns):
+    if not isinstance(v, dict):
+        errs[key] = "형식 오류"
+        return
+    try:
+        rows, cols = int(v.get("rows")), int(v.get("cols"))
+    except (TypeError, ValueError):
+        errs[key] = "행 · 열 숫자 필요"
+        return
+    if not (1 <= rows <= 6 and 1 <= cols <= 6):
+        errs[key] = "행 · 열 1~6"
+        return
+    rl = v.get("relays")
+    if not isinstance(rl, list) or len(rl) != rows * cols:
+        errs[key] = "릴레이 번호 %d개 필요(행 × 열)" % (rows * cols)
+        return
+    for x in rl:
+        try:
+            if not 1 <= int(x) <= N_RELAY:
+                raise ValueError
+        except (TypeError, ValueError):
+            errs[key] = "릴레이 번호 1~%d" % N_RELAY
+            return
+    hr = _num(get_path(values, "heater.relay"))
+    if hr is not None and int(hr) in [int(x) for x in rl]:
+        errs[key] = "히트건 릴레이 R%d 는 쿨러로 쓸 수 없음" % int(hr)
+
+
 def _v_tol_warn(key, v, values, errs, warns):
     w = _num(get_path(values, "photohome.warn_mm"))
     if w is not None and v >= w:
@@ -708,10 +801,11 @@ def _v_tools(key, v, values, errs, warns):
                 x = _num(t.get(f))
                 if x is None or x <= 0 or x > 100:
                     errs["%s.%s" % (p, f)] = "0 초과 100 mm 이하"
-        if "tip_angle_deg" in t:
-            x = _num(t.get("tip_angle_deg"))
-            if x is None or abs(x) > 360:
-                errs[p + ".tip_angle_deg"] = "-360~360 도"
+        for f in ("tip_angle_deg", "tip_angle_img_deg"):
+            if t.get(f) is not None:
+                x = _num(t.get(f))
+                if x is None or abs(x) > 360:
+                    errs["%s.%s" % (p, f)] = "-360~360 도"
         z = _num(t.get("z_work_mm"))
         if z is None or z < 0 or z > zmax + 1e-9:
             errs[p + ".z_work_mm"] = "Z 가동범위 0~%g 밖" % zmax
@@ -778,7 +872,7 @@ def _v_recipe_active(key, v, values, errs, warns):
 VALIDATORS = {
     "xy_in_limits": _v_xy_in_limits, "seed_grow": _v_seed_grow, "tol_warn": _v_tol_warn,
     "head_id": _v_head_id, "jog_steps": _v_jog_steps, "touch_max": _v_touch_max,
-    "markers": _v_markers, "area_size": _v_area_size, "tools": _v_tools, "tool_active": _v_tool_active,
+    "markers": _v_markers, "zones": _v_zones, "area_size": _v_area_size, "tools": _v_tools, "tool_active": _v_tool_active,
     "relays": _v_relays, "recipes": _v_recipes, "recipe_active": _v_recipe_active,
 }
 

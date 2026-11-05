@@ -228,28 +228,56 @@
     }
 
     // ---- 샘플 ----
+    // 표시는 번호 하나뿐이다(좌표 숫자는 목록 · 툴팁에만). 라벨은 칩 · 윤곽 · 공구 끝 · 다른 라벨과 겹치지 않는
+    // 바깥 빈 자리에 두고 짧은 지시선으로 잇는다(core/labels.py 와 같은 방식). 윤곽은 얇게, 색은 상태에만.
     const gs = $('ovSamples');
     gs.textContent = '';
-    (s.samples || []).forEach(sm => {
+    const D = 7 * K;
+    const list0 = s.samples || [];
+    const items = list0.map(sm => {
+      let bb;
+      if (sm.source === 'predicted') bb = [sm.u - 22 * K, sm.v - 22 * K, sm.u + 22 * K, sm.v + 22 * K];
+      else if (sm.verts && sm.verts.length >= 3) {
+        const xs = sm.verts.map(p => p[0]), ys = sm.verts.map(p => p[1]);
+        bb = [Math.min.apply(null, xs), Math.min.apply(null, ys), Math.max.apply(null, xs), Math.max.apply(null, ys)];
+      } else bb = [sm.u - D, sm.v - D, sm.u + D, sm.v + D];
+      if (tipOn && !live && s.tip && sm.on && sm.mmpx) {            // 공구 끝 모양도 피한다
+        tipPoints(s.tip, sm.mmpx, sm.u, sm.v, sm.tip_deg).forEach(p => {
+          bb = [Math.min(bb[0], p[0]), Math.min(bb[1], p[1]), Math.max(bb[2], p[0]), Math.max(bb[3], p[1])];
+        });
+      }
+      const text = sm.no + (sm.manual ? 'M' : '') + (sm.edge_completed ? 'E' : '') + (sm.edge_only ? 'G' : '')
+        + (sm.source === 'local' ? '+' : '') + ((sm.weak || sm.source === 'predicted') ? '?' : '');
+      return { bbox: bb, text: text, w: (text.length * 7.6 + 6) * K, h: 15 * K };
+    });
+    const FW = (s.frame && s.frame.w) || 1280, FH = (s.frame && s.frame.h) || 720;
+    const placed = placeLabels(items, FW, FH, 6 * K);
+    list0.forEach((sm, idx) => {
       const cls = ['ov-sample'];
+      if (sm.source === 'local') cls.push('local');
       if (sm.status === 'done') cls.push('done');
       if (sm.status === 'skip' || !sm.on) cls.push('skip');
       if (sm.status === 'moving' || sm.status === 'measuring') cls.push('target');
       if (UI.selected === sm.no) cls.push('selected');
       // 수동 샘플은 윤곽이 없다 - 중심에 작은 마름모(포인터 십자와 다른 모양).
-      const D = 7 * K;
-      const pts = (sm.manual && !(sm.verts && sm.verts.length))
-        ? [[sm.u, sm.v - D], [sm.u + D, sm.v], [sm.u, sm.v + D], [sm.u - D, sm.v]]
-            .map(p => p.join(',')).join(' ')
+      const noOutline = sm.manual && !(sm.verts && sm.verts.length);
+      const pts = noOutline
+        ? [[sm.u, sm.v - D], [sm.u + D, sm.v], [sm.u, sm.v + D], [sm.u - D, sm.v]].map(p => p.join(',')).join(' ')
         : (sm.verts || []).map(p => p.join(',')).join(' ');
-      if (sm.manual && !(sm.verts && sm.verts.length)) cls.push('manual');
+      if (noOutline) cls.push('manual');
       if (sm.fit === false) cls.push('bad');
+      const tipTxt = '#' + sm.no + (sm.X == null ? ' · 좌표 없음' : ' · X ' + sm.X.toFixed(1) + ' Y ' + sm.Y.toFixed(1) + ' mm')
+        + (sm.area_mm2 ? ' · ' + sm.area_mm2 + ' mm²' : '') + (sm.source ? ' · ' + sm.source : '')
+        + (sm.fit === false ? ' · 공구 끝 벗어남' : '');
+      const title = () => { const t = el('title', {}); t.textContent = tipTxt; return t; };
       if (sm.source === 'predicted') {
         // 예측: 윤곽이 없다 - 점선 원
         const pc = el('circle', { class: 'ov-sample pred', cx: sm.u, cy: sm.v, r: 22 * K });
+        pc.appendChild(title());
         gs.appendChild(pc);
       } else if (pts) {
         const pg = el('polygon', { class: cls.join(' '), points: pts });
+        pg.appendChild(title());
         // 추가 모드에서만 선택을 받는다(평소에는 위의 hit 원이 받는다).
         pg.addEventListener('click', (e) => {
           if (!addMode) return;
@@ -258,9 +286,12 @@
         });
         gs.appendChild(pg);
       }
-      const t = el('text', { class: 'ov-num', x: sm.u + 8 * K, y: sm.v - 6 * K });
-      t.textContent = sm.no + (sm.manual ? 'M' : '') + (sm.edge_completed ? 'E' : '')
-        + (sm.edge_only ? 'G' : '') + (sm.source === 'local' ? '+' : '') + ((sm.weak || sm.source === 'predicted') ? '?' : '');
+      const pl = placed[idx], it = items[idx];
+      gs.appendChild(el('line', { class: 'ov-lead', x1: pl.from[0], y1: pl.from[1], x2: pl.to[0], y2: pl.to[1] }));
+      gs.appendChild(el('rect', { class: 'ov-labbg', x: pl.box[0], y: pl.box[1], width: it.w, height: it.h, rx: 2 * K }));
+      const t = el('text', { class: 'ov-num' + (sm.fit === false ? ' bad' : ''), x: pl.box[0] + 3 * K, y: pl.box[1] + it.h - 3.5 * K });
+      t.textContent = it.text;
+      t.appendChild(title());
       // 추가 모드에서는 번호 라벨도 그 샘플 선택이다(hit 원이 꺼져 있어 라벨 클릭이
       // 사진으로 빠지면 작은 칩 옆에 수동 샘플이 생긴다). 평소에는 CSS 가 막는다.
       t.addEventListener('click', (e) => {
@@ -271,10 +302,12 @@
       gs.appendChild(t);
       // 클릭 판정용(다각형이 얇아도 집히도록 원을 덮는다)
       const hit = el('circle', { class: 'ov-hit', cx: sm.u, cy: sm.v, r: 16 * K, 'data-no': sm.no });
+      hit.appendChild(title());
       hit.addEventListener('click', () => UI.select(sm.no));
       gs.appendChild(hit);
     });
 
+    drawZones(s);
     // ---- 공구 끝 모양(순회 대상 샘플마다 · 실제 크기 · 사진 기준 각도) ----
     const gt = $('ovTips');
     gt.textContent = '';
@@ -282,7 +315,7 @@
       (s.samples || []).forEach(sm => {
         if (!sm.on || !sm.mmpx) return;
         gt.appendChild(el('polygon', { class: 'ov-tip' + (sm.fit === false ? ' bad' : ''),
-                                       points: tipPoints(s.tip, sm.mmpx, sm.u, sm.v).map(p => p.join(',')).join(' ') }));
+                                       points: tipPoints(s.tip, sm.mmpx, sm.u, sm.v, sm.tip_deg).map(p => p.join(',')).join(' ') }));
       });
     }
 
@@ -348,6 +381,40 @@
     UI.send({ cmd: 'sample_add', u: Math.round(u * 10) / 10, v: Math.round(v * 10) / 10 });
   });
 
+  // ---------------- 라벨 배치(core/labels.py place 와 같은 방식) ----------------
+  // items[i] = {bbox:[x0,y0,x1,y1], w, h}. 칩 둘레 바깥 8방향 x 거리 3단계 중 칩 · 다른 라벨과 안 겹치는 첫 자리.
+  function ovArea(a, b) {
+    return Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) * Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+  }
+  function placeLabels(items, W, H, gap) {
+    const chips = items.map(i => i.bbox), placed = [], out = [];
+    items.forEach((it, i) => {
+      const [x0, y0, x1, y1] = chips[i], w = it.w, h = it.h, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      const cands = [];
+      [1, 2, 3.2].forEach(k => {
+        const g = gap * k;
+        cands.push([x1 + g, cy - h / 2], [x0 - g - w, cy - h / 2], [cx - w / 2, y0 - g - h], [cx - w / 2, y1 + g],
+                   [x1 + g, y0 - g - h], [x0 - g - w, y0 - g - h], [x1 + g, y1 + g], [x0 - g - w, y1 + g]);
+      });
+      let best = null, bestCost = null;
+      for (const c of cands) {
+        const lx = Math.min(Math.max(c[0], 2), Math.max(2, W - w - 2)), ly = Math.min(Math.max(c[1], 2), Math.max(2, H - h - 2));
+        const box = [lx, ly, lx + w, ly + h];
+        let cost = 0;
+        chips.forEach((cc, j) => { cost += ovArea(box, [cc[0] - 2, cc[1] - 2, cc[2] + 2, cc[3] + 2]) * (j === i ? 3 : 1); });
+        placed.forEach(p => { cost += ovArea(box, p) * 2; });
+        if (cost === 0) { best = box; bestCost = 0; break; }
+        if (bestCost === null || cost < bestCost) { best = box; bestCost = cost; }
+      }
+      placed.push(best);
+      const lcx = (best[0] + best[2]) / 2, lcy = (best[1] + best[3]) / 2;
+      const a = [Math.min(Math.max(lcx, x0), x1), Math.min(Math.max(lcy, y0), y1)];
+      const b = [Math.min(Math.max(a[0], best[0]), best[2]), Math.min(Math.max(a[1], best[1]), best[3])];
+      out.push({ box: best, from: a, to: b });
+    });
+    return out;
+  }
+
   // ---------------- 공구 끝 모양: 그리기 · 맞음 검사(core/tip.py 와 같은 식) ----------------
   let tipOn = true;
   try { tipOn = localStorage.getItem('tipOn') !== '0'; } catch (e) { /* 저장 못 해도 동작 */ }
@@ -357,6 +424,12 @@
     b.classList.toggle('on', tipOn);
   }
   syncTipBtn();
+  $('btnZones').onclick = () => {
+    zonesOn = !zonesOn;
+    $('btnZones').setAttribute('aria-pressed', zonesOn ? 'true' : 'false');
+    $('btnZones').classList.toggle('on', zonesOn);
+    UI.applyCamera(UI.state);
+  };
   $('btnTip').onclick = () => {
     tipOn = !tipOn;
     try { localStorage.setItem('tipOn', tipOn ? '1' : '0'); } catch (e) { /* 무시 */ }
@@ -364,7 +437,7 @@
     UI.applyCamera(UI.state);
   };
 
-  function tipPoints(tip, mmpx, cx, cy) {
+  function tipPoints(tip, mmpx, cx, cy, angle) {
     const k = 1 / Math.max(mmpx, 1e-9);
     const out = [];
     if (tip.shape === 'circle') {
@@ -372,7 +445,8 @@
       for (let i = 0; i < 24; i++) out.push([cx + r * Math.cos(2 * Math.PI * i / 24), cy + r * Math.sin(2 * Math.PI * i / 24)]);
       return out;
     }
-    const hw = tip.w * k / 2, hh = tip.h * k / 2, th = tip.angle * Math.PI / 180;
+    const ang = angle != null ? angle : (tip.angle_now != null ? tip.angle_now : tip.angle_img || 0);
+    const hw = tip.w * k / 2, hh = tip.h * k / 2, th = ang * Math.PI / 180;
     const c = Math.cos(th), sn = Math.sin(th);
     [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].forEach(q => out.push([cx + q[0] * c - q[1] * sn, cy + q[0] * sn + q[1] * c]));
     return out;
@@ -392,6 +466,28 @@
   function tipFits(pts, verts, marginPx) {
     if (!verts || verts.length < 3) return null;
     return pts.every(p => signedDist(p, verts) >= -marginPx);
+  }
+  // 쿨러 구역 격자(옅게, 토글): 감지 영역 사각형을 rows x cols 로 나눈다(서버 engine.zone_of 와 같은 정렬)
+  let zonesOn = false;
+  function drawZones(s) {
+    const g = $('ovZones');
+    g.textContent = '';
+    const q = s.sensing && s.sensing.quad, z = (s.settings || {}).cooler && s.settings.cooler.zones;
+    if (!zonesOn || live || !q || q.length !== 4 || !z) return;
+    const sm = q.map(p => p[0] + p[1]), df = q.map(p => p[0] - p[1]);
+    const tl = q[sm.indexOf(Math.min.apply(null, sm))], br = q[sm.indexOf(Math.max.apply(null, sm))];
+    const tr = q[df.indexOf(Math.max.apply(null, df))], bl = q[df.indexOf(Math.min.apply(null, df))];
+    const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    const line = (a, b) => g.appendChild(el('line', { class: 'ov-zone', x1: a[0], y1: a[1], x2: b[0], y2: b[1] }));
+    for (let i = 1; i < z.rows; i++) line(lerp(tl, bl, i / z.rows), lerp(tr, br, i / z.rows));
+    for (let j = 1; j < z.cols; j++) line(lerp(tl, tr, j / z.cols), lerp(bl, br, j / z.cols));
+    const K = Math.max(1, ((s.frame && s.frame.w) || 1280) / 1280);
+    for (let i = 0; i < z.rows; i++) for (let j = 0; j < z.cols; j++) {
+      const top = lerp(lerp(tl, tr, (j + 0.5) / z.cols), lerp(bl, br, (j + 0.5) / z.cols), (i + 0.1) / z.rows);
+      const t = el('text', { class: 'ov-zone-lab', x: top[0], y: top[1] + 12 * K });
+      t.textContent = 'R' + z.relays[i * z.cols + j];
+      g.appendChild(t);
+    }
   }
   function curMmpx(s, u, v) {
     const sm = (s.samples || []).find(x => x.mmpx);

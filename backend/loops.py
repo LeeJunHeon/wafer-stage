@@ -11,6 +11,7 @@ import 하지 않는다(순환 방지).
 import asyncio
 import contextlib
 
+import devices
 import engine
 import logger
 import relays
@@ -76,7 +77,8 @@ async def relay_loop():
 def start_all():
     return [asyncio.create_task(status_loop()),
             asyncio.create_task(autosave_loop()),
-            asyncio.create_task(relay_loop())]
+            asyncio.create_task(relay_loop()),
+            asyncio.create_task(devices.loop())]
 
 
 async def stop_all(tasks):

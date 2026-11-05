@@ -128,6 +128,7 @@
         kit.btn('적용', () => UI.send({ cmd: 'plate_exclude_apply', polys: P.excl, size: sizeOf(fr) }),
           { sm: true, primary: P.exclDirty, disabled: !fr || !P.exclDirty, tip: '제외 영역을 저장합니다. 다음 촬영부터 검출 전에 가려집니다.' })]),
       h('div', { cls: ref.exists && ref.valid ? 'okline' : 'note', text: refTxt }),
+      refList(ref),
       h('div', { cls: 'row' }, [
         kit.btn('빈 판 기준 촬영', () => UI.send({ cmd: 'plate_ref_shot' }),
           { sm: true, disabled: kit.busy() || !areaSaved, tip: '샘플을 치운 빈 판을 한 장 찍어 기준 사진으로 저장합니다(노출 · 화이트밸런스도 기록). 설정의 빈 판 기준 사용을 켜야 쓰입니다.' })])]));
@@ -189,6 +190,29 @@
     side.appendChild(buildView(fr, sx, sy));
     side.appendChild(h('div', { cls: 'note', text: P.hint || hintText(fr) }));
   };
+
+  // 기준 목록: 현재 + 보관(최근 10개). 시각 · 유효/무효 · 작은 미리보기 · [이 기준 사용]
+  function refList(ref) {
+    const box = h('div', { cls: 'reflist' });
+    const rows = [];
+    if (ref.exists) rows.push({ name: 'current', time: ref.time, valid: ref.valid, reason: ref.reason, cur: true });
+    (ref.history || []).forEach(x => rows.push(x));
+    if (!rows.length) { box.appendChild(h('div', { cls: 'note', text: '보관된 기준 없음' })); return box; }
+    rows.forEach(x => {
+      const img = h('img', { cls: 'refthumb', alt: '', src: '/plate_ref_thumb/' + x.name + '.jpg?t=' + encodeURIComponent(x.time || '') });
+      const use = x.cur ? h('span', { cls: 'note', text: '현재' })
+        : kit_btn('이 기준 사용', () => UI.send({ cmd: 'plate_ref_use', name: x.name }),
+            { tip: '이 기준을 현재 기준으로 되돌립니다. 지금 기준은 보관됩니다. 메타가 지금 카메라 설정과 다르면(무효) 확인을 받습니다.' });
+      box.appendChild(h('div', { cls: 'refrow' }, [img,
+        h('div', { cls: 'refinfo' }, [h('div', { cls: 'mono', text: x.time || UI.EMPTY }),
+          h('div', { cls: x.valid ? 'okline' : 'warnline', text: x.valid ? '유효' : '무효 · ' + (x.reason || '') })]),
+        use]));
+    });
+    return box;
+  }
+  function kit_btn(text, fn, o) {
+    return K().btn(text, fn, Object.assign({ sm: true, disabled: K().busy() }, o || {}));
+  }
 
   function hintText(fr) {
     if (!fr) return '촬영본이 없습니다 · 단발 촬영 또는 촬영 후 열기';
@@ -351,6 +375,10 @@
     } else if (of === 'plate_exclude_apply') {
       if (msg.ok) { P.sig = ''; P.exclDirty = false; }
       else UI.alert((msg.needs_confirm || []).join('\n') || '저장하지 않았습니다', '제외 영역');
+    } else if (of === 'plate_ref_use') {
+      if (!msg.ok && msg.reason === 'needs_confirm') {
+        UI.confirm((msg.needs_confirm || []).join('\n'), '빈 판 기준').then(ok => { if (ok) UI.send({ cmd: 'plate_ref_use', name: msg.name, confirm: true }); });
+      } else if (!msg.ok) UI.alert((msg.needs_confirm || []).join('\n') || '되돌리지 못했습니다', '빈 판 기준');
     } else if (of === 'plate_ref_shot') {
       if (!msg.ok) UI.alert((msg.needs_confirm || []).join('\n') || '촬영하지 못했습니다', '빈 판 기준');
     } else if (of === 'plate_area_apply') {

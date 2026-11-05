@@ -18,6 +18,10 @@ class Measurer:
     async def measure(self, sample, ctx):   # pragma: no cover - 인터페이스
         raise NotImplementedError
 
+    async def contact(self):
+        """접촉 여부(True/False) 또는 None(알 수 없음). 접촉 드라이버 measurer 가 부른다."""
+        return None
+
     async def close(self):
         return None
 

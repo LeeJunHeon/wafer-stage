@@ -19,6 +19,7 @@
 """
 
 import asyncio
+import contextlib
 import csv
 import math
 import os
@@ -27,6 +28,7 @@ import time
 from core import calib, flat, imgio, paths, plate
 from core import camera as camera_core
 from core import fixed_detect, tip as tip_mod
+import devices
 
 import logger
 import measure as measure_mod
@@ -53,6 +55,10 @@ _save_done = True
 
 class StepError(Exception):
     """단계를 실행할 수 없다(Z 원점 없음 · 릴레이 거절 · 위치 재확인 실패 등)."""
+
+
+class SkipSample(Exception):
+    """정책(접촉 못 찾음 · 온도 시간 초과)으로 이 샘플을 건너뛴다. 순회는 다음 샘플로 간다."""
 
 
 class Stopped(Exception):
@@ -377,6 +383,128 @@ def mmpx_at(u, v):
     return float(mp) if mp else None
 
 
+def jac_at(u, v, cal=None):
+    """(u, v) 에서 사진 px → 스테이지 mm 의 야코비안 [[dx/du, dx/dv], [dy/du, dy/dv]]. 판 보정이 없으면 None."""
+    cal = cal or current_cal()
+    if cal is None or u is None:
+        return None
+    try:
+        x0, y0 = calib.px_to_mm(cal, u, v)
+        xu, yu = calib.px_to_mm(cal, u + 1.0, v)
+        xv, yv = calib.px_to_mm(cal, u, v + 1.0)
+        return [[xu - x0, xv - x0], [yu - y0, yv - y0]]
+    except Exception:                      # noqa: BLE001
+        return None
+
+
+def _area_center_px():
+    q = (state.sensing or {}).get("quad")
+    if q:
+        return sum(p[0] for p in q) / len(q), sum(p[1] for p in q) / len(q)
+    r = (state.sensing or {}).get("rect")
+    if r:
+        return (r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0
+    return None, None
+
+
+def _refresh_tip_now():
+    """공구마다 '지금 사진에서의 방향'(감지 영역 가운데 기준)을 state.tip_extra 에 둔다(공구 탭 미리보기 · 추가 모드 유령)."""
+    u, v = _area_center_px()
+    jac = jac_at(u, v) if u is not None else None
+    out = {}
+    for t in state.get("tool.items") or []:
+        if isinstance(t, dict):
+            out[str(t.get("name"))] = round(tip_mod.img_angle(tip_mod.tip_of(t), jac), 1)
+    state.tip_extra = {"angle_now": out.get(str(state.tool().get("name"))), "tips_now": out,
+                       "has_cal": jac is not None}
+
+
+def migrate_tip_angles():
+    """판 보정이 생기면 사진 기준 방향(tip_angle_img_deg, 예전 설정은 tip_angle_deg)에 해당하는 스테이지 각도를
+    tip_angle_deg 에 한 번 채운다. 반환: 채운 공구 이름 목록."""
+    u, v = _area_center_px()
+    if u is None:
+        d = plate.load()
+        if d and d.get("area"):
+            q = d["area"]
+            u, v = sum(p[0] for p in q) / len(q), sum(p[1] for p in q) / len(q)
+    jac = jac_at(u, v) if u is not None else None
+    if jac is None:
+        return []
+    items = [dict(t) for t in (state.get("tool.items") or []) if isinstance(t, dict)]
+    done = []
+    for t in items:
+        info = tip_mod.tip_of(t)
+        if info["angle"] is not None:
+            continue
+        stage = tip_mod.stage_angle_of(info["angle_img"], jac)
+        t["tip_angle_img_deg"] = info["angle_img"]
+        t["tip_angle_deg"] = round(stage, 1)
+        done.append((t.get("name"), info["angle_img"], t["tip_angle_deg"]))
+    if not done:
+        return []
+    errs = state.save_settings({"tool.items": items})
+    if errs:
+        logger.write("warn", "공구 끝 방향 이행 저장 실패: %s" % errs)
+        return []
+    for nm, img, st in done:
+        logger.write("info", "공구 '%s' 끝 방향 · 사진 %g° → 스테이지 %g° 로 고정" % (nm, img, st))
+        run_on_loop(lambda nm=nm, img=img, st=st: push_log(
+            "공구 '%s' 끝 방향 · 사진 %g° → 스테이지 %g° 로 고정" % (nm, img, st), "ok"))
+    return [d[0] for d in done]
+
+
+def zone_of(u, v):
+    """감지 영역 사각형을 rows x cols 로 나눈 칸 (row, col) · 쿨러 릴레이 번호. 사진 기준 위→아래 · 왼쪽→오른쪽(행 우선)."""
+    q = (state.sensing or {}).get("quad")
+    z = state.get("cooler.zones") or {}
+    if not q or not z:
+        return None
+    try:
+        import cv2
+        import numpy as np
+        pts = np.asarray(q, np.float32).reshape(4, 2)
+        sm, df = pts.sum(axis=1), pts[:, 0] - pts[:, 1]
+        tl, br, tr, bl = pts[int(np.argmin(sm))], pts[int(np.argmax(sm))], pts[int(np.argmax(df))], pts[int(np.argmin(df))]
+        M = cv2.getPerspectiveTransform(np.float32([tl, tr, br, bl]), np.float32([[0, 0], [1, 0], [1, 1], [0, 1]]))
+        x, y = cv2.perspectiveTransform(np.float32([[[u, v]]]), M)[0][0]
+        rows, cols = int(z["rows"]), int(z["cols"])
+        r, c = min(rows - 1, max(0, int(y * rows))), min(cols - 1, max(0, int(x * cols)))
+        return r, c, int(z["relays"][r * cols + c])
+    except Exception:                      # noqa: BLE001
+        return None
+
+
+def assign_coolers():
+    """샘플마다 속한 구역의 쿨러 번호(cooler)와 칸(zone). 수동으로 바꾼 샘플(cooler_manual)은 건드리지 않는다."""
+    for s in state.samples:
+        if s.get("cooler_manual"):
+            continue
+        r = zone_of(s.get("u"), s.get("v")) if s.get("u") is not None else None
+        s["cooler"] = None if r is None else r[2]
+        s["zone"] = None if r is None else [r[0], r[1]]
+
+
+async def set_sample_cooler(no, n):
+    """샘플의 쿨러를 손으로 바꾼다(n 비움/0 = 구역 기준으로 되돌림)."""
+    s = state.sample(no)
+    if s is None:
+        await push_log("#%s 없음" % no, "warn")
+        return False
+    if not n:
+        s["cooler_manual"] = False
+        assign_coolers()
+    else:
+        n = int(n)
+        if not 1 <= n <= 10 or n == heater_n():
+            await push_log("쿨러 번호 오류 (R%s)" % n, "warn")
+            return False
+        s["cooler"], s["cooler_manual"] = n, True
+    await push_log("샘플 #%s 쿨러 R%s%s" % (no, s["cooler"], " (수동)" if s.get("cooler_manual") else ""))
+    await push_state()
+    return True
+
+
 def refresh_fit():
     """샘플마다 사진 배율(mmpx)과 공구 끝 맞음(fit: True 안 / False 벗어남 / None 검사 안 함)을 다시 계산한다.
     예측 샘플 · 윤곽 없는 수동 샘플은 검사하지 않는다."""
@@ -385,10 +513,14 @@ def refresh_fit():
     for s in state.samples:
         mp = mmpx_at(s.get("u"), s.get("v"))
         s["mmpx"] = None if not mp else round(mp, 5)
+        ang = tip_mod.img_angle(t, jac_at(s.get("u"), s.get("v")))
+        s["tip_deg"] = round(ang, 1)
         if not mp or s.get("source") == "predicted" or not s.get("verts"):
             s["fit"] = None
             continue
-        s["fit"] = tip_mod.fits(tip_mod.polygon(t, mp, s["u"], s["v"]), s["verts"], margin / mp)
+        s["fit"] = tip_mod.fits(tip_mod.polygon(t, mp, s["u"], s["v"], angle_deg=ang), s["verts"], margin / mp)
+    _refresh_tip_now()
+    assign_coolers()
 
 
 def refresh_sample_status():
@@ -511,8 +643,33 @@ def _save_seq(bgr, res, images=None):
 # --------------------------------------------------------------------------
 # 이동
 # --------------------------------------------------------------------------
+def heater_n():
+    try:
+        return int(state.get("heater.relay") or 10)
+    except (TypeError, ValueError):
+        return 10
+
+
+async def heater_off(why=""):
+    """히트건 릴레이를 끈다(이미 꺼져 있으면 아무 일도 안 한다). 실패해도 예외를 내지 않는다."""
+    try:
+        n = heater_n()
+        if 1 <= n <= len(state.relays) and not state.relays[n - 1]["on"]:
+            return True
+        ok, _r = await relays.set_relay(n, False, by_engine=True)
+        if ok and why:
+            await push_log("히트건 끔 · " + why, "warn")
+        return ok
+    except Exception as e:                 # noqa: BLE001
+        logger.write("warn", "히트건 끄기 실패: %s" % e)
+        return False
+
+
 async def _goto(x_mm, y_mm, no=None):
-    """X·Y 이동 한 번(검사 없음). Z 상승은 부르는 쪽(goto_xy · 단계)이 먼저 한다."""
+    """X·Y 이동 한 번(검사 없음). Z 상승은 부르는 쪽(goto_xy · 단계)이 먼저 한다.
+
+    안전 불변식: X·Y 이동 전에는 히트건이 반드시 꺼져 있다(여기서 강제)."""
+    await heater_off("X·Y 이동 전")
     # 성공한 이동은 옛 오류 문구를 지운다(배너에 지난 오류가 남지 않게).
     state.stage["last_error"] = ""
     state.stage["moving"] = True
@@ -1127,6 +1284,16 @@ def run_refusal(rc=None):
         out.append("Z 원점 없음 · Z 단계가 있는 레시피는 시작 안 함")
     if any(s.get("X") is None for s in state.samples):
         out.append("판 보정 필요 · 좌표 없는 샘플")
+    off = [n for n in recipe_mod.relays_used(rc, state.settings) if not recipe_mod.relay_enabled(n, state.settings)]
+    if off:
+        out.append("릴레이 %s 사용 안 함 · 릴레이 탭에서 사용 지정" % ", ".join("R%d" % n for n in off))
+    if recipe_mod.needs_temp(rc) and str(state.get("temp.driver") or "dummy") == "dummy" and not stagectl.ctl.dry:
+        out.append("온도 센서 미연결(더미 드라이버) · 가열 · 온도 대기 단계가 있는 레시피는 시작 안 함")
+    if any(isinstance(st, dict) and st.get("type") == "cooler" and st.get("target") == "sample"
+           for st in rc.get("steps") or []):
+        none_c = [s["no"] for s in state.samples if s.get("on") and not s.get("cooler")]
+        if none_c:
+            out.append("쿨러 구역 없는 샘플 #%s" % ", #".join(str(n) for n in none_c))
     if state.get("flow.require_fresh_capture") and state.sequence.get("used"):
         out.append("새 촬영 필요 · 이 촬영으로 이미 순회함")
     return out
@@ -1169,6 +1336,8 @@ async def start_run(mode="auto", only=None):
     _pause_evt = asyncio.Event()
     _pause_evt.set()
     _measurer = measure_mod.make(state.settings)
+    devices.hub.clear_trip()
+    _cooler_on.clear()
     steps = [dict(st) for st in rc.get("steps") or []]
     if mode == "confirm":
         steps.append({"type": "confirm"})    # 확인 모드 = 샘플마다 끝에 확인 대기
@@ -1300,6 +1469,308 @@ async def _run_confirm(step, s, ctx):
     return {}
 
 
+# ---- 측정 과정 단계 (쿨러 · 접촉 · 온도 · 가열 · 기록) -----------------------
+_cooler_on = set()                         # 엔진이 켠 쿨러 릴레이 번호
+_rec = {"task": None, "fh": None, "writer": None, "path": None, "no": None}
+
+
+def _measure_idle():
+    """단계가 끝나면 그래프 목표선 · 남은 시간 표시를 내린다."""
+    devices.hub.target = None
+    devices.hub.left_s = None
+    devices.hub.label = ""
+
+
+async def _vwait(dt_v):
+    """가상 시간 dt_v 를 기다린다. 정지가 오면 즉시 깬다."""
+    try:
+        await asyncio.wait_for(_stop_evt.wait(), timeout=max(0.0, dt_v) / devices.scale())
+    except asyncio.TimeoutError:
+        pass
+    if _stop:
+        raise Stopped()
+
+
+async def _ask(msg):
+    """사람 확인 한 번(정책 confirm): [다음] 이면 계속, 정지면 중단."""
+    _phase("waiting_confirm", msg)
+    await push_state()
+    _next_evt.clear()
+    await _next_evt.wait()
+    if _stop:
+        raise Stopped()
+    _progress(msg)
+
+
+def _cooler_targets(step, s):
+    zones = devices.zone_relays()
+    tg = step.get("target")
+    if tg == "n":
+        return [int(step.get("n"))]
+    if tg == "all":
+        return list(zones)
+    if str(state.get("cooler.mode") or "sample") == "all":
+        return list(zones)
+    n = s.get("cooler")
+    if not n:
+        raise StepError("#%s 쿨러 구역 없음" % s["no"])
+    return [int(n)]
+
+
+async def _run_cooler(step, s, ctx):
+    want = _cooler_targets(step, s)
+    on = step.get("action") == "on"
+    if on and step.get("target") == "sample" and str(state.get("cooler.mode") or "sample") == "sample":
+        for n in sorted(_cooler_on - set(want)):             # 다른 구역에 켜 둔 쿨러는 끈다
+            await relays.set_relay(n, False, by_engine=True)
+            _cooler_on.discard(n)
+    for n in want:
+        ok, reason = await relays.set_relay(n, on, by_engine=True)
+        if not ok:
+            raise StepError("R%s 쿨러 %s 실패 (%s)" % (n, "켜기" if on else "끄기", reason))
+        (_cooler_on.add if on else _cooler_on.discard)(n)
+    return {"relays": want, "on": on}
+
+
+async def _run_contact(step, s, ctx):
+    if not state.stage.get("homed_z"):
+        raise StepError("Z 원점 없음 · 접촉 탐색 안 함")
+    a, b = recipe_mod.contact_range(step, ctx["values"])
+    zmax = stagectl.z_max_mm()
+    press = float(step.get("press_mm") or 0.0)
+    if a is None or b is None or a < 0 or b + press > zmax + 1e-9 or a >= b:
+        raise StepError("접촉 탐색 Z %s~%s mm · 가동범위 0~%g 안이어야 함 (공구 작업 높이 확인)"
+                        % (None if a is None else round(a, 2), None if b is None else round(b, 2), zmax))
+    if devices.hub.contact is None and str(state.get("contact.driver") or "dummy") not in ("dummy",):
+        devices.hub.configure()
+    if await devices.hub.contact_now() is None and devices.hub.contact is None:
+        raise StepError("접촉 드라이버 사용 안 함")
+    step_mm = float(step.get("step_mm"))
+    settle = float(step.get("settle_s") or 0.0)
+    z = round(a, 4)
+    await move_z(z)
+    found = False
+    n_steps = 0
+    while True:
+        await _vwait(settle)
+        c = await devices.hub.contact_now()
+        if c is None:
+            raise StepError("접촉 신호를 읽을 수 없음")
+        if c:
+            found = True
+            break
+        if z + step_mm > b + 1e-9:
+            break
+        z = round(z + step_mm, 4)
+        n_steps += 1
+        await move_z(z)
+    if found:
+        s["contact_z"] = z
+        if press > 0:
+            await move_z(round(min(z + press, zmax), 4))
+        await push_log("#%s 접촉 Z %.2f mm (추가 누름 %.2f)" % (s["no"], z, press), "ok")
+        return {"found": True, "contact_z": z, "press_mm": press, "steps": n_steps}
+    s["contact_z"] = None
+    pol = step.get("on_fail")
+    msg = "접촉 못 찾음 (Z %.2f~%.2f mm)" % (a, b)
+    if pol == "skip":
+        raise SkipSample(msg)
+    if pol == "confirm":
+        await push_log("#%s %s" % (s["no"], msg), "warn")
+        await _ask("#%s %s · [다음]=계속 · 정지" % (s["no"], msg))
+        return {"found": False, "confirmed": True}
+    raise StepError("#%s %s" % (s["no"], msg))
+
+
+async def _timeout_policy(step, s, msg):
+    pol = step.get("on_timeout")
+    if pol == "skip":
+        raise SkipSample(msg)
+    if pol == "stop":
+        raise StepError("#%s %s" % (s["no"], msg))
+    if pol == "confirm":
+        await push_log("#%s %s" % (s["no"], msg), "warn")
+        await _ask("#%s %s · [다음]=계속 · 정지" % (s["no"], msg))
+    else:
+        await push_log("#%s %s · 계속" % (s["no"], msg), "warn")
+
+
+async def _run_wait_temp(step, s, ctx, kind="wait_temp"):
+    hub = devices.hub
+    if kind == "cool":
+        await heater_off("냉각 대기")
+    cond, tc = step.get("cond"), float(step.get("target_c"))
+    hold, max_s = float(step.get("hold_s") or 0.0), float(step.get("max_s"))
+    hub.target, hub.label = tc, ("냉각 대기" if kind == "cool" else "온도 대기")
+    t0 = devices.vnow()
+    ok_since = None
+    reached = None
+    while True:
+        if _stop:
+            raise Stopped()
+        if hub.tripped:
+            raise StepError(hub.tripped)
+        c = hub.last_c
+        now = devices.vnow()
+        sat = c is not None and (c <= tc if cond == "<=" else c >= tc)
+        if sat:
+            ok_since = now if ok_since is None else ok_since
+            if now - ok_since >= hold:
+                reached = now - t0
+                break
+        else:
+            ok_since = None
+        if now - t0 >= max_s:
+            break
+        hub.left_s = round(max(0.0, max_s - (now - t0)), 1)
+        state.sequence["step_left_s"] = hub.left_s
+        await _vwait(0.2)
+    det = {"temp": None if hub.last_c is None else round(hub.last_c, 1), "target_c": tc, "cond": cond}
+    if reached is None:
+        det.update({"timed_out": True, "waited_s": round(devices.vnow() - t0, 1)})
+        await _timeout_policy(step, s, "%s 시간 초과 (%s %g °C · 현재 %s °C)"
+                              % ("냉각 대기" if kind == "cool" else "온도 대기", cond, tc, det["temp"]))
+    else:
+        det.update({"timed_out": False, "reached_s": round(reached, 1)})
+    return det
+
+
+async def _run_cool(step, s, ctx):
+    return await _run_wait_temp(step, s, ctx, kind="cool")
+
+
+async def _run_heat(step, s, ctx):
+    hub = devices.hub
+    n = heater_n()
+    if not recipe_mod.relay_enabled(n, ctx["values"]):
+        raise StepError("히트건 R%d 사용 안 함 · 릴레이 탭에서 사용 지정" % n)
+    if str(state.get("temp.driver") or "dummy") == "dummy" and not stagectl.ctl.dry:
+        raise StepError("온도 센서 미연결(더미) · 가열 안 함")
+    hub.clear_trip()
+    hub.configure()
+    if hub.last_c is None:
+        await hub.tick()
+    if hub.last_c is None:
+        raise StepError("온도 센서 오류 · 가열 안 함")
+    end = step.get("end")
+    tc = float(step.get("target_c") or 0.0)
+    ts = float(step.get("time_s") or 0.0)
+    max_s = float(step.get("max_s"))
+    hub.target, hub.label = (tc if end in ("temp", "either") else None), "가열"
+    ok, reason = await relays.set_relay(n, True, by_engine=True)
+    if not ok:
+        raise StepError("히트건 켜기 실패 (%s)" % reason)
+    t0 = devices.vnow()
+    why = ""
+    el = 0.0
+    try:
+        while True:
+            if _stop:
+                raise Stopped()
+            if hub.tripped:
+                raise StepError(hub.tripped)
+            c = hub.last_c
+            el = devices.vnow() - t0
+            if end in ("temp", "either") and c is not None and c >= tc:
+                why = "temp"
+                break
+            if end in ("time", "either") and el >= ts:
+                why = "time"
+                break
+            if el >= max_s:
+                why = "max"
+                break
+            hub.left_s = round(max(0.0, (max_s if end == "temp" else min(max_s, ts if end == "time" else max_s)) - el), 1)
+            state.sequence["step_left_s"] = hub.left_s
+            await _vwait(0.2)
+    finally:
+        await heater_off("가열 끝")         # 정상 · 정지 · 오류 · 비상정지 어느 경우든
+    det = {"end": why, "elapsed_s": round(el, 1), "temp": None if hub.last_c is None else round(hub.last_c, 1),
+           "target_c": tc if end in ("temp", "either") else None, "timed_out": why == "max"}
+    if why == "max":
+        await push_log("#%s 가열 최대 시간 %g s 도달" % (s["no"], max_s), "warn")
+    return det
+
+
+# ---- 기록(CSV) ----
+async def _rec_loop(s, ctx_params):
+    import csv as _csv
+    t0 = devices.vnow()
+    last_meas = None
+    next_meas = 0.0
+    while True:
+        now = devices.vnow() - t0
+        z = state.stage.get("z_mm")
+        hub = devices.hub
+        sp = float(state.get("measure.sample_period_s") or 0.0)
+        if sp > 0 and now >= next_meas:
+            next_meas = now + sp
+            try:
+                r = await _measurer.measure(dict(s), {"out_dir": state.sequence.get("out_dir"), "params": state.params})
+                last_meas = None if not r else r.get("value")
+            except Exception as e:             # noqa: BLE001
+                logger.write("warn", "기록 중 측정 오류: %s" % e)
+        _rec["writer"].writerow([
+            time.strftime("%Y-%m-%d %H:%M:%S"), round(now, 2), state.sequence.get("step_desc") or "",
+            "" if hub.last_c is None else round(hub.last_c, 2), 1 if state.measure.get("heater_on") else 0,
+            " ".join("R%d" % n for n in (state.measure.get("cooler_on") or [])),
+            "" if z is None else round(z, 3),
+            "" if state.measure.get("contact") is None else (1 if state.measure["contact"] else 0),
+            "" if last_meas is None else last_meas])
+        _rec["fh"].flush()
+        await devices.vsleep(float(state.get("temp.period_s") or 0.5))
+
+
+async def _start_recorder(s):
+    import csv as _csv
+    await _stop_recorder()
+    d = state.sequence.get("out_dir")
+    if not d:
+        return None
+    p = os.path.join(d, "sample_%02d_log.csv" % int(s["no"]))
+    fh = open(p, "w", encoding="utf-8-sig", newline="")
+    w = _csv.writer(fh)
+    w.writerow(["시각", "경과_s", "단계", "온도_C", "히트건", "쿨러", "Z_mm", "접촉", "측정값"])
+    _rec.update({"fh": fh, "writer": w, "path": p, "no": s["no"]})
+    _rec["task"] = asyncio.create_task(_rec_loop(s, state.params))
+    state.measure["recording"] = True
+    return os.path.basename(p)
+
+
+async def _stop_recorder():
+    t = _rec.get("task")
+    if t is not None:
+        t.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await t
+    fh = _rec.get("fh")
+    if fh is not None:
+        with contextlib.suppress(Exception):
+            fh.close()
+    name = os.path.basename(_rec["path"]) if _rec.get("path") else None
+    _rec.update({"task": None, "fh": None, "writer": None, "path": None, "no": None})
+    state.measure["recording"] = False
+    return name
+
+
+async def _run_log(step, s, ctx):
+    if step.get("action") == "start":
+        name = await _start_recorder(s)
+        return {"action": "start", "file": name}
+    name = await _stop_recorder()
+    return {"action": "end", "file": name}
+
+
+async def _end_sample(s):
+    """샘플이 끝났을 때(정상 · 건너뜀 · 오류 · 정지 어느 경우든): 기록 닫기, 쿨러는 설정대로."""
+    await _stop_recorder()
+    _measure_idle()
+    if not bool(state.get("cooler.keep_on", True)) and _cooler_on and not _estopped:
+        for n in sorted(_cooler_on):
+            await relays.set_relay(n, False, by_engine=True)
+        _cooler_on.clear()
+
+
 RUNNERS = {
     "move_sample": _run_move_sample,
     "z": _run_z,
@@ -1307,6 +1778,12 @@ RUNNERS = {
     "wait": _run_wait,
     "measure": _run_measure,
     "confirm": _run_confirm,
+    "cooler": _run_cooler,
+    "contact": _run_contact,
+    "wait_temp": _run_wait_temp,
+    "heat": _run_heat,
+    "cool": _run_cool,
+    "log": _run_log,
 }
 
 
@@ -1335,33 +1812,68 @@ async def _run_loop(todo, steps, recipe_name, tool):
             await _pause_point()
             state.sequence["elapsed_s"] = int(time.monotonic() - t0)
             state.sequence["cur_no"] = s["no"]
-            for i, step in enumerate(steps):
-                await _pause_point()
-                desc = recipe_mod.describe(step, values)
-                label = "#%s · %d/%d · %s" % (s["no"], i + 1, len(steps), desc)
-                state.sequence.update({"step_index": i, "step_desc": label,
-                                       "step_left_s": None})
-                _progress(label)
-                await push_state()
-                t_start = _ts()
-                ctx = {"values": values, "desc": label, "index": i}
-                try:
-                    res = await RUNNERS[step["type"]](step, s, ctx)
-                    _steps_log({"time_start": t_start, "time_end": _ts(), "sample_no": s["no"],
-                                "step": i + 1, "type": step["type"], "desc": desc,
-                                "result": "ok", "detail": res or {}})
-                except Stopped:
-                    _steps_log({"time_start": t_start, "time_end": _ts(), "sample_no": s["no"],
-                                "step": i + 1, "type": step["type"], "desc": desc,
-                                "result": "stopped"})
-                    raise
-                except (StepError, stagectl.StageError) as e:
-                    _steps_log({"time_start": t_start, "time_end": _ts(), "sample_no": s["no"],
-                                "step": i + 1, "type": step["type"], "desc": desc,
-                                "result": "error", "detail": {"error": str(e)}})
-                    raise
-            s["status"] = "done"
-            state.sequence["done"] += 1
+            try:
+                i = 0
+                counters = {}
+                guard = 0
+                while i < len(steps):
+                    guard += 1
+                    if guard > 5000:
+                        raise StepError("단계 반복이 너무 많음")
+                    step = steps[i]
+                    await _pause_point()
+                    if step["type"] == "repeat":
+                        a, c = int(step["from"]), int(step["count"])
+                        counters[i] = counters.get(i, 0) + 1
+                        if counters[i] < c:
+                            for k in range(a - 1, i):      # 안쪽 반복은 다시 센다
+                                counters.pop(k, None)
+                            _steps_log({"time_start": _ts(), "time_end": _ts(), "sample_no": s["no"],
+                                        "step": i + 1, "type": "repeat", "desc": recipe_mod.describe(step, values),
+                                        "result": "ok", "detail": {"round": counters[i], "of": c}})
+                            i = a - 1
+                            continue
+                        counters.pop(i, None)
+                        i += 1
+                        continue
+                    desc = recipe_mod.describe(step, values)
+                    label = "#%s · %d/%d · %s" % (s["no"], i + 1, len(steps), desc)
+                    state.sequence.update({"step_index": i, "step_desc": label,
+                                           "step_left_s": None})
+                    _progress(label)
+                    await push_state()
+                    t_start = _ts()
+                    ctx = {"values": values, "desc": label, "index": i}
+                    try:
+                        res = await RUNNERS[step["type"]](step, s, ctx)
+                        _steps_log({"time_start": t_start, "time_end": _ts(), "sample_no": s["no"],
+                                    "step": i + 1, "type": step["type"], "desc": desc,
+                                    "result": "ok", "detail": res or {}})
+                    except Stopped:
+                        _steps_log({"time_start": t_start, "time_end": _ts(), "sample_no": s["no"],
+                                    "step": i + 1, "type": step["type"], "desc": desc,
+                                    "result": "stopped"})
+                        raise
+                    except SkipSample as e:
+                        _steps_log({"time_start": t_start, "time_end": _ts(), "sample_no": s["no"],
+                                    "step": i + 1, "type": step["type"], "desc": desc,
+                                    "result": "skipped", "detail": {"reason": str(e)}})
+                        raise
+                    except (StepError, stagectl.StageError) as e:
+                        _steps_log({"time_start": t_start, "time_end": _ts(), "sample_no": s["no"],
+                                    "step": i + 1, "type": step["type"], "desc": desc,
+                                    "result": "error", "detail": {"error": str(e)}})
+                        raise
+                    finally:
+                        _measure_idle()
+                    i += 1
+                s["status"] = "done"
+                state.sequence["done"] += 1
+            except SkipSample as e:
+                s["status"] = "skip"
+                await push_log("#%s 건너뜀 · %s" % (s["no"], e), "warn")
+            finally:
+                await _end_sample(s)
             state.sequence["elapsed_s"] = int(time.monotonic() - t0)
             await push_state()
     except Stopped:
@@ -1448,6 +1960,12 @@ async def _finish(result):
     비상정지는 예외다. 이동은 '또 움직이는 것' 이고 save 는 믿을 수 없는 위치를
     EEPROM 에 굳히는 것이라, 둘 다 하지 않는다(릴레이 정책은 estop() 이 이미 적용).
     """
+    await _stop_recorder()
+    await heater_off("순회 종료")           # 정지 · 오류 · 비상정지: 릴레이 정책과 무관하게 항상
+    _cooler_on.clear()
+    devices.hub.target = None
+    devices.hub.label = ""
+    devices.hub.left_s = None
     if _estopped:
         try:
             _write_results()
@@ -1569,7 +2087,7 @@ async def estop():
     _estopped = True
     _last_estop_at = time.monotonic()
     off = relays.policy_off("estop") and relays.supported()
-    ok = stagectl.ctl.abort(relays_off=off)
+    ok = stagectl.ctl.abort(relays_off=off, off_relays=(heater_n(),))
     if dup:
         return
     state.stage["needs_home"] = True       # 원점을 다시 잡기 전까지 이동 잠금

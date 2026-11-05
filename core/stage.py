@@ -698,7 +698,7 @@ class Stage:
         """펌웨어에 동시 이동이 없으므로 X 먼저, 그다음 Y."""
         return [self.move_x_mm(x), self.move_y_mm(y)]
 
-    def abort(self, relays_off=False):
+    def abort(self, relays_off=False, off_relays=()):
         """비상정지. 어느 스레드에서든 즉시 "!" 를 쓴다.
 
         relays_off 면 같은 쓰기에 "r all 0" 을 바로 붙인다(정책이 '끄기' 일 때).
@@ -716,11 +716,16 @@ class Stage:
             self._dry_rx()
             if relays_off:
                 self._dry_relay = [False] * N_RELAY
+            else:
+                for n in off_relays or ():      # 정책과 무관하게 끌 릴레이(히트건)
+                    if 1 <= int(n) <= N_RELAY:
+                        self._dry_relay[int(n) - 1] = False
             return True
         if self.ser is None:
             return True
         try:
-            data = "!" + chr(10) + ("r all 0" + chr(10) if relays_off else "")
+            extra = "" if relays_off else "".join("r %d 0" % int(n) + chr(10) for n in (off_relays or ()))
+            data = "!" + chr(10) + ("r all 0" + chr(10) if relays_off else extra)
             self.ser.write(data.encode("ascii"))
             self.ser.flush()
             return True

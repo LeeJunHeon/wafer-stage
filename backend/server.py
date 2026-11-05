@@ -108,7 +108,7 @@ app = FastAPI(lifespan=lifespan)
 _ASSET_FILES = [os.path.join(paths.FRONTEND_DIR, "css", "style.css")] + [
     os.path.join(paths.FRONTEND_DIR, "js", f)
     for f in ("core.js", "camera.js", "map.js", "samples.js", "sequence.js",
-              "jog.js", "relays.js", "editors.js", "settings.js", "calib.js", "plate.js", "app.js")]
+              "jog.js", "relays.js", "editors.js", "settings.js", "calib.js", "plate.js", "measure.js", "app.js")]
 
 
 def _asset_version():
@@ -165,6 +165,17 @@ async def frame(name):
         return Response(status_code=404)
     return Response(jpg, media_type="image/jpeg",
                     headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/plate_ref_thumb/{name}")
+async def plate_ref_thumb(name):
+    """빈 판 기준(현재 · 보관) 작은 미리보기. 이름은 'current' 또는 보관 시각(yyyymmdd_HHMMSS)."""
+    from core import plate as plate_mod
+    n = name.split(".")[0]
+    jpg = await vision.run_blocking(plate_mod.ref_thumb_jpeg, n)
+    if jpg is None:
+        return Response(status_code=404)
+    return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/estop")

@@ -111,6 +111,24 @@
         td.textContent = t;
         tr.appendChild(td);
       });
+      const tdc2 = document.createElement('td');
+      const cs = document.createElement('select');
+      cs.className = 'in cooler';
+      cs.setAttribute('data-tip', '이 샘플이 쓸 쿨러입니다. 자동은 샘플 중심이 속한 구역의 쿨러이고, 고르면 이 샘플만 바꿉니다.');
+      const oa = document.createElement('option');
+      oa.value = '0'; oa.textContent = sm.cooler_manual ? '자동으로' : (sm.cooler ? 'R' + sm.cooler : UI.EMPTY);
+      cs.appendChild(oa);
+      for (let n = 1; n <= 10; n++) {
+        const o = document.createElement('option');
+        o.value = String(n); o.textContent = 'R' + n + (n === sm.cooler && sm.cooler_manual ? ' (수동)' : '');
+        cs.appendChild(o);
+      }
+      cs.value = sm.cooler_manual && sm.cooler ? String(sm.cooler) : '0';
+      cs.disabled = !!(UI.isRunning && UI.isRunning(s));
+      cs.onclick = (ev) => ev.stopPropagation();
+      cs.onchange = () => UI.send({ cmd: 'sample_cooler', no: sm.no, n: +cs.value });
+      tdc2.appendChild(cs);
+      tr.appendChild(tdc2);
       const tds = document.createElement('td');
       const sp = document.createElement('span');
       sp.className = 'st ' + sm.status;
@@ -131,7 +149,7 @@
       const tr = document.createElement('tr');
       tr.className = 'emptyrow';
       const td = document.createElement('td');
-      td.colSpan = 7;
+      td.colSpan = 8;
       td.textContent = '검출된 샘플 없음';
       tr.appendChild(td);
       tb.appendChild(tr);

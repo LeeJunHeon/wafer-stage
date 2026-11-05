@@ -527,10 +527,14 @@ def detect(crop, params, mm_px, valid=None, ref=None, area_poly=None, log=print)
             if c is not None:
                 if src == "local":
                     n_local += 1
-                samples.append(_make_sample(c, s_real, mm_px, src, weak, W0, H0))
+                sm_ = _make_sample(c, s_real, mm_px, src, weak, W0, H0)
+                sm_["_slot"] = key
+                samples.append(sm_)
             elif bool(cfg["emit_predicted"]):
                 n_pred += 1
-                samples.append(_predicted_sample(p, grid["u"], Lw_real, exp_area, s_real, mm_px, W0, H0))
+                sm_ = _predicted_sample(p, grid["u"], Lw_real, exp_area, s_real, mm_px, W0, H0)
+                sm_["_slot"] = key
+                samples.append(sm_)
         tm["local"] = time.perf_counter() - t0
         # 행 우선 정렬: 화면에서 더 세로인 격자축이 행
         u, vv = grid["u"], grid["v"]
@@ -549,7 +553,8 @@ def detect(crop, params, mm_px, valid=None, ref=None, area_poly=None, log=print)
     res.detect_ms = (time.perf_counter() - t_all) * 1000.0
     res.diag = {"chip_long_px": round(L_est_orig, 1), "scale": round(s_real, 4), "sources": cnt,
                 "grid": None if grid is None else {"inliers": grid["n_inl"], "n_good": len(good),
-                                                    "spacing_px": round(grid["spacing"] / s_real, 1)},
+                                                    "spacing_px": round(grid["spacing"] / s_real, 1),
+                                                    "uv": [(grid["u"] / s_real).tolist(), (grid["v"] / s_real).tolist()]},
                 "time_ms": {k: round(v_ * 1000.0, 1) for k, v_ in tm.items()}, "sigma": sig}
     log("출처      : 검출 %d · 보완 %d · 예측 %d · 시간 %.0f ms (잔차 %.0f · 격자 %.0f · 재탐색 %.0f)"
         % (cnt["detected"], cnt["local"], cnt["predicted"], res.detect_ms,

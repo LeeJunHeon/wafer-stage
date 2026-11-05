@@ -144,7 +144,15 @@
 - 릴레이(relays.py): 펌웨어 RS 가 진실. 사용 안 함 켜기 거절 · 순회 중 수동 거절(전체 끄기만) ·
   정책 off|keep(비상정지·정지·오류·종료) · 비상정지는 '!' 와 같은 쓰기에 "r all 0" · 감시 시간 1/3
   주기 rs 하트비트(이동 중 제외) · max_on_s 초과 자동 끄기 + 경보 · "[!] 통신 끊김" 은 경보 배너.
-- **공구 끝 모양**(core/tip.py): 공구마다 tip_shape/tip_w_mm/tip_h_mm/tip_angle_deg(사진 기준, 0 = 긴 변이 사진 가로). 촬영본 [공구 끝]
+- **측정 과정**(backend/devices.py · engine 단계 실행기): 온도(TempSource) · 접촉(ContactSource) 드라이버 인터페이스 + 더미(열 모델 시뮬레이터, sim.time_scale 로 빠르게).
+  쿨러 구역(cooler.zones 3×3 → 샘플 cooler) · 레시피 단계 cooler/contact/wait_temp/heat/cool/repeat/log · 기록 CSV(sample_NN_log.csv). **안전 불변식**: X·Y 이동 전
+  히트건 꺼짐(engine._goto 강제) · 정지/오류/비상정지는 릴레이 정책과 무관하게 히트건 끔 · 과열 보호(heater.max_c · 센서 오류 연속)는 레시피와 무관. 실제 장비에서
+  온도 드라이버가 더미면 가열/온도 단계 레시피는 시작 안 함. 활성 레시피 기본은 "기본", "가열 측정"은 임시값 예시(장비에서 측정 후 조정).
+- **촬영본 표시 규칙**: 라벨 한 벌(번호만, 좌표 숫자 없음) · 칩/윤곽/다른 라벨과 안 겹치게 바깥 빈 자리 + 지시선(core/labels.py = js placeLabels) · 윤곽 얇게 색은 상태에만 ·
+  번호는 새 촬영의 첫 매김에만 위치 순서(행 우선; 격자면 격자 인덱스) · 감지 영역 밖/제외 영역에 중심이 있는 검출은 결과에서 뺀다 · 빈 판 기준은 새로 찍을 때
+  data/plate_ref_history 에 보관(10개)하고 보정 창에서 되돌린다(메타 불일치는 무효 표시 + 확인).
+- **공구 끝 모양**(core/tip.py): 공구마다 tip_shape/tip_w_mm/tip_h_mm/tip_angle_deg(**스테이지 기준** 0 = 긴 변이 스테이지 X 축; 그릴 때 판 보정으로 국소 방향을 사진 각도로 변환,
+  판 보정 전에는 tip_angle_img_deg 예비값; 판 보정이 생기면 사진 방향 → 스테이지 각도를 한 번 채움). 촬영본 [공구 끝]
   토글이 순회 대상 샘플마다 실제 크기로 그리고(배율 = 판 보정 국소 배율 · 없으면 감지 영역 크기 배율 calib.area_size_mm), engine.refresh_fit
   이 샘플별 fit(윤곽 안 = tool.fit_margin_mm 까지 허용)을 계산 — 벗어나면 "핀 벗어남" 배지 · needs_confirm. 예측 · 윤곽 없는 샘플은 검사 안 함.
   수동 추가는 sample_add.snap 이면 fixed_detect.snap(빈 칸 재탐색 로직)으로 클릭 주변 칩 중심에 붙는다. 샘플 끌기 = sample_move

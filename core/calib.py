@@ -847,7 +847,7 @@ def save_samples_image(bgr, res, params, outdir=None,
     fs = max(0.4, min(img.shape[1], img.shape[0]) / 1600.0)
     th = max(1, int(round(fs * 2)))
     mmxy = {no: (mx, my) for no, _u, _v, mx, my in res["rows"]}
-    for x in det.samples:
+    for x in ([] if res.get("mode") == "fixed" else det.samples):     # 고정 환경은 번호 한 벌만(plate.annotate_fixed)
         mx, my = mmxy.get(x["no"], (0.0, 0.0))
         if mx is None:
             t = "#%d" % x["no"]                 # 검출만 모드: 좌표 없음

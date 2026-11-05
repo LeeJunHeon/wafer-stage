@@ -49,12 +49,12 @@ MOVING_BLOCKED = ("park", "goto", "return_origin", "jog", "touch_end",
 BUSY_BLOCKED = ("park", "goto", "return_origin", "jog", "park_here", "capture_here",
                 "touch_end", "set_origin", "stage_disconnect", "capture", "settings_save",
                 "settings_import", "sample_add", "sample_add_here", "sample_delete",
-                "sample_undo", "sample_move", "tool_select", "recipe_select", "photo_home",
+                "sample_undo", "sample_move", "sample_cooler", "tool_select", "recipe_select", "photo_home",
                 "photo_home_apply", "head_calib_start", "head_calib_apply",
                 "calib_marker_record", "calib_marker_apply", "calib_tool_record",
                 "calib_tool_heat", "calib_tool_mark", "calib_tool_apply",
                 "plate_shot", "plate_area_apply", "plate_calib_apply",
-                "plate_exclude_apply", "plate_ref_shot")
+                "plate_exclude_apply", "plate_ref_shot", "plate_ref_use")
 # 샘플 추가 둘은 결과를 ack{of:"sample_add"} 로 돌려준다(화면이 새 번호를 선택한다).
 SAMPLE_ADD_CMDS = ("sample_add", "sample_add_here")
 # 순회 중 거절을 ack 로도 알려야 하는 명령(화면이 결과를 기다린다)
@@ -463,6 +463,30 @@ async def _sample_delete(data):
     await engine.delete_sample(data.get("no"))
 
 
+async def _sample_cooler(data):
+    await engine.set_sample_cooler(data.get("no"), data.get("n"))
+
+
+async def _contact_manual(data):
+    import devices
+    devices.ManualContact.on = bool(data.get("on"))
+    await push_log("접촉 확인 %s" % ("켬" if devices.ManualContact.on else "끔"))
+
+
+async def _dry_temp(data):
+    """(--dry 전용) 온도 강제 · 센서 오류 흉내: {c: 숫자|null, fail: bool}"""
+    import devices
+    if not stagectl.ctl.dry:
+        return
+    devices.hub.configure()
+    t = devices.hub.temp
+    if hasattr(t, "force_c"):
+        c = data.get("c")
+        t.force_c = None if c is None else float(c)
+        t.sensor_fail = bool(data.get("fail"))
+    await push_log("(dry) 온도 %s%s" % (data.get("c"), " · 센서 오류" if data.get("fail") else ""))
+
+
 async def _sample_move(data):
     await engine.move_sample(data.get("no"), data.get("u"), data.get("v"))
 
@@ -637,8 +661,10 @@ async def _commit_with_effects(v, warns, of):
         await _send_profile()
     if "relay" in changed and stagectl.ctl.connected and stagectl.ctl.fw_major() >= 11:
         await relays.send_watchdog()
-    if "tool" in changed or "limits" in changed:
+    if "tool" in changed or "limits" in changed or "cooler" in changed:
         engine.refresh_sample_status()
+    import devices
+    devices.hub.configure()
     photohome.refresh_state()
     platecal.refresh_state()
     for w in warns:
@@ -789,6 +815,10 @@ async def _plate_exclude_apply(data):
     await platecal.exclude_apply(data)
 
 
+async def _plate_ref_use(data):
+    await platecal.ref_use(data)
+
+
 async def _plate_ref_shot(_data):
     await platecal.ref_shot()
 
@@ -872,6 +902,9 @@ _TABLE = {
     "return_origin": _return_origin,
     "capture": _capture,
     "sample_move": _sample_move,
+    "sample_cooler": _sample_cooler,
+    "contact_manual": _contact_manual,
+    "dry_temp": _dry_temp,
     "exposure_refind": _exposure_refind,
     "sample_add": _sample_add,
     "sample_add_here": _sample_add_here,
@@ -916,6 +949,7 @@ _TABLE = {
     "plate_area_apply": _plate_area_apply,
     "plate_exclude_apply": _plate_exclude_apply,
     "plate_ref_shot": _plate_ref_shot,
+    "plate_ref_use": _plate_ref_use,
     "calib_tool_apply": _calib_tool_apply,
     "dry_slip": _dry_slip,
     "dry_stall": _dry_stall,

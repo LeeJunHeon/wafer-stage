@@ -686,11 +686,29 @@ Z 를 내린 채 조금씩 민다).
 - **검출만 모드(판 보정 전)에서도 추가 · 이동 · 되돌리기는 된다**(픽셀 좌표 저장, 상태 `nocoord`). 좌표(mm) · 이동 · 순회는
   판 보정 뒤에만이고, 판 보정을 적용하면 저장된 픽셀로 편집한 샘플까지 mm 를 계산한다.
 
+### 촬영본 검출 표시 규칙 · 번호
+
+- **라벨은 한 벌**: 화면(HTML 오버레이)이 그리는 번호 하나뿐이고, 저장용 `annotated.jpg` 도 같은 규칙이다(`plate.annotate_fixed`).
+  좌표 숫자는 촬영본에 쓰지 않는다(목록과 툴팁에만). 라벨은 칩 · 윤곽 · 공구 끝 · 다른 라벨과 겹치지 않는 칩 바깥 빈 자리에
+  두고 짧은 지시선으로 잇는다(`core/labels.py place` = `js/camera.js placeLabels`, 칩 둘레 8방향 × 거리 3단계).
+- **윤곽은 얇게, 색은 상태에만**: 검출(초록 실선) · 보완(하늘색 실선 + `+`) · 예측(주황 점선 원 + `?`) · 핀 벗어남(빨강).
+- **번호는 위치 순서(새 촬영의 첫 번호 매김에만)**: 판 보정이 있으면 스테이지 좌표, 없으면 사진 좌표로 행 우선(행 묶음 허용 오차 =
+  칩 긴 변의 절반). 격자 배치면 격자 인덱스 순서(세로 성분이 큰 격자축 = 행). 편집(추가 · 삭제 · 이동)은 번호를 다시 매기지 않는다.
+- **감지 영역 경계 밖이나 제외 영역에 중심이 있는 검출은 결과에서 뺀다**(표시도 안 함 — 크롭 밖으로 나간 예측 칸 포함).
+- **빈 판 기준 보관**: [빈 판 기준 촬영]으로 새로 찍으면 이전 기준을 `data/plate_ref_history/<시각>.png`(+`.json` 메타: 카메라 번호 ·
+  해상도 · 노출 · 화이트밸런스 · 감지 영역 · 찍은 시각)로 보관한다(최근 10개, 넘으면 오래된 것부터 삭제). 보정 창 감지 영역 · 판 보정 탭의
+  기준 목록(시각 · 유효/무효 · 작은 미리보기 `/plate_ref_thumb/<이름>.jpg`)과 [이 기준 사용](`plate_ref_use`)이 현재 기준으로 되돌린다
+  (지금 기준은 먼저 보관). 메타가 지금 카메라 설정과 다르면 무효로 표시하고 사용 시 확인을 받는다.
+
 ### 공구 끝 모양 · 맞음 검사
 
-공구마다 `tip_shape`(rect | circle) · `tip_w_mm` · `tip_h_mm`(원이면 지름 = `tip_w_mm`) · `tip_angle_deg`(**사진 기준**: 0 = 긴 변이
-사진 가로, 90 = 사진 세로 — 판 보정과 무관)를 설정 공구 탭에서 편집한다. 기본: 기준 포인터(핀) 사각 10 × 2 mm 90°, 히트건 원 지름
-5 mm(가열 범위 근사). tip_* 가 없는 예전 공구는 이름별 기본값(`core/tip.py`). 샘플 중심 = 공구 끝이 닿을 자리. 촬영본의 [공구 끝]
+공구마다 `tip_shape`(rect | circle) · `tip_w_mm` · `tip_h_mm`(원이면 지름 = `tip_w_mm`) · `tip_angle_deg`(**스테이지 기준**: 0 = 긴 변이
+스테이지 X 축, 90 = Y 축) · `tip_angle_img_deg`(사진 기준 예비값 — 판 보정이 없을 때만)를 설정 공구 탭에서 편집한다. 그릴 때 판 보정(H)
+으로 그 점의 국소 방향을 사진 각도로 바꾼다(샘플마다 `tip_deg`) — 카메라 방향이 바뀌어도 실물 방향이 그대로다. 이행: 판 보정이 생기면
+사진 기준 방향(핀 90° = 사진 세로 = 실물에서 샘플 긴 쪽의 가로)에 해당하는 스테이지 각도를 계산해 `tip_angle_deg` 에 **한 번** 채우고 로그로
+알린다(그 전에는 `tip_angle_img_deg` 유지, 예전 설정의 사진 기준 `tip_angle_deg` 는 예비값으로 읽는다). 공구 탭에 "지금 사진에서의 방향"
+미리보기(`state.tip.tips_now`). 기본: 기준 포인터(핀) 사각 10 × 2 mm(예비 90°), 히트건 원 지름 5 mm(가열 범위 근사).
+tip_* 가 없는 예전 공구는 이름별 기본값(`core/tip.py`). 샘플 중심 = 공구 끝이 닿을 자리. 촬영본의 [공구 끝]
 토글(카메라 머리줄)이 순회 대상 샘플마다 끝 모양을 실제 크기 · 방향으로 그린다(크기는 판 보정의 국소 배율, 없으면 감지 영역
 크기로 잰 배율). **맞음 검사**: 끝 모양 윤곽이 샘플 윤곽 안에 `tool.fit_margin_mm`(0.3 mm)까지는 벗어나도 봐준다. 벗어나면
 샘플 윤곽 · 끝 모양이 경고 색, 목록에 "핀 벗어남" 배지, 순회 시작 전 확인 대화상자에 번호 목록이 뜬다. 윤곽이 없는 샘플(예측 ·
@@ -711,6 +729,38 @@ python tools/flat_check.py ..\data\out\seq_XXXX --truth ..\data\out\seq_XXXX\sam
 ```
 
 편집마다 `sequence_log.jsonl` 에 `{time, edit:add|delete|undo, via?:click|here, undo_of?:add|delete, no, u, v, X, Y}` 한 줄.
+
+## 측정 과정 (쿨러 · 접촉 · 온도 · 가열 · 기록)
+
+장비가 아직 정해지지 않은 부분은 **드라이버 인터페이스 + 더미(시뮬레이터)**(`backend/devices.py`)이고 값은 모두 설정 · 레시피에서 바꾼다.
+
+- **드라이버**: `TempSource.read() → °C | None(센서 오류)` — `temp.driver`(dummy = 열 모델 시뮬레이터: 쿨러 · 히트건 릴레이 상태에 따라 지수 응답,
+  `sim.*` = 주변 · 히트건 도달 · 쿨러 도달 온도, 시간 상수 3개, 잡음), `temp.period_s`(읽기 주기, 0.5). 실장치(계측기 경유 · 아두이노 아날로그 · 별도
+  시리얼 중 하나)는 `make_temp()` 에 이름만 더하면 된다. `ContactSource.is_contact() → bool | None` — `contact.driver`: `dummy`(Z ≥ `sim.contact_z_mm`) ·
+  `measurer`(`Measurer.contact()` 신설, 더미는 None) · `di`(아두이노 디지털 입력 핀 `contact.di_pin` · `di_pullup` · `di_active_high`; 펌웨어에 읽기
+  명령 `di <pin>`(V12)이 필요하다 — 아직 펌웨어는 만들지 않았고 `stagectl.digital_read` 가 없으면 오류로 알린다, --dry 는 Z 로 흉내) · `manual`([접촉 확인]
+  버튼, 명령 `contact_manual`) · `none`. `Measurer` 는 그대로(기록 구간에서 `measure.sample_period_s` 마다 `measure()` 호출). **시간 배율 `sim.time_scale`**:
+  더미 열 모델과 새 단계의 시간을 빠르게(테스트용, 1 = 실시간). 실제 장비(--dry 아님)에서 온도 드라이버가 더미면 가열 · 온도 대기 단계가 있는 레시피는 시작하지 않는다.
+- **쿨러 구역**: `cooler.zones` = `{rows 3, cols 3, relays [1..9]}` — 감지 영역 사각형을 사진 기준 행 우선(위→아래 · 왼쪽→오른쪽)으로 나눈 칸마다 릴레이.
+  샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러(`sample.cooler` · `zone`, 목록 쿨러 열에서 샘플별 수동 변경 `sample_cooler`, 촬영본 [쿨러 구역] 토글로
+  구역 격자 표시). `cooler.mode`(`sample` = 그 샘플만 | `all` = 쿨러 단계에서 9개 전부), `cooler.keep_on`(샘플이 끝나도 켜 둠, 기본 켬 — 다음 샘플이
+  다른 구역이면 다음 샘플의 쿨러 단계가 이전 쿨러를 끈다; 순회 종료 · 정지는 릴레이 정책). `heater.relay`(10) 는 레시피의 가열 단계만 켠다.
+- **레시피 단계**(값은 `recipe.py` 가 검증, 편집기 표 형식 그대로): `cooler {action on|off, target sample|all|n, n}` ·
+  `contact {start_ref work|mm, start_mm, step_mm, max_ref work|mm, max_mm, press_mm, settle_s, on_fail stop|skip|confirm}`(work = 활성 공구 작업 높이에 더하는 mm;
+  접촉 Z 를 `steps.jsonl` 과 샘플 `contact_z` 에 남김) · `wait_temp {cond ≤|≥, target_c, hold_s, max_s, on_timeout continue|skip|stop|confirm}` ·
+  `heat {end temp|time|either, target_c, time_s, max_s(필수)}`(켜기 → 끝 조건 → 끄기; 정상 · 정지 · 오류 · 비상정지 어느 경우든 끔) · `cool`(히트건 끈 채 wait_temp
+  와 같은 조건) · `repeat {from, to, count}`(앞 블록 from~to 번 단계를 count 번; 편집기는 들여쓰기) · `log {action start|end}`. 기존 z · relay · wait · measure ·
+  confirm 유지. 기본 레시피 목록에 **"가열 측정"**(move_sample → cooler 이 샘플 → contact(작업 높이 −2 mm, 0.1 mm, 최대 작업 높이 +1 mm, 누름 0.1 mm) → log 시작 →
+  wait_temp ≤30 °C 유지 5 s 최대 300 s → heat 150 °C 또는 60 s 최대 120 s → cool ≤40 °C 최대 300 s → log 끝 → z 맨 위)를 더했다(온도 · 시간은 임시값 — 장비에서
+  측정 후 조정). 활성 레시피는 그대로 "기본"이다. 예상 시간은 온도 조건을 최대 대기 기준으로 센다. 필요한 릴레이가 사용 안 함이면 저장은 되고(경고) 시작이 거절된다.
+- **안전 불변식**: X·Y 이동 전에는 히트건이 반드시 꺼져 있다(`engine._goto` 가 강제 · 로그). 정지 · 오류 · 비상정지 때 히트건은 릴레이 정책과 무관하게 항상 끈다
+  (비상정지는 `!` 와 같은 쓰기에 `r <히트건> 0`). 과열 보호는 레시피와 무관하게 히트건이 켜진 동안 온도 > `heater.max_c`(300) 이거나 센서 오류가
+  `heater.sensor_fail_n`(3)회 연속이면 즉시 끄고 경보("히트건") + 순회 오류 중단.
+- **기록**: `log` 구간에서 `temp.period_s` 마다 `sample_<번호>_log.csv`(시각 · 경과_s · 단계 · 온도_C · 히트건 · 쿨러 · Z_mm · 접촉 · 측정값)를 순회 폴더에 남기고
+  `steps.jsonl` 에 단계 결과(도달 시간 `reached_s` · 시간 초과 `timed_out` · 가열 끝 이유 `end` · 접촉 Z `contact_z`). 시간 초과 정책 `skip`/접촉 못 찾음 `skip` 은
+  그 샘플만 건너뛴다(상태 제외 · 결과 `skipped`).
+- **화면**: 로그 오른쪽 온도 그래프(`{"type":"temp"}` 메시지 — 목표선 점선 · 히트건 켜진 구간 음영 · 라벨 · 범례는 축 밖 띠 + 지시선), 현재 °C · 단계 · 남은 시간,
+  상단 온도 칩(센서 오류 · 과열 보호는 경보 색) · 접촉 칩(접촉/비접촉/미사용), 접촉 드라이버가 수동이면 [접촉 확인].
 
 ## 설정 체계 (backend/settings_schema.py)
 
@@ -809,6 +859,14 @@ settings.json 을 직접 편집한다(화면에 있던 `stat_seed` · `stat_grow
 | 사진 호밍 (고급) | `photohome.shot_retries` | 3 |  | 즉시 | 마커 촬영 재시도 |
 | 공구 | `tool.items` | 목록 2개 |  | 다음 순회 | 공구 — 이름 · dX · dY · 작업 높이 · 끝 모양 `tip_shape`(rect/circle) · `tip_w_mm` · `tip_h_mm` · `tip_angle_deg`(사진 기준) · 메모. 기본 핀 rect 10×2 90°, 히트건 circle 5 |
 | 공구 | `tool.fit_margin_mm` | 0.3 | mm | 즉시 | 끝 모양 맞음 여유 — 샘플 윤곽을 이만큼까지 벗어나도 봐줌 |
+| 측정 장비 | `temp.driver` · `temp.period_s` | dummy · 0.5 | s | 즉시 | 온도 드라이버 · 읽기 주기 |
+| 측정 장비 | `contact.driver` | dummy |  | 즉시 | 접촉 드라이버 dummy / measurer / di / manual / none |
+| 측정 장비 | `contact.di_pin` · `di_pullup` · `di_active_high` | 2 · 켬 · 끔 |  | 즉시 | 입력 핀 방식(펌웨어 V12 필요) |
+| 측정 장비 | `cooler.zones` | 3×3 · R1~R9 |  | 즉시 | 쿨러 구역(행 · 열 · 칸별 릴레이, 행 우선) |
+| 측정 장비 | `cooler.mode` · `cooler.keep_on` | sample · 켬 |  | 다음 순회 | 쿨러 켜는 범위 · 샘플이 끝나도 켜 둠 |
+| 측정 장비 | `heater.relay` · `heater.max_c` · `heater.sensor_fail_n` | 10 · 300 · 3 | °C | 즉시 | 히트건 릴레이 · 과열 보호 온도 · 센서 오류 허용 횟수 |
+| 측정 장비 | `measure.sample_period_s` | 0 | s | 다음 순회 | 기록 구간의 측정값 기록 주기(0 = 안 함) |
+| 측정 장비(고급) | `sim.time_scale` · `sim.ambient_c` · `sim.heater_c` · `sim.cooler_c` · `sim.tau_heat_s` · `sim.tau_cool_s` · `sim.tau_amb_s` · `sim.noise_c` · `sim.contact_z_mm` | 1 · 25 · 320 · 5 · 15 · 25 · 120 · 0.2 · 44 |  | 즉시 | 시뮬레이터(테스트용) |
 | 공구 | `tool.active` | 기준 포인터 |  | 다음 순회 | 활성 공구 |
 | 릴레이 | `relay.items` | 목록 10개 |  | 즉시 | 릴레이 |
 | 릴레이 | `relay.on_estop` | off |  | 즉시 | 비상정지 시 |

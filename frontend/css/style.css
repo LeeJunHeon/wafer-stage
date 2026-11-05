@@ -158,14 +158,21 @@
   .ov-wafer { fill: none; stroke: #ffd400; stroke-width: 1.5; opacity: .9; }
   .ov-marker { fill: none; stroke: #2f8cff; stroke-width: calc(2px * var(--ovs, 1)); }
   .ov-marker-label { font: 600 calc(14px * var(--ovs, 1)) var(--mono); fill: #2f8cff; paint-order: stroke; stroke: #0e1418; stroke-width: calc(3px * var(--ovs, 1)); }
-  .ov-sample { fill: rgba(60,220,110,.10); stroke: #35e07a; stroke-width: calc(1.6px * var(--ovs, 1)); }
+  .ov-sample { fill: none; stroke: #35e07a; stroke-width: calc(1.1px * var(--ovs, 1)); }
+  .ov-sample.local { stroke: #3cbeff; }
+  .ov-lead { stroke: rgba(235,235,235,.85); stroke-width: calc(1px * var(--ovs, 1)); pointer-events: none; }
+  .ov-labbg { fill: rgba(14,20,24,.72); pointer-events: none; }
+  .ov-num.bad { fill: #ff8a8a; }
   .ov-sample.done { fill: rgba(60,220,110,.30); }
   .ov-sample.pred { fill: none; stroke: #ffa53a; stroke-dasharray: calc(4px * var(--ovs, 1)) calc(3px * var(--ovs, 1)); }
   .ov-sample.skip { stroke: #9aa7b2; fill: none; stroke-dasharray: 3 3; }
   .ov-sample.target { stroke: #ffa53a; stroke-width: calc(2.6px * var(--ovs, 1)); fill: rgba(255,165,58,.2); }
   .ov-sample.selected { stroke: #7fc8ff; stroke-width: calc(2.4px * var(--ovs, 1)); }
-  .ov-num { font: 600 calc(12.5px * var(--ovs, 1)) var(--mono); fill: #fff; paint-order: stroke; stroke: #0e1418; stroke-width: calc(3px * var(--ovs, 1)); pointer-events: none; }
+  .ov-num { font: 600 calc(12.5px * var(--ovs, 1)) var(--mono); fill: #fff; pointer-events: none; }
   .ov-hit { fill: transparent; cursor: grab; }
+  .ov-zone { stroke: rgba(120,200,255,.55); stroke-width: calc(1.2px * var(--ovs, 1)); stroke-dasharray: calc(6px * var(--ovs, 1)) calc(4px * var(--ovs, 1)); pointer-events: none; }
+  .ov-zone-lab { font: 600 calc(12px * var(--ovs, 1)) var(--mono); fill: rgba(150,215,255,.85); text-anchor: middle; pointer-events: none; }
+  select.in.cooler { height: 22px; padding: 0 2px; font-size: 11px; }
   .ov-tip { fill: rgba(255,255,255,.14); stroke: #ffe14a; stroke-width: calc(1.6px * var(--ovs, 1)); pointer-events: none; }
   .ov-tip.bad { fill: rgba(255,70,70,.22); stroke: #ff4646; }
   .ov-tip.ghost { stroke-dasharray: calc(5px * var(--ovs, 1)) calc(3px * var(--ovs, 1)); }
@@ -267,6 +274,10 @@
 
   /* footer: log + status bar */
   .foot { display: grid; grid-template-rows: 1fr 24px; gap: 6px; min-height: 0; }
+  .footrow { display: grid; grid-template-columns: 1fr 430px; gap: 6px; min-height: 0; }
+  .footlog { min-width: 0; }
+  .footTemp .pb { padding: 4px 8px; }
+  .footTemp .tempsvg { height: 100%; }
   .log { background: #101820; color: #cfe3ee; font-family: var(--mono); font-size: 12px; line-height: 1.45; padding: 8px 12px; overflow: auto; border-radius: 0 0 6px 6px; flex: 1; min-height: 0; }
   /* 로그는 드래그해서 복사할 수 있어야 한다(창 쪽은 window.py 의 text_select). */
   .log div { white-space: pre; user-select: text; }
@@ -498,6 +509,26 @@
   .plateinner svg { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
   .plateview .pq { fill: rgba(255,212,0,.07); stroke: #ffd400; vector-effect: non-scaling-stroke; stroke-width: 1.2; }
   .plateview .pv { fill: #ffd400; stroke: #0e1418; vector-effect: non-scaling-stroke; stroke-width: 1; cursor: grab; }
+  .etable td.ind1 { padding-left: 18px; } .etable td.ind2 { padding-left: 30px; } .etable td.ind3 { padding-left: 42px; }
+  .nowdir { display: inline-flex; align-items: center; gap: 4px; font: 11px var(--mono); }
+  .nowsvg { width: 22px; height: 22px; } .nowsvg rect { fill: rgba(42,91,208,.25); stroke: #2a5bd0; stroke-width: 1; }
+  .reflist { display: flex; flex-direction: column; gap: 4px; max-height: 190px; overflow: auto; }
+  .refrow { display: flex; align-items: center; gap: 8px; padding: 2px 0; border-bottom: 1px solid var(--line); }
+  .refthumb { width: 64px; height: 44px; object-fit: cover; border: 1px solid var(--line); border-radius: 3px; background: #0e1418; }
+  .refinfo { flex: 1; font-size: 11px; }
+  .tpnums { display: flex; gap: 6px; align-items: baseline; font-size: 12px; }
+  .tpnums .k { color: var(--faint); font-size: 10.5px; }
+  .tempsvg { width: 100%; height: 132px; background: #fff; border: 1px solid var(--line); border-radius: 4px; }
+  .tempsvg .tp-plot { fill: #fafbfc; stroke: var(--line); }
+  .tempsvg .tp-grid { stroke: #e3e8ee; stroke-width: 1; }
+  .tempsvg .tp-ax { font: 9px var(--mono); fill: var(--dim); }
+  .tempsvg .tp-line { fill: none; stroke: #1d5fd1; stroke-width: 1.6; }
+  .tempsvg .tp-target { stroke: #d98a00; stroke-width: 1.4; stroke-dasharray: 4 3; }
+  .tempsvg .tp-lead { stroke: var(--faint); stroke-width: 1; }
+  .tempsvg .tp-heat { fill: rgba(217,138,0,.16); }
+  .tempsvg .tp-lab { font: 600 9.5px var(--font); fill: var(--dim); }
+  .tempsvg .tp-lab.tgt { fill: #a86a00; }
+  .tempsvg .tp-lab.cur { fill: #1d5fd1; }
   .plateview .px { fill: rgba(255,59,59,.16); stroke: #ff3b3b; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; stroke-width: 1.4; }
   .plateview .pxc { fill: none; stroke: #ff9a3b; vector-effect: non-scaling-stroke; stroke-width: 1.4; }
   .plateview .pxv { fill: #ff9a3b; stroke: #0e1418; vector-effect: non-scaling-stroke; stroke-width: 1; }

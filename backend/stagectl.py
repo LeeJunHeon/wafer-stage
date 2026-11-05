@@ -152,12 +152,12 @@ class StageCtl:
     async def save(self):
         return await self._call(self._need().save)
 
-    def abort(self, relays_off=False):
+    def abort(self, relays_off=False, off_relays=()):
         """워커 큐를 거치지 않는 즉시 호출 (동기). relays_off 면 "r all 0" 을 바로 붙인다."""
         if self.dev is None:
             return False
         try:
-            return self.dev.abort(relays_off=relays_off)
+            return self.dev.abort(relays_off=relays_off, off_relays=off_relays)
         except Exception as e:             # noqa: BLE001
             logger.write("err", "비상정지 실패: %s" % e)
             return False

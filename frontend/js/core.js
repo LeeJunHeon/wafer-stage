@@ -402,7 +402,7 @@
     chip($('chipServer'), on ? 'ok' : 'bad', on ? '정상' : '끊김');
     document.body.classList.toggle('offline', !on);
     if (!on) {
-      ['chipCam', 'chipStage', 'chipMeter', 'chipCalib', 'chipHome', 'chipTool', 'chipRelay']
+      ['chipCam', 'chipStage', 'chipMeter', 'chipCalib', 'chipHome', 'chipTool', 'chipRelay', 'chipTemp', 'chipContact']
         .forEach(id => chip($(id), null, EMPTY));
       $('statePill').className = 'statepill error';
       $('stateText').textContent = '연결 끊김';

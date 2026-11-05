@@ -46,6 +46,9 @@ def refresh_state():
     else:
         state.set_alarm("판 보정", "판 보정 무효 · 다시 보정")
     engine._update_pointer_px()
+    if ok:
+        engine.migrate_tip_angles()
+    engine._refresh_tip_now()
     return ok
 
 
@@ -53,11 +56,21 @@ def _ref_state(d):
     """빈 판 기준 상태(화면 표시용): {exists, valid, reason, time}."""
     meta = plate.load_ref_meta()
     if not meta:
-        return {"exists": False, "valid": False, "reason": "없음", "time": None, "use": bool(state.get("fixed.use_ref"))}
+        size0 = _req_size()
+        hist0 = []
+        for h in plate.ref_history():
+            hok, hwhy = plate.ref_validity(h["meta"], state.params, _cam_index(), size0, (d or {}).get("area"))
+            hist0.append({"name": h["name"], "time": h["meta"].get("time"), "valid": bool(hok), "reason": hwhy})
+        return {"exists": False, "valid": False, "reason": "없음", "time": None, "use": bool(state.get("fixed.use_ref")),
+                "history": hist0}
     size = _req_size()
     ok, why = plate.ref_validity(meta, state.params, _cam_index(), size, (d or {}).get("area"))
+    hist = []
+    for h in plate.ref_history():
+        hok, hwhy = plate.ref_validity(h["meta"], state.params, _cam_index(), size, (d or {}).get("area"))
+        hist.append({"name": h["name"], "time": h["meta"].get("time"), "valid": bool(hok), "reason": hwhy})
     return {"exists": True, "valid": bool(ok), "reason": why, "time": meta.get("time"),
-            "use": bool(state.get("fixed.use_ref"))}
+            "use": bool(state.get("fixed.use_ref")), "history": hist}
 
 
 def chip_text():
@@ -212,6 +225,33 @@ async def exclude_apply(data):
     refresh_state()
     await push_log("제외 영역 저장 · %d개 · 다시 촬영하면 반영" % len(polys), "ok")
     await push_ack("plate_exclude_apply", True, "", n=len(polys))
+    await push_state()
+    return True
+
+
+async def ref_use(data):
+    """[이 기준 사용] - 보관된 기준을 현재 기준으로 되돌린다. 메타가 지금 카메라 설정과 다르면 확인을 받는다."""
+    if engine.busy() or state.camera.get("capturing"):
+        await push_ack("plate_ref_use", False, "busy", ["순회 · 촬영 중"])
+        return False
+    name = str(data.get("name") or "")
+    hist = {h["name"]: h for h in plate.ref_history()}
+    h = hist.get(name)
+    if h is None:
+        await push_ack("plate_ref_use", False, "invalid", ["보관된 기준 없음"])
+        return False
+    d = plate.load()
+    ok, why = plate.ref_validity(h["meta"], state.params, _cam_index(), _req_size(), (d or {}).get("area"))
+    if not ok and not data.get("confirm"):
+        await push_ack("plate_ref_use", False, "needs_confirm", ["무효 기준 · " + why + " · 그래도 현재 기준으로 되돌립니다"], name=name)
+        return False
+    done, msg = await vision.run_blocking(plate.use_ref, name)
+    if not done:
+        await push_ack("plate_ref_use", False, "invalid", [msg])
+        return False
+    refresh_state()
+    await push_log("빈 판 기준 되돌림 · %s%s" % (h["meta"].get("time"), "" if ok else " (무효 · %s)" % why), "ok" if ok else "warn")
+    await push_ack("plate_ref_use", True, "", valid=bool(ok))
     await push_state()
     return True
 

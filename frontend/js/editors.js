@@ -95,6 +95,33 @@
     });
     return sel;
   }
+  // 스테이지 기준 각도: 0 = 긴 변이 스테이지 X 축, 90 = Y 축. 비우면 판 보정이 생길 때 사진 예비값에서 한 번 채워진다.
+  function angCell(f, t, item, ctx, rows, p, off) {
+    const inp = h('input', { type: 'number', cls: 'in num', step: 1, value: t[f] != null ? t[f] : '',
+                             placeholder: '자동', disabled: off ? 'disabled' : null,
+                             'data-tip': off ? '원은 방향이 없습니다.' : '스테이지 기준 각도입니다(0 = 긴 변이 스테이지 X 축, 90 = Y 축). 카메라 방향이 바뀌어도 실물 방향이 그대로입니다. 비우면 판 보정이 생길 때 사진 예비값에서 한 번 채웁니다.' });
+    inp.addEventListener('input', () => { t[f] = inp.value === '' ? null : num(inp.value); ctx.set(item.key, rows); });
+    markErr(inp, errCell(ctx, p + '.' + f));
+    return inp;
+  }
+  // 지금 사진에서의 방향(서버가 판 보정으로 변환한 값) + 작은 미리보기
+  function nowDir(t) {
+    const tn = ((UI.state && UI.state.tip) || {}).tips_now || {};
+    const deg = tn[t.name];
+    const box = h('span', { cls: 'nowdir' });
+    if (deg == null || t.tip_shape === 'circle') { box.appendChild(document.createTextNode(UI.EMPTY)); return box; }
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '-12 -12 24 24'); svg.setAttribute('class', 'nowsvg');
+    const r = document.createElementNS(NS, 'rect');
+    const w = Math.min(20, Math.max(2, (+t.tip_w_mm || 10) * 1.2)), hh = Math.min(20, Math.max(2, (+t.tip_h_mm || 2) * 1.2));
+    r.setAttribute('x', -w / 2); r.setAttribute('y', -hh / 2); r.setAttribute('width', w); r.setAttribute('height', hh);
+    r.setAttribute('transform', 'rotate(' + deg + ')');
+    svg.appendChild(r);
+    box.appendChild(svg);
+    box.appendChild(document.createTextNode(' ' + (+deg).toFixed(0) + '°'));
+    return box;
+  }
   function tcell(f, step, t, item, ctx, rows, p, off) {
     const d = tipDefaults(t);
     const inp = h('input', { type: 'number', cls: 'in num', step: step, value: t[f] != null ? t[f] : d[f],
@@ -154,7 +181,9 @@
           h('td', {}, [tipShape(t, item, ctx, rows)]),
           h('td', {}, [tcell('tip_w_mm', 0.1, t, item, ctx, rows, p)]),
           h('td', {}, [tcell('tip_h_mm', 0.1, t, item, ctx, rows, p, t.tip_shape === 'circle')]),
-          h('td', {}, [tcell('tip_angle_deg', 1, t, item, ctx, rows, p, t.tip_shape === 'circle')]),
+          h('td', {}, [angCell('tip_angle_deg', t, item, ctx, rows, p, t.tip_shape === 'circle')]),
+          h('td', {}, [tcell('tip_angle_img_deg', 1, t, item, ctx, rows, p, t.tip_shape === 'circle')]),
+          h('td', {}, [nowDir(t)]),
           h('td', {}, [note]),
           h('td', {}, [h('div', { cls: 'cellrow' }, [dup, del])]),
         ]));
@@ -162,7 +191,8 @@
       el.appendChild(h('table', { cls: 'etable' }, [
         h('thead', {}, [h('tr', {}, [h('th', { text: '이름' }), h('th', { text: 'dX mm' }),
           h('th', { text: 'dY mm' }), h('th', { text: '작업 높이 mm' }), h('th', { text: '끝 모양' }), h('th', { text: '끝 가로 mm' }),
-          h('th', { text: '끝 세로 mm' }), h('th', { text: '각도 °' }), h('th', { text: '메모' }),
+          h('th', { text: '끝 세로 mm' }), h('th', { text: '스테이지 각도 °' }), h('th', { text: '사진 예비 °' }),
+          h('th', { text: '지금 사진 방향' }), h('th', { text: '메모' }),
           h('th', { text: '' })])]),
         tb]));
       const add = h('button', { cls: 'btn sm', text: '공구 추가', 'data-tip': '새 공구를 목록 끝에 더합니다.',
@@ -170,7 +200,7 @@
           let n = rows.length + 1, name = '공구 ' + n;
           while (rows.some(x => x.name === name)) { n += 1; name = '공구 ' + n; }
           rows.push({ name: name, dx_mm: 0, dy_mm: 0, z_work_mm: 0, tip_shape: 'circle', tip_w_mm: 5, tip_h_mm: 5,
-                      tip_angle_deg: 0, note: '' });
+                      tip_angle_deg: null, tip_angle_img_deg: 0, note: '' });
           ctx.set(item.key, rows); ctx.rerender();
         } });
       el.appendChild(h('div', { cls: 'erow' }, [add,
@@ -188,6 +218,40 @@
   }
   E.tool_active = { render(el, item, ctx) { nameSelect(el, item, ctx, 'tool.items'); } };
   E.recipe_active = { render(el, item, ctx) { nameSelect(el, item, ctx, 'recipe.items'); } };
+
+  // ---------------- 쿨러 구역 ----------------
+  E.zones = {
+    render(el, item, ctx) {
+      const z = ctx.get(item.key) || { rows: 3, cols: 3, relays: [] };
+      const resize = () => {
+        const n = z.rows * z.cols;
+        while (z.relays.length < n) z.relays.push(Math.min(10, z.relays.length + 1));
+        z.relays.length = n;
+      };
+      const dim = (f, label) => {
+        const inp = h('input', { type: 'number', cls: 'in num', min: 1, max: 6, step: 1, value: z[f] });
+        inp.addEventListener('change', () => { z[f] = Math.max(1, Math.min(6, Math.round(num(inp.value) || 1))); resize(); ctx.set(item.key, z); ctx.rerender(); });
+        return [h('span', { cls: 'note', text: label }), inp];
+      };
+      el.appendChild(h('div', { cls: 'erow' }, dim('rows', '행').concat(dim('cols', '열'))));
+      const tb = h('tbody');
+      for (let r = 0; r < z.rows; r++) {
+        const tr = h('tr');
+        for (let c = 0; c < z.cols; c++) {
+          const k = r * z.cols + c;
+          const s = h('select', { cls: 'in' });
+          for (let n = 1; n <= 10; n++) s.appendChild(h('option', { value: n, text: 'R' + n }));
+          s.value = String(z.relays[k] || 1);
+          s.addEventListener('change', () => { z.relays[k] = +s.value; ctx.set(item.key, z); });
+          tr.appendChild(h('td', {}, [s]));
+        }
+        tb.appendChild(tr);
+      }
+      el.appendChild(h('table', { cls: 'etable narrow' }, [tb]));
+      el.appendChild(h('div', { cls: 'note', text: '사진 기준 위→아래 · 왼쪽→오른쪽(행 우선). 샘플 중심이 속한 칸의 릴레이가 그 샘플의 쿨러입니다.' }));
+      markErr(el, errCell(ctx, item.key));
+    },
+  };
 
   // ---------------- 판 마커 좌표 ----------------
   E.markers = {
@@ -215,15 +279,91 @@
 
   // ---------------- 레시피 ----------------
   const STEP = { move_sample: '샘플 위로 이동', z: 'Z 이동', relay: '릴레이', wait: '대기',
-                 measure: '측정', confirm: '확인 대기' };
+                 measure: '측정', confirm: '확인 대기', cooler: '쿨러', contact: '접촉 탐색',
+                 wait_temp: '온도 대기', heat: '가열', cool: '냉각 대기', repeat: '반복', log: '기록' };
   const NEW_STEP = {
     z: () => ({ type: 'z', target: 'work' }),
     relay: () => ({ type: 'relay', n: 1, on: true }),
     wait: () => ({ type: 'wait', s: 5 }),
     measure: () => ({ type: 'measure' }),
     confirm: () => ({ type: 'confirm' }),
+    cooler: () => ({ type: 'cooler', action: 'on', target: 'sample' }),
+    contact: () => ({ type: 'contact', start_ref: 'work', start_mm: -2, step_mm: 0.1, max_ref: 'work', max_mm: 1,
+                     press_mm: 0.1, settle_s: 0.2, on_fail: 'stop' }),
+    wait_temp: () => ({ type: 'wait_temp', cond: '<=', target_c: 30, hold_s: 5, max_s: 300, on_timeout: 'confirm' }),
+    heat: () => ({ type: 'heat', end: 'either', target_c: 150, time_s: 60, max_s: 120 }),
+    cool: () => ({ type: 'cool', cond: '<=', target_c: 40, hold_s: 0, max_s: 300, on_timeout: 'continue' }),
+    repeat: () => ({ type: 'repeat', from: 2, to: 2, count: 2 }),
+    log: () => ({ type: 'log', action: 'start' }),
   };
   let recSel = null;                       // 편집 중인 레시피 이름
+
+  // 반복 블록 안의 단계는 들여쓴다(from~to 안 = 깊이 1 이상)
+  function indentOf(steps, j) {
+    let d = 0;
+    steps.forEach((s, k) => {
+      if (s.type === 'repeat' && k > j && +s.from - 1 <= j && j < k) d += 1;
+    });
+    return Math.min(d, 3);
+  }
+  function numIn(st, f, step, commit, min, w) {
+    const inp = h('input', { type: 'number', cls: 'in num' + (w ? ' ' + w : ''), step: step, min: min, value: st[f] });
+    inp.addEventListener('input', () => { st[f] = num(inp.value); commit(); });
+    return inp;
+  }
+  function sel(st, f, opts, commit, rerender, ctx) {
+    const s = h('select', { cls: 'in' });
+    opts.forEach(o => s.appendChild(h('option', { value: o[0], text: o[1] })));
+    s.value = st[f];
+    s.addEventListener('change', () => { st[f] = s.value; commit(); if (rerender) ctx.rerender(); });
+    return s;
+  }
+  const TIMEOUT_OPTS = [['continue', '계속'], ['skip', '이 샘플 건너뜀'], ['stop', '정지'], ['confirm', '확인 요청']];
+  const ref = (txt) => h('span', { cls: 'unit', text: txt });
+  // 쿨러 · 접촉 · 온도 대기 · 가열 · 냉각 · 반복 · 기록 단계의 값 입력
+  function measureStep(val, st, ctx, commit, sp) {
+    const T = (t) => ['data-tip', t];
+    if (st.type === 'cooler') {
+      val.appendChild(sel(st, 'action', [['on', '켜기'], ['off', '끄기']], commit));
+      val.appendChild(sel(st, 'target', [['sample', '이 샘플 구역'], ['all', '전부'], ['n', '번호 지정']], commit, true, ctx));
+      if (st.target === 'n') {
+        const n = h('input', { type: 'number', cls: 'in num', min: 1, max: 10, step: 1, value: st.n || 1 });
+        n.addEventListener('input', () => { st.n = num(n.value); commit(); });
+        val.appendChild(ref('R')); val.appendChild(n);
+      }
+    } else if (st.type === 'contact') {
+      val.appendChild(ref('시작'));
+      val.appendChild(sel(st, 'start_ref', [['work', '작업 높이 +'], ['mm', 'Z 값']], commit));
+      val.appendChild(numIn(st, 'start_mm', 0.1, commit, null));
+      val.appendChild(ref('스텝')); val.appendChild(numIn(st, 'step_mm', 0.05, commit, 0.01));
+      val.appendChild(ref('최대')); val.appendChild(sel(st, 'max_ref', [['work', '작업 높이 +'], ['mm', 'Z 값']], commit));
+      val.appendChild(numIn(st, 'max_mm', 0.1, commit, null));
+      val.appendChild(ref('누름')); val.appendChild(numIn(st, 'press_mm', 0.05, commit, 0));
+      val.appendChild(ref('대기 s')); val.appendChild(numIn(st, 'settle_s', 0.1, commit, 0));
+      val.appendChild(ref('못 찾으면'));
+      val.appendChild(sel(st, 'on_fail', [['stop', '정지'], ['skip', '이 샘플 건너뜀'], ['confirm', '확인 요청']], commit));
+    } else if (st.type === 'wait_temp' || st.type === 'cool') {
+      val.appendChild(sel(st, 'cond', [['<=', '≤'], ['>=', '≥']], commit));
+      val.appendChild(numIn(st, 'target_c', 1, commit, null)); val.appendChild(ref('°C'));
+      val.appendChild(ref('유지')); val.appendChild(numIn(st, 'hold_s', 1, commit, 0)); val.appendChild(ref('s'));
+      val.appendChild(ref('최대')); val.appendChild(numIn(st, 'max_s', 5, commit, 1)); val.appendChild(ref('s'));
+      val.appendChild(ref('초과 시')); val.appendChild(sel(st, 'on_timeout', TIMEOUT_OPTS, commit));
+      val.appendChild(h('span', { cls: 'note', text: st.type === 'cool' ? '히트건을 끄고 대기 · 값은 임시, 장비에서 측정 후 조정' : '값은 임시, 장비에서 측정 후 조정' }));
+    } else if (st.type === 'heat') {
+      val.appendChild(sel(st, 'end', [['either', '온도 또는 시간 먼저'], ['temp', '목표 온도'], ['time', '시간']], commit, true, ctx));
+      if (st.end !== 'time') { val.appendChild(numIn(st, 'target_c', 1, commit, null)); val.appendChild(ref('°C')); }
+      if (st.end !== 'temp') { val.appendChild(numIn(st, 'time_s', 1, commit, 1)); val.appendChild(ref('s')); }
+      val.appendChild(ref('최대(필수)')); val.appendChild(numIn(st, 'max_s', 5, commit, 1)); val.appendChild(ref('s'));
+      val.appendChild(h('span', { cls: 'note', text: '히트건 켬 → 끝 조건 → 끔 · 값은 임시, 장비에서 측정 후 조정' }));
+    } else if (st.type === 'repeat') {
+      val.appendChild(numIn(st, 'from', 1, commit, 2)); val.appendChild(ref('번 ~'));
+      val.appendChild(numIn(st, 'to', 1, commit, 2)); val.appendChild(ref('번 단계를'));
+      val.appendChild(numIn(st, 'count', 1, commit, 1)); val.appendChild(ref('번 실행'));
+    } else if (st.type === 'log') {
+      val.appendChild(sel(st, 'action', [['start', '시작'], ['end', '끝']], commit));
+      val.appendChild(h('span', { cls: 'note', text: '온도 · 릴레이 · Z · 측정값을 샘플별 CSV 로 기록' }));
+    }
+  }
 
   function zOf(step, ctx) {
     if (step.target === 'top') return 0;
@@ -238,8 +378,30 @@
   function estimate(r, ctx) {
     const speed = (+ctx.get('motion.speed_pps') || 6000) / 160;
     let s = 0, confirm = false;
-    (r.steps || []).forEach(st => {
-      if (st.type === 'move_sample') s += 2.0;
+    // repeat 를 풀어 실행 순서대로(서버 recipe.expand 와 같은 규칙)
+    const flat = [], steps0 = r.steps || [], cnt = {};
+    for (let i = 0, g = 0; i < steps0.length && g < 2000; g++) {
+      const st = steps0[i];
+      if (st.type === 'repeat') {
+        cnt[i] = (cnt[i] || 0) + 1;
+        if (cnt[i] < (+st.count || 1) && +st.from >= 1 && +st.from <= i) {
+          for (let k = +st.from - 1; k < i; k++) delete cnt[k];
+          i = +st.from - 1; continue;
+        }
+        delete cnt[i]; i += 1; continue;
+      }
+      flat.push(st); i += 1;
+    }
+    flat.forEach(st => {
+      if (st.type === 'wait_temp' || st.type === 'cool' || st.type === 'heat') s += +st.max_s || 0;   // 온도 조건은 최대 대기 기준
+      else if (st.type === 'cooler') s += 0.3;
+      else if (st.type === 'contact') {
+        const w = (tools => (tools.find(x => x.name === ctx.get('tool.active')) || tools[0] || {}).z_work_mm)(ctx.get('tool.items') || []) || 0;
+        const a = st.start_ref === 'work' ? w + (+st.start_mm || 0) : +st.start_mm || 0;
+        const b = st.max_ref === 'work' ? w + (+st.max_mm || 0) : +st.max_mm || 0;
+        s += Math.max(0, (b - a) / Math.max(+st.step_mm || 0.1, 0.01)) * ((+st.settle_s || 0) + 0.15) + 0.5;
+      }
+      else if (st.type === 'move_sample') s += 2.0;
       else if (st.type === 'z') s += 0.3 + Math.abs(zOf(st, ctx)) / speed;
       else if (st.type === 'wait') s += +st.s || 0;
       else if (st.type === 'relay') s += 0.1;
@@ -347,6 +509,8 @@
           val.appendChild(h('span', { cls: 'note', text: '계측기 호출 (지금은 더미)' }));
         } else if (st.type === 'confirm') {
           val.appendChild(h('span', { cls: 'note', text: '[다음] 을 누를 때까지 대기' }));
+        } else {
+          measureStep(val, st, ctx, commit, sp);
         }
         const move = (d) => () => {
           const k = j + d;
@@ -364,7 +528,7 @@
         const e = errCell(ctx, sp);
         tb.appendChild(h('tr', { cls: e ? 'bad' : '' }, [
           h('td', { cls: 'mono', text: String(j + 1) }),
-          h('td', { text: STEP[st.type] || st.type }),
+          h('td', { cls: 'ind' + indentOf(steps, j), text: STEP[st.type] || st.type }),
           h('td', {}, [val]),
           h('td', {}, [h('div', { cls: 'cellrow' }, [up, dn, del])]),
           h('td', { cls: 'err', text: e }),
@@ -387,11 +551,13 @@
       const est = estimate(r, ctx);
       const used = [];
       steps.forEach(st => { if (st.type === 'relay' && used.indexOf(st.n) < 0) used.push(st.n); });
+      const hasTemp = steps.some(x => x.type === 'heat' || x.type === 'wait_temp' || x.type === 'cool');
       const warns = (ctx.warnings() || []).filter(w => w.indexOf("'" + r.name + "'") >= 0);
       const sum = h('div', { cls: 'recsum' }, [
         h('div', { cls: 'k', text: '요약' }),
         h('div', { text: '단계 ' + steps.length + '개' }),
-        h('div', { text: '샘플당 약 ' + UI.dur(est.s) + (est.confirm ? ' + 확인' : '') }),
+        h('div', { text: '샘플당 최대 약 ' + UI.dur(est.s) + (est.confirm ? ' + 확인' : '') }),
+        h('div', { cls: 'note', text: hasTemp ? '온도 조건은 최대 대기 기준' : '' }),
         h('div', { text: '릴레이 ' + (used.length ? used.map(n => 'R' + n).join(', ') : '없음') }),
         h('div', { text: 'Z 단계 ' + (steps.some(x => x.type === 'z') ? '있음 (Z 원점 필요)' : '없음') }),
       ].concat(warns.map(w => h('div', { cls: 'warnline', text: w }))));

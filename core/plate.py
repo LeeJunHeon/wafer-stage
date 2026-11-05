@@ -23,7 +23,7 @@ import time
 import cv2
 import numpy as np
 
-from core import calib, detect, fixed_detect, paths
+from core import calib, detect, fixed_detect, labels, paths
 
 MIN_POINTS = 4
 MIN_AREA_FRAC = 0.01               # 감지 영역이 프레임의 1% 는 돼야 한다
@@ -391,6 +391,17 @@ def sense_fixed(bgr, params, d, log=print):
             % (u0, v0, u1, v1, cw, ch, mm_px, len(d.get("exclude") or [])))
         det = fixed_detect.detect(crop, params, mm_px, valid, ref=ref_crop, area_poly=quad_l, log=log)
         det.wafer.mm_per_px = mm_px
+        # 감지 영역 경계 밖이나 제외 영역에 중심이 있는 검출은 결과에서 뺀다(표시도 하지 않는다).
+        inside, out = [], 0
+        for x in det.samples:
+            cx, cy = int(round(x["x_px"])), int(round(x["y_px"]))
+            if 0 <= cx < cw and 0 <= cy < ch and valid[cy, cx] > 0:      # 크롭 밖(예측 칸 포함)도 영역 밖
+                inside.append(x)
+            else:
+                out += 1
+        if out:
+            log("경계 · 제외 : 감지 영역 밖이나 제외 영역에 중심이 있는 검출 %d개 뺌" % out)
+        det.samples = order_samples(inside, H, (u0, v0), mm_px, det.diag, log)
         kept = det.samples
     else:
         maxpx = int(params.get("detect_max_px", 2000) or 0)
@@ -429,9 +440,12 @@ def sense_fixed(bgr, params, d, log=print):
             x["no"] = i
         det.samples = kept
 
-    vis = detect.annotate(small, det, ())
-    if s != 1.0:
-        vis = cv2.resize(vis, (cw, ch), interpolation=cv2.INTER_LINEAR)
+    if use_fixed:
+        vis = annotate_fixed(crop, det.samples)         # 라벨 한 벌 · 얇은 윤곽 · 겹침 회피(화면과 같은 규칙)
+    else:
+        vis = detect.annotate(small, det, ())
+        if s != 1.0:
+            vis = cv2.resize(vis, (cw, ch), interpolation=cv2.INTER_LINEAR)
 
     log("샘플      : %d 개 (검출 %.0f ms)" % (len(det.samples), det.detect_ms))
     for x in det.warnings:
@@ -462,6 +476,90 @@ def sense_fixed(bgr, params, d, log=print):
 
 
 # --------------------------------------------------------------------------
+# 번호 · 저장용 그림 (고정 환경)
+# --------------------------------------------------------------------------
+def order_samples(samples, H, off, mm_px, diag, log=print):
+    """새 촬영의 첫 번호 매김: 위치 순서(행 우선). 판 보정이 있으면 스테이지 좌표, 없으면 사진 좌표.
+    격자 배치(칸 인덱스가 있으면)는 격자 인덱스 순서. 행 묶음 허용 오차 = 칩 긴 변의 절반. 편집 때는 다시 매기지 않는다."""
+    if not samples:
+        return samples
+    u0, v0 = off
+
+    def xy(x, y):                                     # 사진 crop 좌표 → 번호 기준 좌표
+        return px_to_mm(H, x + u0, y + v0) if H is not None else (x, y)
+
+    pts = [xy(s["x_px"], s["y_px"]) for s in samples]
+    grid = (diag or {}).get("grid")
+    if grid and grid.get("uv") and all("_slot" in s for s in samples):
+        cx, cy = np.mean([s["x_px"] for s in samples]), np.mean([s["y_px"] for s in samples])
+        c0 = np.array(xy(cx, cy))
+        vec = []
+        for d_ in grid["uv"]:
+            p1 = np.array(xy(cx + d_[0], cy + d_[1]))
+            vec.append(tuple(p1 - c0))
+        order = labels.grid_order([s["_slot"] for s in samples], (vec[0], vec[1]))
+        how = "격자 인덱스"
+    else:
+        chip = float((diag or {}).get("chip_long_px") or 0.0)
+        if chip <= 0:
+            chip = 11.0 / max(mm_px, 1e-9)
+        tol = 0.5 * chip * (mm_px if H is not None else 1.0)
+        order = labels.row_major_order(pts, tol)
+        how = "행 묶음 %.1f %s" % (tol, "mm" if H is not None else "px")
+    out = [samples[i] for i in order]
+    for n, s in enumerate(out, 1):
+        s["no"] = n
+    log("번호      : 위치 순서(행 우선) · %s 기준 · %s" % ("스테이지 좌표" if H is not None else "사진 좌표", how))
+    return out
+
+
+_STATE_BGR = {"detected": (90, 200, 60), "local": (255, 190, 60), "predicted": (60, 160, 255)}
+
+
+def annotate_fixed(crop, samples):
+    """저장용 annotated.jpg 의 샘플 표시(고정 환경): 얇은 윤곽(색은 상태에만: 검출 · 보완 · 예측 점선 원 + ?) +
+    번호 하나. 라벨은 칩 · 윤곽 · 다른 라벨과 겹치지 않는 바깥 빈 자리에 두고 짧은 지시선으로 잇는다.
+    좌표 숫자는 쓰지 않는다(목록 · 툴팁에만)."""
+    img = crop.copy()
+    H_, W_ = img.shape[:2]
+    k = max(1.0, max(W_, H_) / 1280.0)
+    th = max(1, int(round(1.0 * k)))
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    fs = 0.5 * k
+    items, texts = [], []
+    for s in samples:
+        col = _STATE_BGR.get(s.get("source") or "detected", _STATE_BGR["detected"])
+        if s.get("source") == "predicted":
+            c = (int(round(s["x_px"])), int(round(s["y_px"])))
+            r = int(round(22 * k))
+            for a in range(0, 360, 30):                       # 점선 원
+                cv2.ellipse(img, c, (r, r), 0, a, a + 16, col, th, cv2.LINE_AA)
+            bb = (c[0] - r, c[1] - r, c[0] + r, c[1] + r)
+        else:
+            poly = np.array(s.get("vertices_px") or [], np.int32).reshape(-1, 1, 2)
+            if len(poly) >= 3:
+                cv2.polylines(img, [poly], True, col, th, cv2.LINE_AA)
+                q = poly.reshape(-1, 2)
+                bb = (int(q[:, 0].min()), int(q[:, 1].min()), int(q[:, 0].max()), int(q[:, 1].max()))
+            else:
+                c = (int(round(s["x_px"])), int(round(s["y_px"])))
+                bb = (c[0] - 8, c[1] - 8, c[0] + 8, c[1] + 8)
+        t = str(s["no"]) + ("+" if s.get("source") == "local" else "") + ("?" if (s.get("weak") or s.get("source") == "predicted") else "")
+        (tw, thh), base = cv2.getTextSize(t, font, fs, th)
+        items.append({"bbox": bb})
+        texts.append((t, tw + 4, thh + base + 4, col))
+    if not items:
+        return img
+    pl = labels.place(items, W_, H_, [t[1] for t in texts], [t[2] for t in texts], gap=5.0 * k)
+    for p, (t, w, h, col) in zip(pl, texts):
+        x0, y0, x1, y1 = p["box"]
+        cv2.line(img, (int(p["from"][0]), int(p["from"][1])), (int(p["to"][0]), int(p["to"][1])), (230, 230, 230), th, cv2.LINE_AA)
+        cv2.rectangle(img, (int(x0), int(y0)), (int(x1), int(y1)), (20, 20, 20), -1)
+        cv2.putText(img, t, (int(x0) + 2, int(y1) - 4), font, fs, col, th, cv2.LINE_AA)
+    return img
+
+
+# --------------------------------------------------------------------------
 # 빈 판 기준 사진 (선택 · 미검증) - 배경을 medianBlur 대신 이 사진으로 쓴다
 # --------------------------------------------------------------------------
 def ref_paths():
@@ -469,9 +567,117 @@ def ref_paths():
     return os.path.join(base, "plate_ref.png"), os.path.join(base, "plate_ref.json")
 
 
-def save_ref(bgr, params, camera_index, area):
-    """빈 판 사진 + 메타(카메라 번호 · 해상도 · 노출 · 화이트밸런스 · 감지 영역)."""
+REF_HISTORY_KEEP = 10                       # 보관하는 이전 기준 수(넘으면 오래된 것부터 지운다)
+
+
+def ref_hist_dir():
+    return os.path.join(os.path.dirname(_path()), "plate_ref_history")
+
+
+def _stamp(meta):
+    """메타의 찍은 시각 → 파일 이름(yyyymmdd_HHMMSS)."""
+    t = str((meta or {}).get("time") or "")
+    digits = "".join(ch for ch in t if ch.isdigit())
+    return (digits[:8] + "_" + digits[8:14]) if len(digits) >= 14 else time.strftime("%Y%m%d_%H%M%S")
+
+
+def ref_history():
+    """보관된 이전 기준 목록(최근 것 먼저): [{name, meta}]."""
+    d = ref_hist_dir()
+    out = []
+    try:
+        names = sorted((f[:-5] for f in os.listdir(d) if f.endswith(".json")), reverse=True)
+    except OSError:
+        return out
+    for n in names:
+        try:
+            with open(os.path.join(d, n + ".json"), encoding="utf-8") as f:
+                m = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if os.path.exists(os.path.join(d, n + ".png")):
+            out.append({"name": n, "meta": m})
+    return out
+
+
+def _prune_history():
+    for h in ref_history()[REF_HISTORY_KEEP:]:
+        for ext in (".png", ".json"):
+            try:
+                os.remove(os.path.join(ref_hist_dir(), h["name"] + ext))
+            except OSError:
+                pass
+
+
+def archive_current_ref():
+    """지금 기준(plate_ref.png + 메타)을 plate_ref_history/<시각>.png(+.json) 로 보관한다(이미 보관돼 있으면 건너뜀).
+    반환: 보관한 이름 | None."""
+    png, mp = ref_paths()
+    meta = load_ref_meta()
+    if not meta or not os.path.exists(png):
+        return None
+    name = _stamp(meta)
+    d = ref_hist_dir()
+    k = 1
+    base = name
+    while os.path.exists(os.path.join(d, name + ".json")):
+        try:
+            with open(os.path.join(d, name + ".json"), encoding="utf-8") as f:
+                if json.load(f) == meta:
+                    return None                     # 이미 보관된 같은 기준
+        except (OSError, ValueError):
+            pass
+        k += 1
+        name = "%s_%d" % (base, k)                  # 같은 초에 찍힌 다른 기준
+    import shutil
+    os.makedirs(d, exist_ok=True)
+    shutil.copyfile(png, os.path.join(d, name + ".png"))
+    with open(os.path.join(d, name + ".json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=1)
+    _prune_history()
+    return name
+
+
+def use_ref(name):
+    """보관된 기준을 현재 기준으로 되돌린다(지금 기준은 먼저 보관). 반환: (ok, 사유)."""
+    import shutil
+    if not name or not all(ch.isdigit() or ch == "_" for ch in str(name)):
+        return False, "이름 오류"
+    d = ref_hist_dir()
+    src_png, src_json = os.path.join(d, name + ".png"), os.path.join(d, name + ".json")
+    if not (os.path.exists(src_png) and os.path.exists(src_json)):
+        return False, "보관된 기준 없음"
+    archive_current_ref()
+    png, mp = ref_paths()
+    os.makedirs(os.path.dirname(png), exist_ok=True)
+    shutil.copyfile(src_png, png)
+    shutil.copyfile(src_json, mp)
+    return True, ""
+
+
+def ref_thumb_jpeg(name, width=160):
+    """작은 미리보기 JPEG 바이트(name = 'current' | 보관 이름) 또는 None."""
     from core import imgio
+    if name == "current":
+        path = ref_paths()[0]
+    elif name and all(ch.isdigit() or ch == "_" for ch in str(name)):
+        path = os.path.join(ref_hist_dir(), name + ".png")
+    else:
+        return None
+    img = imgio.imread_u(path) if os.path.exists(path) else None
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    img = cv2.resize(img, (width, max(1, int(round(h * width / float(w))))), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+    return buf.tobytes() if ok else None
+
+
+def save_ref(bgr, params, camera_index, area):
+    """빈 판 사진 + 메타(카메라 번호 · 해상도 · 노출 · 화이트밸런스 · 감지 영역 · 찍은 시각).
+    새로 찍으면 이전 기준은 plate_ref_history 에 보관한다(최근 REF_HISTORY_KEEP 개)."""
+    from core import imgio
+    archive_current_ref()
     png, meta = ref_paths()
     os.makedirs(os.path.dirname(png), exist_ok=True)
     imgio.imwrite_u(png, bgr)

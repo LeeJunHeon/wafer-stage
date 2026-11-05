@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import csv
 import json
+import math
 import os
 import shutil
 import socket
@@ -1157,8 +1158,8 @@ async def settings_flow(c):
     await c.send(cmd="settings_schema")
     a = await wait_ack(c, "settings_schema")
     tabs = [t["id"] for t in ((a or {}).get("schema") or {}).get("tabs", [])]
-    check(tabs == ["camera", "stage", "position", "photohome", "tool", "relay", "recipe",
-                   "detect", "advanced"], "스키마 탭 9개 (%s)" % tabs)
+    check(tabs == ["camera", "stage", "position", "photohome", "tool", "relay", "measure", "recipe",
+                   "detect", "advanced"], "스키마 탭 10개 (%s)" % tabs)
     keys = [it["key"] for it in a["schema"]["items"]]
     for k in ("relay.items", "tool.items", "recipe.items", "capture_xy", "photohome.marker_id",
               "motion.speed_pps", "preview_fps", "cam_fail_limit", "origin_gap_mm"):
@@ -1806,6 +1807,417 @@ async def fixed_real_flow(c):
     ref = c.state["plate"]["ref"]
     check(ref["exists"] and ref["valid"], "빈 판 기준 유효 (%s)" % ref)
 
+    # --- 번호는 위치 순서(행 우선) · 검출만 모드라 사진 좌표 ---
+    sm = c.state["samples"]
+    rows5 = [sm[i * 5:(i + 1) * 5] for i in range(3)]
+    ok_order = all(sorted(r, key=lambda s: s["u"]) == r for r in rows5) and \
+        all(max(s["v"] for s in rows5[i]) < min(s["v"] for s in rows5[i + 1]) for i in range(2))
+    check([s["no"] for s in sm] == list(range(1, 16)) and ok_order, "번호 = 위치 순서(행 우선 · 3행 x 5열)")
+
+    # --- 기준 보관 · 되돌리기 · 무효 표시 ---
+    import glob
+    hist_dir = os.path.join(DATA_DIR, "plate_ref_history")
+    check(not glob.glob(os.path.join(hist_dir, "*.png")), "첫 기준: 보관본 없음")
+    first_time = c.state["plate"]["ref"]["time"]
+    await c.send(cmd="settings_save", values={"exposure": -3.0})        # 카메라 설정이 바뀌면 기준이 무효
+    await c.pump(0.8)
+    check(not c.state["plate"]["ref"]["valid"] and "노출" in c.state["plate"]["ref"]["reason"],
+          "카메라 설정이 바뀌면 기준 무효 표시 (%s)" % c.state["plate"]["ref"]["reason"])
+    await asyncio.sleep(1.1)
+    c.acks.clear()
+    await c.send(cmd="plate_ref_shot")
+    ack = await wait_ack(c, "plate_ref_shot")
+    await c.pump(0.6)
+    ref = c.state["plate"]["ref"]
+    check(bool(ack) and ack["ok"] and ref["valid"] and len(ref["history"]) == 1, "새 기준 촬영 → 이전 기준 보관 (%d개)" % len(ref["history"]))
+    check(len(glob.glob(os.path.join(hist_dir, "*.png"))) == 1 and len(glob.glob(os.path.join(hist_dir, "*.json"))) == 1,
+          "plate_ref_history 에 png + 메타")
+    h0 = ref["history"][0]
+    check(h0["time"] == first_time and not h0["valid"], "보관본: 찍은 시각 · 지금 설정과 달라 무효 (%s)" % h0)
+    code, body = http_get(c.port, "/plate_ref_thumb/%s.jpg" % h0["name"])
+    check(code == 200 and body[:2] == b"\xff\xd8", "미리보기 썸네일 (%s)" % code)
+    # 무효 기준 사용 → 확인 필요, 확인하면 되돌린다(현재 기준은 보관)
+    c.acks.clear()
+    await c.send(cmd="plate_ref_use", name=h0["name"])
+    ack = await wait_ack(c, "plate_ref_use")
+    check(bool(ack) and not ack["ok"] and ack["reason"] == "needs_confirm", "무효 기준 사용은 확인을 받음 (%s)" % (ack or {}).get("reason"))
+    c.acks.clear()
+    await c.send(cmd="plate_ref_use", name=h0["name"], confirm=True)
+    ack = await wait_ack(c, "plate_ref_use")
+    await c.pump(0.6)
+    ref = c.state["plate"]["ref"]
+    check(bool(ack) and ack["ok"] and ref["time"] == first_time and not ref["valid"] and len(ref["history"]) >= 1,
+          "이 기준 사용 → 현재 기준이 됨 · 무효 표시 유지 (%s)" % ref["time"])
+    # 10개 넘으면 오래된 것부터 삭제
+    for _ in range(12):
+        await asyncio.sleep(1.05)
+        await c.send(cmd="plate_ref_shot")
+        await wait_ack(c, "plate_ref_shot")
+    await c.pump(0.6)
+    check(len(c.state["plate"]["ref"]["history"]) == 10 and len(glob.glob(os.path.join(hist_dir, "*.png"))) == 10,
+          "보관은 최근 10개 (%d)" % len(c.state["plate"]["ref"]["history"]))
+    await c.send(cmd="settings_save", values={"exposure": -5.0})
+    await c.pump(0.5)
+
+    # --- 경계 밖 · 제외 영역에 중심이 있는 검출은 뺀다 ---
+    sm0 = c.state["samples"]
+    tgt = sm0[7]
+    poly = [[tgt["u"] - 60, tgt["v"] - 70], [tgt["u"] + 60, tgt["v"] - 70], [tgt["u"] + 60, tgt["v"] + 70], [tgt["u"] - 60, tgt["v"] + 70]]
+    await c.send(cmd="plate_exclude_apply", polys=[poly], size=item["size"])
+    await wait_ack(c, "plate_exclude_apply")
+    await c.send(cmd="capture", confirm=True)
+    ph = await c.wait_phase(("ready", "error"), 180)
+    sm1 = c.state["samples"]
+    inside = [s for s in sm1 if abs(s["u"] - tgt["u"]) < 60 and abs(s["v"] - tgt["v"]) < 70]
+    check(ph == "ready" and len(sm1) == 14 and not inside,
+          "제외 영역 안 검출은 결과에서 빠짐 (%d개 · 안 %d)" % (len(sm1), len(inside)))
+    check([s["no"] for s in sm1] == list(range(1, 15)), "빠진 뒤 번호는 1부터 위치 순서")
+    ann = os.path.join(c.state["sequence"]["out_dir"], "annotated.jpg")
+    check(os.path.exists(ann), "annotated.jpg 저장(라벨 한 벌 규칙)")
+    # 감지 영역을 줄여 경계 밖이 된 칩도 빠진다(제외 영역 지움 → 사각형 한쪽을 안으로)
+    await c.send(cmd="plate_exclude_apply", polys=[], size=item["size"])
+    await wait_ack(c, "plate_exclude_apply")
+    a_ = item["area"]
+    xs = sorted(p[0] for p in a_)
+    cut = (xs[0] + xs[-1]) / 2.0 + 60
+    quad = [[p[0] if p[0] < cut else cut, p[1]] for p in a_]
+    await c.send(cmd="plate_area_apply", quad=quad, size=item["size"])
+    await wait_ack(c, "plate_area_apply")
+    await c.send(cmd="capture", confirm=True)
+    ph = await c.wait_phase(("ready", "error"), 180)
+    sm2 = c.state["samples"]
+    check(ph == "ready" and 0 < len(sm2) < 15 and all(s["u"] <= cut + 2 for s in sm2),
+          "감지 영역 경계 밖 검출은 빠짐 (%d개 · 최대 u %.0f ≤ %.0f)" % (len(sm2), max(s["u"] for s in sm2), cut))
+    await c.send(cmd="plate_area_apply", quad=a_, size=item["size"])
+    await wait_ack(c, "plate_area_apply")
+    await c.send(cmd="capture", confirm=True)
+    await c.wait_phase(("ready", "error"), 180)
+
+    # --- 화면: 라벨 한 벌 · 겹침 없음(실장 사진) ---
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return
+
+    def look():
+        with sync_playwright() as pw:
+            b = pw.chromium.launch()
+            pg = b.new_page(viewport={"width": 1920, "height": 1040})
+            errs = []
+            pg.on("pageerror", lambda e: errs.append(str(e)))
+            pg.goto("http://127.0.0.1:%d/" % c.port)
+            pg.wait_for_timeout(2500)
+            r = pg.evaluate(r"""() => {
+              const q = s => Array.from(document.querySelectorAll(s));
+              const nums = q('#ovSamples text.ov-num');
+              const bgs = q('#ovSamples rect.ov-labbg').map(e => e.getBBox());
+              const polys = q('#ovSamples polygon, #ovSamples circle.pred').map(e => e.getBBox());
+              const ov = (a, b) => Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 0.5 &&
+                                   Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) > 0.5;
+              let lab_lab = 0, lab_chip = 0;
+              bgs.forEach((a, i) => { bgs.forEach((b, j) => { if (j > i && ov(a, b)) lab_lab++; }); polys.forEach(p => { if (ov(a, p)) lab_chip++; }); });
+              const hasCoord = nums.some(t => /[+-]?\d+\.\d+\/[+-]?\d+\.\d+/.test(t.textContent));
+              return {nums: nums.length, bgs: bgs.length, lab_lab, lab_chip, hasCoord,
+                      leads: q('#ovSamples line.ov-lead').length, big: q('.ov-big, #ovSamples text.big').length};
+            }""")
+            b.close()
+            return r, errs
+    r, errs = await asyncio.get_running_loop().run_in_executor(None, look)
+    n = len(c.state["samples"])
+    check(r["nums"] == n and r["bgs"] == n and r["leads"] == n and not r["hasCoord"] and r["big"] == 0,
+          "라벨 한 벌 · 좌표 숫자 없음 · 지시선 (%s)" % r)
+    check(r["lab_lab"] == 0 and r["lab_chip"] == 0 and not errs, "라벨이 라벨 · 윤곽과 겹치지 않음 (라벨끼리 %d · 윤곽과 %d · 오류 %s)" % (r["lab_lab"], r["lab_chip"], errs))
+
+
+# ---------------------------------------------------------------------------
+# 측정 과정(쿨러 · 접촉 · 온도 · 가열 · 기록) - 더미 열 모델, 시간 배율 sim.time_scale
+# ---------------------------------------------------------------------------
+def _steps_jsonl(c):
+    p = os.path.join(c.state["sequence"]["out_dir"], "steps.jsonl")
+    out = []
+    with open(p, encoding="utf-8") as f:
+        for ln in f:
+            if ln.strip():
+                out.append(json.loads(ln))
+    return out
+
+
+async def _set_recipe(c, steps, **extra):
+    vals = {"recipe": {"items": [{"name": "T", "steps": [{"type": "move_sample"}] + steps}], "active": "T"}}
+    vals.update(extra)
+    c.acks.clear()
+    await c.send(cmd="settings_save", values=vals)
+    a = await wait_ack(c, "settings_save")
+    await c.pump(0.4)
+    check(bool(a) and a["ok"], "레시피 저장 (%s)" % ((a or {}).get("errors")))
+
+
+async def _run_only(c, nos, timeout=90, confirm=True):
+    c.acks.clear()
+    await c.send(cmd="run", mode="pick", only=nos, confirm=confirm)
+    a = await wait_ack(c, "run")
+    return a
+
+
+def _relay_on(c, n):
+    return bool(c.state["relays"][n - 1]["on"])
+
+
+async def _wait_state(c, pred, timeout=60.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        await c.pump(0.2)
+        if pred(c.state):
+            return True
+    return False
+
+
+async def process_flow(c):
+    """기본 레시피 한 샘플 전 과정 · 시간 초과 정책 · 과열 · 센서 오류 · 정지/비상정지 · 이동 불변식 · 쿨러 구역."""
+    await c.send(cmd="capture")
+    ph = await c.wait_phase(("ready", "error"), 90)
+    sm = c.state["samples"]
+    check(ph == "ready" and len(sm) == 9, "촬영 · 샘플 9 (%s %d)" % (ph, len(sm)))
+    # --- 쿨러 구역 배정: 3x3 칸에 샘플 위치별로 R1~R9(사진 기준 행 우선) ---
+    cools = [s["cooler"] for s in sm]
+    check(sorted(cools) == list(range(1, 10)), "샘플마다 다른 구역 R1~R9 (%s)" % cools)
+    first = min(sm, key=lambda s: s["v"] + s["u"])
+    last = max(sm, key=lambda s: s["v"] + s["u"])
+    check(first["cooler"] == 1 and last["cooler"] == 9, "왼쪽 위 R1 · 오른쪽 아래 R9 (%s · %s)" % (first["cooler"], last["cooler"]))
+    s_mid = sorted(sm, key=lambda s: (round(s["v"] / 60), s["u"]))
+    check([s["cooler"] for s in s_mid] == list(range(1, 10)), "행 우선 번호 (%s)" % [s["cooler"] for s in s_mid])
+    # 수동 변경
+    tgt = sm[0]["no"]
+    await c.send(cmd="sample_cooler", no=tgt, n=7)
+    await c.pump(0.4)
+    s0 = next(s for s in c.state["samples"] if s["no"] == tgt)
+    check(s0["cooler"] == 7 and s0["cooler_manual"], "샘플별 수동 쿨러 변경")
+    await c.send(cmd="sample_cooler", no=tgt, n=0)
+    await c.pump(0.4)
+    s0 = next(s for s in c.state["samples"] if s["no"] == tgt)
+    check(s0["cooler"] == cools[0] and not s0["cooler_manual"], "자동으로 되돌림")
+
+    # --- 기본(빠른) 레시피 한 샘플: 접촉 탐색 → 냉각 대기 → 가열 → 냉각 → 기록 ---
+    c.acks.clear()
+    c.logs.clear()
+    a = await _run_only(c, [tgt])
+    check(bool(a) and a["ok"], "순회 시작 (%s)" % (a or {}).get("needs_confirm"))
+    ok = await _wait_state(c, lambda st: st["sequence"]["phase"] in ("done", "error", "stopped"), 120)
+    st = c.state
+    check(ok and st["sequence"]["phase"] == "done", "순회 완료 (%s · %s)" % (st["sequence"]["phase"], st["sequence"]["message"]))
+    recs = [r for r in _steps_jsonl(c) if r.get("sample_no") == tgt and "type" in r]
+    types = [r["type"] for r in recs]
+    check(types == ["move_sample", "cooler", "contact", "log", "wait_temp", "heat", "cool", "log", "z"],
+          "단계 순서 (%s)" % types)
+    check(all(r["result"] == "ok" for r in recs), "단계 결과 전부 ok")
+    det = {r["type"]: r["detail"] for r in recs}
+    cz = (det.get("contact") or {}).get("contact_z")
+    check((det["contact"] or {}).get("found") and cz is not None and 11.5 <= cz <= 12.6, "접촉 탐색 · 접촉 Z %s" % cz)
+    check(det["wait_temp"].get("timed_out") is False and det["heat"]["end"] in ("temp", "time")
+          and det["cool"].get("timed_out") is False, "온도 대기 · 가열 · 냉각 결과 (%s)" % det["heat"])
+    csvp = os.path.join(st["sequence"]["out_dir"], "sample_%02d_log.csv" % tgt)
+    check(os.path.exists(csvp), "기록 CSV 파일")
+    import csv as _csv
+    with open(csvp, encoding="utf-8-sig", newline="") as f:
+        rows = list(_csv.reader(f))
+    check(rows[0] == ["시각", "경과_s", "단계", "온도_C", "히트건", "쿨러", "Z_mm", "접촉", "측정값"] and len(rows) > 6,
+          "CSV 머리 · 행 %d" % len(rows))
+    temps = [float(r[3]) for r in rows[1:] if r[3]]
+    check(min(temps) < 31 and max(temps) > 70 and any(r[4] == "1" for r in rows[1:]), "온도 %.1f~%.1f · 히트건 켜진 행 있음" % (min(temps), max(temps)))
+    check(not _relay_on(c, 10), "끝난 뒤 히트건 꺼짐")
+    check(not _relay_on(c, 10) and not any(_relay_on(c, n) for n in range(1, 10)),
+          "순회 종료: 릴레이 정책(끄기)에 따라 쿨러도 꺼짐")
+
+    # --- 쿨러 모드 · 끝나도 켜 둠 ---
+    await _set_recipe(c, [{"type": "cooler", "action": "on", "target": "sample"}, {"type": "z", "target": "top"}],
+                      cooler={"mode": "all", "keep_on": False})
+    await c.send(cmd="relay_all_off")
+    await c.pump(0.5)
+    await _run_only(c, [tgt])
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("done", "error"), 60)
+    check(c.state["sequence"]["phase"] == "done" and not any(_relay_on(c, n) for n in range(1, 10)),
+          "mode all + keep_on 끔: 샘플 끝나면 쿨러 전부 꺼짐")
+    await _set_recipe(c, [{"type": "cooler", "action": "on", "target": "sample"}, {"type": "z", "target": "top"}],
+                      cooler={"mode": "all", "keep_on": True})
+    await _run_only(c, [tgt])
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("done", "error"), 60)
+    # policy(stop 때 끄기)이 순회 종료에 적용돼 꺼진다 - 순회 도중에는 9개 전부 켜졌었다
+    on_log = [l for l in c.logs if "켜짐" in l["msg"] and l["msg"].startswith("쿨러") or ("켜짐" in l["msg"] and "R" in l["msg"])]
+    check(c.state["sequence"]["phase"] == "done", "mode all 순회 완료")
+    await _set_recipe(c, [{"type": "z", "target": "top"}], cooler={"mode": "sample", "keep_on": True})
+
+    # --- 시간 초과 정책(온도 대기) ---
+    wt = lambda pol: [{"type": "cooler", "action": "on", "target": "sample"},          # noqa: E731
+                      {"type": "wait_temp", "cond": "<=", "target_c": -40, "hold_s": 0, "max_s": 3, "on_timeout": pol},
+                      {"type": "z", "target": "top"}]
+    await _set_recipe(c, wt("stop"))
+    await _run_only(c, [tgt])
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("done", "error"), 60)
+    check(c.state["sequence"]["phase"] == "error" and "시간 초과" in c.state["sequence"]["message"],
+          "시간 초과 → 정지 (%s)" % c.state["sequence"]["message"])
+    await _set_recipe(c, wt("skip"))
+    await _run_only(c, [sm[0]["no"], sm[1]["no"]])
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("done", "error"), 60)
+    sts = [next(s for s in c.state["samples"] if s["no"] == n)["status"] for n in (sm[0]["no"], sm[1]["no"])]
+    check(c.state["sequence"]["phase"] == "done" and sts == ["skip", "skip"] and c.state["sequence"]["done"] == 0,
+          "시간 초과 → 이 샘플 건너뜀 · 순회는 계속 (%s)" % sts)
+    await _set_recipe(c, wt("continue"))
+    await _run_only(c, [tgt])
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("done", "error"), 60)
+    check(c.state["sequence"]["phase"] == "done" and c.state["sequence"]["done"] == 1, "시간 초과 → 계속")
+    await _set_recipe(c, wt("confirm"))
+    await _run_only(c, [tgt])
+    okc = await _wait_state(c, lambda st: st["sequence"]["phase"] == "waiting_confirm", 60)
+    check(okc, "시간 초과 → 확인 요청(대기)")
+    await c.send(cmd="next")
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("done", "error"), 60)
+    check(c.state["sequence"]["phase"] == "done", "확인 뒤 계속")
+
+    # --- 접촉 못 찾으면 ---
+    ct = lambda pol: [{"type": "contact", "start_ref": "mm", "start_mm": 5, "step_mm": 1, "max_ref": "mm", "max_mm": 7,
+                       "press_mm": 0, "settle_s": 0.1, "on_fail": pol}, {"type": "z", "target": "top"}]
+    await _set_recipe(c, ct("stop"))
+    await _run_only(c, [tgt])
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("done", "error"), 60)
+    check(c.state["sequence"]["phase"] == "error" and "접촉 못 찾음" in c.state["sequence"]["message"],
+          "접촉 못 찾음 → 정지 (%s)" % c.state["sequence"]["message"])
+    await _set_recipe(c, ct("skip"))
+    await _run_only(c, [tgt])
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("done", "error"), 60)
+    check(c.state["sequence"]["phase"] == "done" and next(s for s in c.state["samples"] if s["no"] == tgt)["status"] == "skip",
+          "접촉 못 찾음 → 이 샘플 건너뜀")
+
+    # --- 과열: 히트건이 켜진 채 max_c 를 넘으면 즉시 끄고 순회 중단 ---
+    HEAT_LONG = [{"type": "heat", "end": "temp", "target_c": 280, "time_s": 10, "max_s": 100}, {"type": "z", "target": "top"}]
+    await _set_recipe(c, HEAT_LONG, heater={"max_c": 100.0, "relay": 10, "sensor_fail_n": 3})
+    await _run_only(c, [tgt])
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("done", "error", "stopped"), 60)
+    st = c.state
+    check(st["sequence"]["phase"] == "error" and "과열" in st["sequence"]["message"] and not _relay_on(c, 10),
+          "과열 보호: 히트건 끄고 중단 (%s)" % st["sequence"]["message"])
+    check(any(a["src"] == "히트건" for a in st["alarms"]), "과열 경보 배너")
+    # --- 센서 오류 연속 → 즉시 끔 ---
+    await _set_recipe(c, [{"type": "heat", "end": "time", "time_s": 100, "max_s": 100}, {"type": "z", "target": "top"}],
+                      heater={"max_c": 300.0, "relay": 10, "sensor_fail_n": 3})
+    await _run_only(c, [tgt])
+    await _wait_state(c, lambda st: _relay_on(c, 10), 30)
+    await c.send(cmd="dry_temp", c=None, fail=True)
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("done", "error", "stopped"), 30)
+    check(c.state["sequence"]["phase"] == "error" and "센서 오류" in c.state["sequence"]["message"] and not _relay_on(c, 10),
+          "센서 오류 연속: 히트건 끄고 중단 (%s)" % c.state["sequence"]["message"])
+    await c.send(cmd="dry_temp", c=None, fail=False)
+    # --- 불변식: X·Y 이동 전에는 히트건이 꺼져 있다(엔진이 강제) ---
+    c.logs.clear()
+    await c.send(cmd="relay_set", n=10, on=True)
+    await c.pump(0.4)
+    check(_relay_on(c, 10), "(준비) 히트건 수동으로 켬")
+    await c.send(cmd="goto", x=50, y=50)
+    await c.pump(1.5)
+    sent = _sent(c)
+    i_off = next((i for i, m in enumerate(sent) if m == "r 10 0"), None)
+    i_mv = next((i for i, m in enumerate(sent) if m.split(" ")[0] in _MOVES), None)
+    check(i_off is not None and (i_mv is None or i_off < i_mv) and not _relay_on(c, 10),
+          "이동 명령 전에 'r 10 0' (끄기 #%s · 이동 #%s)" % (i_off, i_mv))
+
+    # --- 정지 · 비상정지 중 가열 단계: 정책이 keep 이어도 히트건은 끈다 ---
+    await _set_recipe(c, [{"type": "heat", "end": "time", "time_s": 100, "max_s": 100}, {"type": "z", "target": "top"}],
+                      relay={"on_stop": "keep", "on_estop": "keep", "on_error": "keep"})
+    await _run_only(c, [tgt])
+    await _wait_state(c, lambda st: _relay_on(c, 10), 30)
+    check(_relay_on(c, 10), "가열 중 히트건 켜짐")
+    await c.send(cmd="stop")
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("stopped", "done", "error"), 30)
+    await c.pump(0.5)
+    check(not _relay_on(c, 10), "정지(정책 keep)여도 히트건 꺼짐 (phase %s)" % c.state["sequence"]["phase"])
+    await _run_only(c, [tgt])
+    await _wait_state(c, lambda st: _relay_on(c, 10), 30)
+    await c.send(cmd="estop")
+    await _wait_state(c, lambda st: st["sequence"]["phase"] in ("stopped", "done", "error"), 30)
+    await c.pump(1.0)
+    check(not _relay_on(c, 10), "비상정지(정책 keep)여도 히트건 꺼짐")
+
+
+def _px_dir_deg(H, x=1.0, y=0.0):
+    """스테이지 방향(x, y) 이 사진에서 가리키는 각도(도) - 참 호모그래피 H(mm→px) 의 미분."""
+    sc = _synth()
+    p0, p1 = sc.project(H, 60.0, 60.0), sc.project(H, 60.0 + x, 60.0 + y)
+    return math.degrees(math.atan2(p1[1] - p0[1], p1[0] - p0[0]))
+
+
+def prep_fixed_rot(rot):
+    """합성 판 장면(+판 보정). rot=True 면 카메라를 90° 돌린 것처럼 사진 · 호모그래피를 함께 돌린다."""
+    import cv2
+    import numpy as np
+    from core import plate as plate_mod
+    sc = _synth()
+    w, h = 1280, 960
+    img, truth = sc.render_plate(w, h)
+    H = np.asarray(truth["H"], np.float64)
+    size = (w, h)
+    if rot:
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        T = np.array([[0, -1, h - 1], [1, 0, 0], [0, 0, 1.0]])
+        H = T @ H
+        size = (h, w)
+    path = os.path.join(DATA_DIR, "scene_rot%d.png" % int(rot))
+    cv2.imwrite(path, img)
+    quad = [list(sc.project(H, a, b)) for a, b in sc.PLATE_QUAD_MM]
+    pts = []
+    for x, y in sc.PLATE_CAL_MM:
+        u, v = sc.project(H, x, y)
+        pts.append({"x": x, "y": y, "u": round(u, 2), "v": round(v, 2)})
+    f = plate_mod.fit(pts)
+    for p, r in zip(pts, f["res"]):
+        p["res_mm"] = round(r, 4)
+    d = plate_mod.new_record(1, size)
+    q, _w = plate_mod.check_quad(quad, size)
+    d.update({"area": q, "points": pts, "H": f["H"], "rms_mm": round(f["rms"], 4), "max_mm": round(f["max"], 4),
+              "res_limit_mm": 1.0})
+    plate_mod.save(d, os.path.join(DATA_DIR, "plate_calib.json"))
+    FIXED["H"] = H
+    return path
+
+
+def tip_dir_flow(rot):
+    async def flow(c):
+        """공구 끝 방향은 스테이지 기준: 카메라를 90° 돌려도 실물 방향이 같다(사진 각도가 90° 달라진다)."""
+        H = FIXED["H"]
+        want_x = _px_dir_deg(H, 1, 0)                 # 스테이지 X 축이 사진에서 가리키는 각도
+        want_y = _px_dir_deg(H, 0, 1)
+        await c.send(cmd="capture")
+        ph = await c.wait_phase(("ready", "error"), 90)
+        check(ph == "ready", "촬영 (%s)" % ph)
+        sm = c.state["samples"]
+        tip = c.state["tip"]
+        # 핀: 스테이지 기준 각도 0(긴 변이 X 축) → 사진 각도 = X 축의 사진 방향
+        diff = (sm[0]["tip_deg"] - want_x + 90) % 180 - 90
+        check(abs(diff) < 3, "스테이지 0° → 사진 %.1f° (기대 %.1f°, rot=%s)" % (sm[0]["tip_deg"], want_x, rot))
+        # 이행: 사진 예비값 90° 만 있던 공구(히트건) 가 판 보정으로 스테이지 각도로 한 번 채워진다
+        tools = {t["name"]: t for t in c.state["settings"]["tool"]["items"]}
+        ptr = tools["기준 포인터"]
+        check(ptr["tip_angle_deg"] == 0, "스테이지 각도를 정해 둔 공구는 그대로 (%s)" % ptr["tip_angle_deg"])
+        mig = tools["이행 핀"]
+        exp_stage = (_stage_of_img(H, 90.0)) % 180
+        got = (mig["tip_angle_deg"] or -999) % 180
+        check(mig["tip_angle_deg"] is not None and min(abs(got - exp_stage), 180 - abs(got - exp_stage)) < 3,
+              "사진 90° → 스테이지 %.1f° 이행 (%s)" % (exp_stage, mig["tip_angle_deg"]))
+        FIXED.setdefault("dirs", []).append(want_x)
+        if len(FIXED["dirs"]) == 2:
+            d = (FIXED["dirs"][1] - FIXED["dirs"][0] + 180) % 180
+            check(abs(d - 90) < 3, "카메라 90° 회전 → 같은 실물 방향의 사진 각도 차 %.1f°" % d)
+    return flow
+
+
+def _stage_of_img(H, img_deg):
+    """사진 방향 img_deg 에 해당하는 스테이지 방향(도, 0~180)."""
+    import numpy as np
+    sc = _synth()
+    p0 = np.array(sc.project(H, 60.0, 60.0))
+    J = np.array([np.array(sc.project(H, 61.0, 60.0)) - p0, np.array(sc.project(H, 60.0, 61.0)) - p0]).T   # mm → px
+    th = math.radians(img_deg)
+    v = np.linalg.solve(J, np.array([math.cos(th), math.sin(th)]))
+    return math.degrees(math.atan2(v[1], v[0])) % 180
+
 
 def _nearest(samples, x, y):
     best = min(samples, key=lambda s: (s["X"] - x) ** 2 + (s["Y"] - y) ** 2)
@@ -2367,6 +2779,26 @@ def main():
                        "tip_shape": "circle", "tip_w_mm": 40.0, "tip_h_mm": 40.0, "tip_angle_deg": 0.0},
                       {"name": "작은 핀", "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 0.0, "note": "",
                        "tip_shape": "circle", "tip_w_mm": 1.5, "tip_h_mm": 1.5, "tip_angle_deg": 0.0}]})
+        _PTR_Z10 = {"name": "기준 포인터", "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 10.0, "note": "",
+                    "tip_shape": "rect", "tip_w_mm": 10.0, "tip_h_mm": 2.0, "tip_angle_deg": 0.0, "tip_angle_img_deg": 90.0}
+        MEAS_RECIPE = {"name": "T", "steps": [
+            {"type": "move_sample"},
+            {"type": "cooler", "action": "on", "target": "sample"},
+            {"type": "contact", "start_ref": "work", "start_mm": -2.0, "step_mm": 0.5, "max_ref": "work", "max_mm": 5.0,
+             "press_mm": 0.1, "settle_s": 0.1, "on_fail": "stop"},
+            {"type": "log", "action": "start"},
+            {"type": "wait_temp", "cond": "<=", "target_c": 30.0, "hold_s": 1.0, "max_s": 120.0, "on_timeout": "stop"},
+            {"type": "heat", "end": "either", "target_c": 80.0, "time_s": 40.0, "max_s": 100.0},
+            {"type": "cool", "cond": "<=", "target_c": 40.0, "hold_s": 0.0, "max_s": 200.0, "on_timeout": "stop"},
+            {"type": "log", "action": "end"},
+            {"type": "z", "target": "top"}]}
+        MEAS_P = dict(FIXED_P, relay={"items": relays_patch(tuple(range(1, 11)))},
+                      tool={"items": [_PTR_Z10], "active": "기준 포인터", "fit_margin_mm": 50.0},
+                      sim={"time_scale": 30.0, "contact_z_mm": 12.0, "noise_c": 0.0},
+                      recipe={"active": "T", "items": [MEAS_RECIPE]})
+        TIPDIR_P = dict(FIXED_P, tool={"fit_margin_mm": 50.0, "active": "기준 포인터", "items": [
+            _PTR_Z10, {"name": "이행 핀", "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 0.0, "note": "", "tip_shape": "rect",
+                       "tip_w_mm": 10.0, "tip_h_mm": 2.0, "tip_angle_deg": None, "tip_angle_img_deg": 90.0}]})
         HEAD_P = {"calib": {"mode": "fixed"}, "width": 1280, "height": 720,
                   "photohome": {"on_connect": True, "settle_s": 0.2, "edge_margin_px": 5}}
         cases = [
@@ -2411,6 +2843,10 @@ def main():
                  "preview_max_w": 1280, "photohome": {"before_capture": False}, "flow": {"capture_goto": False}}
                 )] if REAL.setdefault("scene", real_scene()) else []),
             ("공구 끝 표시", lambda: prep_fixed(1280, 960), tip_flow, None, TIP_PATCH),
+            ("측정 과정", lambda: prep_fixed(1280, 960), process_flow, None, MEAS_P),
+            ("공구 방향 0", lambda: prep_fixed_rot(False), tip_dir_flow(False), None, TIPDIR_P),
+            ("공구 방향 90", lambda: prep_fixed_rot(True), tip_dir_flow(True), None,
+             dict(TIPDIR_P, width=960, height=1280)),
             ("고정 보정 4080", lambda: prep_fixed(4080, 3060), fixed_big_flow, None, FIXED_BIG_P),
             ("헤드 마커 연결 판단", lambda: (prep_head_calib() or good), head_connect_flow, SYNTH, HEAD_P),
             ("헤드 마커 미검출", lambda: (prep_head_calib() or good), head_missing_flow,

@@ -41,6 +41,7 @@
       case 'state': applyState(msg); break;
       case 'log': UI.log(msg.msg, msg.level, msg); break;
       case 'ack': handleAck(msg); break;
+      case 'temp': if (UI.onTemp) UI.onTemp(msg); break;
     }
   }
 
@@ -49,7 +50,7 @@
   const CALIB_ACKS = ['head_calib', 'head_calib_apply', 'calib_marker', 'calib_marker_apply',
                       'calib_tool', 'calib_tool_heat', 'calib_tool_mark', 'calib_tool_apply',
                       'plate_shot', 'plate_pos', 'plate_calib_fit', 'plate_calib_apply', 'plate_area_apply',
-                      'plate_exclude_apply', 'plate_ref_shot'];
+                      'plate_exclude_apply', 'plate_ref_shot', 'plate_ref_use'];
 
   function handleAck(msg) {
     if (msg.of === 'run' && !msg.ok) {
@@ -146,6 +147,7 @@
     UI.applySequence(s);
     UI.applyJog(s);
     UI.applyRelays(s);
+    if (UI.applyMeasure) UI.applyMeasure(s);
     UI.lock();
     if (UI.applyCalib) UI.applyCalib(s);
   }
