@@ -153,12 +153,17 @@ class Hub:
 
 
 # --------------------------------------------------------------------------
+FAULT = {}                      # 검증 전용: csv_lock(sample_NN.csv 가 열려 있음) · step_exc(측정 단계 예외)
+
+
 def csv_write(path, header, rows):
     """UTF-8 BOM CSV. 못 쓰면(엑셀이 열고 있음) _1, _2 … 이름으로. 반환: (실제 경로, 경고 문구)."""
     base, ext = os.path.splitext(path)
     cand, n, warn = path, 0, ""
     while True:
         try:
+            if FAULT.get("csv_lock") and n == 0 and os.path.basename(path).startswith("sample_"):
+                raise PermissionError("열려 있음")
             os.makedirs(os.path.dirname(cand), exist_ok=True)
             with open(cand, "w", encoding="utf-8-sig", newline="") as f:
                 w = csv.writer(f)
@@ -204,6 +209,9 @@ class Run:
         self.live = {}                                 # 현재 단계 실시간 값
         self.gen = app.motion.gen
         self.csv_names = {}
+        self.live_text = ""
+        self.bands = []                                # 현재 샘플의 단계 구간 [{name, t0, t1}] (기록 시각 기준)
+        self.ctx_cur = None
 
     # ---- 제어 --------------------------------------------------------
     def start(self):
@@ -338,6 +346,8 @@ class Run:
         self.steps_view = [{"i": i, "text": conditions.describe(st, app.cfg.values), "state": "wait", "value": ""}
                            for i, st in enumerate(x for _j, x in self.flat)]
         t_s = time.time()
+        self.bands = []
+        self.ctx_cur = ctx
         status, reason = OK, ""
         try:
             for k, (_orig, st) in enumerate(self.flat):
@@ -403,6 +413,8 @@ class Run:
         t = st["type"]
         app, cfg, hub = self.app, self.app.cfg, self.hub
         view = self.steps_view[k]
+        if FAULT.get("step_exc") and t == "measure":
+            raise RuntimeError("영상 예외 흉내")
         if t == "move_sample":
             tool = conditions.active_tool(cfg.values)
             px, py = s["X"] - float(tool.get("dx_mm") or 0.0), s["Y"] - float(tool.get("dy_mm") or 0.0)
@@ -500,10 +512,13 @@ class Run:
         hold, mx = float(st.get("hold_s") or 0.0), float(st["max_s"])
         t0 = hub.clock.now()
         ok_since = None
+        band = self._band_open("냉각" if cool else "온도 대기")
         while True:
             self._check()
             now = hub.clock.now()
             T = self._t()
+            self.live_text = "%s %d s · %g °C %s %g °C 또는 %g s에 종료" % ("냉각" if cool else "온도 대기", now - t0, T if T is not None else float("nan"),
+                                                                    "이하" if cond == "<=" else "이상", target, mx)
             if T is not None:
                 if ctx["t_max"] is None or T > ctx["t_max"]:
                     ctx["t_max"] = round(T, 2)
@@ -536,6 +551,19 @@ class Run:
             time.sleep(0.05)
         if cool:
             ctx["cool_s"] = round(hub.clock.now() - t0, 1)
+        self._band_close(band)
+
+    def _band_open(self, name):
+        b = {"name": name, "t0": self._rec_t(), "t1": None}
+        self.bands.append(b)
+        return b
+
+    def _band_close(self, b):
+        b["t1"] = self._rec_t()
+
+    def _rec_t(self):
+        h = self.hub
+        return round(h.clock.now() - h.rec_t0, 2) if h.rec is not None else None
 
     def _heat(self, st, ctx, view):
         app, hub = self.app, self.hub
@@ -545,6 +573,7 @@ class Run:
         app.power.set(int(app.cfg.get("heater.relay")), True, HEAT)
         t0 = hub.clock.now()
         ctx["heat_t0"] = t0
+        band = self._band_open("가열")
         try:
             while True:
                 self._check()
@@ -554,6 +583,8 @@ class Run:
                     ctx["t_max"] = round(T, 2)
                 el = now - t0
                 view["value"] = "%.1f °C · %d s" % (T if T is not None else float("nan"), el)
+                self.live_text = "가열 %d s · %s" % (el, ("%g °C 도달 또는 %g s에 종료" % (tgt, ts if end == "either" else mx)) if end == "either" else
+                                                    ("%g °C 도달에 종료" % tgt) if end == "temp" else ("%g s에 종료" % ts))
                 if end in ("temp", "either") and T is not None and T >= tgt:
                     break
                 if end in ("time", "either") and el >= ts:
@@ -568,6 +599,7 @@ class Run:
             except PowerError as e:
                 logger.log(str(e), "err")
         ctx["heat_s"] = round(hub.clock.now() - t0, 1)
+        self._band_close(band)
 
     def _measure(self, st, ctx, view):
         hub = self.hub
@@ -626,7 +658,21 @@ class Run:
         n = len(self.samples)
         avg = (sum(self.sample_times) / len(self.sample_times)) if self.sample_times else None
         remain = None if avg is None else max(0.0, (n - done) * avg)
-        return {"state": self.state, "paused": self.paused, "waiting": self.waiting, "mode": self.mode, "cond": self.cond["name"],
+        series, targets = [], {}
+        with self.hub.lock:
+            rows = list(self.hub.rec or [])
+        if rows:
+            step = max(1, len(rows) // 400)
+            series = [[r["t"], r["temp"]] for r in rows[::step]]
+        for _o, st in self.flat:
+            if st["type"] == "heat" and st.get("target_c") is not None:
+                targets["heat"] = st["target_c"]
+            elif st["type"] == "wait_temp":
+                targets["start"] = st["target_c"]
+            elif st["type"] == "cool":
+                targets["cool"] = st["target_c"]
+        return {"series": series, "targets": targets, "bands": list(self.bands), "t_now": self._rec_t(), "text": self.live_text,
+                "cur_temp": self.hub.latest[1], "state": self.state, "paused": self.paused, "waiting": self.waiting, "mode": self.mode, "cond": self.cond["name"],
                 "n": n, "done": done, "cur": None if self.cur is None else self.cur["no"], "steps": self.steps_view,
                 "elapsed": round((self.t_end or time.time()) - self.t0, 1), "remain": None if remain is None else round(remain, 0),
                 "results": self.results, "message": self.message, "dir": self.run_dir, "warns": self.warns,

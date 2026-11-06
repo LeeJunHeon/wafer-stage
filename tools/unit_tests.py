@@ -443,5 +443,121 @@ class Section0Test(unittest.TestCase):
         self.assertLess(sent.index("r 10 0"), sent.index("mx 5.0"))
 
 
+# ---------------------------------------------------------------------------
+# 좌표 보정 저장소 (기준 프레임)
+# ---------------------------------------------------------------------------
+import tempfile  # noqa: E402
+
+
+def mk_calib():
+    import calibstore
+    d = tempfile.mkdtemp()
+    c = calibstore.Calib(os.path.join(d, "calib.json"))
+    c.set_area([[100, 100], [900, 110], [890, 800], [95, 790]], "ref1", (1280, 960))
+    return c
+
+
+def true_map(u, v):                                   # 가짜 판: px -> mm (닮음 변환)
+    return (u - 100) * 0.2, (v - 100) * 0.2
+
+
+class CalibStoreTest(unittest.TestCase):
+    def add_pts(self, c, uvs):
+        for u, v in uvs:
+            x, y = true_map(u, v)
+            c.add_point(u, v, x, y)
+
+    def test_apply_needs_five_and_delete_refits(self):
+        c = mk_calib()
+        self.add_pts(c, [(120, 120), (880, 130), (870, 780), (110, 770)])
+        ok, why = c.apply()
+        self.assertFalse(ok)
+        self.assertIn("5개부터", why)
+        self.assertTrue(c.warnings())                       # 4점 경고
+        self.add_pts(c, [(500, 450)])
+        ok, why = c.apply()
+        self.assertTrue(ok, why)
+        x, y = c.px_to_mm(500, 450)
+        self.assertAlmostEqual(x, true_map(500, 450)[0], places=2)
+        c.delete_point(c.points[-1]["no"])                   # 4점으로 내려가면 적용 해제
+        self.assertFalse(c.d["applied"])
+        c.delete_point(c.points[0]["no"])                    # 3점 -> 변환 지움
+        self.assertIsNone(c.H)
+        self.assertIsNone(c.px_to_mm(500, 450))
+
+    def test_degenerate_rejected(self):
+        c = mk_calib()
+        self.add_pts(c, [(100, 100), (300, 300), (500, 500), (700, 700), (900, 800)])
+        ok, why = c.apply()
+        self.assertFalse(ok)
+
+    def test_sample_point_dedupe(self):
+        c = mk_calib()
+        c.add_point(300, 300, 40.0, 40.0, "sample", "s1:3")
+        self.assertIsNotNone(c.point_near("s1:3", 99, 99))   # 같은 촬영 · 번호
+        self.assertIsNotNone(c.point_near(None, 40.1, 40.1))  # 같은 자리
+        self.assertIsNone(c.point_near(None, 90, 90))
+
+    def test_replace_ref_moves_geometry(self):
+        c = mk_calib()
+        self.add_pts(c, [(120, 120), (880, 130), (870, 780), (110, 770), (500, 450)])
+        c.apply()
+        A = frames.Align([[1, 0, 14.0], [0, 1, -9.0]])        # 옛 -> 새 기준 평행 이동
+        c.replace_ref(A, "ref2", (1280, 960))
+        self.assertEqual(c.d["ref_id"], "ref2")
+        self.assertTrue(c.d["applied"])
+        # 새 기준 프레임에서 같은 물리 점(옛 500,450 -> 새 514,441)이 같은 mm
+        x, y = c.px_to_mm(514, 441)
+        self.assertAlmostEqual(x, true_map(500, 450)[0], places=2)
+        self.assertAlmostEqual(c.area[0][0], 114.0, places=1)
+
+    def test_status_invalid_when_ref_changes(self):
+        c = mk_calib()
+        self.add_pts(c, [(120, 120), (880, 130), (870, 780), (110, 770), (500, 450)])
+        c.apply()
+        self.assertEqual(c.status("ref1", (1280, 960))[0], "done")
+        self.assertEqual(c.status("ref9", (1280, 960))[0], "invalid")
+        self.assertEqual(c.status("ref1", (640, 480))[0], "invalid")      # 실제 프레임 크기로 검사
+
+
+class HeadCalibTest(unittest.TestCase):
+    def test_spread_in_mm_not_px(self):
+        import calibstore
+        h = calibstore.HeadCalib(os.path.join(tempfile.mkdtemp(), "h.json"))
+        quad_mm = [[40, 40], [40, 200], [200, 200], [200, 40]]
+        for x, y in [(60, 60), (60, 180), (180, 180), (180, 60), (120, 120)]:
+            h.add(x * 2.0 + 100, y * 2.0 + 50, x, y, "r", (1280, 960))      # 픽셀 폭은 판보다 좁아도
+        ok, why = h.fit(quad_mm)
+        self.assertTrue(ok, why)
+        ok, why = h.apply(0.5)
+        self.assertTrue(ok, why)
+
+    def test_head_collinear_rejected(self):
+        import calibstore
+        h = calibstore.HeadCalib(os.path.join(tempfile.mkdtemp(), "h.json"))
+        for x in (50, 80, 110, 140, 170):
+            h.add(x * 2.0, x * 2.0, x, x, "r", (1280, 960))
+        ok, why = h.fit([[40, 40], [40, 200], [200, 200], [200, 40]])
+        self.assertFalse(ok)
+
+
+class AlignTest(unittest.TestCase):
+    def test_align_recovers_shift_on_texture(self):
+        import cv2
+        from core import align
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import synth_cam
+        ref, _t = synth_cam.render_plate(1280, 960, chips=False, texture=True, seed=5)
+        M = np.float32([[1, 0, 11.0], [0, 1, -6.0]])
+        cur = cv2.warpAffine(ref, M, (1280, 960), borderMode=cv2.BORDER_REPLICATE)
+        area = [[320, 70], [920, 90], [900, 690], [300, 670]]
+        r = align.align(ref, cur, area)
+        self.assertTrue(r["ok"], r)
+        u, v = r["A"].to_cur([[600, 400]])[0]
+        self.assertAlmostEqual(u, 611.0, delta=0.5)
+        self.assertAlmostEqual(v, 394.0, delta=0.5)
+        self.assertLess(r["resid"], align.RESID_FAIL)
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]] + [a for a in sys.argv[1:]], verbosity=2)

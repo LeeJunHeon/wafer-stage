@@ -1,1 +1,43 @@
-<!doctype html><title>t</title>
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>샘플 자동 측정</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/css/style.css?v=__V__">
+</head>
+<body>
+<div id="stage">
+  <div id="canvas">
+    <header id="head">
+      <div class="brand">샘플 자동 측정</div>
+      <nav id="tabs">
+        <button class="tab on" data-act="tab" data-tab="measure">측정</button>
+        <button class="tab" data-act="tab" data-tab="results">결과</button>
+        <button class="tab" data-act="tab" data-tab="setup">장비 설정</button>
+      </nav>
+      <div id="pill" class="pill idle">연결 안 됨</div>
+      <div id="cells"></div>
+      <button id="estop" class="btn estop" data-act="estop" data-tip="모터와 가열을 즉시 멈춥니다. 어떤 상태에서도 눌립니다.">비상정지</button>
+    </header>
+    <div id="band" class="band hidden"></div>
+    <main id="body">
+      <section id="tab-measure" class="tabpane"></section>
+      <section id="tab-results" class="tabpane hidden"></section>
+      <section id="tab-setup" class="tabpane hidden"></section>
+    </main>
+  </div>
+  <div id="dimmer" class="hidden"></div>
+  <div id="win" class="win hidden"></div>
+  <button id="estopDock" class="btn estop dock hidden" data-act="estop" data-tip="비상정지 도크 · 창이 열려 있어도 눌립니다.">비상정지</button>
+  <div id="tip" class="tip hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+</div>
+<script src="/static/js/core.js?v=__V__"></script>
+<script src="/static/js/viewer.js?v=__V__"></script>
+<script src="/static/js/measure.js?v=__V__"></script>
+<script src="/static/js/results.js?v=__V__"></script>
+<script src="/static/js/setup.js?v=__V__"></script>
+<script src="/static/js/app.js?v=__V__"></script>
+</body>
+</html>

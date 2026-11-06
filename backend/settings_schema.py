@@ -578,7 +578,7 @@ def migrate(raw, fill=True):
     """
     s = copy.deepcopy(raw or {})
     notes = []
-    if not has_path(s, "tool.items") and (fill or "z_measure_mm" in s):
+    if not has_path(s, "tool.items") and "z_measure_mm" in s:
         z = s.get("z_measure_mm")
         try:
             z = float(z) if z is not None else 44.0
@@ -587,7 +587,7 @@ def migrate(raw, fill=True):
         set_path(s, "tool.items", _tools_default(z))
         if "z_measure_mm" in s:
             notes.append("z_measure_mm %g → 히트건 작업 높이" % z)
-    if not has_path(s, "condition.items") and (fill or "dwell_s" in s):
+    if not has_path(s, "condition.items") and "dwell_s" in s:
         w = s.get("dwell_s")
         try:
             w = float(w) if w is not None else 5.0
@@ -596,7 +596,7 @@ def migrate(raw, fill=True):
         set_path(s, "condition.items", [conditions.default_condition(w)])
         if "dwell_s" in s:
             notes.append("dwell_s %g → 기본 측정 조건 대기" % w)
-    if "focus_mode" not in s and (fill or "autofocus" in s):
+    if "focus_mode" not in s and "autofocus" in s:
         af = s.get("autofocus", True)
         s["focus_mode"] = "auto" if af in (True, None) else "fixed"
     if isinstance(s.get("focus"), str):

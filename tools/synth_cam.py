@@ -265,7 +265,12 @@ class SynthCamera:
         self.cache[key] = img
         return img
 
+    delay_s = 0.0
+
     def grab(self):
+        if self.delay_s:
+            import time as _t
+            _t.sleep(self.delay_s)
         self.q.append(self._render())
         self.cur = self.q.popleft() if len(self.q) > self.depth else self.q[0]
         return True

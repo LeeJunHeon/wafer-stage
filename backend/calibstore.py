@@ -116,6 +116,8 @@ class Calib:
         if len(self.points) == n0:
             return False
         self.refit()
+        if len(self.points) < MIN_APPLY:
+            self.d["applied"] = False                       # 5점 미만이면 적용 해제 - 샘플 좌표는 다시 계산하면 사라진다
         self.save()
         return True
 

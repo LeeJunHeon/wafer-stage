@@ -607,14 +607,12 @@ class App:
     # ------------------------------------------------------------------
     def c_jog(self, a, gen):
         self._need_stage()
-        if self.run and self.run.state == "running":
+        if self.run and self.run.state == "running" and not self.run.paused:
             raise AppError("측정 중 · 일시정지 뒤 가능")
         ax, mm = str(a["axis"]).lower(), float(a["mm"])
         if abs(mm) > float(self.cfg.get("jog.max_mm")):
             raise AppError("한 번 최대 %g mm" % self.cfg.get("jog.max_mm"))
-        if self.motion.moving:
-            raise AppError("이동 중 · 끝난 뒤")
-        self.motion.jog(ax, mm, gen=gen)
+        self.motion.jog(ax, mm, gen=gen)                # 이동 중이면 이동 잠금 뒤에 줄 서고, 그 사이 비상정지가 오면 gen 으로 버려진다
         st = self.motion.status()
         self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
 
@@ -1075,7 +1073,7 @@ class App:
 
     def c_measure_start(self, a, gen):
         mode = a.get("mode", "continuous")
-        nos = a.get("nos") if mode == "selected" else None
+        nos = a.get("nos")
         cond = self._condition(a.get("condition"))
         why, notes = self.preflight(cond, nos)
         if why:
@@ -1181,6 +1179,18 @@ class App:
     # ------------------------------------------------------------------
     # 종료
     # ------------------------------------------------------------------
+    def c_focus_refind(self, a, gen):
+        """초점 다시 맞추기: 판 영역 안의 선명도로 점수를 매긴다(실제 카메라 전용). 합성 카메라에는 초점이 없다."""
+        if self.vision.synth is not None or self.image:
+            return {"msg": "합성 카메라 · 초점 없음"}
+        cam = self.vision.cam
+        if cam is None or not hasattr(cam, "sweep_focus"):
+            raise AppError("카메라 연결 안 됨")
+        with self.vision.lock:
+            cam.sweep_focus()
+        img, _t = self._grab(gen, n_best=1, poly=self.calib.area)
+        return {"msg": "초점 점수 %.0f" % vision_mod.sharpness(img, self.calib.area)}
+
     def c_dry(self, a, gen):
         """검증 전용(dry 에서만): 합성 카메라 세계 · 멈춤 · 재부팅 · 탈조 …"""
         if not self.dry:
@@ -1210,10 +1220,10 @@ class App:
                     "size": [sy.w, sy.h], "quad_mm": [list(q) for q in synth_cam.PLATE_QUAD_MM]}
         elif op == "slow":
             stage_mod.DRY_MOVE_S = float(a["s"])
-        elif op == "lock_csv":
-            self.lock_csv = bool(a.get("on", True))
-        elif op == "fail_vision":
-            self.vision.fail_next = bool(a.get("on", True))
+        elif op == "fault":
+            measure.FAULT[a["name"]] = a.get("on", True)
+        elif op == "cam_delay":
+            self.vision.synth.delay_s = float(a["s"])
         return {}
 
     def c_shutdown_check(self, a, gen):
@@ -1281,9 +1291,15 @@ class App:
         code, text = c.status(self.ref_id(), self._size())
         hc, ht = self.head.status(self.ref_id(), self._size())
         return {"status": code, "text": text, "points": c.points, "area": c.area, "exclude": c.d.get("exclude") or [],
-                "size_mm": c.d.get("size_mm"), "rms": c.d.get("rms_mm"), "applied": c.d.get("applied"), "warnings": c.warnings(),
+                "size_mm": c.d.get("size_mm"), "rms": c.d.get("rms_mm"), "area_mm": self._area_mm(), "applied": c.d.get("applied"), "warnings": c.warnings(),
                 "pending": self.pending_calib, "min_apply": calibstore.MIN_APPLY, "ref_id": c.d.get("ref_id"),
                 "head": {"status": hc, "text": ht, "pairs": self.head.d["pairs"], "rms": self.head.d.get("rms_mm")}, "msgs": self.calib_msgs[-3:]}
+
+    def _area_mm(self):
+        c = self.calib
+        if c.H is None or not c.area:
+            return None
+        return [[round(v, 2) for v in c.px_to_mm(u, v_)] for u, v_ in c.area]
 
     def state(self):
         m, cfg = self.motion, self.cfg
@@ -1314,11 +1330,19 @@ class App:
             "run": None if self.run is None else self.run.view(),
             "verify": getattr(self, "verify_result", None),
             "tool": conditions.active_tool(cfg.values),
-            "results": self.results_list()[:30] if self.phase() != "측정 중" else [],
+            "results": self.results_list()[:30] if not str(self.phase()).startswith("측정 중") else [],
+            "start_block": self._start_block(),
         }
         if self.last_run is not None and (self.run is self.last_run):
             st["run"] = self.last_run.view()
         return st
+
+    def _start_block(self):
+        try:
+            why, notes = self.preflight(self._condition(), None)
+            return {"why": why, "notes": notes}
+        except Exception as e:                              # noqa: BLE001
+            return {"why": logger.short(e), "notes": []}
 
     def _cond_view(self, c):
         return {"name": c["name"], "steps": [{"i": i, "type": s["type"], "text": conditions.describe(s, self.cfg.values)} for i, s in enumerate(c["steps"])]}

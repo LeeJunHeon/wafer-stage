@@ -278,6 +278,7 @@ def c03(c):
 
 
 def run_cases(names):
+    import e2e_cases  # noqa: F401  (시나리오 04~18 등록)
     sel = [n for n in CASES if not names or any(k in n for k in names)]
     for n in sel:
         print("== %s" % n, flush=True)
@@ -298,4 +299,5 @@ def run_cases(names):
 
 
 if __name__ == "__main__":
-    sys.exit(run_cases(sys.argv[1:]))
+    import e2e as _m                    # __main__ 과 다른 모듈 복사본이 되지 않게
+    sys.exit(_m.run_cases(sys.argv[1:]))
