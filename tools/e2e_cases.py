@@ -274,8 +274,9 @@ def c09b(c):
     ready_capture(c)
     ok, r = c.send("jog", axis="z", mm=-5.0)
     check(not ok and "가동범위" in str(r), "맨 위에서 Z↑ 거절 (%s)" % (r,))
-    ok, r = c.send("jog", axis="x", mm=-500.0)
-    check(not ok and "가동범위" in str(r), "X 가동범위 밖 거절 (%s)" % (r,))
+    c.send("move_xy", x=5.0, y=50.0)
+    ok, r = c.send("jog", axis="x", mm=-10.0)
+    check(not ok and "가동범위" in str(r), "X 0 밑으로 몰기 거절 (%s)" % (r,))
     ok, r = c.send("jog", axis="z", mm=5.0)
     check(ok, "Z↓ 는 됨 (%s)" % (r,))
     ok, r = c.send("jog", axis="z", mm=-5.0)
@@ -475,13 +476,18 @@ def c20(c):
     check(c.wait(lambda s: s["relays"] and s["relays"]["heater_on"], 60, "히트건"), "히트건 중")
     c.dry("cut", s=14.0)
     check(wait_run(c, 90) and c.state["run"]["state"] == "error", "측정이 오류로 끝남 (%s)" % (c.state["run"] or {}).get("state"))
-    check("통신 끊김" in ((c.state["alarm"] or {}).get("text") or ""), "경보 · 통신 끊김 (%s)" % (c.state["alarm"],))
+    c.wait(lambda s_: s_["alarm"], 40, "경보")                  # 링크가 끊긴 것을 먼저 안 쪽(유지 신호 3회 실패 또는 명령 시간 초과)이 경보를 세운다
+    txt = (c.state["alarm"] or {}).get("text") or ""
+    check("통신 끊김" in txt or "측정 오류" in txt, "경보 · 통신 끊김 또는 측정 오류 (%s)" % (c.state["alarm"],))
+    check(bool((c.state.get("band") or {}).get("actions")), "경보 띠에 버튼 (%s)" % [a_["label"] for a_ in (c.state.get("band") or {}).get("actions", [])])
     check(c.state["run"]["results"].get("1", {}).get("status") == "오류", "샘플 결과 = 오류")
     time.sleep(10)
     c.pump(2.0)
     check(not c.state["relays"]["heater_on"], "링크가 돌아온 뒤 히트건 꺼짐")
     ok, r = c.send("link_check")
-    check(ok and not c.state["alarm"], "[연결 확인] 뒤 경보 닫힘 (%s)" % (r,))
+    if ok and c.state["alarm"]:
+        ok2, r2 = c.send("alarm_clear")                          # 측정 오류 경보는 [확인] 으로 닫는다
+    check(ok and not c.state["alarm"], "[연결 확인] · [확인] 뒤 경보 닫힘 (%s)" % (r,))
 
 
 c20.patch = {"sim": {"time_scale": 3.0}}
