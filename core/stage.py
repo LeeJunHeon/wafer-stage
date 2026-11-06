@@ -514,6 +514,7 @@ class Stage:
     def status(self, timeout=None):
         """'st' -> ST 줄을 dict 로. 펄스와 mm 를 함께 담는다."""
         if self.dry:
+            self._dry_rx()                                  # 진짜는 st 를 쓰므로 펌웨어가 줄을 받는다(통신 감시 갱신)
             x, y, z = self._dry_xy["x"], self._dry_xy["y"], self._dry_xy["z"]
             return {"x_pulse": int(x * PPMM), "y_pulse": int(y * PPMM),
                     "x2_pulse": int(x * PPMM), "z_pulse": int(z * Z_PPMM),

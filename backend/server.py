@@ -139,6 +139,11 @@ async def root():
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(status_code=204)
+
+
 @app.get("/health")
 async def health():
     return JSONResponse({"ok": True})
