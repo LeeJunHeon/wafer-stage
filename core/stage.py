@@ -163,6 +163,14 @@ class StageError(Exception):
     pass
 
 
+class StageTimeout(StageError):
+    """응답이 시간 안에 오지 않음. 호출 쪽(core/motion.py)이 '!' + 재동기를 한다."""
+
+
+class StageGuard(StageError):
+    """쓰기 직전 검사(write_guard)가 거절함 - 비상정지 세대가 바뀌었다."""
+
+
 # --------------------------------------------------------------------------
 # 포트 찾기
 # --------------------------------------------------------------------------
@@ -256,6 +264,9 @@ class Stage:
         self._dry_off = {"x": 0.0, "y": 0.0}
         # 펌웨어가 스스로 보낸 사건(통신 끊김 등). fn(kind, line) - 워커·감시 스레드에서 불린다.
         self.on_event = None
+        # 쓰기 직전 검사. fn(cmd) 가 StageGuard 를 던지면 시리얼에 쓰지 않는다('!' 와 읽기 전용 명령은 검사하지 않는다).
+        self.write_guard = None
+        self.dry_hang = False          # 검증용: 이동 완료가 영영 오지 않는 척(이동 시간 한도 시험)
         self.wd_tripped_at = None
         self.profile = None            # 마지막으로 보낸 (가속도, 시작 속도)
 
@@ -332,14 +343,47 @@ class Stage:
         self.close()
 
     # ---- 저수준 송수신 --------------------------------------------------
+    SAFE_CMDS = ("!", "st", "rs", "p", "r all 0")           # 가드 없이 나갈 수 있는 명령(읽기 전용 · 정지 · 전부 끄기)
+
     def _write(self, cmd):
+        g = self.write_guard
+        if g is not None and cmd not in self.SAFE_CMDS and not (cmd.startswith("r ") and cmd.endswith(" 0")):
+            g(cmd)                                          # 거절하면 StageGuard - 아래 쓰기에 닿지 않는다
         self._log("->", cmd)
+        if not self.dry:
+            self._drain()
         if self.dry:
             print("  (dry) %s" % cmd)
             self._dry_rx()
             return
         self.ser.write((cmd + "\n").encode("ascii"))
         self.ser.flush()
+
+    def _drain(self):
+        """보내기 전에 들어와 있던 줄을 비운다 - 이전 명령의 완료 보고 · RS 가 이번 명령의 응답으로 읽히지 않게(응답은 요청한 명령에 맞춘다)."""
+        ser = self.ser
+        if ser is None:
+            return
+        try:
+            n = ser.in_waiting
+        except Exception:                                   # noqa: BLE001
+            return
+        if n <= 0:
+            return
+        try:
+            raw = ser.read(n)
+        except Exception:                                   # noqa: BLE001
+            return
+        for ln in raw.decode("utf-8", errors="replace").splitlines():
+            if not ln.strip():
+                continue
+            self._log("<-", "(버림) " + ln)
+            if "3-AXIS" in ln:
+                self.speed_pps = None
+                self.profile = None
+                self._event("reboot", ln)
+            if WD_MARK in ln:
+                self._event("wd_trip", ln)
 
     def _readline(self, timeout=POLL_S):
         """한 줄 읽기. 타임아웃은 포트를 열 때 한 번만 정한다.
@@ -364,6 +408,7 @@ class Stage:
         if "3-AXIS" in ln:
             self.speed_pps = None
             self.profile = None
+            self._event("reboot", ln)
         if WD_MARK in ln:
             self._event("wd_trip", ln)
         return ln
@@ -441,8 +486,8 @@ class Stage:
                 if WARN_MARK in ln:
                     self.warnings.append(ln.strip())
                 return ln
-        raise StageError("%s 응답이 %.0f초 안에 오지 않았습니다. 마지막 줄: %s"
-                         % (what, deadline_s, seen[-1] if seen else "(없음)"))
+        raise StageTimeout("%s 응답이 %.0f초 안에 오지 않았습니다. 마지막 줄: %s"
+                           % (what, deadline_s, seen[-1] if seen else "(없음)"))
 
     # ---- 명령 ----------------------------------------------------------
     def status(self):
@@ -482,34 +527,41 @@ class Stage:
             out["z_mm"] = None
         return out
 
-    def _dry_wait(self, what):
+    def _dry_wait(self, what, deadline_s=None):
         """dry 이동이 걸리는 시간을 흉내 낸다. 자는 동안 중단을 확인한다.
 
         조각으로 나눠 자면서 _aborted 를 보기 때문에, 이동 중에 들어온
         비상정지가 실제 펌웨어처럼 이동을 끊는다.
         """
-        if DRY_MOVE_S <= 0:
-            return
         # 이미 잠겨 있던 상태(비상정지 뒤 수동 이동)는 중단이 아니다. 이 이동
         # 중에 새로 들어온 '!' 만 중단으로 본다.
         was = self._aborted
-        end = time.time() + DRY_MOVE_S
+        if self.dry_hang and deadline_s:
+            end = time.time() + deadline_s + 0.01              # 완료가 안 온다 → 한도에서 시간 초과
+            hang = True
+        else:
+            end = time.time() + DRY_MOVE_S
+            hang = False
+        if DRY_MOVE_S <= 0 and not hang:
+            return
         self._dry_busy = True
         try:
             while time.time() < end:
                 if self._aborted and not was:
                     raise StageError("비상정지로 중단됨 · (dry) [!] 중단")
                 time.sleep(min(DRY_TICK_S, max(0.0, end - time.time())))
+            if hang:
+                raise StageTimeout("%s 응답이 %.0f초 안에 오지 않았습니다. 마지막 줄: (dry 멈춤)" % (what, deadline_s))
         finally:
             self._dry_busy = False
             self._dry_rx()                 # 펌웨어는 이동이 끝나는 순간 타이머를 다시 시작한다
 
-    def _move(self, cmd, what):
+    def _move(self, cmd, what, deadline_s=None):
         if self._aborted:
             raise StageError("비상정지 상태 · 원점 등록 후 사용")
         self._write(cmd)
         if self.dry:
-            self._dry_wait(what)
+            self._dry_wait(what, deadline_s)
             try:
                 axis, val = cmd.split()
                 self._dry_xy[axis[1]] = float(val)
@@ -517,22 +569,48 @@ class Stage:
                 pass
             return "(dry) %s" % cmd
         # 완료는 이동 보고 줄, 또는 '이미 그 위치'(움직일 필요가 없던 경우).
-        return self._collect(MOVE_TIMEOUT_S,
+        return self._collect(deadline_s or MOVE_TIMEOUT_S,
                              lambda s: (DONE_MARK in s) or (ALREADY_MARK in s), what)
 
-    def move_x_mm(self, mm, speed=None):
+    def move_x_mm(self, mm, speed=None, deadline_s=None):
         self._ensure_speed(speed or DEFAULT_SPEED_PPS)
-        return self._move("mx %.1f" % float(mm), "X 이동")
+        return self._move("mx %.1f" % float(mm), "X 이동", deadline_s)
 
-    def move_y_mm(self, mm, speed=None):
+    def move_y_mm(self, mm, speed=None, deadline_s=None):
         self._ensure_speed(speed or DEFAULT_SPEED_PPS)
-        return self._move("my %.1f" % float(mm), "Y 이동")
+        return self._move("my %.1f" % float(mm), "Y 이동", deadline_s)
 
-    def move_z_mm(self, mm, speed=None):
+    def move_z_mm(self, mm, speed=None, deadline_s=None):
         """Z 절대 이동. 0 이 맨 위이고 값이 커질수록 내려간다."""
         self._need_fw(9, "Z 이동")
         self._ensure_speed(speed or DEFAULT_SPEED_PPS)
-        return self._move("mz %.2f" % float(mm), "Z 이동")
+        return self._move("mz %.2f" % float(mm), "Z 이동", deadline_s)
+
+    def resync(self, quiet_s=0.6, max_s=4.0):
+        """시간 초과 뒤 재동기: '!' 로 이동을 끊고 들어오는 줄을 조용해질 때까지 버린 뒤 st 로 응답이 맞는지 확인한다. 성공하면 True."""
+        self._aborted = True                                # 위치를 못 믿는다 - Motion 이 잠금 상태를 정한다
+        try:
+            self.abort()
+        except StageError:
+            return False
+        if self.dry:
+            self.dry_hang = False
+            return True
+        t0 = time.time()
+        last = time.time()
+        while time.time() - t0 < max_s:
+            ln = self._readline(POLL_S)
+            if ln is None:
+                if time.time() - last >= quiet_s:
+                    break
+                continue
+            last = time.time()
+        try:
+            self._write("st")
+            self._collect(LINE_TIMEOUT_S, lambda t: t.startswith("ST "), "재동기")
+            return True
+        except StageError:
+            return False
 
     # ---- 수동 원점 잡기(V7) --------------------------------------------
     def _need_fw(self, min_major, what):
