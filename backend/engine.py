@@ -669,6 +669,7 @@ def _apply_sense(res):
     u0, v0, u1, v1 = res["rect"]
     state.sensing = {"rect": [int(u0), int(v0), int(u1), int(v1)],
                      "quad": res.get("quad"),
+                     "area_ref": res.get("area_ref"),        # 이 촬영이 쓴 저장 감지 영역(기준 좌표) - 지금 저장 영역과 비교해 바뀜을 알린다
                      "mm_px": res.get("mm_per_px") if fixed else None,
                      "chip_px": (getattr(det, "diag", None) or {}).get("chip_long_px")}
     w = det.wafer

@@ -52,9 +52,10 @@ DEFAULTS = {
     "ref_area_ratio": [0.35, 3.5],
     "ref_min_solidity": 0.7,
     "ref_max_aspect": 5.0,
+    "ref_thin_k": 0.10,             # 가는 선(긁힘) 떼어 내기: 원판 열기 반지름 = 작업 해상도 칩 긴 변 x k(0 = 끔)
     "ref_edge_k": 0.4,              # 감지 영역 경계에서 칩 길이의 이 배 안에 닿은 후보는 버린다
     "ref_check_blobs": 6,           # 기준 점검: 칩 크기 범위 밖 큰 차이 덩어리가 이보다 많으면 다시 촬영 권장
-    "ref_check_resid": 1.5,         # 기준 점검: 정렬 잔차가 이보다 크면 다시 촬영 권장
+    "ref_check_resid": 0.6,         # 기준 점검: 정렬 잔차(바른 정렬 0.23~0.47, 틀린 정렬 ≥ 0.87)가 이보다 크면 다시 촬영 권장
     "cam_shift_warn_mm": 2.0,       # 카메라 이동 경고
     "cam_shift_max_mm": 10.0,       # 이보다 크면 좌표를 만들지 않는다
 }

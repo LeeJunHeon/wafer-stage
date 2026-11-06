@@ -379,6 +379,7 @@ def sense_fixed(bgr, params, d, log=print):
     use_fixed = str((params.get("fixed") or {}).get("detector", "fixed")) != "legacy"
     # 빈 판 기준이 유효하면 기준 차이 경로(+ 카메라 이동 보정), 아니면 단일 사진 경로
     ref_res, cam = None, None
+    single_warn = ""
     path_note = "" if not use_fixed else "기준 없음"
     if use_fixed:
         ref_img, ref_why = ref_usable(params, d, (bgr.shape[1], bgr.shape[0]))
@@ -386,6 +387,8 @@ def sense_fixed(bgr, params, d, log=print):
         if ref_img is None:
             log("검출 경로  : 단일 사진 (빈 판 기준 %s)" % ref_why)
             log("카메라 이동 보정 없음 · 빈 판 기준 필요")
+            if ref_why != "설정에서 꺼짐":
+                single_warn = "빈 판 기준 무효 · 단일 사진 검출 · " + ref_why
         else:
             log("검출 경로  : 빈 판 기준 차이 + 카메라 이동 보정")
             ref_res = ref_detect(bgr, ref_img, quad, d.get("exclude"), params, mm_px, log)
@@ -411,6 +414,8 @@ def sense_fixed(bgr, params, d, log=print):
             det = ref_res["det"]
         else:
             det = fixed_detect.detect(crop, params, mm_px, valid, ref=None, area_poly=quad_l, log=log)
+            if single_warn:
+                det.warnings.append(single_warn)
         det.wafer.mm_per_px = mm_px
         # 감지 영역 경계 밖이나 제외 영역에 중심이 있는 검출은 결과에서 뺀다(표시도 하지 않는다).
         inside, out = [], 0
@@ -497,6 +502,7 @@ def sense_fixed(bgr, params, d, log=print):
             "sensing: quad %dx%d px  scale x%.3f" % (cw, ch, s)]
     return {"cal": cal, "det": det, "rows": rows, "rect": (u0, v0, u1, v1), "refit": False,
             "vis_crop": vis, "info": info, "quad": [[float(a), float(b)] for a, b in area_cur],
+            "area_ref": [[float(a), float(b)] for a, b in np.asarray(quad, np.float64)],
             "scale": s, "mm_per_px": mm_px, "detect_ms": det.detect_ms, "mode": "fixed",
             "area_only": H is None, "cam": cam, "path": "ref" if ref_res is not None else "single", "path_note": path_note}
 
@@ -1009,12 +1015,15 @@ def ref_detect(cur, ref, area_ref, exclude_ref, params, mm_px, log=print):
     if not A["ok"]:
         out["fail"] = "카메라 이동 큼 · 기준 · 보정 다시 (정렬 실패 · %s)" % A["msg"]
         return out
+    ecc_warn = A["msg"] if A.get("msg") else ""
     if shift_mm > float(cfg["cam_shift_max_mm"]):
         out["fail"] = "카메라 이동 큼 · 기준 · 보정 다시 (%.1f mm > %g mm)" % (shift_mm, float(cfg["cam_shift_max_mm"]))
         return out
     warns = []
     if shift_mm > float(cfg["cam_shift_warn_mm"]):
         warns.append("카메라 이동 %.1f mm (경고 %g mm 초과) · 기준 · 보정 확인" % (shift_mm, float(cfg["cam_shift_warn_mm"])))
+    if ecc_warn:
+        warns.append(ecc_warn)
     if A["resid"] > float(cfg["ref_check_resid"]):
         warns.append("빈 판 기준 다시 촬영 권장 · 정렬 잔차 %.2f" % A["resid"])
     area_cur = area_ref @ M[:, :2].T + M[:, 2]

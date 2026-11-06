@@ -145,6 +145,7 @@
   .btn.busy::before { content: ""; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: spin .9s linear infinite; }
   .ov-rect { fill: none; stroke: #ffd400; stroke-width: calc(2px * var(--ovs, 1)); stroke-dasharray: calc(8px * var(--ovs, 1)) calc(6px * var(--ovs, 1)); }
   .ov-quad { fill: none; stroke: #ffd400; stroke-width: calc(1.2px * var(--ovs, 1)); }
+  .ov-quad.saved { stroke-dasharray: calc(8px * var(--ovs, 1)) calc(5px * var(--ovs, 1)); }
   .ov-head { fill: rgba(255,120,200,.12); stroke: #ff78c8; stroke-width: calc(1.6px * var(--ovs, 1)); }
   .ov-label { font: 600 calc(13px * var(--ovs, 1)) var(--mono); fill: #ffd400; paint-order: stroke; stroke: #0e1418; stroke-width: calc(3px * var(--ovs, 1)); }
   .ov-label.head { fill: #ff78c8; }

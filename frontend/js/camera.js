@@ -36,6 +36,7 @@
     $(live ? 'viewLive' : 'viewSnap').checked = true;
     $('cam').classList.toggle('livemode', live);
     $('live').hidden = !live;
+    if (UI.state) UI.applyCamera(UI.state);
     if (live) {
       if (!liveTimer) liveTimer = setInterval(tick, livePeriod());
       tick();
@@ -187,7 +188,16 @@
 
     // ---- 고정 보정: 감지 영역 사각형(얇은 선) + 라벨은 사각형 밖 ----
     const K = Math.max(1, ((s.frame && s.frame.w) || 1280) / 1280);
-    const quad = s.sensing && s.sensing.quad;
+    // 미리보기 = 지금 저장된 감지 영역, 촬영본 = 그 촬영에 쓴 영역(옛 촬영이면 지금 저장 영역을 점선으로 겹치고 바뀜을 알린다)
+    const saved = ((s.plate && s.plate.data && s.plate.data.area) || null);
+    const savedOk = saved && saved.length === 4;
+    const capQuad = s.sensing && s.sensing.quad;
+    const capRef = s.sensing && s.sensing.area_ref;
+    let quad = live ? (savedOk ? saved : null) : capQuad;
+    let changed = false;
+    if (!live && savedOk && capRef && capRef.length === 4) {
+      changed = capRef.some((p, i) => Math.abs(p[0] - saved[i][0]) > 1 || Math.abs(p[1] - saved[i][1]) > 1);
+    }
     const pq = $('ovQuad');
     if (quad && quad.length === 4) {
       pq.setAttribute('points', quad.map(p => p.join(',')).join(' '));
@@ -195,6 +205,7 @@
     } else {
       pq.setAttribute('points', '');
     }
+    $('ovQuadSaved').setAttribute('points', (changed && savedOk) ? saved.map(p => p.join(',')).join(' ') : '');
     // ---- 헤드 마커 검출 표시 ----
     const gh = $('ovHead');
     gh.textContent = '';
@@ -214,7 +225,7 @@
       const fh = (s.frame && s.frame.h) || 720;
       const up = topP[1] - 8 * K > 14 * K;
       const t = el('text', { class: 'ov-label', x: up ? topP[0] : botP[0], y: up ? topP[1] - 8 * K : Math.min(fh - 4 * K, botP[1] + 18 * K) });
-      t.textContent = '감지 영역';
+      t.textContent = changed ? '감지 영역 바뀜 · 다시 촬영' : '감지 영역';
       gh.appendChild(t);
     }
 
@@ -348,11 +359,17 @@
          + c.corner_rms_mm.toFixed(2) + ' · 최대 ' + c.corner_max_mm.toFixed(2) + ' mm'
          + (c.missing_ids.length ? ' · id' + c.missing_ids.join(',') + ' 미검출' : '')))
       : UI.EMPTY;
-    $('infoRect').textContent = r
-      ? (quad ? ('사각형 ' + (r[2] - r[0]) + '×' + (r[3] - r[1]) + ' px 안')
-              : ('(' + r[0] + ',' + r[1] + ')-(' + r[2] + ',' + r[3] + ') '
-                 + (r[2] - r[0]) + '×' + (r[3] - r[1]) + ' px'))
-      : UI.EMPTY;
+    let rectText = UI.EMPTY;
+    if (live && savedOk) {
+      const xs = saved.map(p => p[0]), ys = saved.map(p => p[1]);
+      rectText = '저장 영역 ' + Math.round(Math.max.apply(null, xs) - Math.min.apply(null, xs)) + '×'
+        + Math.round(Math.max.apply(null, ys) - Math.min.apply(null, ys)) + ' px';
+    } else if (r) {
+      rectText = quad ? ('사각형 ' + (r[2] - r[0]) + '×' + (r[3] - r[1]) + ' px 안')
+                      : ('(' + r[0] + ',' + r[1] + ')-(' + r[2] + ',' + r[3] + ') ' + (r[2] - r[0]) + '×' + (r[3] - r[1]) + ' px');
+      if (changed) rectText = (quad ? (r[2] - r[0]) + '×' + (r[3] - r[1]) + ' px' : rectText) + ' · 바뀜';
+    }
+    $('infoRect').textContent = rectText;
     $('infoWafer').textContent = (w && w.found && w.center_mm)
       ? ('중심 X' + w.center_mm[0].toFixed(1) + ' Y' + w.center_mm[1].toFixed(1)
          + ' · r ' + w.r_px.toFixed(0) + ' px')

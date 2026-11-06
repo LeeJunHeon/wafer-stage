@@ -23,7 +23,13 @@ ALIGN_SCALE = 0.25            # 정렬은 1/4 해상도로
 HP_SIGMA = 10.0               # 고역 통과(원본 - 가우시안 σ10) 뒤 σ1.5 로 다시 흐림
 FAINT_MIN_RATIO = 0.6         # 약한 칩 면적 하한(예상 칩 면적 배)
 RING_RATIO = 1.0              # 약한 칩: 테두리 평균 d / 내부 평균 d 가 이 이상
-RESID_FAIL = 2.5              # 정렬 잔차가 이 이상이면 정렬 실패(경고 기준은 fixed.ref_check_resid)
+# 정렬 잔차 = 기준(M⁻¹·x) 과 현재(x) 고역 영상 차이의 표준편차 / 현재 표준편차. 근거(2026-11-05 정답 6장, 바른 M): 0.23~0.47.
+# 일부러 틀린 M(진짜에서 20 px / 40 px 어긋남): 0.87~0.98 / 1.11~1.31, 항등(이동 14~17 px 장): 0.67~0.97. 그 사이에 둔다.
+GROW_MAX_TAKEN = 0.6          # 대신 당할 후보는 예상 칩 면적의 이 배보다 작은 것(반쪽)만 - 온전한 칩은 건드리지 않는다
+GROW_RATIO = 1.5              # 약한 칩 덩어리가 이미 찾은 후보 면적의 이 배 이상이면 그 후보를 대신한다(반쪽만 잡힌 반투명 칩)
+RESCUE_MAX_ASPECT = 3.0       # 긁힘 떼어 내고 되살린 덩어리의 종횡비 상한(긁힘 덩어리는 길쭉하다)
+RESID_FAIL = 0.75             # 이 이상이면 정렬 실패(바른 최대 0.47 과 틀린 최소 0.87 사이)
+RESID_EARLY = 0.55            # 이보다 작으면 1/4 해상도 결과로 끝낸다(바른 최대 0.47 위)
 MAX_SHIFT_FRAC = 0.12         # 위상 상관 초기값이 프레임의 이 비율보다 크면 정렬 실패로 본다
 
 
@@ -62,14 +68,14 @@ def _align_at(ref, cur, mask, scale):
                                        None if sm is None else sm, 5)
         warp = w2
     except cv2.error as e:
-        out["msg"] = "ECC 실패: %s" % str(e).splitlines()[0][:60]
+        out["msg"] = "정밀 정렬 실패 · 이동만 보정 (%s)" % str(e).splitlines()[0][:50]
         # 위상 상관 초기값만으로 계속(ECC 가 중간에 망가뜨린 변환은 쓰지 않는다)
     Ms = np.asarray(warp, np.float64)
     M = Ms.copy()
     M[:, 2] = Ms[:, 2] / scale                                  # 이동만 원해상도로(회전 · 평행이동은 닮음 변환이라 선형부는 그대로)
     th = math.degrees(math.atan2(M[1, 0], M[0, 0]))
     # 잔차: 정렬한 기준 고역 영상과 현재 고역 영상의 차이
-    wa = cv2.warpAffine(ha, Ms.astype(np.float32), (hb.shape[1], hb.shape[0]), flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
+    wa = cv2.warpAffine(ha, Ms.astype(np.float32), (hb.shape[1], hb.shape[0]), flags=cv2.INTER_LINEAR)   # M = 기준→현재 이므로 기준(M⁻¹·x) = 정방향 warp
     m = np.ones_like(hb, bool) if sm is None else (sm > 0)
     m[:8, :] = m[-8:, :] = False
     m[:, :8] = m[:, -8:] = False
@@ -89,7 +95,7 @@ def align(ref, cur, mask=None, scales=(ALIGN_SCALE, 0.5)):
         a = _align_at(ref, cur, mask, sc)
         if best is None or (a["ok"], not a["msg"], -a["resid"]) > (best["ok"], not best["msg"], -best["resid"]):
             best = a
-        if best["ok"] and best["resid"] < 1.0 and not best["msg"]:
+        if best["ok"] and best["resid"] < RESID_EARLY and not best["msg"]:
             break
     return best
 
@@ -143,7 +149,17 @@ def _fill_holes(m):
     return cv2.bitwise_or(m, holes)
 
 
-def _components(mask, d, exp_area, cfg, offset=(0, 0)):
+def cut_thin(m, L_work, k):
+    """가는 선(긁힘) 떼어 내기: 반지름 r = L_work x k 인 원판으로 열고, 열린 덩어리를 r 만큼만 되살린다(원래 마스크 안에서만 - 칩 모서리는 복원, 긴 긁힘은 뿌리 r 만 남음)."""
+    r = int(round(L_work * float(k)))
+    if r < 2:
+        return m
+    se = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    op = cv2.morphologyEx(m, cv2.MORPH_OPEN, se)
+    return cv2.bitwise_and(cv2.dilate(op, se), m)
+
+
+def _components(mask, d, exp_area, cfg, L_work=60.0):
     """모양 필터를 통과한 후보와 칩 크기 범위 밖 큰 덩어리 수. 후보 dict 는 fixed_detect.components 와 같은 키."""
     ko, kc = int(cfg["ref_open"]), int(cfg["ref_close"])
     m = mask
@@ -181,6 +197,31 @@ def _components(mask, d, exp_area, cfg, offset=(0, 0)):
         (rcx, rcy), (rw, rh), ang = cv2.minAreaRect(hull)
         long_, short_ = max(rw, rh), max(1e-6, min(rw, rh))
         ok = sol >= float(cfg["ref_min_solidity"]) and long_ / short_ <= float(cfg["ref_max_aspect"])
+        if not ok and True:
+            th = cut_thin(sub * 255, L_work, cfg["ref_thin_k"])
+            ys2, xs2 = np.nonzero(th)
+            if len(xs2) >= lo * exp_area:
+                a2 = float(len(xs2))
+                cs2, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+                cnt2 = max(cs2, key=cv2.contourArea)
+                hull2 = cv2.convexHull(cnt2)
+                ha2 = cv2.contourArea(hull2)
+                (_a, _b), (rw2, rh2), ang2 = cv2.minAreaRect(hull2)
+                if ha2 > 1 and a2 / ha2 >= float(cfg["ref_min_solidity"]) and max(rw2, rh2) / max(1e-6, min(rw2, rh2)) <= RESCUE_MAX_ASPECT                         and a2 <= hi * exp_area and float(np.median(d[ys2 + by, xs2 + bx])) >= float(cfg["ref_seed"]):
+                    er2 = cv2.erode(th, np.ones((9, 9), np.uint8))
+                    ring2, inner2 = (th > 0) & (er2 == 0), er2 > 0
+                    dd2 = d[by:by + bh, bx:bx + bw]
+                    if inner2.any() and ring2.any() and float(dd2[ring2].mean()) < float(dd2[inner2].mean()) * RING_RATIO:
+                        out.append({"cx": float(cent[i][0]), "cy": float(cent[i][1]), "area": area, "long": long_, "short": short_,
+                                    "sol": sol, "fill": area / max(1e-6, rw * rh), "asp": long_ / short_, "ok": False,
+                                    "strength": float(np.median(d[np.nonzero(sub)[0] + by, np.nonzero(sub)[1] + bx])), "hull": hull.reshape(-1, 2), "ang": float(ang)})
+                        continue
+                    cy2, cx2 = float(ys2.mean()), float(xs2.mean())
+                    out.append({"cx": cx2 + bx, "cy": cy2 + by, "area": a2, "long": max(rw2, rh2), "short": min(rw2, rh2), "sol": a2 / ha2,
+                                "fill": a2 / max(1e-6, rw2 * rh2), "asp": max(rw2, rh2) / max(1e-6, min(rw2, rh2)), "ok": True,
+                                "strength": float(np.median(d[ys2 + by, xs2 + bx])), "hull": hull2.reshape(-1, 2) + [bx, by], "ang": float(ang2),
+                                "rescued": True})
+                    continue
         ys, xs = np.nonzero(sub)
         out.append({"cx": float(cent[i][0]), "cy": float(cent[i][1]), "area": area, "long": long_, "short": short_,
                     "sol": sol, "fill": area / max(1e-6, rw * rh), "asp": long_ / short_, "ok": ok,
@@ -205,54 +246,71 @@ def drop_near_edge(cands, valid, cfg, L_work):
 
 def faint_chips(d_soft, d_hard, exp_area, taken, cfg, L_work):
     """약한 칩 재탐색: σ2 로 흐린 d 를 낮은 기준으로 다시 이진화해(ref_faint 부터 1.0 위까지) 닫힌 테두리를 면으로 메운 덩어리 중 칩 크기 범위인 것을 찾는다.
-    반투명 칩은 내부 차이가 없고 테두리만 보이므로 테두리가 내부보다 d 가 높아야 한다(ring/inner >= RING_RATIO). 이미 찾은 후보(taken) 근처는 건너뛴다."""
+    반투명 칩은 내부 차이가 없고 테두리만 보이므로 테두리가 내부보다 d 가 높아야 한다(ring/inner >= RING_RATIO). taken = 이미 찾은 후보 (cx, cy, 면적).
+    새 칩은 그대로의 덩어리에서만 찾고, 긁힘을 떼어 낸 덩어리(cut_thin)는 이미 찾은 후보가 칩의 반쪽이었을 때 그 후보를 대신하는 데에만 쓴다(grow)."""
     lo, hi = [float(v) for v in cfg["ref_area_ratio"]]
     lo = max(lo, FAINT_MIN_RATIO)                          # 약한 칩은 작은 얼룩과 구분이 어려워 더 큰 것만
     base = float(cfg["ref_faint"])
     out = []
-    centers = list(taken)
+    centers = [(t[0], t[1]) for t in taken]
+    areas = {i: t[2] for i, t in enumerate(taken)}
+    grown = set()
     for th in (base + 1.0, base + 0.5, base):
-        m = (d_soft > th).astype(np.uint8) * 255
-        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-        m = _fill_holes(m)
-        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-        n, lab, stats, cent = cv2.connectedComponentsWithStats((m > 0).astype(np.uint8), 8)
-        for i in range(1, n):
-            area = float(stats[i, cv2.CC_STAT_AREA])
-            if not (lo * exp_area <= area <= hi * exp_area):
-                continue
-            bw, bh = int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT])
-            if max(bw, bh) > 2.2 * L_work or max(bw, bh) < 0.4 * L_work:
-                continue
-            bx, by = int(stats[i, cv2.CC_STAT_LEFT]), int(stats[i, cv2.CC_STAT_TOP])
-            sub = (lab[by:by + bh, bx:bx + bw] == i).astype(np.uint8)
-            cs, _ = cv2.findContours(sub, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-            if not cs:
-                continue
-            cnt = max(cs, key=cv2.contourArea)
-            hull = cv2.convexHull(cnt)
-            ha = cv2.contourArea(hull)
-            if ha < 1 or area / ha < float(cfg["ref_min_solidity"]):
-                continue
-            (rcx, rcy), (rw, rh), ang = cv2.minAreaRect(hull)
-            long_, short_ = max(rw, rh), max(1e-6, min(rw, rh))
-            if long_ / short_ > float(cfg["ref_max_aspect"]):
-                continue
-            cx, cy = float(cent[i][0]), float(cent[i][1])
-            if any(math.hypot(cx - t[0], cy - t[1]) < 0.6 * L_work for t in centers):
-                continue
-            er = cv2.erode(sub, np.ones((9, 9), np.uint8))
-            ring, inner = (sub > 0) & (er == 0), er > 0
-            if not inner.any() or not ring.any():
-                continue
-            dd = d_soft[by:by + bh, bx:bx + bw]
-            if float(dd[ring].mean()) < float(dd[inner].mean()) * RING_RATIO:
-                continue
-            pts = hull.reshape(-1, 2) + [bx, by]
-            out.append({"cx": cx, "cy": cy, "area": area, "long": long_, "short": short_, "sol": area / ha,
-                        "fill": area / max(1e-6, rw * rh), "asp": long_ / short_, "ok": True,
-                        "strength": float(dd[ring].mean()), "hull": pts, "ang": float(ang)})
-            centers.append((cx, cy))
+        m0 = (d_soft > th).astype(np.uint8) * 255
+        m0 = cv2.morphologyEx(m0, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        m0 = _fill_holes(m0)
+        m0 = cv2.morphologyEx(m0, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        for thin in (False, True):
+            m = cut_thin(m0, L_work, cfg["ref_thin_k"]) if thin else m0
+            n, lab, stats, cent = cv2.connectedComponentsWithStats((m > 0).astype(np.uint8), 8)
+            for i in range(1, n):
+                area = float(stats[i, cv2.CC_STAT_AREA])
+                if not (lo * exp_area <= area <= hi * exp_area):
+                    continue
+                bw, bh = int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT])
+                if max(bw, bh) > 2.2 * L_work or max(bw, bh) < 0.4 * L_work:
+                    continue
+                bx, by = int(stats[i, cv2.CC_STAT_LEFT]), int(stats[i, cv2.CC_STAT_TOP])
+                sub = (lab[by:by + bh, bx:bx + bw] == i).astype(np.uint8)
+                cs, _ = cv2.findContours(sub, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+                if not cs:
+                    continue
+                cnt = max(cs, key=cv2.contourArea)
+                hull = cv2.convexHull(cnt)
+                ha = cv2.contourArea(hull)
+                if ha < 1 or area / ha < float(cfg["ref_min_solidity"]):
+                    continue
+                (rcx, rcy), (rw, rh), ang = cv2.minAreaRect(hull)
+                long_, short_ = max(rw, rh), max(1e-6, min(rw, rh))
+                if long_ / short_ > float(cfg["ref_max_aspect"]):
+                    continue
+                cx, cy = float(cent[i][0]), float(cent[i][1])
+                near = [j for j, t in enumerate(centers) if math.hypot(cx - t[0], cy - t[1]) < 0.6 * L_work]
+                grow_idx = None
+                if near:
+                    # 이미 찾은 후보가 이 덩어리의 일부(테두리가 끊겨 반쪽만 잡힘)면 더 큰 덩어리로 바꾼다
+                    j0 = near[0]
+                    if j0 < len(taken) and len(near) == 1 and j0 not in grown and areas.get(j0, 1e9) < GROW_MAX_TAKEN * exp_area and area >= GROW_RATIO * areas.get(j0, 1e9):
+                        grow_idx = j0
+                    else:
+                        continue
+                elif thin:
+                    continue                                    # 떼어 낸 덩어리는 새 칩을 만들지 않는다(오검출 증가: 164607 · 174202 각 +1)
+                er = cv2.erode(sub, np.ones((9, 9), np.uint8))
+                ring, inner = (sub > 0) & (er == 0), er > 0
+                if not inner.any() or not ring.any():
+                    continue
+                dd = d_soft[by:by + bh, bx:bx + bw]
+                if grow_idx is None and float(dd[ring].mean()) < float(dd[inner].mean()) * RING_RATIO:
+                    continue                                    # 대신하는 덩어리는 이미 모양 · 세기를 통과한 후보를 품고 있어 테두리 검사를 건너뛴다
+                pts = hull.reshape(-1, 2) + [bx, by]
+                out.append({"cx": cx, "cy": cy, "area": area, "long": long_, "short": short_, "sol": area / ha,
+                            "fill": area / max(1e-6, rw * rh), "asp": long_ / short_, "ok": True,
+                            "strength": float(dd[ring].mean()), "hull": pts, "ang": float(ang), "grow": grow_idx})
+                if grow_idx is not None:
+                    grown.add(grow_idx)
+                else:
+                    centers.append((cx, cy))
     return out
 
 
@@ -283,10 +341,13 @@ def detect_crop(crop, ref_crop, valid, mm_px, params, area_poly=None, log=print)
     t_d = time.perf_counter() - t0
     exp_area = 0.35 * Lw_real * Lw_real
     mask = (d > float(cfg["ref_seed"])).astype(np.uint8) * 255
-    cands, big = _components(mask, d, exp_area, cfg)
+    cands, big = _components(mask, d, exp_area, cfg, Lw_real)
     good, n_edge = drop_near_edge([c for c in cands if c["ok"]], vs, cfg, Lw_real)
     soft = cv2.GaussianBlur(d, (0, 0), 2.0)
-    faint, _n2 = drop_near_edge(faint_chips(soft, d, exp_area, [(c["cx"], c["cy"]) for c in good], cfg, Lw_real), vs, cfg, Lw_real)
+    faint, _n2 = drop_near_edge(faint_chips(soft, d, exp_area, [(c["cx"], c["cy"], c["area"]) for c in good], cfg, Lw_real), vs, cfg, Lw_real)
+    drop = {f["grow"] for f in faint if f.get("grow") is not None}
+    if drop:
+        good = [c for i, c in enumerate(good) if i not in drop]
     log("기준 차이  : 채널 σ %s · 후보 %d · 모양 통과 %d · 경계 근처 %d · 약한 칩 %d · 큰 덩어리 %d" % (sig, len(cands), len(good), n_edge, len(faint), big))
     warnings = []
     ap = None if area_poly is None else (np.asarray(area_poly, np.float64) * s).astype(np.float32).reshape(-1, 1, 2)

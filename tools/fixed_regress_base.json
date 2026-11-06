@@ -47,6 +47,18 @@
   "fp": 0,
   "nonpred_hit": 14
  },
+ "seq_20261105_174202": {
+  "hit": 12,
+  "miss": 3,
+  "fp": 0,
+  "nonpred_hit": 12
+ },
+ "seq_20261105_174255": {
+  "hit": 11,
+  "miss": 4,
+  "fp": 0,
+  "nonpred_hit": 11
+ },
  "seq_20261105_164243@ref": {
   "hit": 15,
   "miss": 0,
@@ -70,5 +82,17 @@
   "miss": 0,
   "fp": 0,
   "nonpred_hit": 15
+ },
+ "seq_20261105_174202@ref": {
+  "hit": 15,
+  "miss": 0,
+  "fp": 0,
+  "nonpred_hit": 15
+ },
+ "seq_20261105_174255@ref": {
+  "hit": 14,
+  "miss": 1,
+  "fp": 0,
+  "nonpred_hit": 14
  }
 }
