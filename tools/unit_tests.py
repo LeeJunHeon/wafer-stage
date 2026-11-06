@@ -307,5 +307,62 @@ class PowerTest(unittest.TestCase):
         self.assertFalse(any(self.st._dry_relay))
 
 
+class FakeBufferedCam:
+    """이동 전 프레임 depth 장이 큐에 남은 카메라. content 가 현재 장면, 큐에는 옛 장면(content_old)."""
+
+    def __init__(self, depth, old="이동 전", new="이동 후"):
+        self.q = [old] * depth
+        self.new = new
+        self.cur = None
+
+    def grab(self):
+        self.cur = self.q.pop(0) if self.q else self.new
+        return True
+
+    def retrieve(self):
+        return self.cur
+
+
+class FrameSourceTest(unittest.TestCase):
+    def test_naive_read_returns_stale(self):
+        cam = FakeBufferedCam(4)
+        cam.grab()
+        self.assertEqual(cam.retrieve(), "이동 전")
+
+    def test_frame_after_skips_stale_buffer(self):
+        from core import framesrc
+        cam = FakeBufferedCam(4)
+        fs = framesrc.FrameSource(cam, min_fresh=5)
+        st = fs.frame_after(time.monotonic() - 0.01, timeout_s=2.0)
+        self.assertEqual(st.frame, "이동 후")
+
+    def test_frame_after_waits_for_move_end_time(self):
+        from core import framesrc
+        cam = FakeBufferedCam(0)
+        fs = framesrc.FrameSource(cam, min_fresh=2)
+        t_after = time.monotonic() + 0.3
+        st = fs.frame_after(t_after, timeout_s=3.0)
+        self.assertGreaterEqual(st.t, t_after)
+
+    def test_frame_after_times_out(self):
+        from core import framesrc
+
+        class Dead:
+            def grab(self):
+                return False
+
+            def retrieve(self):
+                return None
+        fs = framesrc.FrameSource(Dead(), min_fresh=2)
+        with self.assertRaises(framesrc.StaleFrameError):
+            fs.frame_after(time.monotonic(), timeout_s=0.3)
+
+    def test_motion_records_last_move_end(self):
+        m, st, sent = make_motion()
+        t0 = time.monotonic()
+        m.move_xy(5, 5)
+        self.assertGreaterEqual(m.last_move_end, t0)
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]] + [a for a in sys.argv[1:]], verbosity=2)

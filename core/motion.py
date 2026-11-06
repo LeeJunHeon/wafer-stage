@@ -13,6 +13,7 @@
 """
 
 import threading
+import time
 
 from core import stage as stage_mod
 from core.stage import StageError, StageGuard, StageTimeout
@@ -44,6 +45,7 @@ class Motion:
         self.on_reboot = None                         # fn(line) - 서버가 wd · 속도 · 가속 재전송, ST · RS 재읽기, 측정 중지
         self._tl = threading.local()
         self.moving = False
+        self.last_move_end = 0.0                      # 마지막 이동이 끝난 단조 시각 - 촬영은 이 시각 이후 프레임만 쓴다
         self.speed_pps = stage_mod.DEFAULT_SPEED_PPS
         self.accel = 40000
         stage.write_guard = self._guard
@@ -191,6 +193,7 @@ class Motion:
                     self._run("Y 이동", lambda: self.stage.move_y_mm(y, deadline_s=self.deadline_s(abs(y - cur["y_mm"]))))
                 finally:
                     self.moving = False
+                    self.last_move_end = time.monotonic()
             return self.stage.status()
 
     def move_z(self, mm):
@@ -199,6 +202,7 @@ class Motion:
             with self.op():
                 cur = self.stage.status().get("z_mm") or 0.0
                 self._run("Z 이동", lambda: self.stage.move_z_mm(mm, deadline_s=self.deadline_s(abs(mm - cur), stage_mod.Z_PPMM)))
+                self.last_move_end = time.monotonic()
             return self.stage.status()
 
     # ---- 조그 · 원점 (회복 동작은 잠금 상태에서도 허용) ----------------
@@ -210,6 +214,7 @@ class Motion:
                     return self._run("조그", lambda: self.stage.jog_rel(axis, mm))
                 finally:
                     self.moving = False
+                    self.last_move_end = time.monotonic()
 
     def register_z_origin(self):
         """Z 원점 등록(회복 2단계). 지금 자리를 Z=0 으로. X · Y 는 위치 확인이 끝나야 믿는다."""
