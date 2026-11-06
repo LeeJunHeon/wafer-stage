@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from core import detect as _legacy          # DetectResult / Wafer 껍데기와 annotate 를 재사용한다(수정 없음)
 
 DEFAULTS = {
     "detector": "fixed",
@@ -97,8 +96,22 @@ def cfg_of(params):
 
 
 @dataclass
-class FixedResult(_legacy.DetectResult):
-    """detect.DetectResult 와 같은 모양 + 진단."""
+class Wafer:
+    """판 배율 껍데기(검출 결과가 쓰는 mm/px 하나)."""
+    found: bool = False
+    surface: str = "plate"
+    mm_per_px: float = 0.0
+    scale_source: str = "settings"
+
+
+@dataclass
+class FixedResult:
+    """검출 결과: 샘플 dict 목록 + 경고 · 안내 + 진단."""
+    wafer: Wafer = field(default_factory=Wafer)
+    samples: list = field(default_factory=list)
+    warnings: list = field(default_factory=list)
+    info: list = field(default_factory=list)
+    detect_ms: float = 0.0
     diag: dict = field(default_factory=dict)
 
 
@@ -457,7 +470,7 @@ def detect(crop, params, mm_px, valid=None, ref=None, area_poly=None, log=print)
     if valid is None:
         valid = np.full((H0, W0), 255, np.uint8)
     res = FixedResult()
-    res.wafer = _legacy.Wafer(found=False, surface="plate", mm_per_px=float(mm_px), scale_source="settings")
+    res.wafer = Wafer(found=False, surface="plate", mm_per_px=float(mm_px), scale_source="settings")
     tm = {}
 
     def scaled(s):

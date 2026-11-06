@@ -323,7 +323,7 @@ def detect_crop(crop, ref_crop, valid, mm_px, params, area_poly=None, log=print)
     cfg = fd.cfg_of(params)
     H0, W0 = crop.shape[:2]
     res = fd.FixedResult()
-    res.wafer = fd._legacy.Wafer(found=False, surface="plate", mm_per_px=float(mm_px), scale_source="settings")
+    res.wafer = fd.Wafer(found=False, surface="plate", mm_per_px=float(mm_px), scale_source="settings")
     L_orig = float(cfg["chip_mm"]) / max(mm_px, 1e-9)
     Lw = float(cfg["work_long_px"])
     s = min(1.0, Lw / L_orig)

@@ -10,7 +10,7 @@
 항목 필드
   key, default, type(int|float|bool|str|enum|xy|list|object), min, max, step,
   unit, tab, group, label(명사형 짧게), tip(…합니다 체 1~2문장),
-  apply("즉시"|"다음 촬영"|"재연결"|"다음 순회"), advanced(bool),
+  apply("즉시"|"다음 촬영"|"재연결"|"다음 측정"), advanced(bool),
   validate(교차 검증 함수 이름), options(enum), editor(전용 편집기),
   hidden(화면에 안 보임 - 다른 값에서 유도), pick(xy: 현재 위치 넣기),
   nullable(None 허용), item(list 원소 타입), warn(바꾸면 경고 대화상자)
@@ -22,7 +22,7 @@
 import copy
 import math
 
-import recipe
+import conditions
 from core import fixed_detect as fd
 from core import zones as zones_mod
 
@@ -30,15 +30,15 @@ TABS = [
     ("camera", "카메라"),
     ("stage", "스테이지"),
     ("position", "위치"),
-    ("photohome", "사진 호밍"),
+    ("photohome", "위치 확인"),
     ("tool", "공구"),
     ("relay", "릴레이"),
     ("measure", "측정 장비"),
-    ("recipe", "측정 순서"),
+    ("condition", "측정 순서"),
     ("detect", "검출"),
     ("advanced", "고급"),
 ]
-APPLY = ("즉시", "다음 촬영", "재연결", "다음 순회")
+APPLY = ("즉시", "다음 촬영", "재연결", "다음 측정")
 
 PLATE_MARKER_DEFAULT = {"0": [201, 160], "1": [201, 19], "2": [15, 160], "3": [15, 20]}
 TOOL_POINTER = "기준 포인터"
@@ -125,42 +125,28 @@ ITEMS = [
     I("capture_frames", 3, "int", "camera", "촬영", "촬영 프레임 수",
       "한 장을 찍을 때 연속으로 받아 가장 선명한 장을 고르는 프레임 수입니다. 고해상도는 프레임당 시간이 길어 적게 잡습니다.",
       min=1, max=60, step=1, apply="다음 촬영"),
-    I("bracket", False, "bool", "camera", "촬영", "노출 브라케팅",
-      "노출을 바꿔 여러 장을 받아 감지 영역만 융합합니다. 끄면 고정 노출 한 장입니다. 함체 안 조명이 일정하면 끄고, 한쪽에서 강한 빛이 들어오는 환경에서 켭니다.",
-      apply="다음 촬영"),
-    I("bracket_exposure", [], "list", "camera", "촬영", "브라케팅 노출 목록",
-      "쉼표로 구분한 노출값입니다. 비우면 밝기를 보며 자동으로 정합니다.",
-      item="float", apply="다음 촬영"),
-    I("bracket_settle_s", 0.4, "float", "camera", "촬영", "브라케팅 안정 대기",
-      "노출을 바꾼 뒤 장을 받기 전에 기다리는 시간입니다.",
-      min=0, max=5, step=0.1, unit="s", apply="다음 촬영"),
-    I("flat_field", True, "bool", "camera", "촬영", "조명 평탄화",
-      "감지영역의 종이를 흰색 기준으로 조명 기울기와 화이트밸런스를 바로잡습니다. 고정 보정에서는 기준이 없어 건너뜁니다.",
-      apply="다음 촬영"),
     I("capture_retries", 2, "int", "camera", "촬영", "촬영 재시도",
       "촬영 중 프레임이 끊기면 카메라를 다시 열고 이만큼 다시 찍습니다.",
       min=0, max=10, step=1, apply="다음 촬영"),
-    I("preview_fps", 4.0, "float", "camera", "미리보기 · 복구", "미리보기 주기",
-      "미리보기 그림을 새로 만드는 빈도입니다.",
+    I("preview_fps", 4.0, "float", "camera", "실시간 · 복구", "실시간 주기",
+      "실시간 그림을 새로 만드는 빈도입니다.",
       min=0.5, max=15, step=0.5, unit="fps"),
-    I("preview_max_w", 1280, "int", "camera", "미리보기 · 복구", "미리보기 최대 가로",
-      "미리보기 그림을 이 가로 폭 이하로 줄여 보냅니다. 촬영과 검출은 원본 해상도로 합니다.",
+    I("preview_max_w", 1280, "int", "camera", "실시간 · 복구", "실시간 최대 가로",
+      "실시간 그림을 이 가로 폭 이하로 줄여 보냅니다. 촬영과 검출은 원본 해상도로 합니다.",
       min=320, max=4096, step=10, unit="px"),
-    I("cam_first_frame_s", 5.0, "float", "camera", "미리보기 · 복구", "첫 프레임 대기",
+    I("cam_first_frame_s", 5.0, "float", "camera", "실시간 · 복구", "첫 프레임 대기",
       "카메라를 연 뒤 첫 프레임을 기다리는 최대 시간입니다. 4백만 화소를 넘으면 두 배로 기다립니다.",
       min=1, max=60, step=0.5, unit="s", advanced=True),
-    I("cam_fail_limit", 3, "int", "camera", "미리보기 · 복구", "연속 실패 허용",
+    I("cam_fail_limit", 3, "int", "camera", "실시간 · 복구", "연속 실패 허용",
       "프레임을 이만큼 연속으로 못 받으면 카메라를 닫고 다시 엽니다.",
       min=1, max=30, step=1),
-    I("cam_reopen_s", 5.0, "float", "camera", "미리보기 · 복구", "재개방 대기",
+    I("cam_reopen_s", 5.0, "float", "camera", "실시간 · 복구", "재개방 대기",
       "카메라를 닫은 뒤 다시 열기까지 기다리는 시간입니다. 실패가 이어지면 두 배씩 늘립니다.",
       min=0.5, max=120, step=0.5, unit="s"),
-    I("cam_reopen_max_s", 30.0, "float", "camera", "미리보기 · 복구", "재개방 대기 최대",
+    I("cam_reopen_max_s", 30.0, "float", "camera", "실시간 · 복구", "재개방 대기 최대",
       "재개방 대기가 늘어날 수 있는 최대 시간입니다.",
       min=1, max=600, step=1, unit="s", advanced=True),
     # 유도 값(화면에 없음): focus_mode / exposure 에서 만든다
-    I("autofocus", True, "bool", "camera", "초점", "자동 초점", "", hidden=True),
-    I("auto_exposure", True, "bool", "camera", "장치", "자동 노출", "", hidden=True),
 
     # ---------------- 스테이지 ----------------
     I("serial_port", None, "str", "stage", "연결", "시리얼 포트",
@@ -219,29 +205,29 @@ ITEMS = [
       min=1, max=30, step=0.5, unit="s", apply="재연결", advanced=True),
 
     # ---------------- 위치 ----------------
-    I("park_xy", [0.0, 90.0], "xy", "position", "자리", "파킹 위치",
-      "순회가 끝나고 쉬는 자리입니다.", pick=True, validate="xy_in_limits", unit="mm"),
+    I("park_xy", [0.0, 90.0], "xy", "position", "자리", "대기 위치 위치",
+      "측정가 끝나고 쉬는 자리입니다.", pick=True, validate="xy_in_limits", unit="mm"),
     I("capture_xy", [0.0, 90.0], "xy", "position", "자리", "촬영 위치",
       "촬영할 때 스테이지가 가는 자리입니다. 히트건이 웨이퍼를 가리지 않는 곳으로 둡니다.",
       pick=True, validate="xy_in_limits", unit="mm", apply="다음 촬영"),
-    I("after_run", "park", "enum", "position", "자리", "순회 후 갈 곳",
-      "순회가 끝나거나 정지했을 때 Z 를 올린 뒤 가는 곳입니다.",
-      options=[{"value": "park", "label": "파킹 위치"},
+    I("after_run", "park", "enum", "position", "자리", "측정 후 갈 곳",
+      "측정가 끝나거나 정지했을 때 Z 를 올린 뒤 가는 곳입니다.",
+      options=[{"value": "park", "label": "대기 위치 위치"},
                {"value": "capture", "label": "촬영 위치"},
                {"value": "origin", "label": "원점"},
-               {"value": "stay", "label": "그 자리"}], apply="다음 순회"),
+               {"value": "stay", "label": "그 자리"}], apply="다음 측정"),
     I("flow.capture_lift_z", True, "bool", "position", "촬영 흐름", "촬영 전 Z 올리기",
       "촬영 위치로 가기 전에 Z 를 맨 위로 올립니다.", apply="다음 촬영"),
     I("flow.capture_goto", True, "bool", "position", "촬영 흐름", "촬영 위치로 이동",
       "촬영 전에 촬영 위치로 갑니다. 끄면 지금 자리에서 찍습니다.", apply="다음 촬영"),
     I("flow.require_fresh_capture", False, "bool", "position", "촬영 흐름",
-      "순회 전 새 촬영 요구", "한 번 순회한 촬영으로는 다시 순회하지 않고 새 촬영을 요구합니다.",
-      apply="다음 순회"),
-    I("flow.after_photo", False, "bool", "position", "촬영 흐름", "순회 후 확인 촬영",
-      "순회가 끝나면 촬영 위치로 가서 한 장 더 찍어 같은 폴더에 남깁니다.",
-      apply="다음 순회"),
+      "측정 전 새 촬영 요구", "한 번 측정한 촬영으로는 다시 측정하지 않고 새 촬영을 요구합니다.",
+      apply="다음 측정"),
+    I("flow.after_photo", False, "bool", "position", "촬영 흐름", "측정 후 확인 촬영",
+      "측정가 끝나면 촬영 위치로 가서 한 장 더 찍어 같은 폴더에 남깁니다.",
+      apply="다음 측정"),
 
-    # ---------------- 사진 호밍 ----------------
+    # ---------------- 위치 확인 ----------------
     I("photohome.marker_id", 10, "int", "photohome", "헤드 마커", "헤드 마커 번호",
       "Z 모터 윗면에 붙인 ArUco 마커 번호입니다. 판 마커 번호와 겹치면 안 됩니다.",
       min=0, max=49, step=1, validate="head_id"),
@@ -257,19 +243,17 @@ ITEMS = [
       "허용 오차와 이 값 사이면 자동으로 바로잡고, 넘으면 확인을 받습니다.",
       min=0.1, max=100, step=0.5, unit="mm"),
     I("photohome.on_connect", True, "bool", "photohome", "자동 확인", "연결 직후 위치 판단",
-      "스테이지를 연결하면 이동 없이 한 장 찍어 헤드 마커로 위치를 판단합니다. 헤드 보정이 유효할 때만 합니다.",
+      "스테이지를 연결하면 이동 없이 한 장 찍어 헤드 마커로 위치를 판단합니다. 헤드 위치 보정이 유효할 때만 합니다.",
       apply="재연결"),
     I("photohome.edge_margin_px", 0, "int", "photohome", "판정", "화면 끝 여백",
       "헤드 마커가 화면 가장자리에서 이만큼 안쪽에 걸치면 결과를 쓰지 않습니다. 0 이면 프레임 짧은 변의 3% 입니다.",
       min=0, max=1000, step=1, unit="px"),
-    I("photohome.before_capture", True, "bool", "photohome", "자동 확인", "촬영 전 자동 확인",
-      "촬영 위치에 도착하면 헤드 마커로 위치를 확인합니다.", apply="다음 촬영"),
     I("photohome.after_move", False, "bool", "photohome", "자동 확인", "샘플 이동 후 재확인",
-      "순회 중 샘플 위에 도착할 때마다 헤드 마커로 위치를 확인합니다.", apply="다음 순회"),
+      "측정 중 샘플 위에 도착할 때마다 헤드 마커로 위치를 확인합니다.", apply="다음 측정"),
     I("photohome.after_move_fail", "stop", "enum", "photohome", "자동 확인", "재확인 실패 시",
       "한 번 바로잡아도 허용 오차를 넘을 때의 동작입니다.",
       options=[{"value": "stop", "label": "정지"}, {"value": "continue", "label": "경고 후 계속"}],
-      apply="다음 순회"),
+      apply="다음 측정"),
     I("photohome.grid_n", 3, "int", "photohome", "보정", "보정 격자",
       "헤드 마커 보정 때 X·Y 로 나누는 점 수입니다(n×n).", min=2, max=7, step=1),
     I("photohome.grid_margin_mm", 20.0, "float", "photohome", "보정", "격자 여백",
@@ -286,14 +270,14 @@ ITEMS = [
 
     # ---------------- 공구 ----------------
     I("tool.items", _tools_default(), "list", "tool", "공구 목록", "공구",
-      "공구마다 오프셋(기준 포인터 대비) · 작업 높이 · 끝 모양입니다. 끝 모양은 촬영본에 실제 크기로 그려지고 샘플 윤곽 안에 들어가는지 검사합니다(각도는 스테이지 기준: 0 = 긴 변이 스테이지 X 축, 90 = Y 축 — 카메라 방향이 바뀌어도 실물 방향이 그대로입니다. 판 보정이 없을 때만 사진 기준 예비값 tip_angle_img_deg 를 씁니다). 기준 포인터는 지울 수 없습니다.",
-      editor="tools", validate="tools", apply="다음 순회"),
+      "공구마다 오프셋(기준 포인터 대비) · 작업 높이 · 끝 모양입니다. 끝 모양은 촬영 사진에 실제 크기로 그려지고 샘플 윤곽 안에 들어가는지 검사합니다(각도는 스테이지 기준: 0 = 긴 변이 스테이지 X 축, 90 = Y 축 — 카메라 방향이 바뀌어도 실물 방향이 그대로입니다. 좌표 보정이 없을 때만 사진 기준 예비값 tip_angle_img_deg 를 씁니다). 기준 포인터는 지울 수 없습니다.",
+      editor="tools", validate="tools", apply="다음 측정"),
     I("tool.fit_margin_mm", 0.3, "float", "tool", "공구 목록", "끝 모양 맞음 여유",
-      "공구 끝 모양이 샘플 윤곽을 이만큼까지 벗어나는 것은 봐줍니다. 더 벗어나면 샘플에 핀 벗어남을 표시하고 순회 전에 확인을 받습니다.",
+      "공구 끝 모양이 샘플 윤곽을 이만큼까지 벗어나는 것은 봐줍니다. 더 벗어나면 샘플에 핀 벗어남을 표시하고 측정 전에 확인을 받습니다.",
       min=0, max=5, step=0.1, unit="mm", apply="즉시"),
     I("tool.active", TOOL_POINTER, "str", "tool", "공구 목록", "활성 공구",
-      "순회와 샘플 이동이 오프셋을 적용할 공구입니다.",
-      editor="tool_active", validate="tool_active", apply="다음 순회"),
+      "측정와 샘플 이동이 오프셋을 적용할 공구입니다.",
+      editor="tool_active", validate="tool_active", apply="다음 측정"),
 
     # ---------------- 릴레이 ----------------
     I("relay.items", _relays_default(), "list", "relay", "릴레이", "릴레이",
@@ -301,10 +285,10 @@ ITEMS = [
       editor="relays", validate="relays"),
     I("relay.on_estop", "off", "enum", "relay", "정책", "비상정지 시",
       "비상정지 때 켜진 릴레이를 어떻게 할지 정합니다.", options=POLICY_OPTS),
-    I("relay.on_stop", "off", "enum", "relay", "정책", "정지 · 순회 종료 시",
-      "순회가 정지하거나 끝났을 때의 처리입니다.", options=POLICY_OPTS),
+    I("relay.on_stop", "off", "enum", "relay", "정책", "정지 · 측정 종료 시",
+      "측정가 정지하거나 끝났을 때의 처리입니다.", options=POLICY_OPTS),
     I("relay.on_error", "off", "enum", "relay", "정책", "오류 시",
-      "순회가 오류로 멈췄을 때의 처리입니다.", options=POLICY_OPTS),
+      "측정가 오류로 멈췄을 때의 처리입니다.", options=POLICY_OPTS),
     I("relay.on_exit", "off", "enum", "relay", "정책", "종료 · 연결 해제 시",
       "프로그램 종료나 스테이지 연결 해제 때의 처리입니다.", options=POLICY_OPTS),
     I("relay.watchdog_ms", 5000, "int", "relay", "통신 감시", "통신 감시 시간",
@@ -330,26 +314,26 @@ ITEMS = [
     I("contact.di_active_high", False, "bool", "measure", "접촉", "HIGH 가 접촉",
       "켜면 핀이 HIGH 일 때 접촉, 끄면 LOW 일 때 접촉입니다.", apply="즉시", show_if={"contact.driver": "di"}),
     I("cooler.zones", zones_mod.default_zones(), "object", "measure", "쿨러 구역",
-      "쿨러 구역", "판 사각형 좌표(mm, 0~감지 영역 실제 크기)를 행 × 열로 나눈 칸마다 쿨러 번호(표시용) · 릴레이 번호 · 이름입니다(행 우선, 사진 기준 위에서 아래 · 왼쪽에서 오른쪽). 샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러입니다. 칸을 눌러 지정하고 경계는 mm 로 입력하거나 미리보기에서 끕니다.",
+      "쿨러 구역", "판 사각형 좌표(mm, 0~판 영역 실제 크기)를 행 × 열로 나눈 칸마다 쿨러 번호(표시용) · 릴레이 번호 · 이름입니다(행 우선, 사진 기준 위에서 아래 · 왼쪽에서 오른쪽). 샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러입니다. 칸을 눌러 지정하고 경계는 mm 로 입력하거나 실시간에서 끕니다.",
       editor="zones", validate="zones", apply="즉시"),
     I("cooler.mode", "sample", "enum", "measure", "쿨러 구역", "쿨러 켜는 범위",
-      "샘플은 그 샘플의 쿨러만, 전부는 레시피의 쿨러 단계에서 9개 전부를 켭니다.",
-      options=[{"value": "sample", "label": "그 샘플만"}, {"value": "all", "label": "전부"}], apply="다음 순회"),
+      "샘플은 그 샘플의 쿨러만, 전부는 측정 조건의 쿨러 단계에서 9개 전부를 켭니다.",
+      options=[{"value": "sample", "label": "그 샘플만"}, {"value": "all", "label": "전부"}], apply="다음 측정"),
     I("cooler.keep_on", True, "bool", "measure", "쿨러 구역", "샘플이 끝나도 켜 둠",
-      "켜면 샘플이 끝나도 쿨러를 그대로 둡니다(다음 샘플이 같은 구역이면 그대로, 다르면 다음 샘플의 쿨러 단계가 바꿉니다). 순회 종료 · 정지 때는 릴레이 정책을 따릅니다.",
-      apply="다음 순회"),
+      "켜면 샘플이 끝나도 쿨러를 그대로 둡니다(다음 샘플이 같은 구역이면 그대로, 다르면 다음 샘플의 쿨러 단계가 바꿉니다). 측정 종료 · 정지 때는 릴레이 정책을 따릅니다.",
+      apply="다음 측정"),
     I("heater.relay", 10, "int", "measure", "히트건", "히트건 릴레이",
-      "히트건 전원 릴레이 번호입니다. 이 릴레이는 레시피의 가열 단계만 켭니다.", min=1, max=10, step=1,
-      apply="다음 순회"),
+      "히트건 전원 릴레이 번호입니다. 이 릴레이는 측정 조건의 가열 단계만 켭니다.", min=1, max=10, step=1,
+      apply="다음 측정"),
     I("heater.max_c", 300.0, "float", "measure", "히트건", "과열 보호 온도",
-      "히트건이 켜진 동안 온도가 이 값을 넘으면 즉시 끄고 순회를 중단합니다.", min=30, max=600, step=5, unit="°C",
+      "히트건이 켜진 동안 온도가 이 값을 넘으면 즉시 끄고 측정를 중단합니다.", min=30, max=600, step=5, unit="°C",
       apply="즉시"),
     I("heater.sensor_fail_n", 3, "int", "measure", "히트건", "센서 오류 허용 횟수",
-      "히트건이 켜진 동안 온도 센서 오류가 이만큼 연속되면 즉시 끄고 순회를 중단합니다.", min=1, max=100, step=1,
+      "히트건이 켜진 동안 온도 센서 오류가 이만큼 연속되면 즉시 끄고 측정를 중단합니다.", min=1, max=100, step=1,
       apply="즉시"),
     I("measure.sample_period_s", 0.0, "float", "measure", "기록", "측정값 기록 주기",
       "기록 구간에서 이 주기로 계측기 측정을 불러 기록합니다. 0 이면 기록 구간 중에는 측정하지 않습니다.",
-      min=0, max=3600, step=0.5, unit="s", apply="다음 순회"),
+      min=0, max=3600, step=0.5, unit="s", apply="다음 측정"),
     I("sim.time_scale", 1.0, "float", "measure", "시뮬레이터(테스트용)", "시간 배율",
       "더미 열 모델과 접촉 · 온도 대기 · 가열 · 기록 단계의 시간을 이 배율로 빠르게 합니다(검증용, 1 = 실시간).",
       min=0.1, max=1000, step=0.5, apply="즉시", advanced=True),
@@ -376,40 +360,26 @@ ITEMS = [
       apply="즉시", advanced=True),
 
     # ---------------- 측정 순서 ----------------
-    I("recipe.items", [recipe.default_recipe(), recipe.default_heat_recipe()], "list", "recipe", "레시피", "레시피",
+    I("condition.items", [conditions.default_condition(), conditions.default_heat_condition()], "list", "condition", "측정 조건", "측정 조건",
       "샘플마다 실행할 단계 순서입니다. 첫 단계는 샘플 위로 이동입니다.",
-      editor="recipes", validate="recipes", apply="다음 순회"),
-    I("recipe.active", recipe.DEFAULT_NAME, "str", "recipe", "레시피", "활성 레시피",
-      "순회가 쓸 레시피입니다.", editor="recipe_active", validate="recipe_active",
-      apply="다음 순회"),
-    I("measure.driver", "dummy", "enum", "recipe", "계측기", "계측기 드라이버",
+      editor="conditions", validate="conditions", apply="다음 측정"),
+    I("condition.active", conditions.DEFAULT_NAME, "str", "condition", "측정 조건", "활성 측정 조건",
+      "측정가 쓸 측정 조건입니다.", editor="condition_active", validate="condition_active",
+      apply="다음 측정"),
+    I("measure.driver", "dummy", "enum", "condition", "계측기", "계측기 드라이버",
       "측정 단계가 부르는 계측기입니다. 지금은 값 없이 통과하는 더미뿐입니다.",
-      options=[{"value": "dummy", "label": "더미"}], apply="다음 순회"),
+      options=[{"value": "dummy", "label": "더미"}], apply="다음 측정"),
 
     # ---------------- 검출 ----------------
-    I("stat_seed", 25.0, "float", "detect", "판정", "검출 씨앗 임계",
-      "잡음으로 정규화한 Lab 잔차의 d² 가 이 값을 넘는 곳이 샘플의 씨앗입니다(χ²(3) 25 ≈ 1e-5).",
-      min=1, max=500, step=1, unit="d²", apply="다음 촬영"),
-    I("stat_grow", 12.0, "float", "detect", "판정", "검출 확장 임계",
-      "씨앗에서 이어 붙이는 화소의 d² 하한입니다. 씨앗 임계보다 작아야 합니다.",
-      min=1, max=500, step=1, unit="d²", apply="다음 촬영", validate="seed_grow"),
-    I("calib.mode", "fixed", "enum", "detect", "보정 방식", "보정 방식",
-      "고정은 판 마커 없이 저장한 감지 영역 · 판 보정으로 좌표를 만듭니다. 마커는 판 마커 4개를 매번 찍어 보정하는 예전 방식입니다.",
-      options=[{"value": "fixed", "label": "고정"}, {"value": "markers", "label": "판 마커"}],
-      apply="다음 촬영"),
-    I("calib.residual_limit_mm", 1.0, "float", "detect", "보정 방식", "판 보정 잔차 한계",
-      "판 보정 점의 잔차가 이 값을 넘으면 빨갛게 표시합니다.",
+    I("calib.residual_limit_mm", 1.0, "float", "detect", "보정 방식", "좌표 보정 잔차 한계",
+      "좌표 보정 점의 잔차가 이 값을 넘으면 빨갛게 표시합니다.",
       min=0.05, max=20, step=0.05, unit="mm", apply="다음 촬영"),
-    I("calib.area_margin_mm", 1.0, "float", "detect", "보정 방식", "감지 영역 경계 여유",
-      "고정 보정에서 감지 영역 경계에 이만큼보다 가까이 닿은 검출은 버립니다. 새겨진 선이나 경계 이음매가 칩으로 잡히는 것을 막습니다.",
+    I("calib.area_margin_mm", 1.0, "float", "detect", "보정 방식", "판 영역 경계 여유",
+      "고정 보정에서 판 영역 경계에 이만큼보다 가까이 닿은 검출은 버립니다. 새겨진 선이나 경계 이음매가 칩으로 잡히는 것을 막습니다.",
       min=0, max=10, step=0.1, unit="mm", apply="다음 촬영"),
     I("calib.est_mm_per_px", 0.143, "float", "detect", "보정 방식", "대략 배율",
-      "감지 영역이 없을 때만 쓰는 예비 배율입니다. 감지 영역이 있으면 감지 영역 실제 크기로, 판 보정을 하면 보정값을 씁니다.",
+      "판 영역이 없을 때만 쓰는 예비 배율입니다. 판 영역이 있으면 판 영역 실제 크기로, 좌표 보정을 하면 보정값을 씁니다.",
       min=0.005, max=1.0, step=0.001, unit="mm/px", apply="다음 촬영"),
-    I("fixed.detector", "fixed", "enum", "detect", "고정 환경 검출", "검출기",
-      "고정은 천장 고정 카메라 · 판 위 샘플 · 격자 배치 전용 검출기입니다. 기존은 웨이퍼·철판 일반 검출기입니다.",
-      options=[{"value": "fixed", "label": "고정 환경"}, {"value": "legacy", "label": "기존"}],
-      apply="다음 촬영", show_if={"calib.mode": "fixed"}),
     I("fixed.layout", "auto", "enum", "detect", "고정 환경 검출", "배치",
       "자동은 격자 맞춤의 인라이어가 후보의 일정 비율 이상일 때만 격자를 쓰고 아니면 자유 배치로 검출합니다. 격자는 격자 예측으로 빈 칸을 채우되 조건을 못 넘으면 예측 없이 자유 배치로 냅니다. 자유는 검출된 것만 냅니다.",
       options=[{"value": "auto", "label": "자동"}, {"value": "grid", "label": "격자"}, {"value": "free", "label": "자유"}],
@@ -429,37 +399,37 @@ ITEMS = [
     I("fixed.grid_min_ratio", 0.8, "float", "detect", "고정 환경 검출", "격자 인라이어 비율",
       "자동 배치: 격자 맞춤의 인라이어 / 후보가 이 값 이상이고 인라이어가 행 × 열 × 0.6 이상일 때만 격자를 씁니다.",
       min=0.3, max=1, step=0.05, apply="다음 촬영", advanced=True, show_if={"calib.mode": "fixed"}),
-    I("fixed.use_ref", True, "bool", "detect", "고정 환경 검출", "빈 판 기준 사용",
-      "감지 영역 탭에서 찍은 빈 판 기준 사진이 유효하면 기준과의 차이로 칩을 찾고, 촬영마다 카메라 이동도 보정합니다. 기준이 없거나 무효면 단일 사진으로 검출합니다.",
+    I("fixed.use_ref", True, "bool", "detect", "고정 환경 검출", "빈 판 사진 사용",
+      "판 영역 탭에서 찍은 빈 판 사진 사진이 유효하면 기준과의 차이로 칩을 찾고, 촬영마다 카메라 이동도 보정합니다. 기준이 없거나 무효면 단일 사진으로 검출합니다.",
       apply="다음 촬영", show_if={"calib.mode": "fixed"}),
-    I("fixed.ref_seed", fd.DEFAULTS["ref_seed"], "float", "detect", "빈 판 기준 차이", "차이 임계(d)",
+    I("fixed.ref_seed", fd.DEFAULTS["ref_seed"], "float", "detect", "빈 판 사진 차이", "차이 임계(d)",
       "기준과의 차이 d 가 이 값을 넘는 곳이 후보입니다.", min=1, max=30, step=0.1, apply="다음 촬영", advanced=True,
       show_if={"calib.mode": "fixed"}),
-    I("fixed.ref_faint", fd.DEFAULTS["ref_faint"], "float", "detect", "빈 판 기준 차이", "약한 칩 임계",
+    I("fixed.ref_faint", fd.DEFAULTS["ref_faint"], "float", "detect", "빈 판 사진 차이", "약한 칩 임계",
       "σ2 로 흐린 차이 d 가 이 값을 넘고 닫힌 테두리를 이루는 덩어리를 약한 칩(보완)으로 더합니다.", min=0.5, max=10, step=0.1,
       apply="다음 촬영", advanced=True, show_if={"calib.mode": "fixed"}),
-    I("fixed.ref_area_ratio", list(fd.DEFAULTS["ref_area_ratio"]), "list", "detect", "빈 판 기준 차이", "면적 범위(배)",
+    I("fixed.ref_area_ratio", list(fd.DEFAULTS["ref_area_ratio"]), "list", "detect", "빈 판 사진 차이", "면적 범위(배)",
       "예상 칩 면적의 [하한 배, 상한 배]입니다.", item="float", apply="다음 촬영", advanced=True, show_if={"calib.mode": "fixed"}),
-    I("fixed.ref_min_solidity", fd.DEFAULTS["ref_min_solidity"], "float", "detect", "빈 판 기준 차이", "최소 볼록도",
+    I("fixed.ref_min_solidity", fd.DEFAULTS["ref_min_solidity"], "float", "detect", "빈 판 사진 차이", "최소 볼록도",
       "후보의 면적 / 볼록껍질 면적 하한입니다.", min=0.3, max=1, step=0.01, apply="다음 촬영", advanced=True, show_if={"calib.mode": "fixed"}),
-    I("fixed.ref_max_aspect", fd.DEFAULTS["ref_max_aspect"], "float", "detect", "빈 판 기준 차이", "최대 종횡비",
+    I("fixed.ref_max_aspect", fd.DEFAULTS["ref_max_aspect"], "float", "detect", "빈 판 사진 차이", "최대 종횡비",
       "후보의 최소외접사각형 긴 변 / 짧은 변 상한입니다.", min=1, max=20, step=0.1, apply="다음 촬영", advanced=True, show_if={"calib.mode": "fixed"}),
-    I("fixed.ref_open", fd.DEFAULTS["ref_open"], "int", "detect", "빈 판 기준 차이", "열기 커널",
+    I("fixed.ref_open", fd.DEFAULTS["ref_open"], "int", "detect", "빈 판 사진 차이", "열기 커널",
       "이진화 뒤 open 커널 크기(px)입니다.", min=1, max=21, step=2, apply="다음 촬영", advanced=True, show_if={"calib.mode": "fixed"}),
-    I("fixed.ref_close", fd.DEFAULTS["ref_close"], "int", "detect", "빈 판 기준 차이", "닫기 커널",
+    I("fixed.ref_close", fd.DEFAULTS["ref_close"], "int", "detect", "빈 판 사진 차이", "닫기 커널",
       "이진화 뒤 close 커널 크기(px)입니다. 반투명 칩의 얇은 테두리를 이어 붙입니다.", min=1, max=31, step=2, apply="다음 촬영", advanced=True,
       show_if={"calib.mode": "fixed"}),
-    I("fixed.ref_thin_k", fd.DEFAULTS["ref_thin_k"], "float", "detect", "빈 판 기준 차이", "긁힘 떼어 내기(칩 길이 배)",
+    I("fixed.ref_thin_k", fd.DEFAULTS["ref_thin_k"], "float", "detect", "빈 판 사진 차이", "긁힘 떼어 내기(칩 길이 배)",
       "덩어리에서 이 배보다 가는 선(칩 꼭짓점을 지나는 긁힘)을 원판 열기로 떼어 낸 뒤 모양(볼록도 · 면적)을 판정합니다. 0 이면 끕니다.",
       min=0, max=0.3, step=0.01, apply="다음 촬영", advanced=True, show_if={"calib.mode": "fixed"}),
-    I("fixed.ref_edge_k", fd.DEFAULTS["ref_edge_k"], "float", "detect", "빈 판 기준 차이", "경계 근처 제외(칩 길이 배)",
-      "감지 영역 경계에서 칩 길이의 이 배 안에 닿은 후보는 칩이 아니라고 봅니다(새겨진 선 · 레일).", min=0, max=2, step=0.1,
+    I("fixed.ref_edge_k", fd.DEFAULTS["ref_edge_k"], "float", "detect", "빈 판 사진 차이", "경계 근처 제외(칩 길이 배)",
+      "판 영역 경계에서 칩 길이의 이 배 안에 닿은 후보는 칩이 아니라고 봅니다(새겨진 선 · 레일).", min=0, max=2, step=0.1,
       apply="다음 촬영", advanced=True, show_if={"calib.mode": "fixed"}),
-    I("fixed.ref_check_blobs", fd.DEFAULTS["ref_check_blobs"], "int", "detect", "빈 판 기준 차이", "기준 점검 · 큰 덩어리 수",
-      "칩 크기 밖의 큰 차이 덩어리가 이보다 많으면 빈 판 기준 다시 촬영을 권장합니다.", min=1, max=100, step=1, apply="다음 촬영", advanced=True,
+    I("fixed.ref_check_blobs", fd.DEFAULTS["ref_check_blobs"], "int", "detect", "빈 판 사진 차이", "기준 점검 · 큰 덩어리 수",
+      "칩 크기 밖의 큰 차이 덩어리가 이보다 많으면 빈 판 사진 다시 촬영을 권장합니다.", min=1, max=100, step=1, apply="다음 촬영", advanced=True,
       show_if={"calib.mode": "fixed"}),
-    I("fixed.ref_check_resid", fd.DEFAULTS["ref_check_resid"], "float", "detect", "빈 판 기준 차이", "기준 점검 · 정렬 잔차",
-      "정렬 잔차가 이보다 크면 빈 판 기준 다시 촬영을 권장합니다(0.75 이상이면 정렬 실패). 바른 정렬은 0.23~0.47, 틀린 정렬은 0.87 이상입니다.", min=0.1, max=0.74, step=0.05, apply="다음 촬영",
+    I("fixed.ref_check_resid", fd.DEFAULTS["ref_check_resid"], "float", "detect", "빈 판 사진 차이", "기준 점검 · 정렬 잔차",
+      "정렬 잔차가 이보다 크면 빈 판 사진 다시 촬영을 권장합니다(0.75 이상이면 정렬 실패). 바른 정렬은 0.23~0.47, 틀린 정렬은 0.87 이상입니다.", min=0.1, max=0.74, step=0.05, apply="다음 촬영",
       advanced=True, show_if={"calib.mode": "fixed"}),
     I("fixed.cam_shift_warn_mm", fd.DEFAULTS["cam_shift_warn_mm"], "float", "detect", "카메라 이동 보정", "이동 경고",
       "기준에 대한 카메라 이동이 이보다 크면 경고합니다(기준이 있을 때 촬영마다 정렬로 잽니다).", min=0.1, max=50, step=0.5, unit="mm",
@@ -494,43 +464,37 @@ ITEMS = [
     I("fixed.work_long_px", fd.DEFAULTS["work_long_px"], "int", "detect", "고정 환경 검출", "작업 칩 길이",
       "검출용으로 줄인 사진에서 칩 긴 변이 이 정도 픽셀이 되게 합니다.",
       min=20, max=300, step=5, unit="px", apply="다음 촬영", advanced=True, show_if={"calib.mode": "fixed"}),
-    I("calib.axis_probe_mm", 10.0, "float", "detect", "보정 방식", "축 방향 측정 거리",
-      "샘플로 맞추는 판 보정의 근사 변환을 만들 때, 헤드 보정이 없으면 X · Y 를 각각 이만큼 움직여 헤드 마커 이동 방향으로 스테이지 축 방향을 잽니다.",
-      min=2, max=50, step=1, unit="mm", apply="즉시", show_if={"calib.mode": "fixed"}),
     I("calib.outlier_n", 4.0, "float", "detect", "보정 방식", "이상점 배수",
       "새 보정점이 현재 변환의 예측과 이 값 × 다른 점 잔차 중앙값(하한 0.3 mm) 이상 어긋나면 이상점 의심으로 확인을 받습니다. 연속 2번이면 카메라 이동 의심입니다.",
       min=1.5, max=20, step=0.5, apply="즉시", show_if={"calib.mode": "fixed"}),
-    I("calib.area_size_mm", [154.0, 154.0], "list", "detect", "보정 방식", "감지 영역 실제 크기",
-      "판에 새겨진 사각형의 실제 [가로, 세로] mm 입니다(15.4 × 15.4 cm). 판 보정 전에는 감지 영역 네 변의 픽셀 길이와 이 크기로 배율을 계산하고, 판 보정을 적용하면 변 길이가 이 크기와 2% 넘게 다른지 확인합니다.",
+    I("calib.area_size_mm", [154.0, 154.0], "list", "detect", "보정 방식", "판 영역 실제 크기",
+      "판에 새겨진 사각형의 실제 [가로, 세로] mm 입니다(15.4 × 15.4 cm). 좌표 보정 전에는 판 영역 네 변의 픽셀 길이와 이 크기로 배율을 계산하고, 좌표 보정을 적용하면 변 길이가 이 크기와 2% 넘게 다른지 확인합니다.",
       item="float", validate="area_size", apply="다음 촬영"),
     I("sample_add.snap", True, "bool", "detect", "수동 지정", "클릭 스냅",
       "샘플 추가 클릭 주변(칩 길이 정도 반경)에서 칩을 찾아 그 중심에 붙입니다. 못 찾으면 클릭한 자리 그대로 둡니다.",
       apply="즉시"),
-    I("detect_max_px", 2000, "int", "detect", "보정 방식", "검출 최대 변",
-      "기존 검출기에서 감지 영역 crop 의 긴 변이 이보다 크면 줄여서 검출하고 좌표를 원본으로 되돌립니다. 0 이면 줄이지 않습니다. 고정 환경 검출기는 작업 칩 길이로 스스로 줄입니다.",
-      min=0, max=8000, step=100, unit="px", apply="다음 촬영"),
-    I("marker_mm", 30.0, "float", "detect", "판 마커", "판 마커 크기",
-      "베이스에 붙인 ArUco 마커 한 변의 실제 크기입니다.",
-      min=5, max=200, step=1, unit="mm", apply="다음 촬영", show_if={"calib.mode": "markers"}),
-    I("marker_mm_xy", copy.deepcopy(PLATE_MARKER_DEFAULT), "object", "detect", "판 마커",
-      "판 마커 좌표", "판 마커 0~3 중심의 스테이지 좌표입니다. 보정 창에서 포인터로 다시 잡습니다.",
-      editor="markers", validate="markers", apply="다음 촬영", show_if={"calib.mode": "markers"}),
-    I("calib.min_markers", 3, "int", "detect", "판 마커", "판 마커 최소 개수",
-      "좌표를 만들 수 있는 판 마커 최소 개수입니다. 3 이면 하나가 가려져도 됩니다.",
-      min=3, max=4, step=1, apply="다음 촬영", show_if={"calib.mode": "markers"}),
-    I("calib.confirm_3markers", True, "bool", "detect", "판 마커", "마커 3개면 확인",
-      "판 마커가 3개만 보이면 순회 시작 전에 확인을 받습니다(오차 약 1 mm).",
-      apply="다음 순회", show_if={"calib.mode": "markers"}),
 
     # ---------------- 고급 ----------------
     I("origin_gap_mm", 2.0, "float", "advanced", "원점", "원점 이격",
-      "원점(0)은 끝단에서 이만큼 물러난 자리입니다. 바꾸면 판 마커 · 헤드 보정을 다시 해야 합니다.",
+      "원점(0)은 끝단에서 이만큼 물러난 자리입니다. 바꾸면 판 마커 · 헤드 위치 보정을 다시 해야 합니다.",
       min=0, max=10, step=0.1, unit="mm", advanced=True, warn=True),
     I("file_log", True, "bool", "advanced", "기록", "파일 로그",
       "화면 로그를 날짜별 파일에도 남깁니다.", advanced=True),
 ]
 
 BY_KEY = {it["key"]: it for it in ITEMS}
+
+# 목록형 설정의 길이 · 원소 범위(빈 값이 저장돼 촬영이 깨지는 일이 없도록)
+LIST_RULES = {
+    "jog.steps": {"min_len": 1, "max_len": 8, "elem": "float", "lo": 0.01, "hi": 100.0},
+    "fixed.ref_area_ratio": {"len": 2, "elem": "float", "lo": 0.01, "hi": 100.0},
+    "fixed.area_ratio": {"len": 2, "elem": "float", "lo": 0.01, "hi": 100.0},
+    "fixed.local_seeds": {"min_len": 1, "max_len": 8, "elem": "float", "lo": 0.5, "hi": 50.0},
+    "calib.area_size_mm": {"len": 2, "elem": "float", "lo": 10.0, "hi": 500.0},
+    "tool.items": {"min_len": 1, "max_len": 20},
+    "relay.items": {"len": 10},
+    "condition.items": {"min_len": 1, "max_len": 30},
+}
 
 
 # --------------------------------------------------------------------------
@@ -596,13 +560,13 @@ def migrate(raw, fill=True):
     """예전 settings.json 을 지금 형식으로. 모르는 키는 지우지 않는다.
 
     fill=False(가져오기)면 파일에 있는 예전 키만 바꾸고, 없는 항목을 기본값으로
-    채우지 않는다 - 일부만 담긴 파일을 가져올 때 공구·레시피가 기본값으로 덮이면 안 된다.
+    채우지 않는다 - 일부만 담긴 파일을 가져올 때 공구·측정 조건가 기본값으로 덮이면 안 된다.
 
     - park_xy · marker_mm_xy 는 그대로
     - z_measure_mm → 히트건(기본 공구)의 z_work_mm
-    - dwell_s → 기본 레시피의 대기 단계 값
+    - dwell_s → 기본 측정 조건의 대기 단계 값
     - autofocus/focus("auto") → focus_mode · focus_sweep
-    - capture_xy 가 없으면 park_xy (예전 촬영은 파킹 위치에서 찍었다)
+    - capture_xy 가 없으면 park_xy (예전 촬영은 대기 위치 위치에서 찍었다)
     돌려주는 것: (새 dict, 바뀐 것 설명 목록)
     """
     s = copy.deepcopy(raw or {})
@@ -616,15 +580,15 @@ def migrate(raw, fill=True):
         set_path(s, "tool.items", _tools_default(z))
         if "z_measure_mm" in s:
             notes.append("z_measure_mm %g → 히트건 작업 높이" % z)
-    if not has_path(s, "recipe.items") and (fill or "dwell_s" in s):
+    if not has_path(s, "condition.items") and (fill or "dwell_s" in s):
         w = s.get("dwell_s")
         try:
             w = float(w) if w is not None else 5.0
         except (TypeError, ValueError):
             w = 5.0
-        set_path(s, "recipe.items", [recipe.default_recipe(w)])
+        set_path(s, "condition.items", [conditions.default_condition(w)])
         if "dwell_s" in s:
-            notes.append("dwell_s %g → 기본 레시피 대기" % w)
+            notes.append("dwell_s %g → 기본 측정 조건 대기" % w)
     if "focus_mode" not in s and (fill or "autofocus" in s):
         af = s.get("autofocus", True)
         s["focus_mode"] = "auto" if af in (True, None) else "fixed"
@@ -711,12 +675,21 @@ def _check_type(it, v):
     elif t == "list":
         if not isinstance(v, list):
             return v, "목록 필요"
-        if it.get("item") == "float":
+        rule = LIST_RULES.get(it["key"], {})
+        if "len" in rule and len(v) != rule["len"]:
+            return v, "%d개 필요" % rule["len"]
+        if len(v) < rule.get("min_len", 1):
+            return v, "비어 있음 · %d개 이상 필요" % rule.get("min_len", 1)
+        if len(v) > rule.get("max_len", 200):
+            return v, "%d개 이하" % rule.get("max_len", 200)
+        if rule.get("elem") == "float" or it.get("item") == "float":
             out = []
             for x in v:
                 f = _num(x)
                 if f is None:
                     return v, "숫자 목록 필요"
+                if f < rule.get("lo", -1e18) or f > rule.get("hi", 1e18):
+                    return v, "값 %g~%g" % (rule.get("lo", -1e18), rule.get("hi", 1e18))
                 out.append(f)
             v = out
     elif t == "object":
@@ -878,15 +851,15 @@ def _v_relays(key, v, values, errs, warns):
             errs[p + ".max_on_s"] = "0~86400 s"
 
 
-def _v_recipes(key, v, values, errs, warns):
+def _v_conditions(key, v, values, errs, warns):
     zmax = _num(get_path(values, "limits.z_max_mm")) or 0.0
     names = []
     if not v:
-        errs[key] = "레시피 1개 이상"
+        errs[key] = "측정 조건 1개 이상"
         return
     for i, r in enumerate(v):
         p = "%s[%d]" % (key, i)
-        e, w = recipe.validate_recipe(r, values, zmax, prefix=p)
+        e, w = conditions.validate_condition(r, values, zmax, prefix=p)
         errs.update(e)
         warns.extend(w)
         nm = str((r or {}).get("name") or "").strip() if isinstance(r, dict) else ""
@@ -894,21 +867,21 @@ def _v_recipes(key, v, values, errs, warns):
             errs[p + ".name"] = "이름 중복"
         names.append(nm)
     if len(v) > 30:
-        errs[key] = "레시피 30개 이내"
+        errs[key] = "측정 조건 30개 이내"
 
 
-def _v_recipe_active(key, v, values, errs, warns):
+def _v_condition_active(key, v, values, errs, warns):
     names = [str((r or {}).get("name") or "").strip()
-             for r in get_path(values, "recipe.items") or [] if isinstance(r, dict)]
+             for r in get_path(values, "condition.items") or [] if isinstance(r, dict)]
     if v not in names:
-        errs[key] = "목록에 없는 레시피"
+        errs[key] = "목록에 없는 측정 조건"
 
 
 VALIDATORS = {
     "xy_in_limits": _v_xy_in_limits, "seed_grow": _v_seed_grow, "tol_warn": _v_tol_warn,
     "head_id": _v_head_id, "jog_steps": _v_jog_steps, "touch_max": _v_touch_max,
     "markers": _v_markers, "zones": _v_zones, "area_size": _v_area_size, "tools": _v_tools, "tool_active": _v_tool_active,
-    "relays": _v_relays, "recipes": _v_recipes, "recipe_active": _v_recipe_active,
+    "relays": _v_relays, "conditions": _v_conditions, "condition_active": _v_condition_active,
 }
 
 

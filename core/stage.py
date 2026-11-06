@@ -226,7 +226,7 @@ class Stage:
         self.banner = ""
         self.fw_version = ""           # 배너에서 읽은 "V8" … "V11"
         self.needs_home = False        # 배너에 "원점없음" 이 있었나
-        self.log_path = log_path or os.path.join(paths.OUT_DIR, "serial.log")
+        self.log_path = log_path or os.path.join(paths.LOGS_DIR, "serial.log")
         # 주고받은 줄을 그대로 넘겨받을 곳(서버가 화면 로그로 보낸다). 파일 로그는
         # 이것과 무관하게 항상 남는다 - 화면에서 껐다고 기록이 사라지면 안 된다.
         self.on_line = None

@@ -27,14 +27,14 @@ sys.path.insert(0, ROOT)
 import cv2          # noqa: E402
 import numpy as np  # noqa: E402
 
-from core import fixed_detect as fd, imgio, plate  # noqa: E402
+from core import fixed_detect as fd, geom, imgio, sense  # noqa: E402
 
 BASE = os.path.join(ROOT, "tools", "fixed_regress_base.json")
 
 
 def _data_root():
-    from core import paths
-    return os.path.dirname(paths.OUT_DIR)
+    """기본 데이터 폴더 = 저장소 옆 data_v2 (정답은 data_v2/truth, 사진은 truth/images/<항목>/)."""
+    return os.path.normpath(os.path.join(ROOT, "..", "data_v2"))
 
 
 def load_truth(tdir):
@@ -51,9 +51,12 @@ def load_truth(tdir):
 
 
 def params_with(sets):
-    sys.path.insert(0, os.path.join(ROOT, "backend"))
-    import settings_schema as sch
-    p = sch.defaults()
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "backend"))
+        import settings_schema as sch
+        p = sch.defaults()
+    except ImportError:                                     # 스키마가 아직 없으면 검출기 기본값만
+        p = {"fixed": dict(fd.DEFAULTS), "calib": {}}
     for kv in sets or []:
         k, _, v = kv.partition("=")
         val = json.loads(v)
@@ -79,7 +82,7 @@ def _item_params(item, params):
 
 def run_item(name, item, params, out_root, mode="single"):
     """mode = single(단일 사진 경로) | ref(빈 판 기준 차이 + 정렬). 반환: (점 [(u, v, source)], ms, FixedResult | None, 카메라 이동 dict | None)."""
-    path = os.path.join(out_root, name, item["image"])
+    path = os.path.join(TRUTH_DIR, item["image"])
     bgr = imgio.imread_u(path)
     if bgr is None:
         raise IOError("사진 없음: %s" % path)
@@ -92,19 +95,19 @@ def run_item(name, item, params, out_root, mode="single"):
         if ref is None:
             raise IOError("빈 판 기준 사진 없음: %s" % ref_path)
         t0 = time.perf_counter()
-        r = plate.ref_detect(bgr, ref, item["area"], item.get("exclude"), params, float(item["mm_per_px"]), log=lambda *_: None)
+        r = sense.detect_shot(bgr, item["area"], item.get("exclude"), params, float(item["mm_per_px"]), ref=ref, ref_id=item["ref"], log=lambda *_: None)
         ms = (time.perf_counter() - t0) * 1000.0
-        if r["fail"]:
-            return [], ms, None, dict(r["cam"], fail=r["fail"])
-        u0, v0 = r["off"]
-        pts = [(s["x_px"] + u0, s["y_px"] + v0, s["source"]) for s in r["det"].samples]
-        return pts, ms, r["det"], r["cam"]
-    crop, valid, (u0, v0), quad_l = plate.prep_crop(bgr, item["area"], item.get("exclude"))
-    t0 = time.perf_counter()
-    res = fd.detect(crop, params, float(item["mm_per_px"]), valid, area_poly=quad_l, log=lambda *_: None)
-    ms = (time.perf_counter() - t0) * 1000.0
-    pts = [(s["x_px"] + u0, s["y_px"] + v0, s["source"]) for s in res.samples]
-    return pts, ms, res, None
+        cam = dict(r["cam"] or {})
+        if r["fail"] or not r["coords_ok"]:
+            cam["fail"] = r["fail"] or "정렬 실패"
+            if r["fail"]:
+                return [], ms, None, cam
+        pts = [(s["x_px"], s["y_px"], s["source"]) for s in r["det"].samples]
+        return pts, ms, r["det"], cam
+    r = sense.detect_shot(bgr, item["area"], item.get("exclude"), params, float(item["mm_per_px"]), ref=None, log=lambda *_: None)
+    ms = 0.0
+    pts = [(s["x_px"], s["y_px"], s["source"]) for s in r["det"].samples]
+    return pts, ms, r["det"], None
 
 
 def match(truth_pts, det_pts, tol):
@@ -143,7 +146,7 @@ def evaluate(items, params, out_root, mode="single"):
     """mode ref 는 layout 이 free 인 항목(기준 사진이 있는 촬영)만 돈다."""
     rows = {}
     for name, item in items.items():
-        if mode == "ref" and item.get("layout") != "free":
+        if mode == "ref" and not item.get("ref"):
             continue
         pts, ms, _res, cam = run_item(name, item, params, out_root, mode)
         r = score(name, item, pts)

@@ -1,10 +1,10 @@
-"""recipe.py - 측정 순서(레시피)의 단계 정의 · 설명 · 검증 · 예상 시간.
+"""conditions.py - 측정 조건(단계 목록)의 정의 · 설명 · 검증 · 펼치기 · 예상 시간.
 
-순수 함수만 둔다(state·장비를 모른다). 설정 검증(settings_schema)과 순회
+순수 함수만 둔다(state·장비를 모른다). 설정 검증(settings_schema)과 측정
 엔진(engine)이 같은 정의를 쓴다 - 화면이 받아 주는 단계와 엔진이 실행하는
 단계가 어긋나지 않게.
 
-레시피: {"name": "기본", "steps": [step, ...]}
+측정 조건: {"name": "기본", "steps": [step, ...]}
 단계(step)는 "type" 과 그 종류의 값만 가진다.
 
   move_sample  샘플 위로 이동(공구 오프셋 적용). 첫 단계로 고정 - 삭제·이동 불가
@@ -12,7 +12,7 @@
                work = 활성 공구의 작업 높이(z_work_mm), top = 맨 위(0)
   relay        {"n": 1~10, "on": true|false}
   wait         {"s": 5.0}
-  measure      계측기 호출(지금은 더미)
+  measure      계측기 채널을 n 회 읽어 평균 {"n": 3, "interval_s": 0.5} - 결과 표의 측정값 열
   confirm      사람이 [다음]을 누를 때까지 대기
   cooler       {"action": "on"|"off", "target": "sample"|"all"|"n", "n": 1~10}  쿨러(구역 릴레이)
   contact      Z 접촉 탐색 {"start_ref": "work"|"mm", "start_mm", "step_mm", "max_ref": "work"|"mm", "max_mm",
@@ -20,7 +20,8 @@
   wait_temp    {"cond": "<="|">=", "target_c", "hold_s", "max_s", "on_timeout": "continue"|"skip"|"stop"|"confirm"}
   heat         히트건 켜기 → 끝 조건 → 끄기 {"end": "temp"|"time"|"either", "target_c", "time_s", "max_s"}
   cool         히트건 끈 채 wait_temp 와 같은 조건으로 대기(기록 구분용 이름)
-  repeat       블록 반복 {"from": 시작 단계, "to": 끝 단계(번호는 1부터), "count": 횟수} - 이 단계 앞의 블록을 count 번 돈다
+  repeat       구간 반복 {"from": 시작 단계, "to": 끝 단계(번호는 1부터, to ≤ 이 단계 번호 - 1), "count": 전체 횟수} - from~to 구간을
+               첫 통과 뒤에 (count - 1) 번 더 돈다. 엔진과 expand() 가 같은 구현(expand 의 결과를 엔진이 그대로 실행)
   log          {"action": "start"|"end"} 기록 시작/끝(temp.period_s 마다 온도 · 릴레이 · Z · 측정값을 CSV 로)
 
 새 단계 종류는 STEP_TYPES 에 정의(설명·검증·예상 시간)를 더하고, engine 의
@@ -37,22 +38,22 @@ HEAT_NAME = "가열 측정"
 TEMP_MIN_C, TEMP_MAX_C = -50.0, 600.0
 
 
-def default_recipe(wait_s=5.0):
-    """기본 레시피. 릴레이 단계는 넣지 않는다(사용할 릴레이가 아직 정해지지 않았다)."""
+def default_condition(wait_s=5.0):
+    """기본 측정 조건. 릴레이 단계는 넣지 않는다(사용할 릴레이가 아직 정해지지 않았다)."""
     return {"name": DEFAULT_NAME, "steps": [
         {"type": "move_sample"},
         {"type": "z", "target": "work"},
         {"type": "wait", "s": float(wait_s)},
-        {"type": "measure"},
+        {"type": "measure", "n": 3, "interval_s": 0.5},
         {"type": "z", "target": "top"},
     ]}
 
 
-def default_heat_recipe():
-    """기본 레시피 '가열 측정'. 온도 · 시간 값은 전부 임시(placeholder) - 장비에서 측정한 뒤 바꾼다."""
+def default_heat_condition():
+    """기본 측정 조건 '가열 측정'. 온도 · 시간 값은 전부 임시(placeholder) - 장비에서 측정한 뒤 바꾼다."""
     return {"name": HEAT_NAME, "steps": [
         {"type": "move_sample"},
-        {"type": "cooler", "action": "on", "target": "sample"},
+        {"type": "cooler", "action": "on", "target": "sample", "n": 1},
         {"type": "contact", "start_ref": "work", "start_mm": -2.0, "step_mm": 0.1,
          "max_ref": "work", "max_mm": 1.0, "press_mm": 0.1, "settle_s": 0.2, "on_fail": "stop"},
         {"type": "log", "action": "start"},
@@ -135,7 +136,7 @@ def describe(step, values=None):
     if t == "wait":
         return "대기 %s s" % _fmt(_num(step.get("s")))
     if t == "measure":
-        return "측정"
+        return "측정 %s회 평균" % _fmt(_num(step.get("n")))
     if t == "confirm":
         return "확인 대기"
     if t == "cooler":
@@ -156,7 +157,7 @@ def describe(step, values=None):
             "%s °C 또는 %s s" % (_fmt(_num(step.get("target_c"))), _fmt(_num(step.get("time_s")))))
         return "가열 %s · 최대 %s s" % (cond, _fmt(_num(step.get("max_s"))))
     if t == "repeat":
-        return "반복 %s~%s 단계 × %s" % (step.get("from"), step.get("to"), step.get("count"))
+        return "반복 %s~%s 단계 · 총 %s회" % (step.get("from"), step.get("to"), step.get("count"))
     if t == "log":
         return "기록 %s" % ("시작" if step.get("action") == "start" else "끝")
     return "알 수 없는 단계"
@@ -224,8 +225,10 @@ def validate_step(step, values, z_max_mm):
             return "릴레이 번호 오류"
         if not 1 <= n <= 10:
             return "릴레이 번호 1~10"
+        if n == heater_relay_n(values):
+            return "R%d 는 히트건 전용 · 가열 단계만" % n
         if not relay_enabled(n, values):
-            return "R%d 사용 안 함 · 릴레이 탭에서 사용 지정" % n
+            return "R%d 사용 안 함 · 장비 설정 7 에서 사용 지정" % n
         if not isinstance(step.get("on"), bool):
             return "릴레이 켜기/끄기 오류"
     elif t == "wait":
@@ -239,10 +242,13 @@ def validate_step(step, values, z_max_mm):
             return "쿨러 대상 오류"
         if step.get("target") == "n":
             try:
-                if not 1 <= int(step.get("n")) <= 10:
-                    return "릴레이 번호 1~10"
+                nn = int(step.get("n"))
             except (TypeError, ValueError):
                 return "릴레이 번호 오류"
+            if not 1 <= nn <= 10:
+                return "릴레이 번호 1~10"
+            if nn == heater_relay_n(values):
+                return "R%d 는 히트건 전용 · 쿨러에 못 씀" % nn
     elif t == "contact":
         if step.get("start_ref") not in ("work", "mm") or step.get("max_ref") not in ("work", "mm"):
             return "접촉 탐색 높이 기준 오류"
@@ -292,17 +298,23 @@ def validate_step(step, values, z_max_mm):
             return "가열 시간 0 초과 3600 s 이하"
         if ms is None or ms <= 0 or ms > 3600:
             return "최대 시간(필수) 0 초과 3600 s 이하"
+    elif t == "measure":
+        n, iv = _num(step.get("n")), _num(step.get("interval_s"))
+        if n is None or int(n) != n or not 1 <= n <= 100:
+            return "측정 횟수 1~100"
+        if iv is None or iv < 0 or iv > 600:
+            return "측정 간격 0~600 s"
     elif t == "log":
         if step.get("action") not in ("start", "end"):
             return "기록 시작/끝 오류"
     return None
 
 
-def validate_recipe(r, values, z_max_mm, prefix=""):
+def validate_condition(r, values, z_max_mm, prefix=""):
     """(errors{path: 문구}, warnings[문구])."""
     errs, warns = {}, []
     if not isinstance(r, dict):
-        return {prefix or "recipe": "레시피 형식 오류"}, warns
+        return {prefix or "condition": "측정 조건 형식 오류"}, warns
     name = str(r.get("name") or "").strip()
     if not name:
         errs[prefix + ".name"] = "이름 필요"
@@ -320,7 +332,7 @@ def validate_recipe(r, values, z_max_mm, prefix=""):
             continue
         e = validate_step(st, values, z_max_mm)
         if not e and isinstance(st, dict) and st.get("type") == "repeat":
-            e = _validate_repeat(st, i)
+            e = _validate_repeat(st, i, steps)
         if e:
             errs["%s.steps[%d]" % (prefix, i)] = e
         elif isinstance(st, dict):
@@ -332,16 +344,20 @@ def validate_recipe(r, values, z_max_mm, prefix=""):
     return errs, warns
 
 
-def _validate_repeat(st, i):
-    """repeat(0 기준 위치 i): 블록은 자기 앞 단계들(2 이상 · 첫 단계 샘플 이동은 제외)이어야 한다."""
+def _validate_repeat(st, i, steps=None):
+    """repeat(0 기준 위치 i): 구간 a~b(1 기준)는 2번 단계부터 이 단계 바로 앞까지 안이고 repeat 를 품지 않는다."""
     try:
         a, b, c = int(st.get("from")), int(st.get("to")), int(st.get("count"))
     except (TypeError, ValueError):
         return "반복 시작 · 끝 · 횟수 숫자 필요"
     if a < 2 or a > b or b > i:
-        return "반복 블록은 2번 단계부터 이 단계 바로 앞까지 안에서"
+        return "반복 구간은 2번 단계부터 이 단계 바로 앞까지 안에서"
     if not 1 <= c <= 100:
         return "반복 횟수 1~100"
+    if steps is not None:
+        for j in range(a - 1, b):
+            if isinstance(steps[j], dict) and steps[j].get("type") == "repeat":
+                return "반복 구간 안에 반복 불가"
     return None
 
 
@@ -350,7 +366,7 @@ def step_warnings(st, values, name, i):
     out = []
     off = [n for n in step_relays(st, values) if not relay_enabled(n, values)]
     if off:
-        out.append("'%s' %d번 단계 · %s 사용 안 함 · 릴레이 탭에서 사용 지정해야 실행됨"
+        out.append("'%s' %d번 단계 · %s 사용 안 함 · 장비 설정 7 에서 사용 지정해야 실행됨"
                    % (name, i + 1, ", ".join("R%d" % n for n in off)))
     if st.get("type") == "contact":
         a, b = contact_range(st, values)
@@ -402,35 +418,36 @@ def step_relays(st, values):
     return []
 
 
-def expand(steps, cap=2000):
-    """repeat 를 풀어 실행 순서대로의 (원래 단계 번호 0 기준, 단계) 목록. 예상 시간 계산용(엔진은 같은 규칙으로 돈다)."""
-    out, counters, i, guard = [], {}, 0, 0
-    steps = [s for s in steps if isinstance(s, dict)]
-    while i < len(steps) and guard < cap:
-        guard += 1
-        st = steps[i]
-        if st.get("type") == "repeat":
-            try:
-                a, c = int(st.get("from")), int(st.get("count"))
-            except (TypeError, ValueError):
-                i += 1
-                continue
-            counters[i] = counters.get(i, 0) + 1
-            if counters[i] < c and 1 <= a <= i:
-                for k in range(a - 1, i):          # 안쪽 반복의 카운터는 다시 시작
-                    counters.pop(k, None)
-                i = a - 1
-                continue
-            counters.pop(i, None)
-            i += 1
+def expand(steps, cap=5000):
+    """repeat 를 풀어 실행 순서대로의 (원래 단계 번호 0 기준, 단계) 목록. **엔진이 이 목록을 그대로 실행한다**(같은 구현).
+
+    repeat(0 기준 위치 i, from a, to b, count c) = 첫 통과 뒤 구간 steps[a-1..b-1] 을 (c - 1) 번 더. 구간 밖(b 와 i 사이)은 한 번만 돈다.
+    잘못된 repeat(검증이 거절하는 값)는 건너뛴다.
+    """
+    out = []
+    steps = list(steps)
+    for i, st in enumerate(steps):
+        if not isinstance(st, dict):
             continue
-        out.append((i, st))
-        i += 1
+        if st.get("type") != "repeat":
+            out.append((i, st))
+            continue
+        try:
+            a, b, c = int(st.get("from")), int(st.get("to")), int(st.get("count"))
+        except (TypeError, ValueError):
+            continue
+        if _validate_repeat(st, i, steps) is not None:
+            continue
+        for _ in range(c - 1):
+            for j in range(a - 1, b):
+                out.append((j, steps[j]))
+        if len(out) > cap:
+            return out[:cap]
     return out
 
 
 def ends_at_top(r, values):
-    """레시피가 끝날 때 Z 가 맨 위(0)인가. z 단계가 없으면 그대로(참)."""
+    """측정 조건가 끝날 때 Z 가 맨 위(0)인가. z 단계가 없으면 그대로(참)."""
     last = None
     for st in r.get("steps") or []:
         if isinstance(st, dict) and st.get("type") == "z":
@@ -462,19 +479,19 @@ def relays_used(r, values=None):
 
 
 def needs_temp(r):
-    """온도 센서가 필요한 레시피인가(가열 · 온도 대기 · 냉각 대기)."""
+    """온도 센서가 필요한 측정 조건인가(가열 · 온도 대기 · 냉각 대기)."""
     return any(isinstance(s, dict) and s.get("type") in ("heat", "wait_temp", "cool") for s in r.get("steps") or [])
 
 
 def find(values, name=None):
-    """이름으로 레시피를 찾는다(없으면 활성, 그것도 없으면 첫 레시피)."""
-    rc = (values or {}).get("recipe") or {}
+    """이름으로 측정 조건을 찾는다(없으면 활성, 그것도 없으면 첫 조건)."""
+    rc = (values or {}).get("condition") or {}
     items = [r for r in rc.get("items") or [] if isinstance(r, dict)]
     want = name if name is not None else rc.get("active")
     for r in items:
         if r.get("name") == want:
             return r
-    return items[0] if items else default_recipe()
+    return items[0] if items else default_condition()
 
 
 def estimate_step_s(step, values, move_s, z_speed_mm_s):
