@@ -91,16 +91,30 @@ def _punch(mask, quads, shift, scale):
     return mask
 
 
+def _flatten_boxes(gray, quads, scale):
+    """gray(축소 영상) 안의 헤드 마커 상자를 그 둘레 고리의 중앙값 밝기로 덮는다(가장자리 · 모서리가 남지 않아 정렬이 마커를 따라가지 않는다)."""
+    if not quads:
+        return gray
+    out = gray.copy()
+    for q in quads:
+        P = np.asarray(q, np.float64).reshape(-1, 2) * scale
+        m = np.zeros(out.shape[:2], np.uint8)
+        cv2.fillConvexPoly(m, np.round(cv2.convexHull(P.astype(np.float32))).astype(np.int32), 255)
+        if not m.any():
+            continue
+        ring = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))) & ~m
+        v = np.median(out[ring > 0]) if (ring > 0).any() else float(np.median(out))
+        out[m > 0] = v
+    return out
+
+
 def _at(ref, cur, area_ref, scale, allow_homography, mask_cur=None, mask_ref=None):
     a = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
     b = cv2.cvtColor(cur, cv2.COLOR_BGR2GRAY)
     sa = cv2.resize(a, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     sb = cv2.resize(b, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    sa, sb = _flatten_boxes(sa, mask_ref, scale), _flatten_boxes(sb, mask_cur, scale)      # 헤드 마커 상자는 주변 배경 밝기로 덮어 위상 상관 · ECC 가 마커를 보지 않게
     ha, hb = _hp(sa), _hp(sb)
-    for h_, qs in ((ha, mask_ref), (hb, mask_cur)):
-        for q in qs or []:                                   # 헤드 마커 상자는 위상 상관 · ECC 에서도 뺀다(마커가 커서 정렬을 마커 이동 쪽으로 끌고 간다)
-            P = np.asarray(q, np.float64).reshape(-1, 2) * scale
-            cv2.fillConvexPoly(h_, np.round(cv2.convexHull(P.astype(np.float32))).astype(np.int32), 0)
     mask = area_mask(ha.shape, area_ref, scale)
     win = cv2.createHanningWindow((ha.shape[1], ha.shape[0]), cv2.CV_32F)
     (dx0, dy0), _cc = cv2.phaseCorrelate(ha, hb, win)

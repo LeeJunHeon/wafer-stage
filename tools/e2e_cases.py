@@ -39,9 +39,11 @@ def after_estop(c):
 
 def recover(c):
     """회복 순서(명령): Z 원점 잡기 -> 위치 확인 -> 적용."""
-    ok1, _ = c.send("origin", axis="z")
+    ok1, r1 = c.send("origin", axis="z")
     ok2, r = c.send("verify_position")
     ok3, r3 = c.send("apply_position")
+    if not (ok1 and ok2 and ok3):
+        print("  (회복 실패: 원점 %s · 위치 확인 %s · 적용 %s)" % (r1, r, r3))
     return ok1 and ok2 and ok3, (r, r3)
 
 
@@ -141,6 +143,8 @@ def c06(c):
         c.wait(lambda s: s["run"] and s["run"]["waiting"] == "확인 대기", 120, "확인 대기")
         st = c.state
         check(st["run"]["waiting"] == "확인 대기" and st["phase"] == "확인 대기", "샘플 %d · 확인 대기 (%s)" % (k + 1, st["phase"]))
+        c.pump(1.6)                                           # 상태 읽기 주기(1 s)가 지나 Z 가 갱신되길 기다린다
+        st = c.state
         check(abs(st["stage"]["z"] - 20.0) < 0.1, "핀을 샘플에 댄 채 기다림 (Z %.2f)" % st["stage"]["z"])
         c.pump(1.0)
         check(c.state["run"]["waiting"] == "확인 대기", "[다음] 전에는 계속 기다림")
@@ -559,7 +563,7 @@ def c23(c):
                 else:
                     bad.append((msg[:50], x, y))
     check(not bad, "50곳 중 마커가 보이는 자리 전부 통과 · 통과 %d · 마커 안 보임 %d · 실패 %s" % (n_ok, n_hidden, bad[:5]))
-    check(n_ok >= 40, "통과 %d / 50" % n_ok)
+    check(n_ok + n_hidden == 50, "통과 %d / 50 (마커 안 보임 %d)" % (n_ok, n_hidden))
 
 
 @case("24 첫 실행 · 원점 없음 → 버튼으로 Z · X · Y 원점 → 설정 → 촬영 → 측정")
