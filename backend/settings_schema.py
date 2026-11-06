@@ -296,12 +296,12 @@ ITEMS = [
       min=0, max=600000, step=500, unit="ms"),
 
     # ---------------- 측정 장비 (온도 · 접촉 · 쿨러 · 히트건) ----------------
-    I("temp.driver", "dummy", "enum", "measure", "온도", "온도 드라이버",
+    I("temp.driver", "none", "enum", "measure", "온도", "온도 드라이버",
       "온도 읽기 방식입니다. 더미는 열 모델 시뮬레이터입니다(실장치는 미정 — 계측기 · 아두이노 아날로그 입력 · 별도 시리얼 중 하나를 붙일 자리). 실제 장비에서 더미로는 가열 단계가 실행되지 않습니다.",
-      options=[{"value": "dummy", "label": "더미(시뮬레이터)"}], apply="즉시"),
+      options=[{"value": "none", "label": "센서 없음"}, {"value": "dummy", "label": "더미(dry 전용)"}], apply="즉시"),
     I("temp.period_s", 0.5, "float", "measure", "온도", "읽기 주기",
       "온도를 읽어 그래프 · 기록에 남기는 주기입니다.", min=0.05, max=10, step=0.05, unit="s", apply="즉시"),
-    I("contact.driver", "dummy", "enum", "measure", "접촉", "접촉 드라이버",
+    I("contact.driver", "none", "enum", "measure", "접촉", "접촉 드라이버",
       "접촉 확인 방식입니다. 더미는 Z 가 시뮬레이터 접촉 높이 이상이면 접촉, 계측기는 계측기가 돌려주고, 입력 핀은 아두이노 디지털 입력(펌웨어 V12 의 읽기 명령 필요), 수동은 [접촉 확인] 버튼입니다.",
       options=[{"value": "dummy", "label": "더미"}, {"value": "measurer", "label": "계측기"},
                {"value": "di", "label": "입력 핀"}, {"value": "manual", "label": "수동"},
@@ -366,10 +366,17 @@ ITEMS = [
     I("condition.active", conditions.DEFAULT_NAME, "str", "condition", "측정 조건", "활성 측정 조건",
       "측정가 쓸 측정 조건입니다.", editor="condition_active", validate="condition_active",
       apply="다음 측정"),
-    I("measure.driver", "dummy", "enum", "condition", "계측기", "계측기 드라이버",
-      "측정 단계가 부르는 계측기입니다. 지금은 값 없이 통과하는 더미뿐입니다.",
-      options=[{"value": "dummy", "label": "더미"}], apply="다음 측정"),
-
+    I("meter.driver", "none", "enum", "measure", "계측기", "계측기 드라이버",
+      "측정 단계가 부르는 계측기입니다. 실장치는 미정이며 더미는 dry 에서만 쓰입니다. 없으면 온도만 기록합니다.",
+      options=[{"value": "none", "label": "없음"}, {"value": "dummy", "label": "더미(dry 전용)"}], apply="다음 측정"),
+    I("meter.channels", [{"name": "저항", "unit": "Ω", "digits": 3}], "list", "measure", "계측기", "채널 정의",
+      "채널 이름 · 단위 · 소수 자리입니다. 결과 표의 측정값 열이 이것으로 만들어집니다.", editor="channels", apply="다음 측정"),
+    I("data_dir", "../data_v2", "str", "advanced", "기록", "데이터 폴더",
+      "촬영 · 측정 결과 · 보정 파일을 두는 폴더입니다. 바꾸면 다시 시작해야 합니다.", apply="재연결", advanced=True),
+    I("capture.settle_s", 0.8, "float", "camera", "촬영", "이동 뒤 안정 시간",
+      "마지막 이동이 끝난 뒤 이 시간이 지난 프레임부터 씁니다.", min=0, max=10, step=0.1, unit="s", apply="다음 촬영"),
+    I("capture.fresh_frames", 5, "int", "camera", "촬영", "버릴 프레임 수",
+      "이동 뒤 카메라 큐에 남은 옛 프레임을 버리기 위해 새로 받아 건너뛰는 프레임 수입니다. 큐 깊이보다 커야 합니다.", min=1, max=30, step=1, apply="다음 촬영"),
     # ---------------- 검출 ----------------
     I("calib.residual_limit_mm", 1.0, "float", "detect", "보정 방식", "좌표 보정 잔차 한계",
       "좌표 보정 점의 잔차가 이 값을 넘으면 빨갛게 표시합니다.",
@@ -597,9 +604,6 @@ def migrate(raw, fill=True):
         s["focus_sweep"] = True
         s["focus"] = -1
         notes.append("focus \"auto\" → 초점 스윕")
-    if fill and not has_path(s, "calib.mode"):
-        set_path(s, "calib.mode", "fixed")
-        notes.append("calib.mode 없음 → fixed (판 마커 없이 고정 보정)")
     zz = get_path(s, "cooler.zones") if has_path(s, "cooler.zones") else None
     if isinstance(zz, dict) and "cells" not in zz:
         newz, _ch = zones_mod.migrate(zz)

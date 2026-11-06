@@ -1,0 +1,1334 @@
+"""app.py - 서버 상태의 주인. 연결 · 카메라 · 좌표 보정 · 샘플 · 측정 · 회복 순서를 한곳에서 다룬다.
+
+명령은 c_<이름>(args, gen) 이고, **gen 은 명령이 들어온 순간의 비상정지 세대**다(서버가 메시지 수신 때 잡는다).
+이동 · 촬영 · 위치 확인 · 원점 등록은 모두 이 gen 을 core/motion.py 에 넘겨 잠금 뒤에 비교한다.
+화면은 요청만 보내고 state() 가 돌려주는 값으로만 바뀐다.
+"""
+
+import copy
+import datetime
+import os
+import shutil
+import threading
+import time
+
+import cv2
+import numpy as np
+
+import calibstore
+import conditions
+import logger
+import measure
+import store
+import vision as vision_mod
+from core import align as align_mod
+from core import fixed_detect, frames, geom, imgio, paths, sense, tip, zones
+from core import motion as motion_mod
+from core import power as power_mod
+from core import stage as stage_mod
+from core.motion import MotionError
+from core.power import PowerError
+from core.stage import StageError
+
+STATUS_TAGS = ("done", "need", "invalid")
+
+
+class AppError(Exception):
+    """화면에 가는 한 줄 사유."""
+
+
+def _stamp():
+    return time.strftime("%Y%m%d_%H%M%S")
+
+
+class App:
+    def __init__(self, dry=False, image=None, settings_path=None):
+        self.dry = dry
+        self.image = image
+        self.cfg = store.Settings(settings_path)
+        for d in (paths.DATA_DIR, paths.SHOTS_DIR, paths.RUNS_DIR, paths.LOGS_DIR, paths.REF_HISTORY_DIR):
+            os.makedirs(d, exist_ok=True)
+        self.stage = self.motion = self.power = self.hub = None
+        self.calib = calibstore.Calib()
+        self.head = calibstore.HeadCalib()
+        self.vision = vision_mod.Vision(self.cfg, self._true_xy, dry, image)
+        self.lock = threading.RLock()
+        self.version = 0
+        self.busy = ""                               # 촬영 | 위치 확인 | 헤드 위치 보정 | 공구 가열 | 빈 판 사진 …
+        self.alarm = None
+        self.ref_meta = store.read_json(paths.REF_META_PATH)
+        self._ref_img = None
+        self.snap = None                             # 단발 촬영: {img, A, id, t}
+        self.shot = None                             # 촬영 결과
+        self.samples = []
+        self.edits = []
+        self.sel = None
+        self.next_no = 1
+        self.run = None
+        self.last_run = None
+        self.pos = {"x": None, "y": None, "z": None}
+        self.poll_fail = 0
+        self.pending_verify = None
+        self.pending_calib = None
+        self.tool_tmp = {}
+        self.stop_poll = threading.Event()
+        self.cap_text = ""
+        self.cap_error = None
+        self.notes = []
+        self._dirty = threading.Event()
+        self.calib_msgs = []
+        self.shutting = False
+        self._load_last_shot()
+
+    # ------------------------------------------------------------------
+    # 공통
+    # ------------------------------------------------------------------
+    def touch(self):
+        self.version += 1
+        self._dirty.set()
+
+    def _true_xy(self):
+        return self.stage.dry_true_xy() if self.stage is not None else (0.0, 0.0)
+
+    def ids(self):
+        return {"ref": (self.ref_meta or {}).get("id"), "calib": self.calib.d.get("created"), "calib_ref": self.calib.d.get("ref_id"),
+                "head": self.head.d.get("ref_id")}
+
+    def shot_dir_name(self):
+        return None if not self.shot else self.shot["id"]
+
+    def set_alarm(self, text, nxt=""):
+        self.alarm = {"text": text, "next": nxt, "t": time.time()} if text else None
+        self.touch()
+
+    def _size(self):
+        return self.vision.size
+
+    def ref_id(self):
+        return (self.ref_meta or {}).get("id")
+
+    def ref_img(self):
+        if self._ref_img is None and self.ref_meta and os.path.exists(paths.REF_PATH):
+            self._ref_img = imgio.imread_u(paths.REF_PATH)
+        return self._ref_img
+
+    # ------------------------------------------------------------------
+    # 연결
+    # ------------------------------------------------------------------
+    def connect(self):
+        if self.stage is not None:
+            return
+        port = self.cfg.get("serial_port")
+        st = stage_mod.Stage(port=port, dry=self.dry)
+        st.on_line = lambda arrow, text: None
+        st.open()
+        self.stage = st
+        stage_mod.set_limits(self.cfg.get("limits.x_max_mm"), self.cfg.get("limits.y_max_mm"), self.cfg.get("limits.z_max_mm"))
+        stage_mod.configure(speed_pps=self.cfg.get("motion.speed_pps"), jog_pps=self.cfg.get("motion.jog_pps"),
+                            jog_slow_pps=self.cfg.get("motion.jog_slow_pps"), line_timeout_s=self.cfg.get("serial.line_timeout_s"),
+                            move_timeout_s=self.cfg.get("serial.move_timeout_s"))
+        self.motion = motion_mod.Motion(st, log=lambda m: logger.log(m, "warn"))
+        self.power = power_mod.Power(st, heater_n=self.cfg.get("heater.relay"), log=logger.log)
+        self.motion.pre_xy = self.power.pre_xy
+        self.motion.on_reboot = self._on_reboot
+        self._apply_motion_cfg()
+        self.hub = measure.Hub(self.cfg, self.power, self.motion, self.dry)
+        self.hub.configure()
+        self.hub.start()
+        self._init_firmware()
+        self.motion.sync_from_status()
+        self.vision.true_xy = self._true_xy
+        self.touch()
+        threading.Thread(target=self._poll, name="poll", daemon=True).start()
+        logger.log("스테이지 연결 · %s" % (st.fw_version or "?"))
+
+    def _apply_motion_cfg(self):
+        m = self.motion
+        m.speed_pps = int(self.cfg.get("motion.speed_pps"))
+        m.accel = int(self.cfg.get("motion.accel"))
+        m.origin_gap_mm = float(self.cfg.get("origin_gap_mm"))
+
+    def _init_firmware(self):
+        """연결 직후 · 재부팅 뒤: 속도 · 가속 · 통신 감시를 다시 보낸다."""
+        st = self.stage
+        with self.motion.lock:
+            try:
+                st.set_profile(self.cfg.get("motion.accel"), self.cfg.get("motion.start_pps"))
+                st.watchdog(int(self.cfg.get("relay.watchdog_ms")))
+            except StageError as e:
+                logger.log("펌웨어 설정 실패 · " + logger.short(e), "warn")
+
+    def _on_reboot(self, line):
+        """A-10: 보드 재부팅 감지 - 측정 중지, 재설정, ST · RS 다시 읽기, 원점 확인 요구."""
+        logger.log("보드 재부팅 감지", "err")
+        if self.run:
+            self.run.stop()
+        self.set_alarm("보드 재부팅 감지 · 원점 확인 필요", "회복: " + " → ".join(self.motion.recovery_steps()))
+
+        def work():
+            try:
+                self._init_firmware()
+                st = self.stage.status()
+                self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
+                self.stage.relay_status()
+            except Exception as e:                      # noqa: BLE001
+                logger.log("재부팅 뒤 재설정 실패 · " + logger.short(e), "err")
+            self.touch()
+        threading.Thread(target=work, daemon=True).start()
+
+    def _poll(self):
+        while not self.stop_poll.is_set():
+            period = max(0.5, float(self.cfg.get("status_poll_s")))
+            time.sleep(period)
+            m = self.motion
+            if m is None or m.moving or self.busy:
+                continue
+            if not m.lock.acquire(blocking=False):
+                continue
+            try:
+                st = m.status()
+                self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
+                self.poll_fail = 0
+            except Exception as e:                      # noqa: BLE001
+                self.poll_fail += 1                      # 한 번 실패로 연결을 끊지 않는다
+                if self.poll_fail >= 3:
+                    self.set_alarm("스테이지 응답 없음 · 연결 확인", "")
+                    logger.log("상태 읽기 연속 실패 · " + logger.short(e), "warn")
+            finally:
+                m.lock.release()
+            self.touch()
+
+    # ------------------------------------------------------------------
+    # 비상정지
+    # ------------------------------------------------------------------
+    def estop(self):
+        """즉시. 잠금을 기다리지 않는다."""
+        if self.motion is None:
+            return {"ok": True}
+        heater = int(self.cfg.get("heater.relay"))
+        policy_off = self.cfg.get("relay.on_estop") == "off"
+        try:
+            self.motion.estop(relays_off=policy_off, off_relays=(heater,))
+        except StageError as e:
+            logger.log("비상정지 전송 실패 · " + logger.short(e), "err")
+        if self.power:
+            self.power.owners.clear() if policy_off else self.power.owners.pop(heater, None)
+        if self.run:
+            self.run.stop()
+        self.pending_verify = None
+        self.set_alarm("비상정지 · 이동 잠김", "회복: " + " → ".join(self.motion.recovery_steps()))
+        logger.log("비상정지", "err")
+        return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # 명령 진입
+    # ------------------------------------------------------------------
+    def handle(self, cmd, args, gen):
+        fn = getattr(self, "c_" + cmd, None)
+        if fn is None:
+            raise AppError("알 수 없는 명령")
+        try:
+            r = fn(args or {}, gen)
+        except MotionError as e:
+            if e.code == "estop":
+                raise AppError("비상정지로 중단")
+            raise AppError(str(e))
+        except (PowerError, StageError) as e:
+            raise AppError(logger.short(e))
+        finally:
+            self.touch()
+        return r if isinstance(r, dict) else {}
+
+    def _need_stage(self):
+        if self.motion is None:
+            raise AppError("스테이지 연결 안 됨")
+
+    def _no_run(self, what="이 동작"):
+        if self.run and self.run.state in ("running", "paused", "stopping"):
+            raise AppError("측정 중 · %s 못 함" % what)
+
+    def _begin(self, name):
+        with self.lock:
+            if self.busy:
+                raise AppError("%s 중 · 끝난 뒤" % self.busy)
+            self.busy = name
+        self.touch()
+
+    def _end(self):
+        self.busy = ""
+        self.cap_text = ""
+        self.touch()
+
+    # ------------------------------------------------------------------
+    # 설정
+    # ------------------------------------------------------------------
+    def c_settings_save(self, a, gen):
+        if self.run and self.run.state in ("running", "paused", "stopping"):
+            raise AppError("측정 중 · 설정 변경 잠김")
+        ok, errs, warns = self.cfg.save(a["patch"])
+        if not ok:
+            k = next(iter(errs))
+            raise AppError("%s · %s" % (k, errs[k]))
+        if self.motion:
+            self._apply_motion_cfg()
+            if self.power:
+                self.power.heater_n = int(self.cfg.get("heater.relay"))
+            self.hub.configure()
+        return {"warnings": warns}
+
+    def c_settings_import_old(self, a, gen):
+        self._no_run()
+        path = a.get("path") or os.path.join(paths.OLD_DATA_DIR, "..", "wafer_stage", "settings.json")
+        patch, why = store.import_old(os.path.normpath(path))
+        if patch is None:
+            raise AppError(why)
+        ok, errs, _w = self.cfg.save(patch)
+        if not ok:
+            k = next(iter(errs))
+            raise AppError("가져오기 실패 · %s %s" % (k, errs[k]))
+        return {"imported": sorted(patch)}
+
+    # ------------------------------------------------------------------
+    # 촬영 · 검출
+    # ------------------------------------------------------------------
+    def _mm_px(self):
+        c = self.calib
+        if c.H is not None:
+            return c.local_mm_per_px()
+        sz = geom.area_scale(c.area, self.cfg.get("calib.area_size_mm"))
+        return sz[0] if sz else 0.143
+
+    def _use_diff(self):
+        m = self.ref_meta or {}
+        return (m.get("exposure") == self.cfg.get("exposure") and m.get("wb_temperature") == self.cfg.get("wb_temperature"))
+
+    def _goto_capture_xy(self, gen):
+        """촬영 위치로(Z 맨 위). 원점이 없으면 이동 없이 그 자리에서."""
+        m = self.motion
+        if m is None or not self.cfg.get("flow.capture_goto"):
+            return
+        cx, cy = self.cfg.get("capture_xy")
+        if m.z_ok and m.xy_ok and not m.estop_locked:
+            self.cap_text = "촬영 위치로 이동"
+            self.touch()
+            m.move_xy(cx, cy, gen=gen)
+        else:
+            logger.log("원점 없음 · 이동 없이 이 자리에서 촬영", "warn")
+
+    def _grab(self, gen, n_best=3, poly=None):
+        t_after = self.motion.last_move_end if self.motion else 0.0
+        self.cap_text = "프레임 받는 중"
+        self.touch()
+        img, tm = self.vision.frame_after(t_after, n_best=n_best, poly=poly)
+        if self.motion and gen != self.motion.gen:
+            raise AppError("촬영 중 비상정지 · 결과 버림")
+        return img, tm
+
+    def c_capture(self, a, gen):
+        self._no_run("촬영")
+        self._begin("촬영")
+        try:
+            if not self.calib.area:
+                raise AppError("판 영역 필요 · 장비 설정 2")
+            self.cap_error = None
+            lock = self.motion.lock if self.motion else threading.RLock()
+            with lock:
+                if self.motion and gen != self.motion.gen:
+                    raise AppError("비상정지로 중단")
+                self._goto_capture_xy(gen)
+                img, tm = self._grab(gen, n_best=int(self.cfg.get("capture_frames")), poly=self.calib.area)
+            self.cap_text = "검출"
+            self.touch()
+            self._detect_and_store(img)
+            return {"n": len(self.samples)}
+        except (AppError, MotionError) as e:
+            self.cap_error = {"id": time.time(), "text": logger.short(e)}
+            raise
+        except Exception as e:                             # noqa: BLE001
+            self.cap_error = {"id": time.time(), "text": logger.short(e)}
+            logger.log("촬영 실패 · " + logger.short(e), "err", raw=repr(e))
+            raise AppError("촬영 실패 · " + logger.short(e, 40))
+        finally:
+            self._end()
+
+    def _detect_and_store(self, img):
+        c = self.calib
+        sid = _stamp()
+        ref = self.ref_img()
+        mm_px = self._mm_px()
+        params = copy.deepcopy(self.cfg.values)
+        r = sense.detect_shot(img, c.area, c.d.get("exclude"), params, mm_px, ref=ref, ref_id=self.ref_id() or "",
+                              use_diff=self._use_diff(), log=lambda *m: logger.log(" ".join(str(x) for x in m)))
+        det = r["det"]
+        coords_ok = bool(r["coords_ok"]) and c.ready(self.ref_id(), self._size()) and (ref is None or r["A"] is not None)
+        if ref is not None and r["A"] is None:
+            coords_ok = False
+        warns = list(r["warnings"]) + list(det.warnings)
+        if not c.ready(self.ref_id(), self._size()):
+            warns.append("좌표 보정 필요 · 검출만")
+        # 번호: 기준 mm 위치 순서(행 우선)
+        tmp = [dict(s, x_px=s.get("ref_u", s["x_px"]), y_px=s.get("ref_v", s["y_px"])) for s in det.samples]
+        order_in = geom.order_samples(tmp, c.H if coords_ok else None, (0, 0), mm_px, det.diag, lambda *_: None)
+        by_pos = {(round(s["x_px"], 1), round(s["y_px"], 1)): s for s in det.samples}
+        samples = []
+        for s in order_in:
+            src = by_pos.get((round(s["x_px"], 1), round(s["y_px"], 1))) or s
+            samples.append(self._mk_sample(s["no"], src, coords_ok and r["A"] is not None or (ref is None and coords_ok), r["A"]))
+        self.shot = {"id": sid, "time": time.strftime("%Y-%m-%d %H:%M:%S"), "img": img, "size": (img.shape[1], img.shape[0]),
+                     "A": r["A"], "cam": r["cam"], "coords_ok": coords_ok, "warnings": warns, "path": r["path"], "fail": r["fail"],
+                     "mm_px": mm_px, "area_cur": r["area_cur"], "ref_id": self.ref_id()}
+        self.samples = samples
+        self.edits = []
+        self.sel = None
+        self.next_no = len(samples) + 1
+        self._assign_cooler()
+        self._save_shot()
+        if not coords_ok:
+            why = "; ".join(w for w in r["warnings"] if "카메라" in w) or ("좌표 보정 필요" if not c.ready(self.ref_id(), self._size()) else "좌표 못 만듦")
+            self.set_alarm(why, "장비 설정에서 확인") if r["cam"] and not r["cam"].get("ok", True) or r["fail"] else None
+        elif self.alarm and "카메라 위치" in self.alarm["text"]:
+            self.set_alarm(None)
+        logger.log("촬영 · 인식 %d · 확인 필요 %d · 경로 %s" % (len(samples), sum(1 for s in samples if s["weak"]), r["path"]))
+
+    def _mk_sample(self, no, s, with_xy, A):
+        ru, rv = s.get("ref_u"), s.get("ref_v")
+        d = {"no": no, "u": s["x_px"], "v": s["y_px"], "ru": ru, "rv": rv, "verts": s.get("vertices_px") or [],
+             "source": s.get("source", "detected"), "weak": bool(s.get("weak") or s.get("source") == "predicted"),
+             "excluded": False, "manual": False, "X": None, "Y": None, "cooler": None, "cooler_relay": None,
+             "w_mm": s.get("w_mm"), "h_mm": s.get("h_mm"), "angle": s.get("angle_deg")}
+        if with_xy and ru is not None:
+            x, y = self.calib.px_to_mm(ru, rv)
+            d["X"], d["Y"] = round(x, 2), round(y, 2)
+        return d
+
+    def _recalc_samples(self):
+        """좌표 보정이 바뀌었을 때: 기준 픽셀에서 X · Y 와 쿨러 구역을 다시 계산한다."""
+        ok = self.calib.ready(self.ref_id(), self._size()) and self.shot is not None and \
+            (self.ref_img() is None or self.shot.get("A") is not None)
+        for s in self.samples:
+            if ok and s.get("ru") is not None and not s.get("from_xy"):
+                x, y = self.calib.px_to_mm(s["ru"], s["rv"])
+                s["X"], s["Y"] = round(x, 2), round(y, 2)
+            elif s.get("from_xy") and ok:
+                pass
+            else:
+                s["X"] = s["Y"] = None
+        if self.shot:
+            self.shot["coords_ok"] = bool(ok)
+        self._assign_cooler()
+
+    def _assign_cooler(self):
+        c = self.calib
+        if c.H is None or not c.area:
+            for s in self.samples:
+                s["cooler"] = s["cooler_relay"] = None
+            return
+        size = c.measured_size_mm() or self.cfg.get("calib.area_size_mm")
+        z = self.cfg.get("cooler.zones")
+        Hp = geom.plate_homography(c.area, size)
+        for s in self.samples:
+            if s.get("ru") is None:
+                continue
+            lx, ly = geom.px_to_mm(Hp, s["ru"], s["rv"])
+            cell = zones.cell_at(z, size, lx, ly)
+            if cell is not None:
+                row, col = cell if isinstance(cell, tuple) else (cell // z["cols"], cell % z["cols"])
+                cc = z["cells"][row * z["cols"] + col]
+                s["cooler"], s["cooler_relay"] = cc.get("cooler"), cc.get("relay")
+
+    def _save_shot(self):
+        sh = self.shot
+        d = os.path.join(paths.SHOTS_DIR, sh["id"])
+        try:
+            os.makedirs(d, exist_ok=True)
+            imgio.imwrite_u(os.path.join(d, "raw.png"), sh["img"])
+            store.write_json(os.path.join(d, "samples.json"), {"id": sh["id"], "samples": self.samples, "cam": sh["cam"],
+                                                             "warnings": sh["warnings"], "ref_id": sh["ref_id"]})
+            ann = geom.annotate_fixed(sh["img"], [dict(s, x_px=s["u"], y_px=s["v"], vertices_px=s["verts"]) for s in self.samples])
+            imgio.imwrite_u(os.path.join(d, "annotated.jpg"), ann)
+        except OSError as e:
+            logger.log("촬영 저장 실패 · " + logger.short(e), "warn")
+
+    def _load_last_shot(self):
+        try:
+            ids = sorted(os.listdir(paths.SHOTS_DIR))
+        except OSError:
+            return
+        for sid in reversed(ids):
+            j = store.read_json(os.path.join(paths.SHOTS_DIR, sid, "samples.json"))
+            img = imgio.imread_u(os.path.join(paths.SHOTS_DIR, sid, "raw.png"))
+            if j and img is not None:
+                self.shot = {"id": sid, "time": "%s-%s-%s %s:%s:%s" % (sid[:4], sid[4:6], sid[6:8], sid[9:11], sid[11:13], sid[13:15]),
+                             "img": img, "size": (img.shape[1], img.shape[0]), "A": None, "cam": j.get("cam"), "coords_ok": False,
+                             "warnings": ["이전 촬영 · 다시 촬영하면 좌표가 맞음"], "path": "?", "fail": None, "mm_px": 0.15,
+                             "area_cur": None, "ref_id": j.get("ref_id")}
+                self.samples = j["samples"]
+                self.next_no = max([s["no"] for s in self.samples] + [0]) + 1
+                if self.shot["cam"] and self.shot["cam"].get("M"):
+                    self.shot["A"] = frames.Align.from_dict({"M": self.shot["cam"]["M"], "model": self.shot["cam"].get("model", "euclid"),
+                                                             "tag": frames.SHOT})
+                return
+            break
+
+    # ------------------------------------------------------------------
+    # 샘플 편집
+    # ------------------------------------------------------------------
+    def _push_edit(self):
+        self.edits.append((copy.deepcopy(self.samples), self.next_no, self.sel))
+        del self.edits[:-50]
+
+    def _need_shot(self):
+        if not self.shot:
+            raise AppError("촬영 결과 없음")
+        self._no_run("샘플 편집")
+
+    def c_sample_select(self, a, gen):
+        self.sel = a.get("no")
+
+    def _shot_to_ref(self, uv):
+        A = self.shot.get("A")
+        if A is not None:
+            return tuple(A.to_ref([list(uv)])[0])
+        if self.ref_img() is None:
+            return tuple(uv)
+        raise AppError("정렬 없음 · 좌표 변환 불가")
+
+    def c_sample_add(self, a, gen):
+        self._need_shot()
+        u, v = float(a["u"]), float(a["v"])
+        if a.get("snap", True):
+            try:
+                crop_img = self.shot["img"]
+                res = fixed_detect.snap(crop_img, u, v, copy.deepcopy(self.cfg.values), self.shot["mm_px"])
+                if res:
+                    u, v = float(res["x_px"]), float(res["y_px"])
+            except Exception:                              # noqa: BLE001
+                pass
+        ru, rv = self._shot_to_ref((u, v))
+        self._push_edit()
+        s = {"no": self.next_no, "u": round(u, 1), "v": round(v, 1), "ru": round(ru, 1), "rv": round(rv, 1), "verts": [], "source": "manual",
+             "weak": False, "excluded": False, "manual": True, "X": None, "Y": None, "cooler": None, "cooler_relay": None}
+        self.next_no += 1
+        self.samples.append(s)
+        self.sel = s["no"]
+        self._recalc_samples()
+        self._save_shot()
+
+    def c_sample_here(self, a, gen):
+        """현재 위치를 샘플로: X · Y 가 기준. 픽셀은 X · Y 에서 다시 만든다(기준 -> 촬영 프레임)."""
+        self._need_shot()
+        self._need_stage()
+        c = self.calib
+        if not c.ready(self.ref_id(), self._size()):
+            raise AppError("좌표 보정 필요 · 장비 설정 4")
+        x, y = self.pos["x"], self.pos["y"]
+        tl = conditions.active_tool(self.cfg.values)
+        x, y = x + float(tl.get("dx_mm") or 0.0), y + float(tl.get("dy_mm") or 0.0)
+        ru, rv = c.mm_to_px(x, y)
+        A = self.shot.get("A")
+        u, v = (A.to_cur([[ru, rv]])[0] if A is not None else (ru, rv))
+        self._push_edit()
+        s = {"no": self.next_no, "u": round(float(u), 1), "v": round(float(v), 1), "ru": round(ru, 1), "rv": round(rv, 1), "verts": [],
+             "source": "manual", "weak": False, "excluded": False, "manual": True, "X": round(x, 2), "Y": round(y, 2), "cooler": None,
+             "cooler_relay": None, "from_xy": True}
+        self.next_no += 1
+        self.samples.append(s)
+        self.sel = s["no"]
+        self._assign_cooler()
+        self._save_shot()
+
+    def _find(self, no):
+        for s in self.samples:
+            if s["no"] == no:
+                return s
+        raise AppError("샘플 %s 없음" % no)
+
+    def c_sample_move(self, a, gen):
+        """위치 수정."""
+        self._need_shot()
+        s = self._find(int(a["no"]))
+        ru, rv = self._shot_to_ref((float(a["u"]), float(a["v"])))
+        self._push_edit()
+        s.update(u=round(float(a["u"]), 1), v=round(float(a["v"]), 1), ru=round(ru, 1), rv=round(rv, 1), manual=True, weak=False,
+                 verts=[], from_xy=False)
+        self._recalc_samples()
+        self._save_shot()
+
+    def c_sample_delete(self, a, gen):
+        self._need_shot()
+        self._find(int(a["no"]))
+        self._push_edit()
+        self.samples = [s for s in self.samples if s["no"] != int(a["no"])]
+        if self.sel == int(a["no"]):
+            self.sel = None
+        self._save_shot()
+
+    def c_sample_exclude(self, a, gen):
+        self._need_shot()
+        s = self._find(int(a["no"]))
+        self._push_edit()
+        s["excluded"] = bool(a.get("on", not s["excluded"]))
+
+    def c_undo_edit(self, a, gen):
+        self._need_shot()
+        if not self.edits:
+            raise AppError("되돌릴 편집 없음")
+        self.samples, self.next_no, self.sel = self.edits.pop()
+        self._recalc_samples()
+        self._save_shot()
+
+    def c_sample_confirm(self, a, gen):
+        """확인 필요 해제."""
+        s = self._find(int(a["no"]))
+        self._push_edit()
+        s["weak"] = False
+
+    def c_goto_sample(self, a, gen):
+        self._need_stage()
+        self._no_run("이동")
+        s = self._find(int(a["no"]))
+        if s["X"] is None:
+            raise AppError("좌표 없음 · 좌표 보정 필요")
+        tl = conditions.active_tool(self.cfg.values)
+        px, py = s["X"] - float(tl.get("dx_mm") or 0.0), s["Y"] - float(tl.get("dy_mm") or 0.0)
+        lx, ly = self.cfg.get("limits.x_max_mm"), self.cfg.get("limits.y_max_mm")
+        if not (0 <= px <= lx and 0 <= py <= ly):
+            raise AppError("가동범위 밖 · X %.1f Y %.1f" % (px, py))
+        self._begin("이동")
+        try:
+            self.motion.move_xy(px, py, gen=gen)
+            st = self.motion.status()
+            self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
+        finally:
+            self._end()
+
+    # ------------------------------------------------------------------
+    # 이동 · 조그 · 회복
+    # ------------------------------------------------------------------
+    def c_jog(self, a, gen):
+        self._need_stage()
+        if self.run and self.run.state == "running":
+            raise AppError("측정 중 · 일시정지 뒤 가능")
+        ax, mm = str(a["axis"]).lower(), float(a["mm"])
+        if abs(mm) > float(self.cfg.get("jog.max_mm")):
+            raise AppError("한 번 최대 %g mm" % self.cfg.get("jog.max_mm"))
+        if self.motion.moving:
+            raise AppError("이동 중 · 끝난 뒤")
+        self.motion.jog(ax, mm, gen=gen)
+        st = self.motion.status()
+        self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
+
+    def c_move_xy(self, a, gen):
+        self._need_stage()
+        self._no_run("이동")
+        if self.motion.moving:
+            raise AppError("이동 중 · 끝난 뒤")
+        self.motion.move_xy(float(a["x"]), float(a["y"]), gen=gen)
+
+    def c_goto_named(self, a, gen):
+        self._need_stage()
+        self._no_run("이동")
+        key = {"park": "park_xy", "capture": "capture_xy"}[a["name"]]
+        x, y = self.cfg.get(key)
+        self.motion.move_xy(x, y, gen=gen)
+
+    def c_z_top(self, a, gen):
+        self._need_stage()
+        self.motion.move_z(0.0, gen=gen)
+
+    def c_register_z(self, a, gen):
+        self._need_stage()
+        self.motion.register_z_origin(gen=gen)
+        self._after_recovery()
+
+    def c_register_xy(self, a, gen):
+        self._need_stage()
+        self.motion.register_xy_origin(gen=gen)
+        self._after_recovery()
+
+    def _after_recovery(self):
+        st = self.motion.status()
+        self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
+        if not self.motion.recovery_steps():
+            self.set_alarm(None)
+        else:
+            self.set_alarm("비상정지 회복 중", "다음: " + " → ".join(self.motion.recovery_steps()))
+
+    # ------------------------------------------------------------------
+    # 위치 확인 (헤드 마커)
+    # ------------------------------------------------------------------
+    def _align_snap(self, img):
+        """촬영 사진과 빈 판 사진 정렬 -> (Align | None, 문구)."""
+        ref = self.ref_img()
+        if ref is None or not self.calib.area:
+            return None, "빈 판 사진 없음"
+        ar = align_mod.align(ref, img, self.calib.area, ref_id=self.ref_id() or "", tag=frames.SNAP)
+        if not ar["ok"]:
+            return None, "정렬 실패 · " + ar["msg"]
+        return ar["A"], ""
+
+    def _head_px_ref(self, img):
+        ph = {"marker_id": self.cfg.get("photohome.marker_id"), "dict": self.cfg.get("photohome.dict")}
+        h = geom.detect_head(img, ph)
+        if h is None:
+            return None, None, "헤드 마커 안 보임"
+        size = (img.shape[1], img.shape[0])
+        if geom.touches_edge(h[2], size, geom.edge_margin_px(self.cfg.get("photohome"), size)):
+            return None, None, "헤드 마커가 화면 가장자리에 걸침"
+        A, why = self._align_snap(img)
+        if A is None:
+            return (h[0], h[1]), None, why
+        ru, rv = A.to_ref([[h[0], h[1]]])[0]
+        return (h[0], h[1]), (float(ru), float(rv)), ""
+
+    def c_verify_position(self, a, gen):
+        """위치 확인: 지금 자리에서 한 장 -> 헤드 마커 -> 기준 프레임 -> 헤드 위치 보정 -> 실제 X · Y."""
+        self._need_stage()
+        self._no_run("위치 확인")
+        self._begin("위치 확인")
+        try:
+            with self.motion.lock:
+                self.motion._enter(gen)
+                with self.motion.op(gen):
+                    pre = self.motion.stage.status()
+                pre_xy = (pre["x_mm"], pre["y_mm"])
+                img, tm = self._grab(gen, n_best=1)
+            _px, rp, why = self._head_px_ref(img)
+            if self.head.status(self.ref_id(), self._size())[0] != "done":
+                raise AppError("헤드 위치 보정 필요 · 장비 설정 5")
+            if rp is None:
+                self.pending_verify = None
+                raise AppError("위치 확인 못 함 · " + why + (" · 자동 적용 안 함" if why.startswith("정렬") or "빈 판" in why else ""))
+            X, Y = self.head.predict(*rp)
+            d = float(np.hypot(X - pre_xy[0], Y - pre_xy[1]))
+            tol, warn = float(self.cfg.get("photohome.tol_mm")), float(self.cfg.get("photohome.warn_mm"))
+            res = {"x": round(X, 2), "y": round(Y, 2), "fw_x": round(pre_xy[0], 2), "fw_y": round(pre_xy[1], 2), "d": round(d, 2),
+                   "gen": gen, "pre_xy": pre_xy, "t": time.time()}
+            if d <= tol:
+                res["verdict"] = "정상"
+                self.pending_verify = None
+            else:
+                res["verdict"] = "자동 적용" if d <= warn else "확인 필요"
+                self.pending_verify = res
+                if d <= warn and not self.motion.estop_locked and self.motion.z_ok:
+                    pass
+            self.verify_result = res
+            logger.log("위치 확인 · 차이 %.2f mm · %s" % (d, res["verdict"]))
+            return res
+        finally:
+            self._end()
+
+    def c_apply_position(self, a, gen):
+        """위치 확인 결과 적용(sp) - 회복의 마지막 단계. 촬영 사이 비상정지 · 위치 변경이면 거절."""
+        self._need_stage()
+        pv = self.pending_verify or getattr(self, "verify_result", None)
+        if not pv:
+            raise AppError("적용할 위치 확인 결과 없음")
+        self.motion.apply_position(pv["x"], pv["y"], expect_gen=pv["gen"], expect_xy=pv["pre_xy"], gen=gen)
+        self.pending_verify = None
+        self._after_recovery()
+        return {"x": pv["x"], "y": pv["y"]}
+
+    # ------------------------------------------------------------------
+    # 빈 판 사진 · 판 영역
+    # ------------------------------------------------------------------
+    def c_ref_capture(self, a, gen):
+        """빈 판 사진: 항상 촬영 위치(Z 맨 위)로 자동 이동한 뒤 찍는다. 교체면 옛 -> 새 정렬 뒤 기하를 옮긴다."""
+        self._no_run("빈 판 사진")
+        self._begin("빈 판 사진")
+        try:
+            lock = self.motion.lock if self.motion else threading.RLock()
+            with lock:
+                if self.motion:
+                    self.motion._enter(gen)
+                    cx, cy = self.cfg.get("capture_xy")
+                    if not (self.motion.z_ok and self.motion.xy_ok and not self.motion.estop_locked):
+                        raise AppError("원점 필요 · 촬영 위치로 못 감")
+                    self.cap_text = "촬영 위치로 이동"
+                    self.touch()
+                    self.motion.move_xy(cx, cy, gen=gen)
+                img, tm = self._grab(gen, n_best=int(self.cfg.get("capture_frames")), poly=self.calib.area)
+            return self._install_ref(img)
+        finally:
+            self._end()
+
+    def _install_ref(self, new_img, new_id=None, from_history=False):
+        old = self.ref_img()
+        new_id = new_id or _stamp()
+        size = (new_img.shape[1], new_img.shape[0])
+        A = None
+        if self.calib.area and (old is not None or (self.snap and self.snap.get("img") is not None)):
+            base = old if old is not None else self.snap["img"]
+            ar = align_mod.align(base, new_img, self.calib.area, ref_id=new_id)
+            if not ar["ok"]:
+                raise AppError("교체 거절 · 정렬 실패 (%s)" % ar["msg"][:28])
+            A = ar["A"]
+            moved = {"shift_px": round(A.shift_px(np.mean(self.calib.area, axis=0)), 1), "resid": round(ar["resid"], 2), "model": A.model}
+        else:
+            moved = None
+        self._archive_current_ref()
+        imgio.imwrite_u(paths.REF_PATH, new_img)
+        self.ref_meta = {"id": new_id, "time": time.strftime("%Y-%m-%d %H:%M:%S"), "size": list(size), "camera_index": self.cfg.get("camera_index"),
+                         "exposure": self.cfg.get("exposure"), "wb_temperature": self.cfg.get("wb_temperature")}
+        store.write_json(paths.REF_META_PATH, self.ref_meta)
+        self._ref_img = new_img
+        if A is not None:
+            why = self.calib.replace_ref(A, new_id, size)
+            self.head.replace_ref(A, new_id)
+            if why:
+                self.calib_msgs.append("좌표 보정 다시 풂 실패 · " + why)
+        elif self.calib.area:
+            self.calib.d["ref_id"] = new_id
+            self.calib.d["size"] = list(size)
+            self.calib.save()
+        self.shot = self.shot if self.shot and self.shot.get("ref_id") == new_id else self.shot
+        self._recalc_samples()
+        self._prune_history()
+        res = {"id": new_id, "moved": moved}
+        logger.log("빈 판 사진 교체" + ("" if not moved else " · 이동 %(shift_px)s px · 잔차 %(resid)s · %(model)s" % moved))
+        return res
+
+    def _archive_current_ref(self):
+        if not (self.ref_meta and os.path.exists(paths.REF_PATH)):
+            return
+        os.makedirs(paths.REF_HISTORY_DIR, exist_ok=True)
+        base = os.path.join(paths.REF_HISTORY_DIR, self.ref_meta["id"])
+        try:
+            shutil.copy2(paths.REF_PATH, base + ".png")
+            store.write_json(base + ".json", self.ref_meta)
+        except OSError:
+            pass
+
+    def _prune_history(self):
+        try:
+            names = sorted({f.split(".")[0] for f in os.listdir(paths.REF_HISTORY_DIR)})
+            for n in names[:-10]:
+                for ext in (".png", ".json"):
+                    try:
+                        os.remove(os.path.join(paths.REF_HISTORY_DIR, n + ext))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+    def ref_history(self):
+        out = []
+        try:
+            for n in sorted({f.split(".")[0] for f in os.listdir(paths.REF_HISTORY_DIR)}, reverse=True):
+                m = store.read_json(os.path.join(paths.REF_HISTORY_DIR, n + ".json")) or {}
+                out.append({"id": n, "time": m.get("time", n)})
+        except OSError:
+            pass
+        return out
+
+    def c_ref_restore(self, a, gen):
+        self._no_run("빈 판 사진")
+        n = a["id"]
+        img = imgio.imread_u(os.path.join(paths.REF_HISTORY_DIR, n + ".png"))
+        if img is None:
+            raise AppError("보관 사진 없음")
+        meta = store.read_json(os.path.join(paths.REF_HISTORY_DIR, n + ".json")) or {}
+        r = self._install_ref(img, new_id=meta.get("id", n), from_history=True)
+        if meta:
+            self.ref_meta.update({k: meta[k] for k in ("exposure", "wb_temperature", "time") if k in meta})
+            store.write_json(paths.REF_META_PATH, self.ref_meta)
+        return r
+
+    def c_snap(self, a, gen):
+        """단발 촬영(보정 작업용): 지금 자리에서 한 장. 정렬이 있으면 기준 프레임으로 옮길 수 있다."""
+        self._begin("촬영")
+        try:
+            lock = self.motion.lock if self.motion else threading.RLock()
+            with lock:
+                img, tm = self._grab(gen, n_best=1)
+            A, why = (None, "") if not self.calib.area else self._align_snap(img)
+            self.snap = {"img": img, "A": A, "id": _stamp(), "t": tm, "why": why}
+            return {"aligned": A is not None, "why": why}
+        finally:
+            self._end()
+
+    def _frame_to_ref(self, pts, frame):
+        """클릭 좌표(프레임 태그 frame) -> 기준 프레임. 프레임 변환은 frames.Align 한곳."""
+        if frame == "ref":
+            return [tuple(p) for p in pts]
+        A = None
+        if frame == "snap":
+            A = self.snap and self.snap.get("A")
+        elif frame == "shot":
+            A = self.shot and self.shot.get("A")
+        if A is None:
+            if self.ref_img() is None:
+                return [tuple(p) for p in pts]               # 빈 판 사진이 없으면 지금 프레임이 곧 기준이 된다
+            raise AppError("정렬 없음 · 클릭 좌표 변환 불가")
+        return [tuple(t) for t in A.to_ref(pts)]
+
+    def c_area_set(self, a, gen):
+        self._no_run("판 영역")
+        pts = self._frame_to_ref(a["points"], a.get("frame", "ref"))
+        size = self._size() or (a.get("size") or (1280, 960))
+        ok, why = self.calib.set_area(pts, self.ref_id(), size)
+        if not ok:
+            raise AppError("판 영역 거절 · " + why)
+        self._recalc_samples()
+        return {"area": self.calib.area}
+
+    def c_exclude_set(self, a, gen):
+        polys = [self._frame_to_ref(p, a.get("frame", "ref")) for p in a["polys"]]
+        self.calib.set_exclude(polys)
+
+    # ------------------------------------------------------------------
+    # 좌표 보정
+    # ------------------------------------------------------------------
+    def c_calib_record(self, a, gen):
+        """위치 기록: 지금 스테이지 X · Y 를 잡아 두고 사진에서 같은 점을 클릭받는다."""
+        self._need_stage()
+        st = self.motion.status()
+        tl = conditions.active_tool(self.cfg.values)
+        self.pending_calib = {"x": round(st["x_mm"], 3), "y": round(st["y_mm"], 3)}
+        return dict(self.pending_calib)
+
+    def c_calib_click(self, a, gen):
+        if not self.pending_calib:
+            raise AppError("위치 기록 먼저")
+        (ru, rv), = self._frame_to_ref([[a["u"], a["v"]]], a.get("frame", "snap"))
+        p = self.calib.point_near(a.get("shot"), self.pending_calib["x"], self.pending_calib["y"], tol_mm=0.2) if a.get("shot") else None
+        if p:
+            raise AppError("이미 기록한 점 · %d번" % p["no"])
+        no = self.calib.add_point(ru, rv, self.pending_calib["x"], self.pending_calib["y"], a.get("src", "click"), a.get("shot"))
+        self.pending_calib = None
+        self._recalc_samples()
+        return {"no": no, "warnings": self.calib.warnings()}
+
+    def c_calib_delete(self, a, gen):
+        if not self.calib.delete_point(a["no"]):
+            raise AppError("점 없음")
+        self._recalc_samples()
+
+    def c_calib_apply(self, a, gen):
+        ok, why = self.calib.apply()
+        if not ok:
+            raise AppError(why)
+        self._recalc_samples()
+        return {"rms": self.calib.d["rms_mm"], "size_mm": self.calib.d.get("size_mm")}
+
+    # ------------------------------------------------------------------
+    # 헤드 위치 보정
+    # ------------------------------------------------------------------
+    def c_head_calib(self, a, gen):
+        self._need_stage()
+        self._no_run("헤드 위치 보정")
+        c = self.calib
+        if not c.ready(self.ref_id(), self._size()):
+            raise AppError("좌표 보정 필요 · 장비 설정 4")
+        n, mg = int(self.cfg.get("photohome.grid_n")), float(self.cfg.get("photohome.grid_margin_mm"))
+        q = np.asarray([c.px_to_mm(u, v) for u, v in c.area])
+        x0, x1, y0, y1 = q[:, 0].min() + mg, q[:, 0].max() - mg, q[:, 1].min() + mg, q[:, 1].max() - mg
+        xs, ys = np.linspace(max(0, x0), x1, n), np.linspace(max(0, y0), y1, n)
+        self._begin("헤드 위치 보정")
+        try:
+            self.head.clear()
+            skipped = 0
+            with self.motion.lock:
+                self.motion._enter(gen)
+                for i, y in enumerate(ys):
+                    for x in (xs if i % 2 == 0 else xs[::-1]):
+                        self.cap_text = "격자 %d / %d" % (len(self.head.d["pairs"]) + skipped + 1, n * n)
+                        self.touch()
+                        self.motion.move_xy(float(x), float(y), gen=gen)
+                        st = self.motion.status()
+                        img, tm = self._grab(gen, n_best=1)
+                        _px, rp, why = self._head_px_ref(img)
+                        if rp is None:
+                            skipped += 1
+                            logger.log("헤드 보정 점 건너뜀 · " + why, "warn")
+                            continue
+                        self.head.add(rp[0], rp[1], st["x_mm"], st["y_mm"], self.ref_id(), self._size())
+            ok, why = self.head.fit([c.px_to_mm(u, v) for u, v in c.area])
+            if not ok:
+                self.head.save()
+                raise AppError("헤드 위치 보정 실패 · " + why)
+            self.head.save()
+            return {"n": len(self.head.d["pairs"]), "rms": self.head.d["rms_mm"], "skipped": skipped}
+        finally:
+            self._end()
+
+    def c_head_apply(self, a, gen):
+        ok, why = self.head.apply(float(self.cfg.get("photohome.rms_limit_mm")))
+        if not ok:
+            raise AppError(why)
+
+    # ------------------------------------------------------------------
+    # 공구 오프셋
+    # ------------------------------------------------------------------
+    def _save_tool_offset(self, dx, dy):
+        items = copy.deepcopy(self.cfg.get("tool.items"))
+        name = self.cfg.get("tool.active")
+        for t in items:
+            if t["name"] == name:
+                t["dx_mm"], t["dy_mm"] = round(dx, 2), round(dy, 2)
+        ok, errs, _w = self.cfg.save({"tool.items": items})
+        if not ok:
+            raise AppError("공구 저장 실패 · " + next(iter(errs.values())))
+
+    def c_tool_m1(self, a, gen):
+        """방법 1: 포인터와 공구 끝을 같은 점에 대고 두 번 기록. d = A - B."""
+        self._need_stage()
+        st = self.motion.status()
+        if a["which"] == "pointer":
+            self.tool_tmp["A"] = (st["x_mm"], st["y_mm"])
+            return {"A": self.tool_tmp["A"]}
+        if "A" not in self.tool_tmp:
+            raise AppError("포인터 위치 먼저")
+        A = self.tool_tmp.pop("A")
+        d = (A[0] - st["x_mm"], A[1] - st["y_mm"])
+        self._save_tool_offset(*d)
+        return {"dx": round(d[0], 2), "dy": round(d[1], 2)}
+
+    def c_tool_m2_heat(self, a, gen):
+        """방법 2: 지금 자리에 시간 한도 안에서 가열해 자국을 남기고, 단발 촬영을 둔다."""
+        self._need_stage()
+        self._no_run("공구 가열")
+        s = float(a.get("seconds", 3.0))
+        self._begin("공구 가열")
+        try:
+            st = self.motion.status()
+            self.tool_tmp["P0"] = (st["x_mm"], st["y_mm"])
+            self.power.heater_for(s, cancel=lambda: self.motion.gen != gen)
+        finally:
+            self._end()
+        return {"P0": self.tool_tmp["P0"]}
+
+    def c_tool_m2_click(self, a, gen):
+        if "P0" not in self.tool_tmp:
+            raise AppError("가열 먼저")
+        c = self.calib
+        if not c.ready(self.ref_id(), self._size()):
+            raise AppError("좌표 보정 필요")
+        (ru, rv), = self._frame_to_ref([[a["u"], a["v"]]], a.get("frame", "snap"))
+        M = c.px_to_mm(ru, rv)
+        P0 = self.tool_tmp.pop("P0")
+        d = (M[0] - P0[0], M[1] - P0[1])
+        self._save_tool_offset(*d)
+        return {"dx": round(d[0], 2), "dy": round(d[1], 2)}
+
+    # ------------------------------------------------------------------
+    # 릴레이 (수동)
+    # ------------------------------------------------------------------
+    def c_relay(self, a, gen):
+        self._need_stage()
+        n, on = int(a["n"]), bool(a["on"])
+        if self.run and self.run.state == "running":
+            raise AppError("측정 중 · 수동 릴레이 못 씀")
+        if on and not self.cfg.get("relay.items")[n - 1].get("enabled"):
+            raise AppError("R%d 사용 안 함 · 장비 설정 7" % n)
+        if self.motion.estop_locked and on:
+            raise AppError("비상정지 잠금 · 켜기 거절")
+        self.power.set(n, on, "manual")
+
+    # ------------------------------------------------------------------
+    # 측정
+    # ------------------------------------------------------------------
+    def _condition(self, name=None):
+        return copy.deepcopy(conditions.find(self.cfg.values, name or self.cfg.get("condition.active")))
+
+    def preflight(self, cond, nos):
+        """(차단 사유 | "", 안내 목록)."""
+        if self.motion is None:
+            return "스테이지 연결 안 됨", []
+        if self.busy:
+            return "%s 중 · 끝난 뒤" % self.busy, []
+        if self.run and self.run.state in ("running", "paused", "stopping"):
+            return "측정 중", []
+        if not self.shot or not self.samples:
+            return "촬영 필요", []
+        if not self.calib.ready(self.ref_id(), self._size()):
+            return "좌표 보정 필요 · 장비 설정 4", []
+        if not self.shot.get("coords_ok"):
+            return "카메라 위치 확인 필요 · 다시 촬영", []
+        m = self.motion
+        if m.estop_locked or not m.z_ok or not m.xy_ok:
+            return "원점 확인 필요 · " + " → ".join(m.recovery_steps()), []
+        steps = [s["type"] for s in cond["steps"]]
+        notes = []
+        tk = self.hub.temp_kind()
+        needs = conditions.needs_temp(cond)
+        if needs and tk == "none":
+            return "온도 센서 없음 · 장비 설정 7", []
+        if needs and tk == "dummy" and not self.dry:
+            return "온도 드라이버가 더미 · 실제 장비에서 시작 안 함", []
+        if "contact" in steps and not (self.cfg.get("contact.driver") != "none" and self.hub.contact is not None):
+            return ("접촉 드라이버가 더미 · 실제 장비에서 시작 안 함" if (self.cfg.get("contact.driver") == "dummy" and not self.dry)
+                    else "접촉 드라이버 없음 · 장비 설정 7"), []
+        if "measure" in steps and isinstance(self.hub.meter, __import__("devices").NoMeter):
+            notes.append("계측기 미연결 · 온도만 기록")
+        if any(s["type"] in ("heat",) for s in cond["steps"]) and not self.cfg.get("relay.items")[int(self.cfg.get("heater.relay")) - 1].get("enabled"):
+            return "히트건 릴레이 사용 안 함 · 장비 설정 7", []
+        errs, _w = conditions.validate_condition(cond, self.cfg.values, self.cfg.get("limits.z_max_mm"), prefix="c")
+        if errs:
+            return "측정 조건 오류 · " + next(iter(errs.values())), []
+        sel = [s for s in self.samples if (nos is None or s["no"] in nos) and not s["excluded"]]
+        if not sel:
+            return "측정 대상 없음", []
+        if any(s["X"] is None for s in sel):
+            return "좌표 없는 샘플 있음", []
+        return "", notes
+
+    def c_measure_start(self, a, gen):
+        mode = a.get("mode", "continuous")
+        nos = a.get("nos") if mode == "selected" else None
+        cond = self._condition(a.get("condition"))
+        why, notes = self.preflight(cond, nos)
+        if why:
+            raise AppError(why)
+        if any(s["weak"] and not s["excluded"] for s in self.samples) and not a.get("ok_weak"):
+            raise AppError("확인 필요 샘플 남음")
+        sel = [s for s in self.samples if (nos is None or s["no"] in nos) and not s["excluded"]]
+        self.hub.configure()
+        self.hub.start()
+        self._apply_motion_cfg()
+        run = measure.Run(self, cond, copy.deepcopy(sel), mode)
+        self.run = run
+        self.last_run = None
+        run.warns.extend(notes)
+        self._save_run_photo(run)
+        run.start()
+        logger.log("측정 시작 · %s · %d개" % (cond["name"], len(sel)))
+        return {"dir": run.run_dir}
+
+    def _save_run_photo(self, run):
+        if not self.shot:
+            return
+        try:
+            c = self.calib
+            ann = geom.annotate_fixed(self.shot["img"], [dict(s, x_px=s["u"], y_px=s["v"], vertices_px=s["verts"]) for s in self.samples])
+            area = self.shot.get("area_cur") or c.area
+            u0, v0, u1, v1 = geom.crop_rect(area, ann.shape)
+            os.makedirs(run.run_dir, exist_ok=True)
+            imgio.imwrite_u(os.path.join(run.run_dir, "plate_fit.jpg"), ann[v0:v1, u0:u1])
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    def on_run_end(self, run):
+        self.last_run = run
+        if run.state == "error":
+            self.set_alarm("측정 오류 · " + run.message, "결과 탭에서 확인")
+        self.touch()
+
+    def _run_cmd(self, fn):
+        if not self.run or self.run.state in ("done", "stopped", "error"):
+            raise AppError("측정 중 아님")
+        fn(self.run)
+
+    def c_measure_pause(self, a, gen):
+        self._run_cmd(lambda r: r.pause())
+
+    def c_measure_resume(self, a, gen):
+        self._run_cmd(lambda r: r.resume())
+
+    def c_measure_stop(self, a, gen):
+        self._run_cmd(lambda r: r.stop())
+
+    def c_measure_answer(self, a, gen):
+        self._run_cmd(lambda r: r.answer(a["value"]))
+
+    def c_measure_redo_sample(self, a, gen):
+        """이 샘플만 다시 측정: 같은 측정 폴더에 재측정 기록을 추가한다(이전 기록 보존)."""
+        base = self.last_run
+        if base is None or base.state not in ("done", "stopped", "error"):
+            raise AppError("끝난 측정 없음")
+        no = int(a["no"])
+        s = next((x for x in self.samples if x["no"] == no), None)
+        if s is None:
+            raise AppError("샘플 %d 없음" % no)
+        cond = base.cond
+        why, _n = self.preflight(cond, [no])
+        if why:
+            raise AppError(why)
+        run = measure.Run(self, cond, [copy.deepcopy(s)], "selected", run_dir=base.run_dir, prior=base.results)
+        run.t0 = base.t0
+        run.warns = base.warns
+        self.run = run
+        run.start()
+
+    # ------------------------------------------------------------------
+    # 결과
+    # ------------------------------------------------------------------
+    def results_list(self):
+        out = []
+        try:
+            for n in sorted(os.listdir(paths.RUNS_DIR), reverse=True):
+                j = store.read_json(os.path.join(paths.RUNS_DIR, n, "run.json"))
+                if j:
+                    out.append({"name": n, "state": j.get("state"), "n": len(j.get("results") or {}), "summary": j.get("summary")})
+        except OSError:
+            pass
+        return out
+
+    def c_results_open(self, a, gen):
+        j = store.read_json(os.path.join(paths.RUNS_DIR, a["name"], "run.json"))
+        if not j:
+            raise AppError("측정 기록 없음")
+        self.viewing = j
+        self.viewing["dir"] = os.path.join(paths.RUNS_DIR, a["name"])
+        return {}
+
+    def c_open_folder(self, a, gen):
+        d = a.get("path") or (self.run.run_dir if self.run else paths.RUNS_DIR)
+        if os.name == "nt" and not os.environ.get("WAFER2_NO_SHELL"):
+            os.startfile(d)                               # noqa: S606
+        return {"path": d}
+
+    # ------------------------------------------------------------------
+    # 종료
+    # ------------------------------------------------------------------
+    def c_dry(self, a, gen):
+        """검증 전용(dry 에서만): 합성 카메라 세계 · 멈춤 · 재부팅 · 탈조 …"""
+        if not self.dry:
+            raise AppError("dry 에서만")
+        op = a["op"]
+        if op == "world":
+            kw = {k: (tuple(v) if isinstance(v, list) and k in ("shift_px", "tilt") else v) for k, v in a["kw"].items()}
+            self.vision.set_world(**kw)
+            if self.vision.synth:
+                self.vision.synth.cache.clear()
+        elif op == "hang":
+            self.stage.dry_hang = bool(a.get("on", True))
+        elif op == "reboot":
+            self.stage._event("reboot", "=== 3-AXIS V11 ===")
+        elif op == "slip":
+            self.stage.dry_slip(a["dx"], a["dy"])
+        elif op == "z":
+            self.stage._dry_xy["z"] = float(a["mm"])
+        elif op == "temp_fail":
+            self.hub.temp.fail = bool(a.get("on", True))
+        elif op == "truth":
+            import sys as _s
+            _s.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+            import synth_cam
+            sy = self.vision.synth
+            return {"H": synth_cam.plate_homography(sy.w, sy.h).tolist(), "chips": [list(c) for c in sy.world["chips"]],
+                    "size": [sy.w, sy.h], "quad_mm": [list(q) for q in synth_cam.PLATE_QUAD_MM]}
+        elif op == "slow":
+            stage_mod.DRY_MOVE_S = float(a["s"])
+        elif op == "lock_csv":
+            self.lock_csv = bool(a.get("on", True))
+        elif op == "fail_vision":
+            self.vision.fail_next = bool(a.get("on", True))
+        return {}
+
+    def c_shutdown_check(self, a, gen):
+        if self.run and self.run.state in ("running", "paused", "stopping"):
+            raise AppError("측정 중 · 중지한 뒤 종료")
+        if self.motion and self.motion.moving:
+            raise AppError("이동 중 · 끝난 뒤 종료")
+        return {}
+
+    def shutdown_cleanup(self):
+        """종료 순서 2~5: 히트건 · 릴레이 정책 -> save -> 시리얼 닫기 -> 카메라 놓기."""
+        self.shutting = True
+        self.stop_poll.set()
+        try:
+            if self.power:
+                if self.cfg.get("relay.on_exit") == "off":
+                    self.power.all_off()
+                else:
+                    self.power.heater_off()
+        except Exception as e:                              # noqa: BLE001
+            logger.log("종료 · 릴레이 끄기 실패 " + logger.short(e), "err")
+        try:
+            if self.hub:
+                self.hub.stop()
+            if self.stage and not (self.motion and self.motion.estop_locked):
+                self.stage.save()
+        except Exception as e:                              # noqa: BLE001
+            logger.log("종료 · save 실패 " + logger.short(e), "warn")
+        try:
+            if self.stage:
+                self.stage.close()
+        except Exception:                                   # noqa: BLE001
+            pass
+        try:
+            self.vision.close()
+        except Exception:                                   # noqa: BLE001
+            pass
+
+    # ------------------------------------------------------------------
+    # 상태 (화면으로 가는 전부)
+    # ------------------------------------------------------------------
+    def phase(self):
+        m = self.motion
+        r = self.run
+        if m is None:
+            return "연결 안 됨"
+        if m.estop_locked:
+            return "비상정지"
+        if r and r.state in ("running", "paused", "stopping"):
+            if r.state == "stopping":
+                return "중지 중"
+            if r.state == "paused" or r.paused:
+                return "일시정지"
+            return "측정 중 %d / %d" % (min(len(r.results) + 1, len(r.samples)), len(r.samples))
+        if self.busy == "촬영" or self.busy == "빈 판 사진" or self.busy == "위치 확인":
+            return "촬영 중"
+        if self.busy or m.moving:
+            return "이동 중"
+        if self.alarm and self.alarm["text"].startswith("측정 오류"):
+            return "오류"
+        return "대기"
+
+    def calib_view(self):
+        c = self.calib
+        code, text = c.status(self.ref_id(), self._size())
+        hc, ht = self.head.status(self.ref_id(), self._size())
+        return {"status": code, "text": text, "points": c.points, "area": c.area, "exclude": c.d.get("exclude") or [],
+                "size_mm": c.d.get("size_mm"), "rms": c.d.get("rms_mm"), "applied": c.d.get("applied"), "warnings": c.warnings(),
+                "pending": self.pending_calib, "min_apply": calibstore.MIN_APPLY, "ref_id": c.d.get("ref_id"),
+                "head": {"status": hc, "text": ht, "pairs": self.head.d["pairs"], "rms": self.head.d.get("rms_mm")}, "msgs": self.calib_msgs[-3:]}
+
+    def state(self):
+        m, cfg = self.motion, self.cfg
+        shot = self.shot
+        temp = None if self.hub is None else self.hub.latest[1]
+        st = {
+            "v": self.version, "dry": self.dry, "phase": self.phase(), "alarm": self.alarm,
+            "stage": None if m is None else {
+                "connected": True, "x": self.pos["x"], "y": self.pos["y"], "z": self.pos["z"], "moving": m.moving, "locked": m.estop_locked,
+                "z_ok": m.z_ok, "xy_ok": m.xy_ok, "recovery": m.recovery_steps(), "gen": m.gen,
+                "origin_text": "원점 정상" if (m.z_ok and m.xy_ok and not m.estop_locked) else "원점 없음"},
+            "camera": {"open": self.vision.cam is not None, "size": self.vision.size, "text": "%s×%s · 노출 %s · %s K" % (
+                *(self.vision.size or (cfg.get("width"), cfg.get("height"))), cfg.get("exposure"), cfg.get("wb_temperature")),
+                "cap_text": self.cap_text, "cap_error": self.cap_error, "busy": self.busy},
+            "calib": self.calib_view(),
+            "ref": None if not self.ref_meta else dict(self.ref_meta, history=self.ref_history()),
+            "shot": None if not shot else {"id": shot["id"], "time": shot["time"], "size": shot["size"], "coords_ok": shot["coords_ok"],
+                                           "warnings": shot["warnings"], "path": shot["path"], "cam": shot["cam"], "area": shot.get("area_cur"),
+                                           "ref_id": shot.get("ref_id"), "fail": shot.get("fail")},
+            "samples": [self._pub(s) for s in self.samples], "sel": self.sel, "can_undo": bool(self.edits),
+            "n_detect": len(self.samples), "n_weak": sum(1 for s in self.samples if s["weak"]),
+            "temp": {"c": None if temp is None else round(temp, 1), "driver": cfg.get("temp.driver"), "kind": None if self.hub is None else self.hub.temp_kind()},
+            "meter": {"driver": cfg.get("meter.driver"), "channels": cfg.get("meter.channels")},
+            "relays": None if self.power is None else {"owners": dict(self.power.owners), "heater": cfg.get("heater.relay"),
+                                                       "heater_on": bool(self.power.owners.get(int(cfg.get("heater.relay"))))},
+            "settings": cfg.values, "conditions": [self._cond_view(c) for c in cfg.get("condition.items")],
+            "active_condition": cfg.get("condition.active"),
+            "run": None if self.run is None else self.run.view(),
+            "verify": getattr(self, "verify_result", None),
+            "tool": conditions.active_tool(cfg.values),
+            "results": self.results_list()[:30] if self.phase() != "측정 중" else [],
+        }
+        if self.last_run is not None and (self.run is self.last_run):
+            st["run"] = self.last_run.view()
+        return st
+
+    def _cond_view(self, c):
+        return {"name": c["name"], "steps": [{"i": i, "type": s["type"], "text": conditions.describe(s, self.cfg.values)} for i, s in enumerate(c["steps"])]}
+
+    @staticmethod
+    def _pub(s):
+        return {k: s.get(k) for k in ("no", "u", "v", "ru", "rv", "verts", "X", "Y", "cooler", "weak", "excluded", "manual", "source")}
+
+    def log_tail(self):
+        return logger.recent(3)
+
+
+__all__ = ["App", "AppError", "datetime", "tip"]

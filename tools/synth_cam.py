@@ -213,6 +213,74 @@ def render_plate(w, h, head_xy=None, params=None, seed=3, shift_mm=(0.0, 0.0), c
     return out, truth
 
 
+# --------------------------------------------------------------------------
+# 합성 카메라 객체 (grab / retrieve) - 서버의 dry 카메라
+# --------------------------------------------------------------------------
+class SynthCamera:
+    """판 · 칩 · 스테이지 위치에 따른 헤드 마커를 그리는 카메라. core.camera.Camera 와 같은 grab / retrieve.
+
+    - 큐 잔류: 드라이버 큐처럼 grab 한 프레임이 depth 번 뒤에 나온다(이동 직전 프레임이 이동 뒤에도 남는다).
+    - 카메라 평행 이동 · 기울기: world["shift_px"] (dx, dy) · world["rot_deg"] · world["tilt"] (원근 계수).
+    - world["empty"] 가 참이면 칩 없는 빈 판(빈 판 사진용), world["chips"] 는 스테이지 mm 위치 목록.
+    """
+
+    def __init__(self, true_xy_fn, w=1280, h=960, depth=4, params=None):
+        from collections import deque
+        self.true_xy = true_xy_fn
+        self.w, self.h = int(w), int(h)
+        self.depth = int(depth)
+        self.params = params or {"photohome": {"marker_id": 10, "marker_mm": 40.0, "dict": "4X4_50"}}
+        self.world = {"empty": False, "chips": list(PLATE_SAMPLES_MM), "shift_px": (0.0, 0.0), "rot_deg": 0.0,
+                      "tilt": (0.0, 0.0), "head": True, "seed": 5}
+        self.q = deque()
+        self.cur = None
+        self.cache = {}
+        self.opened = True
+
+    def set_world(self, **kw):
+        self.world.update(kw)
+
+    def _render(self):
+        wd = self.world
+        xy = self.true_xy() if wd["head"] else None
+        key = (self.w, self.h, wd["empty"], tuple(map(tuple, wd["chips"])), tuple(wd["shift_px"]), wd["rot_deg"], tuple(wd["tilt"]),
+               None if xy is None else (round(xy[0], 2), round(xy[1], 2)))
+        if key in self.cache:
+            return self.cache[key]
+        img, _t = render_plate(self.w, self.h, head_xy=xy, params=self.params, seed=wd["seed"], chips=not wd["empty"], texture=True,
+                               samples_mm=list(wd["chips"]))
+        dx, dy = wd["shift_px"]
+        if dx or dy or wd["rot_deg"] or any(wd["tilt"]):
+            c = (self.w / 2.0, self.h / 2.0)
+            R = cv2.getRotationMatrix2D(c, wd["rot_deg"], 1.0)
+            M = np.vstack([R, [0, 0, 1.0]])
+            M[0, 2] += dx
+            M[1, 2] += dy
+            P = np.eye(3)
+            P[2, 0], P[2, 1] = wd["tilt"]
+            M = M @ P
+            img = cv2.warpPerspective(img, M, (self.w, self.h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        if len(self.cache) > 12:
+            self.cache.clear()
+        self.cache[key] = img
+        return img
+
+    def grab(self):
+        self.q.append(self._render())
+        self.cur = self.q.popleft() if len(self.q) > self.depth else self.q[0]
+        return True
+
+    def retrieve(self):
+        return None if self.cur is None else self.cur.copy()
+
+    def read(self):
+        self.grab()
+        return self.retrieve()
+
+    def release(self):
+        self.opened = False
+
+
 def _selftest():
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                     "backend"))
