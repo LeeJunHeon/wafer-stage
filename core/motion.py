@@ -187,6 +187,13 @@ class Motion:
     def move_xy(self, x, y, gen=None):
         """X · Y 이동 하나. 이동 잠금 안에서 Z 올림 -> ST 로 Z=0 확인 -> X -> Y. 설정으로 끌 수 없다."""
         g = self.gen if gen is None else gen             # 잠금 전에 잡는다
+        for v in (x, y):
+            if not isinstance(v, (int, float)) or v != v or abs(v) == float("inf"):
+                raise MotionError("좌표 값 오류", "range")
+        _lm = stage_mod.limits_mm()
+        lx, ly = _lm["x_max_mm"], _lm["y_max_mm"]
+        if not (0 <= x <= lx and 0 <= y <= ly):
+            raise MotionError("가동범위 밖 · X %.1f Y %.1f" % (x, y), "range")
         with self.lock:
             self._enter(g)
             self._need_origin(xy=True)
@@ -225,6 +232,8 @@ class Motion:
             if not self.z_ok and not (ax == "z" and mm < 0):
                 raise MotionError("Z 원점 등록 먼저 · 지금은 Z 위쪽 조그만", "no_z")
             with self.op(g):
+                if ax in ("x", "y") and self.pre_xy:
+                    self.pre_xy()                                 # X · Y 조그도 히트건 끄기 확인 뒤에(Z 위쪽 조그는 예외)
                 self.moving = True
                 try:
                     return self._run("조그", lambda: self.stage.jog_rel(axis, mm))
@@ -246,8 +255,10 @@ class Motion:
 
     def register_z_origin(self, gen=None):
         """Z 원점 등록(회복 2단계). Z 는 위쪽 끝단이라 이격 = 아래(+). X · Y 는 위치 확인이 끝나야 믿는다."""
+        g0 = self.gen if gen is None else gen
         with self.lock:
-            self._backoff_and_zero("z", gen)
+            self._backoff_and_zero("z", g0)
+            self._enter(g0)
             self.stage._aborted = not self.xy_ok            # 드라이버 잠금은 X · Y 가 믿을 만할 때만 푼다
             self.z_ok = True
             if self.xy_ok:
@@ -259,7 +270,9 @@ class Motion:
         with self.lock:
             if not self.z_ok:
                 raise MotionError("Z 원점 등록 먼저", "no_z")
-            self._backoff_and_zero("xy", gen)
+            g0 = self.gen if gen is None else gen
+            self._backoff_and_zero("xy", g0)
+            self._enter(g0)
             self.xy_ok = True
             if self.z_ok:
                 self.estop_locked = False
@@ -284,6 +297,7 @@ class Motion:
                     if abs(st["x_mm"] - expect_xy[0]) > tol_mm or abs(st["y_mm"] - expect_xy[1]) > tol_mm:
                         raise MotionError("촬영 사이 위치가 바뀜 · 위치 적용 안 함", "moved")
                 self._run("위치 적용", lambda: self.stage.set_position(x, y))
+                self._enter(g)                                    # sp 뒤 · 플래그 변경 직전 세대 재확인
                 self.stage.reset_abort()
                 self.xy_ok = True
                 self.estop_locked = False

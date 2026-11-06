@@ -266,6 +266,7 @@ class Stage:
         self.on_event = None
         # 쓰기 직전 검사. fn(cmd) 가 StageGuard 를 던지면 시리얼에 쓰지 않는다('!' 와 읽기 전용 명령은 검사하지 않는다).
         self.write_guard = None
+        self._wlock = threading.RLock()
         self.dry_hang = False          # 검증용: 이동 완료가 영영 오지 않는 척(이동 시간 한도 시험)
         self.wd_tripped_at = None
         self.profile = None            # 마지막으로 보낸 (가속도, 시작 속도)
@@ -346,18 +347,19 @@ class Stage:
     SAFE_CMDS = ("!", "st", "rs", "p", "r all 0")           # 가드 없이 나갈 수 있는 명령(읽기 전용 · 정지 · 전부 끄기)
 
     def _write(self, cmd):
-        g = self.write_guard
-        if g is not None and cmd not in self.SAFE_CMDS and not (cmd.startswith("r ") and cmd.endswith(" 0")):
-            g(cmd)                                          # 거절하면 StageGuard - 아래 쓰기에 닿지 않는다
-        self._log("->", cmd)
-        if not self.dry:
-            self._drain()
-        if self.dry:
-            print("  (dry) %s" % cmd)
-            self._dry_rx()
-            return
-        self.ser.write((cmd + "\n").encode("ascii"))
-        self.ser.flush()
+        with self._wlock:                                   # 가드 검사 ~ 쓰기 ~ flush 를 한 덩어리로('!' 쓰기와 섞이지 않게)
+            g = self.write_guard
+            if g is not None and cmd not in self.SAFE_CMDS and not (cmd.startswith("r ") and cmd.endswith(" 0")):
+                g(cmd)                                      # 거절하면 StageGuard - 아래 쓰기에 닿지 않는다
+            self._log("->", cmd)
+            if not self.dry:
+                self._drain()
+            if self.dry:
+                print("  (dry) %s" % cmd)
+                self._dry_rx()
+                return
+            self.ser.write((cmd + chr(10)).encode("ascii"))
+            self.ser.flush()
 
     def _drain(self):
         """보내기 전에 들어와 있던 줄을 비운다 - 이전 명령의 완료 보고 · RS 가 이번 명령의 응답으로 읽히지 않게(응답은 요청한 명령에 맞춘다)."""
@@ -804,8 +806,9 @@ class Stage:
         try:
             extra = "" if relays_off else "".join("r %d 0" % int(n) + chr(10) for n in (off_relays or ()))
             data = "!" + chr(10) + ("r all 0" + chr(10) if relays_off else extra)
-            self.ser.write(data.encode("ascii"))
-            self.ser.flush()
+            with self._wlock:
+                self.ser.write(data.encode("ascii"))
+                self.ser.flush()
             return True
         except Exception as e:             # noqa: BLE001
             raise StageError("비상정지 전송 실패: %s" % e)

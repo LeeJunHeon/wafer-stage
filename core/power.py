@@ -33,12 +33,15 @@ class Power:
         self.heater_ok = True              # 마지막 끄기가 확인됨
         self.lock = threading.RLock()
         self.heat_since = None
+        self.disabled = False             # 종료 중 켜기 금지
 
     # ---- 일반 릴레이 ------------------------------------------------
     def set(self, n, on, owner):
         """릴레이 하나. 히트건 릴레이는 owner == HEAT 일 때만 켠다."""
         n = int(n)
         with self.lock:
+            if on and self.disabled:
+                raise PowerError("종료 중 · 켜기 거절")
             if n == self.heater_n:
                 if on and owner not in HEAT_OWNERS:
                     raise PowerError("R%d 는 히트건 전용 · 가열 단계만" % n)
@@ -63,11 +66,12 @@ class Power:
             self.heat_since = time.monotonic()
             self.heater_ok = True
         else:
-            self.owners.pop(self.heater_n, None)
-            self.heat_since = None
-            # 응답이 꺼짐을 말하지 않으면 끄기 실패로 본다
+            # 응답이 꺼짐을 말할 때만 기록을 지운다(못 끈 채 기록만 지우면 과열 보호가 재시도하지 않는다)
             self.heater_ok = not (isinstance(rs, (list, tuple)) and len(rs) >= self.heater_n and rs[self.heater_n - 1])
-            if not self.heater_ok:
+            if self.heater_ok:
+                self.owners.pop(self.heater_n, None)
+                self.heat_since = None
+            else:
                 raise PowerError("히트건 끄기 미확인 · 이동 거절")
         return rs
 

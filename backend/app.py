@@ -987,11 +987,16 @@ class App:
         self._need_stage()
         self._no_run("공구 가열")
         s = float(a.get("seconds", 3.0))
+        if self.motion.estop_locked or not self.motion.z_ok:
+            raise AppError("비상정지 잠금 · 가열 거절")
+        if not 0 < s <= 30:
+            raise AppError("가열 0 초과 30 s 이하")
         self._begin("공구 가열")
         try:
-            st = self.motion.status()
-            self.tool_tmp["P0"] = (st["x_mm"], st["y_mm"])
-            self.power.heater_for(s, cancel=lambda: self.motion.gen != gen)
+            with self.motion.op(gen):
+                st = self.motion.status()
+                self.tool_tmp["P0"] = (st["x_mm"], st["y_mm"])
+                self.power.heater_for(s, cancel=lambda: self.motion.gen != gen)
         finally:
             self._end()
         return {"P0": self.tool_tmp["P0"]}
@@ -1035,7 +1040,7 @@ class App:
             return "스테이지 연결 안 됨", []
         if self.busy:
             return "%s 중 · 끝난 뒤" % self.busy, []
-        if self.run and self.run.state in ("running", "paused", "stopping"):
+        if self.run and self.run.state in ("ready", "running", "paused", "stopping"):
             return "측정 중", []
         if not self.shot or not self.samples:
             return "촬영 필요", []
@@ -1084,8 +1089,13 @@ class App:
         self.hub.configure()
         self.hub.start()
         self._apply_motion_cfg()
-        run = measure.Run(self, cond, copy.deepcopy(sel), mode)
-        self.run = run
+        if self.motion and gen != self.motion.gen:
+            raise AppError("비상정지로 중단")
+        with self.lock:
+            if self.run and self.run.state in ("ready", "running", "paused", "stopping"):
+                raise AppError("측정 중")
+            run = measure.Run(self, cond, copy.deepcopy(sel), mode)
+            self.run = run
         self.last_run = None
         run.warns.extend(notes)
         self._save_run_photo(run)
@@ -1227,16 +1237,25 @@ class App:
         return {}
 
     def c_shutdown_check(self, a, gen):
-        if self.run and self.run.state in ("running", "paused", "stopping"):
+        if self.run and self.run.state in ("ready", "running", "paused", "stopping"):
             raise AppError("측정 중 · 중지한 뒤 종료")
-        if self.motion and self.motion.moving:
+        if self.busy:
+            raise AppError("%s 중 · 끝난 뒤 종료" % self.busy)
+        if self.motion and (self.motion.moving or not self.motion.lock.acquire(blocking=False)):
             raise AppError("이동 중 · 끝난 뒤 종료")
+        if self.motion:
+            self.motion.lock.release()
         return {}
 
     def shutdown_cleanup(self):
         """종료 순서 2~5: 히트건 · 릴레이 정책 -> save -> 시리얼 닫기 -> 카메라 놓기."""
         self.shutting = True
         self.stop_poll.set()
+        if self.power:
+            self.power.disabled = True                       # 이후 켜기 금지
+        if self.run and self.run.thread and self.run.thread.is_alive():
+            self.run.stop()                                  # 측정 스레드를 먼저 멈추고 기다린다(릴레이를 끈 뒤 다시 켜지 못하게)
+            self.run.thread.join(10.0)
         try:
             if self.power:
                 if self.cfg.get("relay.on_exit") == "off":

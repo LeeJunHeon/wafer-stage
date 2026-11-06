@@ -102,7 +102,7 @@ class Hub:
             except Exception:                               # noqa: BLE001
                 t = None
             now = self.clock.now()
-            on = bool(self.power.owners.get(heater_n))
+            on = bool(self.power.owners.get(heater_n)) or not self.power.heater_ok      # 끄기 미확인이면 계속 재시도
             if t is None:
                 self.fail_n += 1
             else:
@@ -146,10 +146,16 @@ class Hub:
                 self.rec.append(row)
 
     def _z(self):
+        """기록용 Z. 이동 중이면(잠금을 못 얻으면) 직전 값 - 이동 완료 보고를 가로채지 않는다."""
+        if not self.motion.lock.acquire(blocking=False):
+            return getattr(self, "_zc", None)
         try:
-            return self.motion.stage.status().get("z_mm")
+            self._zc = self.motion.stage.status().get("z_mm")
+            return self._zc
         except Exception:                                   # noqa: BLE001
             return None
+        finally:
+            self.motion.lock.release()
 
 
 # --------------------------------------------------------------------------
@@ -265,6 +271,10 @@ class Run:
 
     # ---- 본체 --------------------------------------------------------
     def _main(self):
+        with self.app.motion.op(self.gen):                 # 측정 스레드 전체가 시작 시점의 비상정지 세대 안에서 돈다(릴레이 쓰기도 가드)
+            self._main_inner()
+
+    def _main_inner(self):
         app = self.app
         try:
             self.hub.trip = ""
@@ -321,7 +331,7 @@ class Run:
                 app.motion.move_z(0.0)
                 if self.state != "error" and app.cfg.get("after_run") == "park" and app.motion.xy_ok:
                     px, py = app.cfg.get("park_xy")
-                    app.motion.move_xy(px, py)
+                    app.motion.move_xy(px, py, gen=self.gen)
             except Exception as e:                           # noqa: BLE001
                 logger.log("측정 뒤 복귀 실패 · " + logger.short(e), "warn")
         elif app.motion.gen != self.gen:
@@ -425,7 +435,7 @@ class Run:
             hub.extra = {}
         elif t == "z":
             mm = conditions.z_target_mm(st, cfg.values)
-            app.motion.move_z(mm)
+            app.motion.move_z(mm, gen=self.gen)
             view["value"] = "%.1f mm" % mm
         elif t == "relay":
             app.power.set(int(st["n"]), bool(st["on"]), "engine")

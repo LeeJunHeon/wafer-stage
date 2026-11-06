@@ -62,9 +62,11 @@ async def lifespan(_app):
     _LOOP = asyncio.get_running_loop()
     APP = App(dry=_ARGS.dry, image=_ARGS.image)
     logger.subscribe(lambda e: _LOOP.call_soon_threadsafe(lambda: asyncio.ensure_future(_bcast({"type": "log", "e": e}))))
-    if _ARGS.dry:
-        with contextlib.suppress(Exception):
-            await asyncio.to_thread(APP.connect)
+    try:
+        await asyncio.to_thread(APP.connect)                 # dry 는 가상 스테이지, 실제 모드는 설정의 포트(없으면 자동 탐색)
+    except Exception as e:                                   # noqa: BLE001
+        logger.log("스테이지 연결 실패 · " + logger.short(e), "err", raw=repr(e))
+        APP.set_alarm("스테이지 연결 안 됨 · " + logger.short(e, 30), "장비 설정에서 포트 확인")
     try:
         APP.vision.open()
         APP.vision.start_preview()
@@ -269,9 +271,13 @@ def main(argv=None):
                 ok = window.WINDOW.evaluate_js("(function(){if(window.requestExit){window.requestExit();return true}return false})()")
             except Exception:                                        # noqa: BLE001
                 ok = False
-            if not ok:
-                if APP:
-                    APP.shutdown_cleanup()
+            if not ok:                                               # 화면이 응답 못 해도 측정 · 이동 중이면 거절한다
+                try:
+                    APP.c_shutdown_check({}, 0)
+                except Exception as e:                           # noqa: BLE001
+                    logger.log("종료 거절 · " + logger.short(e), "warn")
+                    return
+                APP.shutdown_cleanup()
                 window.request_exit(HOLDER.get("server"))
         threading.Thread(target=ask, daemon=True).start()
         return False
