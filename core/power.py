@@ -96,11 +96,10 @@ class Power:
 
     def pre_xy(self):
         """Motion.pre_xy 훅: X · Y 이동 전 히트건이 꺼졌음을 확인한다. 못 끄면 이동 거절."""
-        if self.owners.get(self.heater_n) or not self.heater_ok:
-            try:
-                self.heater_off()
-            except PowerError as e:
-                raise MotionError(str(e), "heater") from e
+        try:
+            self.heater_off()                  # 캐시와 무관하게 항상 보내고 RS 로 꺼짐을 확인한다
+        except PowerError as e:
+            raise MotionError(str(e), "heater") from e
         return True
 
     # ---- 일괄 -------------------------------------------------------

@@ -364,5 +364,84 @@ class FrameSourceTest(unittest.TestCase):
         self.assertGreaterEqual(m.last_move_end, t0)
 
 
+class Section0Test(unittest.TestCase):
+    def tearDown(self):
+        stage_mod.DRY_MOVE_S = 0.0
+
+    def test_queued_command_before_estop_not_executed_after(self):
+        m, st, sent = make_motion(move_s=0.4)
+        res = {}
+
+        def mv():
+            try:
+                m.move_xy(30, 30)
+            except motion_mod.MotionError:
+                pass
+        t1 = threading.Thread(target=mv)
+        t1.start()
+        time.sleep(0.15)
+        g = m.gen                                                  # 요청이 들어온 순간의 세대
+
+        def jg():
+            try:
+                m.jog("x", 5, gen=g)
+            except motion_mod.MotionError as e:
+                res["e"] = e
+        t2 = threading.Thread(target=jg)
+        t2.start()
+        time.sleep(0.1)
+        m.estop()
+        t1.join(5)
+        t2.join(5)
+        self.assertEqual(res["e"].code, "estop")
+        after = sent[sent.index(next(c for c in sent if c.startswith("mx"))):]
+        self.assertFalse([c for c in after if c.startswith("jx") or c.startswith("v ")], after)
+
+    def test_xy_jog_refused_without_z_origin(self):
+        m, st, sent = make_motion()
+        st._dry_xy["z"] = 12.0
+        m.estop()
+        with self.assertRaises(motion_mod.MotionError) as c:
+            m.jog("x", 5)
+        self.assertEqual(c.exception.code, "no_z")
+        self.assertFalse([x for x in sent if x.startswith("jx")])
+        m.jog("z", -3)                                              # Z 위쪽 조그는 허용
+        self.assertTrue([x for x in sent if x.startswith("jz")])
+        with self.assertRaises(motion_mod.MotionError):
+            m.jog("z", 3)                                           # 아래쪽은 거절
+        m.register_z_origin()
+        m.jog("x", 5)
+        self.assertTrue([x for x in sent if x.startswith("jx")])
+
+    def test_origin_registration_backs_off_gap(self):
+        m, st, sent = make_motion()
+        m.estop()
+        m.origin_gap_mm = 2.0
+        m.register_z_origin()
+        i_j, i_z = sent.index("jz 320"), sent.index("zz")
+        self.assertLess(i_j, i_z)
+        m.apply_position(10, 10)
+        sent.clear()
+        m.register_xy_origin()
+        self.assertEqual([c for c in sent if c[0] in "jz"][:3], ["jx 320", "jy 320", "z"])
+
+    def test_origin_backoff_is_gen_checked(self):
+        m, st, sent = make_motion()
+        g = m.gen
+        m.estop()
+        with self.assertRaises(motion_mod.MotionError) as c:
+            m.register_z_origin(gen=g)
+        self.assertEqual(c.exception.code, "estop")
+        self.assertNotIn("zz", sent)
+
+    def test_pre_xy_always_sends_heater_off_and_checks_rs(self):
+        m, st, sent = make_motion()
+        p = power_mod.Power(st, 10)
+        m.pre_xy = p.pre_xy
+        m.move_xy(5, 5)
+        self.assertIn("r 10 0", sent)
+        self.assertLess(sent.index("r 10 0"), sent.index("mx 5.0"))
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]] + [a for a in sys.argv[1:]], verbosity=2)

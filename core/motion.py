@@ -44,6 +44,7 @@ class Motion:
         self.pre_xy = None                            # fn() - X · Y 이동 전 점검(히트건 꺼짐 확인). 거절하면 MotionError
         self.on_reboot = None                         # fn(line) - 서버가 wd · 속도 · 가속 재전송, ST · RS 재읽기, 측정 중지
         self._tl = threading.local()
+        self.origin_gap_mm = 2.0                      # 끝단에서 물러나는 이격(설정 origin_gap_mm)
         self.moving = False
         self.last_move_end = 0.0                      # 마지막 이동이 끝난 단조 시각 - 촬영은 이 시각 이후 프레임만 쓴다
         self.speed_pps = stage_mod.DEFAULT_SPEED_PPS
@@ -82,20 +83,26 @@ class Motion:
             raise StageGuard("비상정지 · 쓰기 취소 (%s)" % cmd)
 
     class _Op:
-        def __init__(self, m):
+        def __init__(self, m, gen=None):
             self.m = m
+            self.gen = gen
 
         def __enter__(self):
             self.prev = getattr(self.m._tl, "gen", None)
-            self.m._tl.gen = self.m.gen
+            self.m._tl.gen = self.m.gen if self.gen is None else self.gen
             return self
 
         def __exit__(self, *a):
             self.m._tl.gen = self.prev
 
-    def op(self):
-        """세대를 잡는다. 이 안의 모든 시리얼 쓰기는 직전에 세대를 비교한다."""
-        return Motion._Op(self)
+    def op(self, gen=None):
+        """세대를 잡는다. 이 안의 모든 시리얼 쓰기는 직전에 세대를 비교한다. gen 은 **명령이 들어온 순간** 잡은 값."""
+        return Motion._Op(self, gen)
+
+    def _enter(self, gen):
+        """잠금을 얻은 직후 부른다: 명령이 들어온 뒤 비상정지가 있었으면 쓰지 않고 중단."""
+        if gen is not None and gen != self.gen:
+            raise MotionError("비상정지로 중단", "estop")
 
     def _check_gen(self):
         tok = getattr(self._tl, "gen", None)
@@ -177,13 +184,15 @@ class Motion:
                 raise MotionError("Z 올림 실패 · X Y 이동 안 함", "z_lift")
         return True
 
-    def move_xy(self, x, y):
+    def move_xy(self, x, y, gen=None):
         """X · Y 이동 하나. 이동 잠금 안에서 Z 올림 -> ST 로 Z=0 확인 -> X -> Y. 설정으로 끌 수 없다."""
+        g = self.gen if gen is None else gen             # 잠금 전에 잡는다
         with self.lock:
+            self._enter(g)
             self._need_origin(xy=True)
-            if self.pre_xy:
-                self.pre_xy()                          # 히트건 꺼짐 확인 - 거절하면 여기서 끝
-            with self.op():
+            with self.op(g):
+                if self.pre_xy:
+                    self.pre_xy()                      # 히트건 끄기 전송 + 확인 - 거절하면 여기서 끝
                 self.moving = True
                 try:
                     self.lift_z()
@@ -196,19 +205,26 @@ class Motion:
                     self.last_move_end = time.monotonic()
             return self.stage.status()
 
-    def move_z(self, mm):
+    def move_z(self, mm, gen=None):
+        g = self.gen if gen is None else gen
         with self.lock:
+            self._enter(g)
             self._need_origin(xy=(mm > Z_TOP_TOL_MM))
-            with self.op():
+            with self.op(g):
                 cur = self.stage.status().get("z_mm") or 0.0
                 self._run("Z 이동", lambda: self.stage.move_z_mm(mm, deadline_s=self.deadline_s(abs(mm - cur), stage_mod.Z_PPMM)))
                 self.last_move_end = time.monotonic()
             return self.stage.status()
 
     # ---- 조그 · 원점 (회복 동작은 잠금 상태에서도 허용) ----------------
-    def jog(self, axis, mm):
+    def jog(self, axis, mm, gen=None):
+        g = self.gen if gen is None else gen
         with self.lock:
-            with self.op():
+            self._enter(g)
+            ax = str(axis).lower()
+            if not self.z_ok and not (ax == "z" and mm < 0):
+                raise MotionError("Z 원점 등록 먼저 · 지금은 Z 위쪽 조그만", "no_z")
+            with self.op(g):
                 self.moving = True
                 try:
                     return self._run("조그", lambda: self.stage.jog_rel(axis, mm))
@@ -216,39 +232,53 @@ class Motion:
                     self.moving = False
                     self.last_move_end = time.monotonic()
 
-    def register_z_origin(self):
-        """Z 원점 등록(회복 2단계). 지금 자리를 Z=0 으로. X · Y 는 위치 확인이 끝나야 믿는다."""
+    def _backoff_and_zero(self, axis, gen):
+        """끝단 이격 규약: (끝단까지 밀기는 사람이 한다) 이격만큼 물러난 뒤 그 자리를 0 으로 등록한다."""
+        g = self.gen if gen is None else gen
         with self.lock:
-            with self.op():
-                self.stage.set_zero("z")
-                self.stage._aborted = not self.xy_ok            # 드라이버 잠금은 X · Y 가 믿을 만할 때만 푼다
-                self.z_ok = True
-                if self.xy_ok:
-                    self.estop_locked = False
+            self._enter(g)
+            with self.op(g):
+                if self.origin_gap_mm > 0:
+                    for ax in axis:
+                        self._run("이격", lambda ax=ax: self.stage.jog_rel(ax, self.origin_gap_mm))
+                self._run("원점 등록", lambda: self.stage.set_zero(axis if len(axis) == 1 else "xy"))
+        return g
+
+    def register_z_origin(self, gen=None):
+        """Z 원점 등록(회복 2단계). Z 는 위쪽 끝단이라 이격 = 아래(+). X · Y 는 위치 확인이 끝나야 믿는다."""
+        with self.lock:
+            self._backoff_and_zero("z", gen)
+            self.stage._aborted = not self.xy_ok            # 드라이버 잠금은 X · Y 가 믿을 만할 때만 푼다
+            self.z_ok = True
+            if self.xy_ok:
+                self.estop_locked = False
             return self.stage.status()
 
-    def register_xy_origin(self):
-        """수동 X · Y 원점 등록(보조)."""
+    def register_xy_origin(self, gen=None):
+        """수동 X · Y 원점 등록(보조). 이격 = +."""
         with self.lock:
-            with self.op():
-                self.stage.set_zero("xy")
-                self.xy_ok = True
-                if self.z_ok:
-                    self.estop_locked = False
+            if not self.z_ok:
+                raise MotionError("Z 원점 등록 먼저", "no_z")
+            self._backoff_and_zero("xy", gen)
+            self.xy_ok = True
+            if self.z_ok:
+                self.estop_locked = False
             return self.stage.status()
 
-    def apply_position(self, x, y, expect_gen=None, expect_xy=None, tol_mm=0.5):
+    def apply_position(self, x, y, expect_gen=None, expect_xy=None, tol_mm=0.5, gen=None):
         """위치 확인 결과 적용(sp). 회복 3~4단계.
 
         expect_gen: 촬영을 시작할 때의 세대 - 그 사이 비상정지가 있었으면 거절.
         expect_xy: 촬영 전 펌웨어 위치 (x, y) - 그 사이 위치가 바뀌었으면 거절.
         """
+        g = self.gen if gen is None else gen
         with self.lock:
+            self._enter(g)
             if expect_gen is not None and expect_gen != self.gen:
                 raise MotionError("촬영 중 비상정지 · 위치 적용 안 함", "estop")
             if not self.z_ok:
                 raise MotionError("Z 원점 없음 · Z 끝단 → Z 원점 등록 먼저", "no_z")
-            with self.op():
+            with self.op(g):
                 if expect_xy is not None:
                     st = self.stage.status()
                     if abs(st["x_mm"] - expect_xy[0]) > tol_mm or abs(st["y_mm"] - expect_xy[1]) > tol_mm:
