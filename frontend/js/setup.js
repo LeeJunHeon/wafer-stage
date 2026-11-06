@@ -1,6 +1,6 @@
 /* setup.js - 장비 설정 탭: 7단계(카메라 · 판 영역 · 빈 판 사진 · 좌표 보정 · 헤드 위치 보정 · 공구 오프셋 · 측정 장비) + 고급 설정. */
 "use strict";
-const S = { step: 1, view: "ref", zoom: "plate", viewer: null, built: false, jogStep: 1, area: null, areaFrom: null, leftSig: "", rightSig: "", lastVerify: null, tip: null };
+const S = { step: 1, view: "live", zoom: "plate", viewer: null, built: false, jogStep: 1, area: null, areaFrom: null, leftSig: "", rightSig: "", lastVerify: null, tip: null };
 const STEPS = ["카메라", "판 영역", "빈 판 사진", "좌표 보정", "헤드 위치 보정", "공구 오프셋", "측정 장비"];
 
 function stepInfo(s, i) {
@@ -56,7 +56,7 @@ function renderSetup(s) {
   const pos = $("#su-pos");
   if (pos && s.stage) pos.textContent = xy(s.stage.x, s.stage.y) + " · Z " + f1(s.stage.z, 2);
 }
-UI.acts["su-step"] = (a) => { S.step = a.i; S.view = a.i === 3 ? "ref" : S.view; S.leftSig = ""; S.rightSig = ""; S.area = null; render(); };
+UI.acts["su-step"] = (a) => { S.step = a.i; if (UI.state && !UI.state.ref && S.view === "ref") S.view = "live"; else if (a.i === 3 && UI.state.ref) S.view = "ref"; S.leftSig = ""; S.rightSig = ""; S.area = null; render(); };
 
 function renderSetupView(s) {
   const v = S.viewer, seg = h("div", { class: "seg" }, ...[["live", "실시간"], ["snap", "단발 촬영"], ["shot", "촬영 사진"], ["ref", "빈 판 사진"]].map(([k, l]) => btn(l, "su-view", { k }, S.view === k ? "on" : "")));
@@ -197,13 +197,13 @@ function renderPanel(s) {
     const cand = c.area ? c.area.map((p, i) => btn("꼭짓점 " + (i + 1), "su-cand", { i }, "sm", "기록한 위치에 이 꼭짓점을 기준점으로 대응시킵니다.", c.pending ? "" : "위치 기록 먼저")) : [];
     const sampleCand = UI.state.samples.slice(0, 15).map((p) => btn(String(p.no), "su-cand-s", { no: p.no }, "sm", "기록한 위치에 이 칩 가운데를 대응시킵니다.", c.pending ? "" : "위치 기록 먼저"));
     kids.push(card("좌표 보정", h("ol", { class: "sub" }, h("li", { text: "핀 가운데를 기준점에 맞추기 · Z 는 판 위 1–2 mm" }), h("li", { text: "위치 기록" }), h("li", { text: "사진에서 같은 점 클릭" })),
-      h("div", { class: "row" }, btn("위치 기록 · " + (n + 1) + "번 점", "su-record", null, "primary", "", lock || nostage && "스테이지 연결 안 됨"), c.pending ? h("span", { class: "chip warn", text: "대기 " + xy(c.pending.x, c.pending.y) }) : null)),
-      jogCard(),
-      card("기준점 " + n, h("div", { class: "scroll" }, h("table", { class: "tb" }, h("tr", {}, ["점", "X", "Y", "잔차", ""].map((t) => h("th", { text: t }))),
-        c.points.map((p) => h("tr", {}, h("td", { text: p.no }), h("td", { text: f1(p.x) }), h("td", { text: f1(p.y) }), h("td", { text: p.res_mm != null ? f1(p.res_mm, 2) : "—" }), h("td", {}, btn("삭제", "su-pdel", { no: p.no }, "sm", "", lock))))))),
-        c.warnings.map((w) => h("div", { class: "why", text: w })),
-        h("div", { class: "row" }, btn("적용 · 5점부터", "su-capply", null, "primary", "", lock || (n >= c.min_apply ? "" : "기준점 " + n + "개 · " + c.min_apply + "개부터"))),
-        h("div", { class: "sub3", text: c.text }), h("div", { class: "sub3", text: "기준점 후보" }), h("div", { class: "row wrap" }, ...cand), h("div", { class: "row wrap" }, ...sampleCand)));
+      h("div", { class: "row" }, btn("위치 기록 · " + (n + 1) + "번 점", "su-record", null, "primary", "", lock || (nostage ? "스테이지 연결 안 됨" : "")), c.pending ? h("span", { class: "chip warn", text: "대기 " + xy(c.pending.x, c.pending.y) }) : null)));
+    kids.push(jogCard());
+    const rowsT = c.points.map((p) => h("tr", {}, h("td", { text: p.no }), h("td", { text: f1(p.x) }), h("td", { text: f1(p.y) }), h("td", { text: p.res_mm != null ? f1(p.res_mm, 2) : "—" }), h("td", {}, btn("삭제", "su-pdel", { no: p.no }, "sm", "", lock))));
+    kids.push(card("기준점 " + n, h("div", { class: "scroll" }, h("table", { class: "tb" }, h("tr", {}, ["점", "X", "Y", "잔차", ""].map((t) => h("th", { text: t }))), rowsT)),
+      ...c.warnings.map((w) => h("div", { class: "why", text: w })),
+      h("div", { class: "row" }, btn("적용 · 5점부터", "su-capply", null, "primary", "", lock || (n >= c.min_apply ? "" : "기준점 " + n + "개 · " + c.min_apply + "개부터"))),
+      h("div", { class: "sub3", text: c.text }), h("div", { class: "sub3", text: "기준점 후보" }), h("div", { class: "row wrap" }, ...cand), h("div", { class: "row wrap" }, ...sampleCand)));
   } else if (S.step === 5) {
     const hc = c.head, v = s.verify;
     kids.push(card("헤드 위치 보정", h("div", { class: "sub", text: "격자 n×n 으로 자동 이동 · 촬영해 헤드 마커 위치를 잽니다." }),

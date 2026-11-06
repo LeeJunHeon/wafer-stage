@@ -24,6 +24,7 @@ HARD_EXIT_S = 12.0
 WINDOW = None
 _MUTEX = None
 _exiting = False
+ALLOW_CLOSE = False                # 종료 순서 1~6 이 끝난 뒤에만 창 닫기를 허용한다(그 전의 X 는 화면 확인으로)
 
 
 def _k32():
@@ -135,10 +136,12 @@ def _hard_exit_timer():
 
 def request_exit(server=None):
     """종료 순서 6~7: 서버 정지 -> 창 닫기. (1~5 는 App.shutdown_cleanup 이 먼저 한다.)"""
-    global _exiting
+    global _exiting, ALLOW_CLOSE
     if _exiting:
         return
     _exiting = True
+    ALLOW_CLOSE = True
+    print("[exit] 종료 요청", flush=True)
     _hard_exit_timer()
     if server is not None:
         server.should_exit = True
@@ -182,10 +185,12 @@ def run(fastapi_app, host, port, no_window, server_holder):
         else:
             import webview
             WINDOW = webview.create_window("샘플 자동 측정", url, width=1440, height=900, maximized=True, text_select=True)
-            WINDOW.events.closing += lambda: server_holder["on_closing"]()
+            WINDOW.events.closing += lambda: True if ALLOW_CLOSE else server_holder["on_closing"]()
             webview.start()
+            print("[exit] 창 닫힘 · webview.start 반환", flush=True)
         server.should_exit = True
         th.join(8.0)
+        print("[exit] 서버 스레드 끝 %s" % (not th.is_alive()), flush=True)
     finally:
         release_mutex()
     return 0

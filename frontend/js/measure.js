@@ -274,7 +274,8 @@ function pinJac(s) {
 function drawMinimap(s) {
   const m = M.mini; m.replaceChildren();
   const am = s.calib.area_mm;
-  if (!am || !s.stage) { m.append(sv("text", { x: 95, y: 98, "text-anchor": "middle", "font-size": 12, fill: "#8a929b" }, "좌표 보정 뒤 표시")); return; }
+  m.classList.toggle("hidden", !am || !s.stage);
+  if (!am || !s.stage) return;
   const xs = am.map((p) => p[0]), ys = am.map((p) => p[1]);
   const x0 = Math.min(...xs) - 10, x1 = Math.max(...xs) + 10, y0 = Math.min(...ys) - 10, y1 = Math.max(...ys) + 10;
   const sc = Math.min(160 / (x1 - x0), 150 / (y1 - y0));
