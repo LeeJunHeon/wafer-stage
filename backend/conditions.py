@@ -1,73 +1,82 @@
-"""conditions.py - 측정 조건(단계 목록)의 정의 · 설명 · 검증 · 펼치기 · 예상 시간.
+"""conditions.py - 측정 조건(단계 목록)의 정의 · 설명 · 검증 · 예상 시간.
 
-순수 함수만 둔다(state·장비를 모른다). 설정 검증(settings_schema)과 측정
-엔진(engine)이 같은 정의를 쓴다 - 화면이 받아 주는 단계와 엔진이 실행하는
-단계가 어긋나지 않게.
+순수 함수만 둔다(state·장비를 모른다). 설정 검증(settings_schema)과 측정 실행(measure)이 같은 정의를 쓴다.
+온도 · 계측기 · 접촉 판정은 별도 프로그램이 맡으므로 이 프로그램에는 없다. 남은 것은 이동 · Z · 쿨러 · 히트건 · 대기뿐이다.
 
-측정 조건: {"name": "기본", "steps": [step, ...]}
-단계(step)는 "type" 과 그 종류의 값만 가진다.
+측정 조건: {"name": "접촉 시험", "steps": [step, ...]}
 
-  move_sample  샘플 위로 이동(공구 오프셋 적용). 첫 단계로 고정 - 삭제·이동 불가
-  z            {"target": "work"|"top"|"mm", "mm": 10.0}
-               work = 활성 공구의 작업 높이(z_work_mm), top = 맨 위(0)
-  relay        {"n": 1~10, "on": true|false}
-  wait         {"s": 5.0}
-  measure      계측기 채널을 n 회 읽어 평균 {"n": 3, "interval_s": 0.5} - 결과 표의 측정값 열
-  confirm      사람이 [다음]을 누를 때까지 대기
-  cooler       {"action": "on"|"off", "target": "sample"|"all"|"n", "n": 1~10}  쿨러(구역 릴레이)
-  contact      Z 접촉 탐색 {"start_ref": "work"|"mm", "start_mm", "step_mm", "max_ref": "work"|"mm", "max_mm",
-               "press_mm", "settle_s", "on_fail": "stop"|"skip"|"confirm"} (work 기준 값은 작업 높이에 더하는 mm)
-  wait_temp    {"cond": "<="|">=", "target_c", "hold_s", "max_s", "on_timeout": "continue"|"skip"|"stop"|"confirm"}
-  heat         히트건 켜기 → 끝 조건 → 끄기 {"end": "temp"|"time"|"either", "target_c", "time_s", "max_s"}
-  cool         히트건 끈 채 wait_temp 와 같은 조건으로 대기(기록 구분용 이름)
-  repeat       구간 반복 {"from": 시작 단계, "to": 끝 단계(번호는 1부터, to ≤ 이 단계 번호 - 1), "count": 전체 횟수} - from~to 구간을
-               첫 통과 뒤에 (count - 1) 번 더 돈다. 엔진과 expand() 가 같은 구현(expand 의 결과를 엔진이 그대로 실행)
-  log          {"action": "start"|"end"} 기록 시작/끝(temp.period_s 마다 온도 · 릴레이 · Z · 측정값을 CSV 로)
-
-새 단계 종류는 STEP_TYPES 에 정의(설명·검증·예상 시간)를 더하고, engine 의
-RUNNERS 에 실행 함수를 더하면 된다(예: 나중의 photo).
+  move_sample  샘플 위로 이동: Z 맨 위 확인 뒤 X · Y(공구 오프셋 적용). 첫 단계로 고정 - 삭제 · 이동 불가
+  contact      접촉 높이로 내리기: 저장한 접촉 높이(절대 Z)까지. X · Y 가 샘플 위일 때만. 접촉 높이가 비어 있으면 측정 시작을 거절
+  cooler       {"action": "on"|"off", "target": "sample"|"all"}  쿨러 켜기(샘플 구역 / 전부) · 끄기
+  heat         {"s": 20.0}  히트건 n s - 시간이 되면 자동으로 끈다. n 은 heater.max_on_s 를 넘을 수 없다
+  wait         {"s": 5.0}   대기
+  confirm      사람이 [다음] 을 누를 때까지 대기(별도 프로그램으로 측정하는 동안 핀을 샘플에 댄 채 기다리는 용도)
+  z_top        Z 맨 위
 """
 
 import math
 
 WAIT_MAX_S = 3600.0
 FIRST = "move_sample"
-DEFAULT_NAME = "기본"
-HEAT_NAME = "가열 측정"
-# 온도 · 접촉 · 가열 단계의 입력 범위(검증 · 편집기 공용)
-TEMP_MIN_C, TEMP_MAX_C = -50.0, 600.0
+DEFAULT_NAME = "접촉 시험"
+MANUAL_NAME = "수동 측정"
+HEAT_NAME = "가열"
+HEAT_MAX_DEFAULT = 120.0
+
+STEP_TYPES = {
+    "move_sample": "샘플 위로 이동",
+    "contact": "접촉 높이로 내리기",
+    "cooler": "쿨러",
+    "heat": "히트건",
+    "wait": "대기",
+    "confirm": "확인 대기",
+    "z_top": "Z 맨 위",
+}
 
 
-def default_condition(wait_s=5.0):
-    """기본 측정 조건. 릴레이 단계는 넣지 않는다(사용할 릴레이가 아직 정해지지 않았다)."""
+def default_condition(wait_s=2.0):
+    """접촉 시험: 이동 → 접촉 높이 → 대기 2 s → Z 맨 위. 릴레이를 켜지 않는다."""
     return {"name": DEFAULT_NAME, "steps": [
         {"type": "move_sample"},
-        {"type": "z", "target": "work"},
+        {"type": "contact"},
         {"type": "wait", "s": float(wait_s)},
-        {"type": "measure", "n": 3, "interval_s": 0.5},
-        {"type": "z", "target": "top"},
+        {"type": "z_top"},
+    ]}
+
+
+def default_manual_condition():
+    """수동 측정: 이동 → 쿨러 켜기(구역) → 접촉 높이 → 확인 대기 → 쿨러 끄기 → Z 맨 위."""
+    return {"name": MANUAL_NAME, "steps": [
+        {"type": "move_sample"},
+        {"type": "cooler", "action": "on", "target": "sample"},
+        {"type": "contact"},
+        {"type": "confirm"},
+        {"type": "cooler", "action": "off", "target": "sample"},
+        {"type": "z_top"},
     ]}
 
 
 def default_heat_condition():
-    """기본 측정 조건 '가열 측정'. 온도 · 시간 값은 전부 임시(placeholder) - 장비에서 측정한 뒤 바꾼다."""
+    """가열: 값은 전부 예시 - 장비에서 확인한 뒤 [편집]에서 바꾼다."""
     return {"name": HEAT_NAME, "steps": [
         {"type": "move_sample"},
-        {"type": "cooler", "action": "on", "target": "sample", "n": 1},
-        {"type": "contact", "start_ref": "work", "start_mm": -2.0, "step_mm": 0.1,
-         "max_ref": "work", "max_mm": 1.0, "press_mm": 0.1, "settle_s": 0.2, "on_fail": "stop"},
-        {"type": "log", "action": "start"},
-        {"type": "wait_temp", "cond": "<=", "target_c": 30.0, "hold_s": 5.0, "max_s": 300.0,
-         "on_timeout": "confirm"},
-        {"type": "heat", "end": "either", "target_c": 150.0, "time_s": 60.0, "max_s": 120.0},
-        {"type": "cool", "cond": "<=", "target_c": 40.0, "hold_s": 0.0, "max_s": 300.0,
-         "on_timeout": "continue"},
-        {"type": "log", "action": "end"},
-        {"type": "z", "target": "top"},
+        {"type": "cooler", "action": "on", "target": "sample"},
+        {"type": "contact"},
+        {"type": "wait", "s": 30.0},
+        {"type": "heat", "s": 20.0},
+        {"type": "wait", "s": 60.0},
+        {"type": "cooler", "action": "off", "target": "sample"},
+        {"type": "z_top"},
     ]}
 
 
+def default_conditions():
+    return [default_condition(), default_manual_condition(), default_heat_condition()]
+
+
 def _num(v):
+    if isinstance(v, bool):
+        return None
     try:
         f = float(v)
     except (TypeError, ValueError):
@@ -75,21 +84,8 @@ def _num(v):
     return f if math.isfinite(f) else None
 
 
-def relay_name(n, values):
-    items = (((values or {}).get("relay") or {}).get("items")) or []
-    try:
-        nm = str(items[int(n) - 1].get("name") or "").strip()
-    except (IndexError, TypeError, ValueError, AttributeError):
-        nm = ""
-    return nm or ("R%s" % n)
-
-
-def relay_enabled(n, values):
-    items = (((values or {}).get("relay") or {}).get("items")) or []
-    try:
-        return bool(items[int(n) - 1].get("enabled"))
-    except (IndexError, TypeError, ValueError, AttributeError):
-        return False
+def _fmt(v):
+    return ("%g" % v) if v is not None else "?"
 
 
 def active_tool(values):
@@ -105,212 +101,75 @@ def active_tool(values):
         "tip_shape": "rect", "tip_w_mm": 10.0, "tip_h_mm": 2.0, "tip_angle_deg": 90.0}
 
 
-def z_target_mm(step, values):
-    """z 단계의 목표 높이(mm). 0 = 맨 위. 읽을 수 없으면 None."""
-    t = step.get("target")
-    if t == "top":
-        return 0.0
-    if t == "work":
-        return _num(active_tool(values).get("z_work_mm"))
-    return _num(step.get("mm"))
+def heater_relay_n(values):
+    try:
+        return int((((values or {}).get("heater")) or {}).get("relay") or 10)
+    except (TypeError, ValueError):
+        return 10
 
 
-def _fmt(v):
-    return ("%g" % v) if v is not None else "?"
+def heater_max_s(values):
+    v = _num((((values or {}).get("heater")) or {}).get("max_on_s"))
+    return v if v and v > 0 else HEAT_MAX_DEFAULT
+
+
+def relay_enabled(n, values):
+    items = (((values or {}).get("relay") or {}).get("items")) or []
+    try:
+        return bool(items[int(n) - 1].get("enabled"))
+    except (IndexError, TypeError, ValueError, AttributeError):
+        return False
 
 
 def describe(step, values=None):
-    """화면·로그용 한 줄(명사형)."""
+    """화면 · 로그용 한 줄(명사형). 서버가 만든 설명 문구 하나로 표시한다."""
     t = step.get("type")
     if t == "move_sample":
         return "샘플 위로 이동"
-    if t == "z":
-        tg = step.get("target")
-        if tg == "top":
-            return "Z 맨 위"
-        if tg == "work":
-            return "Z 작업 높이 %s mm" % _fmt(z_target_mm(step, values))
-        return "Z %s mm" % _fmt(_num(step.get("mm")))
-    if t == "relay":
-        return "%s %s" % (relay_name(step.get("n"), values), "켜기" if step.get("on") else "끄기")
+    if t == "contact":
+        z = _num(((values or {}).get("contact_z_mm")))
+        return "접촉 높이로 내리기" + ("" if z is None else " · Z %s mm" % _fmt(z))
+    if t == "cooler":
+        who = "전부" if step.get("target") == "all" else "샘플 구역"
+        return "쿨러 %s %s" % (who, "켜기" if step.get("action") == "on" else "끄기")
+    if t == "heat":
+        return "히트건 %s s" % _fmt(_num(step.get("s")))
     if t == "wait":
         return "대기 %s s" % _fmt(_num(step.get("s")))
-    if t == "measure":
-        return "측정 %s회 평균" % _fmt(_num(step.get("n")))
     if t == "confirm":
         return "확인 대기"
-    if t == "cooler":
-        tg = step.get("target")
-        who = "전부" if tg == "all" else ("R%s" % step.get("n") if tg == "n" else "이 샘플 구역")
-        return "쿨러 %s %s" % (who, "켜기" if step.get("action") == "on" else "끄기")
-    if t == "contact":
-        return "접촉 탐색 시작 %s · 스텝 %s mm · 최대 %s" % (_ref_text(step, "start", values), _fmt(_num(step.get("step_mm"))),
-                                                      _ref_text(step, "max", values))
-    if t == "wait_temp":
-        return "온도 대기 %s °C %s · 최대 %s s" % (_fmt(_num(step.get("target_c"))), "이하" if step.get("cond") == "<=" else "이상", _fmt(_num(step.get("max_s"))))
-    if t == "cool":
-        return "냉각 대기 %s °C %s · 최대 %s s" % (_fmt(_num(step.get("target_c"))), "이하" if step.get("cond") == "<=" else "이상", _fmt(_num(step.get("max_s"))))
-    if t == "heat":
-        e = step.get("end")
-        cond = ("%s °C" % _fmt(_num(step.get("target_c")))) if e == "temp" else (
-            "%s s" % _fmt(_num(step.get("time_s")))) if e == "time" else (
-            "%s °C 또는 %s s" % (_fmt(_num(step.get("target_c"))), _fmt(_num(step.get("time_s")))))
-        return "가열 %s · 최대 %s s" % (cond, _fmt(_num(step.get("max_s"))))
-    if t == "repeat":
-        return "반복 %s~%s 단계 · 총 %s회" % (step.get("from"), step.get("to"), step.get("count"))
-    if t == "log":
-        return "기록 %s" % ("시작" if step.get("action") == "start" else "끝")
+    if t == "z_top":
+        return "Z 맨 위"
     return "알 수 없는 단계"
 
 
-STEP_TYPES = {
-    "move_sample": "샘플 위로 이동",
-    "z": "Z 이동",
-    "relay": "릴레이",
-    "wait": "대기",
-    "measure": "측정",
-    "confirm": "확인 대기",
-    "cooler": "쿨러",
-    "contact": "접촉 탐색",
-    "wait_temp": "온도 대기",
-    "heat": "가열",
-    "cool": "냉각 대기",
-    "repeat": "반복",
-    "log": "기록",
-}
-ON_TIMEOUT = ("continue", "skip", "stop", "confirm")
-
-
-def _ref_text(step, which, values):
-    ref = step.get(which + "_ref")
-    v = _num(step.get(which + "_mm"))
-    if ref == "work":
-        return "작업 높이 %+g mm" % (v or 0.0)
-    return "%s mm" % _fmt(v)
-
-
-def contact_range(step, values):
-    """접촉 탐색의 (시작 Z, 최대 Z) 절대값(mm). 읽을 수 없으면 (None, None)."""
-    work = _num(active_tool(values).get("z_work_mm")) or 0.0
-    out = []
-    for w in ("start", "max"):
-        v = _num(step.get(w + "_mm"))
-        if v is None:
-            out.append(None)
-        else:
-            out.append(work + v if step.get(w + "_ref") == "work" else v)
-    return out[0], out[1]
-
-
-def validate_step(step, values, z_max_mm):
+def validate_step(step, values, z_max_mm=None):
     """단계 하나의 오류 문구 또는 None."""
     if not isinstance(step, dict):
         return "단계 형식 오류"
     t = step.get("type")
     if t not in STEP_TYPES:
         return "알 수 없는 단계 종류 (%s)" % t
-    if t == "z":
-        tg = step.get("target")
-        if tg not in ("work", "top", "mm"):
-            return "Z 목표 오류"
-        z = z_target_mm(step, values)
-        if z is None:
-            return "Z 높이 오류"
-        if z < 0 or z > z_max_mm + 1e-9:
-            return "Z %g mm · 가동범위 0~%g 밖" % (z, z_max_mm)
-    elif t == "relay":
-        try:
-            n = int(step.get("n"))
-        except (TypeError, ValueError):
-            return "릴레이 번호 오류"
-        if not 1 <= n <= 10:
-            return "릴레이 번호 1~10"
-        if n == heater_relay_n(values):
-            return "R%d 는 히트건 전용 · 가열 단계만" % n
-        if not relay_enabled(n, values):
-            return "R%d 사용 안 함 · 장비 설정 7 에서 사용 지정" % n
-        if not isinstance(step.get("on"), bool):
-            return "릴레이 켜기/끄기 오류"
-    elif t == "wait":
+    if t == "wait":
         s = _num(step.get("s"))
         if s is None or s < 0 or s > WAIT_MAX_S:
             return "대기 0~%g s" % WAIT_MAX_S
     elif t == "cooler":
         if step.get("action") not in ("on", "off"):
             return "쿨러 켜기/끄기 오류"
-        if step.get("target") not in ("sample", "all", "n"):
-            return "쿨러 대상 오류"
-        if step.get("target") == "n":
-            try:
-                nn = int(step.get("n"))
-            except (TypeError, ValueError):
-                return "릴레이 번호 오류"
-            if not 1 <= nn <= 10:
-                return "릴레이 번호 1~10"
-            if nn == heater_relay_n(values):
-                return "R%d 는 히트건 전용 · 쿨러에 못 씀" % nn
-    elif t == "contact":
-        if step.get("start_ref") not in ("work", "mm") or step.get("max_ref") not in ("work", "mm"):
-            return "접촉 탐색 높이 기준 오류"
-        a, b = contact_range(step, values)
-        if a is None or b is None:
-            return "접촉 탐색 높이 오류"
-        rel = step.get("start_ref") == "work" or step.get("max_ref") == "work"
-        if not rel:                          # 작업 높이 기준은 공구에 따라 달라 경고로(실행 때 다시 검사)
-            for nm, z in (("시작", a), ("최대", b)):
-                if z < 0 or z > z_max_mm + 1e-9:
-                    return "접촉 %s Z %g mm · 가동범위 0~%g 밖" % (nm, z, z_max_mm)
-            if a >= b:
-                return "접촉 시작 높이는 최대 깊이보다 위여야 함"
-        elif a is not None and b is not None and a >= b:
-            return "접촉 시작 높이는 최대 깊이보다 위여야 함"
-        st = _num(step.get("step_mm"))
-        if st is None or st <= 0 or st > 5:
-            return "스텝 0 초과 5 mm 이하"
-        pr = _num(step.get("press_mm"))
-        if pr is None or pr < 0 or pr > 5:
-            return "추가 누름 0~5 mm"
-        se = _num(step.get("settle_s"))
-        if se is None or se < 0 or se > 60:
-            return "스텝 간 대기 0~60 s"
-        if step.get("on_fail") not in ("stop", "skip", "confirm"):
-            return "못 찾으면 처리 오류"
-    elif t in ("wait_temp", "cool"):
-        if step.get("cond") not in ("<=", ">="):
-            return "조건은 ≤ 또는 ≥"
-        tc = _num(step.get("target_c"))
-        if tc is None or not TEMP_MIN_C <= tc <= TEMP_MAX_C:
-            return "목표 %g~%g °C" % (TEMP_MIN_C, TEMP_MAX_C)
-        hs, ms = _num(step.get("hold_s")), _num(step.get("max_s"))
-        if hs is None or hs < 0 or hs > WAIT_MAX_S:
-            return "유지 시간 0~%g s" % WAIT_MAX_S
-        if ms is None or ms <= 0 or ms > 86400:
-            return "최대 대기 0 초과 86400 s 이하"
-        if step.get("on_timeout") not in ON_TIMEOUT:
-            return "시간 초과 처리 오류"
+        if step.get("target") not in ("sample", "all"):
+            return "쿨러 대상은 샘플 구역 또는 전부"
     elif t == "heat":
-        if step.get("end") not in ("temp", "time", "either"):
-            return "가열 끝 조건 오류"
-        tc, ts, ms = _num(step.get("target_c")), _num(step.get("time_s")), _num(step.get("max_s"))
-        if step.get("end") in ("temp", "either") and (tc is None or not TEMP_MIN_C <= tc <= TEMP_MAX_C):
-            return "목표 %g~%g °C" % (TEMP_MIN_C, TEMP_MAX_C)
-        if step.get("end") in ("time", "either") and (ts is None or ts <= 0 or ts > 3600):
-            return "가열 시간 0 초과 3600 s 이하"
-        if ms is None or ms <= 0 or ms > 3600:
-            return "최대 시간(필수) 0 초과 3600 s 이하"
-    elif t == "measure":
-        n, iv = _num(step.get("n")), _num(step.get("interval_s"))
-        if n is None or int(n) != n or not 1 <= n <= 100:
-            return "측정 횟수 1~100"
-        if iv is None or iv < 0 or iv > 600:
-            return "측정 간격 0~600 s"
-    elif t == "log":
-        if step.get("action") not in ("start", "end"):
-            return "기록 시작/끝 오류"
+        s = _num(step.get("s"))
+        mx = heater_max_s(values)
+        if s is None or s <= 0:
+            return "히트건 시간 0 초과"
+        if s > mx + 1e-9:
+            return "히트건 %g s · 상한 %g s 초과" % (s, mx)
     return None
 
 
-def validate_condition(r, values, z_max_mm, prefix=""):
+def validate_condition(r, values, z_max_mm=None, prefix=""):
     """(errors{path: 문구}, warnings[문구])."""
     errs, warns = {}, []
     if not isinstance(r, dict):
@@ -331,34 +190,27 @@ def validate_condition(r, values, z_max_mm, prefix=""):
             errs["%s.steps[%d]" % (prefix, i)] = "샘플 이동은 첫 단계만"
             continue
         e = validate_step(st, values, z_max_mm)
-        if not e and isinstance(st, dict) and st.get("type") == "repeat":
-            e = _validate_repeat(st, i, steps)
         if e:
             errs["%s.steps[%d]" % (prefix, i)] = e
         elif isinstance(st, dict):
             warns.extend(step_warnings(st, values, name, i))
     if len(steps) > 50:
         errs[prefix + ".steps"] = "단계 50개 이내"
-    if not errs and not ends_at_top(r, values):
-        warns.append("'%s' 끝에서 Z 가 맨 위가 아님 · 다음 이동 전 자동 상승" % name)
+    if not errs:
+        w = _order_warning(steps, name)
+        if w:
+            warns.append(w)
+        if not ends_at_top(r):
+            warns.append("'%s' 끝에서 Z 가 맨 위가 아님 · 다음 이동 전 자동 상승" % name)
     return errs, warns
 
 
-def _validate_repeat(st, i, steps=None):
-    """repeat(0 기준 위치 i): 구간 a~b(1 기준)는 2번 단계부터 이 단계 바로 앞까지 안이고 repeat 를 품지 않는다."""
-    try:
-        a, b, c = int(st.get("from")), int(st.get("to")), int(st.get("count"))
-    except (TypeError, ValueError):
-        return "반복 시작 · 끝 · 횟수 숫자 필요"
-    if a < 2 or a > b or b > i:
-        return "반복 구간은 2번 단계부터 이 단계 바로 앞까지 안에서"
-    if not 1 <= c <= 100:
-        return "반복 횟수 1~100"
-    if steps is not None:
-        for j in range(a - 1, b):
-            if isinstance(steps[j], dict) and steps[j].get("type") == "repeat":
-                return "반복 구간 안에 반복 불가"
-    return None
+def _order_warning(steps, name):
+    """내린 채(접촉 높이) 끝나거나 히트건이 접촉 전에 켜지는 순서를 알린다(저장은 된다)."""
+    types = [s.get("type") for s in steps if isinstance(s, dict)]
+    if "heat" in types and "contact" in types and types.index("heat") < types.index("contact"):
+        return "'%s' 히트건이 접촉 높이보다 먼저 켜짐" % name
+    return ""
 
 
 def step_warnings(st, values, name, i):
@@ -366,14 +218,8 @@ def step_warnings(st, values, name, i):
     out = []
     off = [n for n in step_relays(st, values) if not relay_enabled(n, values)]
     if off:
-        out.append("'%s' %d번 단계 · %s 사용 안 함 · 장비 설정 7 에서 사용 지정해야 실행됨"
+        out.append("'%s' %d번 단계 · %s 사용 안 함 · 장비 설정 8 에서 사용 지정해야 실행됨"
                    % (name, i + 1, ", ".join("R%d" % n for n in off)))
-    if st.get("type") == "contact":
-        a, b = contact_range(st, values)
-        zmax = _num((((values or {}).get("limits")) or {}).get("z_max_mm")) or 45.0
-        if a is not None and b is not None and (a < 0 or b + (_num(st.get("press_mm")) or 0) > zmax + 1e-9):
-            out.append("'%s' %d번 단계 · 활성 공구 기준 접촉 높이 Z %g~%g mm 가 가동범위 0~%g 밖 · 공구 작업 높이 확인"
-                       % (name, i + 1, a, b, zmax))
     return out
 
 
@@ -391,27 +237,10 @@ def zone_relay_list(values):
     return out
 
 
-def heater_relay_n(values):
-    try:
-        return int((((values or {}).get("heater")) or {}).get("relay") or 10)
-    except (TypeError, ValueError):
-        return 10
-
-
 def step_relays(st, values):
-    """단계가 켜는 릴레이 번호(쿨러 · 히트건 · 릴레이 단계)."""
+    """단계가 켜는 릴레이 번호(쿨러 · 히트건)."""
     t = st.get("type")
-    if t == "relay":
-        try:
-            return [int(st.get("n"))] if st.get("on") else []
-        except (TypeError, ValueError):
-            return []
     if t == "cooler" and st.get("action") == "on":
-        if st.get("target") == "n":
-            try:
-                return [int(st.get("n"))]
-            except (TypeError, ValueError):
-                return []
         return zone_relay_list(values)
     if t == "heat":
         return [heater_relay_n(values)]
@@ -419,68 +248,39 @@ def step_relays(st, values):
 
 
 def expand(steps, cap=5000):
-    """repeat 를 풀어 실행 순서대로의 (원래 단계 번호 0 기준, 단계) 목록. **엔진이 이 목록을 그대로 실행한다**(같은 구현).
+    """실행 순서대로의 (원래 단계 번호 0 기준, 단계) 목록. 반복 단계는 없다 - 그대로 번호를 붙인다."""
+    return [(i, st) for i, st in enumerate(steps) if isinstance(st, dict)][:cap]
 
-    repeat(0 기준 위치 i, from a, to b, count c) = 첫 통과 뒤 구간 steps[a-1..b-1] 을 (c - 1) 번 더. 구간 밖(b 와 i 사이)은 한 번만 돈다.
-    잘못된 repeat(검증이 거절하는 값)는 건너뛴다.
-    """
-    out = []
-    steps = list(steps)
-    for i, st in enumerate(steps):
+
+def ends_at_top(r):
+    """측정 조건이 끝날 때 Z 가 맨 위인가: 내리기(contact) 뒤에 Z 맨 위가 있어야 한다."""
+    down = False
+    for st in r.get("steps") or []:
         if not isinstance(st, dict):
             continue
-        if st.get("type") != "repeat":
-            out.append((i, st))
-            continue
-        try:
-            a, b, c = int(st.get("from")), int(st.get("to")), int(st.get("count"))
-        except (TypeError, ValueError):
-            continue
-        if _validate_repeat(st, i, steps) is not None:
-            continue
-        for _ in range(c - 1):
-            for j in range(a - 1, b):
-                out.append((j, steps[j]))
-        if len(out) > cap:
-            return out[:cap]
-    return out
+        if st.get("type") == "contact":
+            down = True
+        elif st.get("type") == "z_top":
+            down = False
+    return not down
 
 
-def ends_at_top(r, values):
-    """측정 조건가 끝날 때 Z 가 맨 위(0)인가. z 단계가 없으면 그대로(참)."""
-    last = None
-    for st in r.get("steps") or []:
-        if isinstance(st, dict) and st.get("type") == "z":
-            last = z_target_mm(st, values)
-    return last is None or abs(last) < 1e-9
+def uses_contact(r):
+    return any(isinstance(s, dict) and s.get("type") == "contact" for s in r.get("steps") or [])
 
 
-def uses_z(r):
-    return any(isinstance(s, dict) and s.get("type") == "z" for s in r.get("steps") or [])
+def uses_heat(r):
+    return any(isinstance(s, dict) and s.get("type") == "heat" for s in r.get("steps") or [])
 
 
 def relays_used(r, values=None):
     out = []
     for s in r.get("steps") or []:
-        if not isinstance(s, dict):
-            continue
-        if s.get("type") == "relay":
-            try:
-                n = int(s.get("n"))
-            except (TypeError, ValueError):
-                continue
-            if n not in out:
-                out.append(n)
-        elif values is not None:
+        if isinstance(s, dict):
             for n in step_relays(s, values):
                 if n not in out:
                     out.append(n)
     return sorted(out)
-
-
-def needs_temp(r):
-    """온도 센서가 필요한 측정 조건인가(가열 · 온도 대기 · 냉각 대기)."""
-    return any(isinstance(s, dict) and s.get("type") in ("heat", "wait_temp", "cool") for s in r.get("steps") or [])
 
 
 def find(values, name=None):
@@ -499,32 +299,16 @@ def estimate_step_s(step, values, move_s, z_speed_mm_s):
     t = step.get("type")
     if t == "move_sample":
         return move_s
-    if t == "z":
-        z = z_target_mm(step, values) or 0.0
-        return 0.3 + abs(z) / max(z_speed_mm_s, 1e-6)
-    if t == "wait":
+    if t in ("contact", "z_top"):
+        z = _num((values or {}).get("contact_z_mm")) if t == "contact" else 0.0
+        return 0.5 + abs(z or 0.0) / max(z_speed_mm_s, 1e-6)
+    if t in ("wait", "heat"):
         return _num(step.get("s")) or 0.0
-    if t == "relay":
-        return 0.1
-    if t == "measure":
-        return 0.5
-    if t in ("wait_temp", "cool"):
-        return (_num(step.get("max_s")) or 0.0)          # 온도 조건은 최대 대기 기준
-    if t == "heat":
-        return (_num(step.get("max_s")) or 0.0)
     if t == "cooler":
         return 0.3
-    if t == "contact":
-        a, b = contact_range(step, values)
-        st = _num(step.get("step_mm")) or 0.1
-        se = _num(step.get("settle_s")) or 0.0
-        if a is None or b is None:
-            return 0.0
-        return max(0.0, (b - a) / max(st, 1e-6)) * (se + 0.15) + 0.5     # 최대 깊이까지 간다고 어림
     return 0.0
 
 
 def estimate_sample_s(r, values, move_s, z_speed_mm_s):
-    """샘플 하나에 드는 예상 시간(초). z 단계 사이의 거리는 '0 에서 목표' 로 어림한다."""
-    return sum(estimate_step_s(s, values, move_s, z_speed_mm_s)
-               for _i, s in expand(r.get("steps") or []))
+    """샘플 하나에 드는 예상 시간(초)."""
+    return sum(estimate_step_s(s, values, move_s, z_speed_mm_s) for _i, s in expand(r.get("steps") or []))

@@ -95,7 +95,7 @@ class Settings:
 
 
 IMPORT_KEYS = ["serial_port", "camera_index", "width", "height", "fourcc", "wb_temperature", "exposure", "focus_mode", "focus",
-               "limits", "motion", "park_xy", "capture_xy", "relay", "cooler", "tool", "temp"]
+               "limits", "motion", "park_xy", "capture_xy", "relay", "cooler"]
 
 
 def import_old(path):
@@ -108,9 +108,7 @@ def import_old(path):
     for k in IMPORT_KEYS:
         if k in mig:
             patch[k] = copy.deepcopy(mig[k])
-    if "park_xy" in patch:                                  # 이름이 바뀐 것은 그대로(대기 위치)
-        pass
-    if isinstance(patch.get("temp"), dict):
-        patch["temp"] = {"driver": "none" if patch["temp"].get("driver") not in ("dummy",) else "dummy",
-                         **{k: v for k, v in patch["temp"].items() if k != "driver"}}
+    hr = (mig.get("heater") or {}).get("relay") if isinstance(mig.get("heater"), dict) else None
+    if isinstance(hr, int) and 1 <= hr <= 10:
+        patch["heater"] = {"relay": hr}                     # 히트건 릴레이 번호만(온도 보호 값은 이 프로그램에 없다)
     return patch, skipped

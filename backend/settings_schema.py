@@ -33,7 +33,7 @@ TABS = [
     ("photohome", "위치 확인"),
     ("tool", "공구"),
     ("relay", "릴레이"),
-    ("measure", "측정 장비"),
+    ("measure", "릴레이 · 접촉 높이"),
     ("condition", "측정 순서"),
     ("detect", "검출"),
     ("advanced", "고급"),
@@ -48,7 +48,8 @@ POLICY_OPTS = [{"value": "off", "label": "전부 끄기"}, {"value": "keep", "la
 
 
 def _relays_default():
-    return [{"enabled": False, "name": "R%d" % (i + 1), "max_on_s": 0}
+    """쿨러 R1~R9 · 히트건 R10. 켜기는 사람이 누르거나 측정 조건이 할 때만이다."""
+    return [{"enabled": True, "name": ("히트건" if i == N_RELAY - 1 else "쿨러 %d" % (i + 1)), "max_on_s": 0}
             for i in range(N_RELAY)]
 
 
@@ -59,7 +60,7 @@ def _tools_default(z_work=44.0):
          "tip_angle_img_deg": 90.0, "note": "스테이지 좌표가 가리키는 점"},
         {"name": TOOL_HEATGUN, "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": float(z_work),
          "tip_shape": "circle", "tip_w_mm": 5.0, "tip_h_mm": 5.0, "tip_angle_deg": 90.0,
-         "tip_angle_img_deg": 0.0, "note": "노즐이 비스듬해 가열 중심은 오프셋 보정으로 잡는다"},
+         "tip_angle_img_deg": 0.0, "note": "오프셋 0 유지"},
     ]
 
 
@@ -295,82 +296,34 @@ ITEMS = [
       "펌웨어가 이 시간 동안 명령을 못 받으면 릴레이를 전부 끕니다. 0 이면 끕니다.",
       min=0, max=600000, step=500, unit="ms"),
 
-    # ---------------- 측정 장비 (온도 · 접촉 · 쿨러 · 히트건) ----------------
-    I("temp.driver", "none", "enum", "measure", "온도", "온도 드라이버",
-      "온도 읽기 방식입니다. 더미는 열 모델 시뮬레이터입니다(실장치는 미정 — 계측기 · 아두이노 아날로그 입력 · 별도 시리얼 중 하나를 붙일 자리). 실제 장비에서 더미로는 가열 단계가 실행되지 않습니다.",
-      options=[{"value": "none", "label": "센서 없음"}, {"value": "dummy", "label": "더미(dry 전용)"}], apply="즉시"),
-    I("temp.period_s", 0.5, "float", "measure", "온도", "읽기 주기",
-      "온도를 읽어 그래프 · 기록에 남기는 주기입니다.", min=0.05, max=10, step=0.05, unit="s", apply="즉시"),
-    I("contact.driver", "none", "enum", "measure", "접촉", "접촉 드라이버",
-      "접촉 확인 방식입니다. 더미는 Z 가 시뮬레이터 접촉 높이 이상이면 접촉, 계측기는 계측기가 돌려주고, 입력 핀은 아두이노 디지털 입력(펌웨어 V12 의 읽기 명령 필요), 수동은 [접촉 확인] 버튼입니다.",
-      options=[{"value": "dummy", "label": "더미"}, {"value": "measurer", "label": "계측기"},
-               {"value": "di", "label": "입력 핀"}, {"value": "manual", "label": "수동"},
-               {"value": "none", "label": "사용 안 함"}], apply="즉시"),
-    I("contact.di_pin", 2, "int", "measure", "접촉", "입력 핀 번호",
-      "접촉 신호를 읽는 아두이노 디지털 핀 번호입니다(입력 핀 방식).", min=0, max=99, step=1, apply="즉시",
-      show_if={"contact.driver": "di"}),
-    I("contact.di_pullup", True, "bool", "measure", "접촉", "내부 풀업",
-      "입력 핀의 내부 풀업 저항을 켭니다.", apply="즉시", show_if={"contact.driver": "di"}),
-    I("contact.di_active_high", False, "bool", "measure", "접촉", "HIGH 가 접촉",
-      "켜면 핀이 HIGH 일 때 접촉, 끄면 LOW 일 때 접촉입니다.", apply="즉시", show_if={"contact.driver": "di"}),
+    # ---------------- 릴레이 · 접촉 높이 (쿨러 · 히트건) ----------------
     I("cooler.zones", zones_mod.default_zones(), "object", "measure", "쿨러 구역",
       "쿨러 구역", "판 사각형 좌표(mm, 0~판 영역 실제 크기)를 행 × 열로 나눈 칸마다 쿨러 번호(표시용) · 릴레이 번호 · 이름입니다(행 우선, 사진 기준 위에서 아래 · 왼쪽에서 오른쪽). 샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러입니다. 칸을 눌러 지정하고 경계는 mm 로 입력하거나 실시간에서 끕니다.",
       editor="zones", validate="zones", apply="즉시"),
-    I("cooler.mode", "sample", "enum", "measure", "쿨러 구역", "쿨러 켜는 범위",
-      "샘플은 그 샘플의 쿨러만, 전부는 측정 조건의 쿨러 단계에서 9개 전부를 켭니다.",
-      options=[{"value": "sample", "label": "그 샘플만"}, {"value": "all", "label": "전부"}], apply="다음 측정"),
-    I("cooler.keep_on", True, "bool", "measure", "쿨러 구역", "샘플이 끝나도 켜 둠",
-      "켜면 샘플이 끝나도 쿨러를 그대로 둡니다(다음 샘플이 같은 구역이면 그대로, 다르면 다음 샘플의 쿨러 단계가 바꿉니다). 측정 종료 · 정지 때는 릴레이 정책을 따릅니다.",
-      apply="다음 측정"),
     I("heater.relay", 10, "int", "measure", "히트건", "히트건 릴레이",
-      "히트건 전원 릴레이 번호입니다. 이 릴레이는 측정 조건의 가열 단계만 켭니다.", min=1, max=10, step=1,
+      "히트건 전원 릴레이 번호입니다. 이 릴레이는 측정 조건의 히트건 단계만 켭니다.", min=1, max=10, step=1,
       apply="다음 측정"),
-    I("heater.max_c", 300.0, "float", "measure", "히트건", "과열 보호 온도",
-      "히트건이 켜진 동안 온도가 이 값을 넘으면 즉시 끄고 측정를 중단합니다.", min=30, max=600, step=5, unit="°C",
-      apply="즉시"),
-    I("heater.sensor_fail_n", 3, "int", "measure", "히트건", "센서 오류 허용 횟수",
-      "히트건이 켜진 동안 온도 센서 오류가 이만큼 연속되면 즉시 끄고 측정를 중단합니다.", min=1, max=100, step=1,
-      apply="즉시"),
-    I("measure.sample_period_s", 0.0, "float", "measure", "기록", "측정값 기록 주기",
-      "기록 구간에서 이 주기로 계측기 측정을 불러 기록합니다. 0 이면 기록 구간 중에는 측정하지 않습니다.",
-      min=0, max=3600, step=0.5, unit="s", apply="다음 측정"),
+    I("heater.max_on_s", 120.0, "float", "measure", "히트건", "히트건 최대 시간",
+      "히트건 단계 한 번의 시간 상한입니다. 측정 조건의 시간은 이 값을 넘을 수 없고, 넘기면 시간이 되기 전에 끕니다.",
+      min=1, max=3600, step=5, unit="s", apply="다음 측정"),
+    I("contact_z_mm", None, "float", "measure", "접촉 높이", "접촉 높이",
+      "Z 원점에서 핀이 샘플에 닿는 높이(절대 Z, mm)입니다. 장비 설정 7 에서 샘플 위에서 내려 정합니다. 비어 있으면 접촉 높이 단계가 있는 측정 조건은 시작하지 않습니다.",
+      nullable=True, min=0.1, max=100, step=0.05, unit="mm", apply="즉시", validate="contact_z"),
+    I("contact_tool", None, "str", "measure", "접촉 높이", "접촉 높이를 잰 공구",
+      "접촉 높이를 저장할 때의 활성 공구 이름입니다. 다른 공구가 활성이면 접촉 높이로 내리지 않습니다.", nullable=True, hidden=True),
+    I("approach_mm", 2.0, "float", "measure", "접촉 높이", "느린 구간",
+      "접촉 높이 이만큼 앞까지는 보통 속도로, 남은 거리는 느린 속도로 내립니다.",
+      min=0.2, max=10, step=0.1, unit="mm", apply="즉시"),
     I("sim.time_scale", 1.0, "float", "measure", "시뮬레이터(테스트용)", "시간 배율",
-      "더미 열 모델과 접촉 · 온도 대기 · 가열 · 기록 단계의 시간을 이 배율로 빠르게 합니다(검증용, 1 = 실시간).",
+      "대기 · 히트건 단계의 시간을 이 배율로 빠르게 합니다(시뮬레이션에서만, 검증용. 실장비에서는 1).",
       min=0.1, max=1000, step=0.5, apply="즉시", advanced=True),
-    I("sim.ambient_c", 25.0, "float", "measure", "시뮬레이터(테스트용)", "주변 온도",
-      "열 모델의 주변 온도입니다.", min=-20, max=80, step=1, unit="°C", apply="즉시", advanced=True),
-    I("sim.heater_c", 320.0, "float", "measure", "시뮬레이터(테스트용)", "히트건 도달 온도",
-      "히트건이 계속 켜져 있을 때 열 모델이 향하는 온도입니다.", min=30, max=800, step=10, unit="°C", apply="즉시",
-      advanced=True),
-    I("sim.cooler_c", 5.0, "float", "measure", "시뮬레이터(테스트용)", "쿨러 도달 온도",
-      "쿨러가 켜져 있을 때 열 모델이 향하는 온도입니다.", min=-50, max=60, step=1, unit="°C", apply="즉시",
-      advanced=True),
-    I("sim.tau_heat_s", 15.0, "float", "measure", "시뮬레이터(테스트용)", "가열 시간 상수",
-      "히트건에 대한 지수 응답의 시간 상수입니다.", min=0.5, max=600, step=0.5, unit="s", apply="즉시", advanced=True),
-    I("sim.tau_cool_s", 25.0, "float", "measure", "시뮬레이터(테스트용)", "냉각 시간 상수",
-      "쿨러에 대한 지수 응답의 시간 상수입니다.", min=0.5, max=600, step=0.5, unit="s", apply="즉시", advanced=True),
-    I("sim.tau_amb_s", 120.0, "float", "measure", "시뮬레이터(테스트용)", "자연 냉각 시간 상수",
-      "아무것도 안 켰을 때 주변 온도로 돌아가는 시간 상수입니다.", min=1, max=3600, step=5, unit="s", apply="즉시",
-      advanced=True),
-    I("sim.noise_c", 0.2, "float", "measure", "시뮬레이터(테스트용)", "잡음",
-      "읽은 온도에 더하는 가우시안 잡음의 표준편차입니다.", min=0, max=5, step=0.1, unit="°C", apply="즉시",
-      advanced=True),
-    I("sim.contact_z_mm", 44.0, "float", "measure", "시뮬레이터(테스트용)", "접촉 Z",
-      "더미 접촉 드라이버가 접촉이라고 보는 Z 높이(이 값 이상)입니다.", min=0, max=100, step=0.1, unit="mm",
-      apply="즉시", advanced=True),
-
     # ---------------- 측정 순서 ----------------
-    I("condition.items", [conditions.default_condition(), conditions.default_heat_condition()], "list", "condition", "측정 조건", "측정 조건",
+    I("condition.items", conditions.default_conditions(), "list", "condition", "측정 조건", "측정 조건",
       "샘플마다 실행할 단계 순서입니다. 첫 단계는 샘플 위로 이동입니다.",
       editor="conditions", validate="conditions", apply="다음 측정"),
     I("condition.active", conditions.DEFAULT_NAME, "str", "condition", "측정 조건", "활성 측정 조건",
       "측정가 쓸 측정 조건입니다.", editor="condition_active", validate="condition_active",
       apply="다음 측정"),
-    I("meter.driver", "none", "enum", "measure", "계측기", "계측기 드라이버",
-      "측정 단계가 부르는 계측기입니다. 실장치는 미정이며 더미는 dry 에서만 쓰입니다. 없으면 온도만 기록합니다.",
-      options=[{"value": "none", "label": "없음"}, {"value": "dummy", "label": "더미(dry 전용)"}], apply="다음 측정"),
-    I("meter.channels", [{"name": "저항", "unit": "Ω", "digits": 3}], "list", "measure", "계측기", "채널 정의",
-      "채널 이름 · 단위 · 소수 자리입니다. 결과 표의 측정값 열이 이것으로 만들어집니다.", editor="channels", apply="다음 측정"),
     I("data_dir", "../data_v2", "str", "advanced", "기록", "데이터 폴더",
       "촬영 · 측정 결과 · 보정 파일을 두는 폴더입니다. 바꾸면 다시 시작해야 합니다.", apply="재연결", advanced=True),
     I("capture.settle_s", 0.8, "float", "camera", "촬영", "이동 뒤 안정 시간",
@@ -482,9 +435,6 @@ ITEMS = [
       apply="즉시"),
 
     # ---------------- 고급 ----------------
-    I("origin_gap_mm", 2.0, "float", "advanced", "원점", "원점 이격",
-      "원점(0)은 끝단에서 이만큼 물러난 자리입니다. 바꾸면 판 마커 · 헤드 위치 보정을 다시 해야 합니다.",
-      min=0, max=10, step=0.1, unit="mm", advanced=True, warn=True),
     I("file_log", True, "bool", "advanced", "기록", "파일 로그",
       "화면 로그를 날짜별 파일에도 남깁니다.", advanced=True),
 ]
@@ -717,6 +667,12 @@ def _v_xy_in_limits(key, v, values, errs, warns):
         errs[key] = "가동범위 X 0~%g · Y 0~%g 밖" % (lx, ly)
 
 
+def _v_contact_z(key, v, values, errs, warns):
+    zmax = _num(get_path(values, "limits.z_max_mm"))
+    if v is not None and zmax is not None and not (0 < v <= zmax + 1e-9):
+        errs[key] = "Z 가동범위 0 초과 %g 이하" % zmax
+
+
 def _v_seed_grow(key, v, values, errs, warns):
     seed = _num(values.get("stat_seed"))
     if seed is not None and v >= seed:
@@ -882,7 +838,7 @@ def _v_condition_active(key, v, values, errs, warns):
 
 
 VALIDATORS = {
-    "xy_in_limits": _v_xy_in_limits, "seed_grow": _v_seed_grow, "tol_warn": _v_tol_warn,
+    "contact_z": _v_contact_z, "xy_in_limits": _v_xy_in_limits, "seed_grow": _v_seed_grow, "tol_warn": _v_tol_warn,
     "head_id": _v_head_id, "jog_steps": _v_jog_steps, "touch_max": _v_touch_max,
     "markers": _v_markers, "zones": _v_zones, "area_size": _v_area_size, "tools": _v_tools, "tool_active": _v_tool_active,
     "relays": _v_relays, "conditions": _v_conditions, "condition_active": _v_condition_active,

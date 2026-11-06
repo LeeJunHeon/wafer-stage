@@ -53,12 +53,11 @@ class Client:
         self.settings = os.path.join(self.tmp, "settings.json")
         base = {"width": W, "height": H, "capture_frames": 2, "preview_fps": 2, "status_poll_s": 0.5,
                 "capture": {"settle_s": 0.2, "fresh_frames": 5},
-                "temp": {"driver": "dummy", "period_s": 0.2}, "contact": {"driver": "dummy"}, "meter": {"driver": "dummy"},
-                "sim": {"time_scale": 60.0, "contact_z_mm": 20.0}, "autosave_s": 60,
+                "contact_z_mm": 20.0, "approach_mm": 2.0,
+                "sim": {"time_scale": 60.0}, "autosave_s": 60,
                 "relay": {"items": [{"enabled": True, "name": "R%d" % (i + 1), "max_on_s": 0} for i in range(10)],                           "on_estop": "off", "on_stop": "off", "on_error": "off", "on_exit": "off"},
                 "photohome": {"grid_n": 3, "grid_margin_mm": 20.0}, "capture_xy": [10.0, 90.0], "park_xy": [10.0, 20.0],
-                "calib": {"area_size_mm": [160.0, 160.0]}, "heater": {"relay": 10, "max_c": 400.0, "sensor_fail_n": 3},
-                "tool": {"active": "히트건"}}
+                "calib": {"area_size_mm": [160.0, 160.0]}, "heater": {"relay": 10, "max_on_s": 120.0}}
         base = _merge(base, patch or {})
         with open(self.settings, "w", encoding="utf-8") as f:
             json.dump(base, f, ensure_ascii=False)
@@ -245,12 +244,10 @@ def c02(c):
     check(st["calib"]["status"] == "done" and st["calib"]["head"]["status"] == "done", "좌표 보정 · 헤드 위치 보정 완료 (%s)" % st["calib"]["text"])
     sz = st["calib"]["size_mm"]
     check(sz and abs(sz[0] - 160) < 2 and abs(sz[1] - 160) < 2, "판 실측 크기 %s" % (sz,))
-    c.send("move_xy", x=100, y=100)
-    c.send("tool_m1", which="pointer")
-    c.send("jog", axis="x", mm=3.0)
-    c.send("jog", axis="y", mm=-2.0)
-    ok, r = c.send("tool_m1", which="tool")
-    check(ok and abs(r["dx"] + 3.0) < 0.01 and abs(r["dy"] - 2.0) < 0.01, "공구 오프셋 방법 1 (%s)" % (r,))
+    ok, r = c.send("move_xy", x=100, y=100)
+    check(ok, "이동 (%s)" % (r,))
+    ok, r = c.send("jog", axis="x", mm=3.0)
+    check(ok, "조그")
 
 
 @case("03 촬영 · 인식 · 샘플 편집")
@@ -284,7 +281,7 @@ def run_cases(names):
         print("== %s" % n, flush=True)
         c = None
         try:
-            c = Client(patch=getattr(CASES[n], "patch", None))
+            c = Client(patch=getattr(CASES[n], "patch", None), env=getattr(CASES[n], "env", None))
             CASES[n](c)
         except Exception:
             traceback.print_exc()

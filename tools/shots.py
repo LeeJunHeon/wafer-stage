@@ -36,7 +36,7 @@ def main(out):
                 pg.click('#tabs .tab[data-tab="%s"]' % t)
 
             shot("01_measure_empty")
-            for i in range(1, 8):
+            for i in range(1, 9):
                 tab("setup")
                 pg.click('.sitem >> nth=%d' % (i - 1))
                 shot("02_setup_%d_before" % i, 500)
@@ -55,13 +55,13 @@ def main(out):
             pg.click('[data-act="m-mode"][data-args*="live"]')
             shot("06_measure_live", 1500)
             pg.click('[data-act="m-mode"][data-args*="shot"]')
-            for i in range(1, 8):
+            for i in range(1, 9):
                 tab("setup")
                 pg.click('.sitem >> nth=%d' % (i - 1))
                 shot("07_setup_%d" % i, 800)
             # 측정 중
             c.dry("slow", s=0.0)
-            ec.start_run(c, "가열 측정", nos=[1, 2, 3])
+            ec.start_run(c, ec.HEAT, nos=[1, 2, 3])
             c.wait(lambda s: s["relays"] and s["relays"]["heater_on"], 120)
             tab("measure")
             shot("08_run_heating", 900)
@@ -74,6 +74,15 @@ def main(out):
             shot("10_results", 1500)
             pg.click("#res-left table tr >> nth=1")
             shot("11_results_detail", 1200)
+            # 확인 대기(수동 측정)
+            c.dry("slow", s=0.0)
+            ec.start_run(c, ec.MANUAL, nos=[2, 3])
+            c.wait(lambda s_: s_["run"] and s_["run"]["waiting"] == "확인 대기", 120)
+            shot("08b_run_confirm_wait", 900)
+            c.send("measure_answer", value="next")
+            c.wait(lambda s_: s_["run"] and s_["run"]["waiting"] == "확인 대기", 120)
+            c.send("measure_answer", value="next")
+            ec.wait_run(c, 120)
             # 비상정지 띠
             ec.estop_http(c)
             tab("measure")
@@ -81,7 +90,7 @@ def main(out):
             ec.recover(c)
             # 오류 띠
             c.dry("fault", name="step_exc", on=True)
-            ec.start_run(c, "기본", nos=[2])
+            ec.start_run(c, ec.TOUCH, nos=[2])
             ec.wait_run(c, 60)
             shot("13_error_band", 1200)
             c.dry("fault", name="step_exc", on=False)

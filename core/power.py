@@ -58,8 +58,7 @@ class Power:
         try:
             rs = self.stage.relay_set(self.heater_n, bool(on))
         except StageError as e:
-            if not on:
-                self.heater_ok = False
+            self.heater_ok = False                      # 켜기가 실패해도(줄은 이미 나갔을 수 있다) 꺼짐을 모른다 - Hub 가 끄기를 확인될 때까지 다시 보낸다
             raise PowerError("히트건 %s 실패 · %s" % ("켜기" if on else "끄기", str(e)[:40]))
         if on:
             self.owners[self.heater_n] = owner
@@ -88,9 +87,9 @@ class Power:
         s = float(seconds)
         if not 0 < s <= self.max_heat_s:
             raise PowerError("가열 시간 0 초과 %g s 이하" % self.max_heat_s)
-        self.heater_on("tool_heat")
         t0 = time.monotonic()
         try:
+            self.heater_on("tool_heat")
             while time.monotonic() - t0 < s:
                 if cancel and cancel():
                     break

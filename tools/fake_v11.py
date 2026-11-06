@@ -3,11 +3,12 @@
 firmware/stage_v11/stage_v11.ino 의 앱이 쓰는 명령과 출력 형식을 그대로 흉내 낸다. 시간도 흉내 낸다 - 펌웨어는 단일 스레드라
 블로킹 이동 중에는 다른 줄을 처리하지 않고('!' 만 이동 도중에 본다), 응답은 별도 스레드에서 비동기로 시리얼 쪽에 들어온다.
 
-  명령: st · p · mx/my/mz · gx/gy/gz · jx/jy/jz · zx/zy/zz/z · sp · v · a · b · w · wd · r N 0/1 · r all 0 · rs · save · forget · !
+  명령: st · p · mx/my/mz · gx/gy/gz · jx/jy/jz · fz x/y/z [펄스] · zx/zy/zz/z · sp · v · a · b · w · wd · r N 0/1 · r all 0 · rs · save · forget · !
   출력: 시작 배너 · 이동 완료 줄(" | X=") · "  이미 그 위치" · "  [거부] …" · "  [!] 중단" · ST · RS · "  [!] 통신 끊김 · 릴레이 전부 꺼짐"
   통신 감시: 받은 줄마다 lastRx 갱신 · 블로킹 이동 중에는 판정 안 함 · 이동이 끝나는 순간 타이머 재시작.
 
-시험용 조작: latency(응답 지연) · drop_next(줄 하나 잃음) · reboot() · freeze(초) · slip(dx, dy) · time_scale(이동 시간 배율).
+시험용 조작: latency(응답 지연) · drop_next(줄 하나 잃음) · reboot(eeprom=) · freeze(초) · slip(dx, dy) · time_scale(이동 시간 배율) · block_write(초: 쓰기 막힘).
+EEPROM 상태(부팅 배너): restored(마지막 저장 위치 복원 - 원점 있음) · unsaved(save 없이 꺼짐 - 원점 없음) · none(기록 없음 - 원점 없음).
 """
 
 import collections
@@ -20,8 +21,11 @@ N_RELAY = 10
 
 
 class FakeV11:
-    def __init__(self, time_scale=0.05, homed=True, banner=True):
+    def __init__(self, time_scale=0.05, homed=True, banner=True, eeprom=None):
         self.timeout = 0.2
+        self.write_timeout = None                   # pyserial 모양: 쓰기가 이 시간 안에 못 끝나면 SerialTimeoutException
+        self.block_until = 0.0                      # 이 시각까지 쓰기가 막힘(USB 막힘 흉내)
+        self.eeprom = eeprom or ("restored" if homed else "none")
         self.time_scale = float(time_scale)         # 1 = 실시간 이동 시간, 0.05 = 20배 빠르게
         self.latency = 0.0                          # 응답 한 줄이 시리얼에 나타나기까지 지연(s)
         self.hang_move = False                      # 다음 이동이 끝나지 않는다('!' 가 올 때까지 - 모터 멈춤 흉내)
@@ -35,7 +39,7 @@ class FakeV11:
         self.cv = threading.Condition()
         self.alive = True
         self.true_off = [0.0, 0.0]                  # 탈조 - 실제 위치 = 보고 + off (mm)
-        self._init_state(homed)
+        self._init_state(bool(homed) and self.eeprom == "restored")
         self.wd_ms = 0
         self.last_rx = time.monotonic()
         self.wd_tripped = False
@@ -49,6 +53,16 @@ class FakeV11:
 
     # ---- pyserial 모양 ------------------------------------------------
     def write(self, data):
+        if time.monotonic() < self.block_until:
+            wt = self.write_timeout
+            wait = self.block_until - time.monotonic()
+            if wt is None:
+                time.sleep(max(0.0, wait))               # write_timeout 이 없으면 풀릴 때까지 영원히 막힌다
+            else:
+                time.sleep(min(wt, max(0.0, wait)))
+                if time.monotonic() < self.block_until:
+                    import serial
+                    raise serial.SerialTimeoutException("Write timeout")
         if time.monotonic() < self.cut_until:
             return len(data)
         if b"!" in data:
@@ -108,6 +122,9 @@ class FakeV11:
             self.cv.notify_all()
 
     # ---- 시험용 조작 ----------------------------------------------------
+    def block_write(self, sec):
+        self.block_until = time.monotonic() + sec
+
     def cut_link(self, sec):
         self.cut_until = time.monotonic() + sec
 
@@ -121,9 +138,12 @@ class FakeV11:
         self.true_off[0] += dx_mm
         self.true_off[1] += dy_mm
 
-    def reboot(self):
-        """보드 재부팅: 릴레이 꺼짐 · 속도 기본값 · 통신 감시 꺼짐 · 배너를 다시 보낸다(EEPROM 위치 복원)."""
+    def reboot(self, eeprom=None):
+        """보드 재부팅: 릴레이 꺼짐 · 속도 기본값 · 통신 감시 꺼짐 · 배너를 다시 보낸다(eeprom: restored | unsaved | none)."""
         self.abort_flag = True
+        if eeprom:
+            self.eeprom = eeprom
+        self.hx = self.hy = self.hz = (self.eeprom == "restored")
         self.relay = [False] * N_RELAY
         self.v, self.a, self.b = 6000, 40000, 300
         self.wd_ms = 0
@@ -156,7 +176,10 @@ class FakeV11:
     def _banner(self):
         self._emit("=== 3-AXIS V11 ===")
         self._emit("  X 0~%d  Y 0~%d  Z 0~%d   (160 pulse = 1mm, Z: 0 = 맨 위)" % (X_MAX, Y_MAX, Z_MAX))
-        self._emit("  EEPROM: 마지막 저장 위치 복원  (꺼진 동안 손으로 밀었다면 fz 로 재등록)")
+        self._emit({"restored": "  EEPROM: 마지막 저장 위치 복원  (꺼진 동안 손으로 밀었다면 fz 로 재등록)",
+                    "unsaved": "  EEPROM: save 하지 않고 꺼짐 → 위치 불신",
+                    "none": "  EEPROM: 기록 없음"}.get(self.eeprom, "  EEPROM: 기록 없음"))
+        self._status()
 
     def _rs(self):
         self._emit("RS " + " ".join("R%d=%d" % (i + 1, 1 if on else 0) for i, on in enumerate(self.relay)))
@@ -254,7 +277,10 @@ class FakeV11:
             self._relay(tok)
         elif c == "save":
             self.dirty = False
+            self.eeprom = "restored"
             self._emit("  저장됨 (신뢰 확정)")
+        elif c == "fz":
+            self._fz(tok)
         elif c == "forget":
             self.hx = self.hy = self.hz = False
             self._emit("  기록 삭제")
@@ -295,6 +321,40 @@ class FakeV11:
             self._jog(c[1], int(num(1)))
         else:
             self._emit("  ? fz z zx zy zz sp home gx gy gz g mx my mz jx jy jz x y x1 x2 rx ry fx fy save forget st p v a b w e !")
+
+    def _fz(self, tok):
+        """.ino findZero: 끝단 쪽으로 searchLen(기본 800, 상한 1600) 펄스를 느리게(v1200) 밀고 → 0.5 s → 320 펄스(2 mm) 물러나 0 → 저장."""
+        ax = tok[1].lower() if len(tok) > 1 else ""
+        if ax not in ("x", "y", "z"):
+            self._emit("  ? fz x [탐색펄스]  (x / y / z. 기본 800 = 5mm, 상한 1600)")
+            return
+        n = int(float(tok[2])) if len(tok) > 2 else 0
+        if n <= 0:
+            n = 800
+        if n > 1600:
+            self._emit("  [거부] fz 탐색은 1600 펄스(10mm)까지")
+            return
+        self._emit("--- 원점 탐색 (탐색 %d 펄스) --- 끝에 닿으면 드르륵 소리 (정상)" % n)
+        sv = self.v
+        hx, hy, hz = self.hx, self.hy, self.hz
+        self.hx = self.hy = self.hz = True                # 탐색 중에는 범위 검사를 하지 않는다
+        self.v = 1200
+        self._move(ax, -n)
+        time.sleep(0.5 * self.time_scale)
+        if not self.abort_flag:
+            self._move(ax, 320)
+        self.v = sv
+        self.hx, self.hy, self.hz = hx, hy, hz
+        if self.abort_flag:
+            self._emit("--- 중단됨. 원점 설정 안 됨 ---")
+            return
+        self._setpos(ax, 0)
+        setattr(self, "h" + ax, True)
+        self.true_off[0 if ax == "x" else 1] = 0.0 if ax in ("x", "y") else self.true_off[1]
+        self.dirty = False
+        self.eeprom = "restored"
+        self._emit("--- 원점 설정 완료 (저장됨) ---")
+        self._st()
 
     def _relay(self, tok):
         if len(tok) < 3 or tok[2] not in ("0", "1"):

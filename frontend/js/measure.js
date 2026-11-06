@@ -1,67 +1,18 @@
-/* measure.js - 측정 탭: 준비(촬영 사진 · 샘플 · 측정 시작) 와 측정 중(온도 그래프 · 진행 · 기록 표).
-   화면 원칙: 카드마다 주 동작 하나(보조는 ⋯) · 문제 있을 때만 상태 표시 · 모드 버튼 대신 사진을 직접 다룬다(끌어서 위치 수정 · 더블클릭으로 추가). */
+/* measure.js - 측정 탭: 준비(촬영 사진 · 샘플 · 측정 시작)와 측정 중(판 맞춤 촬영 사진에 샘플 상태 색 · 현재 샘플 · 단계 목록).
+   화면 원칙: 카드마다 주 동작 하나(보조는 ⋯) · 문제 있을 때만 상태 표시 · 모드 버튼 대신 사진을 직접 다룬다(끌어서 위치 수정 · 더블클릭으로 추가).
+   온도 · 계측기는 이 프로그램에 없다(별도 프로그램). 남은 것은 이동 · 접촉 높이 · 쿨러 · 히트건 · 대기 · 확인 대기뿐. */
 "use strict";
-const M = { viewer: null, mode: "shot", zoom: "plate", rightSig: "", prepBuilt: false, mode_run: "continuous", cond: null, showSteps: false, dragNo: null };
+const M = { viewer: null, mode: "shot", zoom: "plate", rightSig: "", prepBuilt: false, cond: null, showSteps: false, dragNo: null };
+const SCOL = { done: "#2b9a58", cur: "#2f6fdb", wait: "#8a929b", err: "#d03a3a", stop: "#e08a1e", skip: "#b9bdc2" };
 
-/* ---- 그래프(측정 중 · 결과 공용) ---- */
-function drawGraph(W, Hh, data) {
-  const svg = sv("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh });
-  const L = 58, R = 170, T = 14, B = 74, pw = W - L - R, ph = Hh - T - B;
-  const ser = (data.series || []).filter((p) => p[1] != null);
-  const tg = data.targets || {};
-  const tmax = Math.max(60, (data.t_now || 0) * 1.12, ...(ser.length ? [ser[ser.length - 1][0] * 1.05] : [0]));
-  const vals = ser.map((p) => p[1]).concat(Object.values(tg), [20]);
-  let ymin = Math.floor(Math.min(...vals) / 10) * 10 - 5, ymax = Math.ceil(Math.max(...vals) / 10) * 10 + 10;
-  if (ymax - ymin < 40) ymax = ymin + 40;
-  const X = (t) => L + (t / tmax) * pw, Y = (v) => T + ph - ((v - ymin) / (ymax - ymin)) * ph;
-  svg.append(sv("rect", { x: L, y: T, width: pw, height: ph, fill: "#fff", stroke: "#c3c7cc" }));
-  for (let v = Math.ceil(ymin / 20) * 20; v <= ymax; v += 20) {
-    svg.append(sv("line", { x1: L, x2: L + pw, y1: Y(v), y2: Y(v), stroke: "#e3e6e9" }));
-    svg.append(sv("text", { x: L - 6, y: Y(v) + 4, "text-anchor": "end", "font-size": 12, fill: "#5a626b" }, String(v)));
-  }
-  const dt = tmax > 400 ? 100 : tmax > 150 ? 50 : 20;
-  for (let t = 0; t <= tmax; t += dt) {
-    svg.append(sv("line", { x1: X(t), x2: X(t), y1: T + ph, y2: T + ph + 4, stroke: "#5a626b" }));
-    svg.append(sv("text", { x: X(t), y: T + ph + 17, "text-anchor": "middle", "font-size": 12, fill: "#5a626b" }, String(t)));
-  }
-  svg.append(sv("text", { x: L + pw / 2, y: Hh - 4, "text-anchor": "middle", "font-size": 12, fill: "#5a626b" }, "시간 s"));
-  svg.append(sv("text", { x: 14, y: T + 10, "font-size": 12, fill: "#5a626b" }, "°C"));
-  const BC = { "온도 대기": "#d9dde2", "가열": "#ffd3c1", "냉각": "#cfe0fb" };
-  const tnow = data.t_now != null ? data.t_now : (ser.length ? ser[ser.length - 1][0] : null);
-  (data.bands || []).forEach((b) => {
-    if (b.t0 == null) return;
-    const t1 = b.t1 == null ? (tnow || b.t0) : b.t1;
-    const x0 = X(b.t0), x1 = Math.max(X(t1), x0 + 2);
-    svg.append(sv("rect", { x: x0, y: T + ph + 24, width: x1 - x0, height: 20, fill: BC[b.name] || "#ddd", stroke: "#9aa1a8" }));
-    if (x1 - x0 > 46) svg.append(sv("text", { x: (x0 + x1) / 2, y: T + ph + 38, "text-anchor": "middle", "font-size": 12 }, b.name));
-  });
-  /* 목표선 · 현재 온도 라벨은 그래프 오른쪽 바깥 띠에만. 지시선은 그래프 가장자리에서 라벨까지만(그래프를 가로지르지 않는다) */
-  const labels = [];
-  [["heat", "가열 목표", "#ff5a1f"], ["cool", "냉각 목표", "#2f6fdb"], ["start", "시작 온도", "#5a626b"]].forEach(([k, name, col]) => {
-    if (tg[k] == null) return;
-    svg.append(sv("line", { x1: L, x2: L + pw, y1: Y(tg[k]), y2: Y(tg[k]), stroke: col, "stroke-dasharray": "6 4", "stroke-width": 1.5 }));
-    labels.push({ y: Y(tg[k]), text: name + " " + tg[k] + " °C", col });
-  });
-  if (ser.length) {
-    svg.append(sv("polyline", { points: ser.map((p) => X(p[0]) + "," + Y(p[1])).join(" "), fill: "none", stroke: "#2f6fdb", "stroke-width": 2.2 }));
-    const last = ser[ser.length - 1];
-    svg.append(sv("circle", { cx: X(last[0]), cy: Y(last[1]), r: 4.5, fill: "#2f6fdb" }));
-    labels.push({ y: Y(last[1]), text: (data.ended ? "끝 " : "지금 ") + f1(last[1]) + " °C", col: "#2f6fdb" });
-  }
-  if (tnow != null) {
-    svg.append(sv("line", { x1: X(tnow), x2: X(tnow), y1: T, y2: T + ph + 48, stroke: "#1d2126", "stroke-dasharray": "2 3" }));
-    svg.append(sv("text", { x: X(tnow), y: T + ph + 60, "text-anchor": "middle", "font-size": 12, "font-weight": 700 }, data.ended ? "끝" : "지금"));
-  }
-  labels.sort((a, b) => a.y - b.y);
-  let prev = -1e9;
-  labels.forEach((l) => { l.ly = Math.max(l.y, prev + 20); prev = l.ly; });
-  const over = prev - (T + ph);
-  if (over > 0) labels.forEach((l) => { l.ly -= over; });
-  labels.forEach((l) => {
-    svg.append(sv("polyline", { points: (L + pw) + "," + l.y + " " + (L + pw + 10) + "," + l.y + " " + (L + pw + 20) + "," + l.ly, fill: "none", stroke: l.col, "stroke-width": 1 }));
-    svg.append(sv("text", { x: L + pw + 24, y: l.ly + 4, "font-size": 13, fill: l.col, "font-weight": 700 }, l.text));
-  });
-  return svg;
+function isRunning(s) { return !!(s.run && ["running", "paused", "stopping"].includes(s.run.state)); }
+function sampleState(s, p) {
+  const run = s.run;
+  if (!run || !isRunning(s)) return null;
+  const r = run.results[p.no];
+  if (p.no === run.cur && !r) return "cur";
+  if (r) return r.status === "완료" ? "done" : r.status === "오류" ? "err" : r.status === "중지됨" ? "stop" : r.status === "측정 제외" ? "skip" : "done";
+  return run.order.includes(p.no) ? "wait" : "skip";
 }
 
 /* ---- 준비 화면의 왼쪽(사진 보기) ---- */
@@ -73,14 +24,13 @@ function buildPrep() {
   M.mini = sv("svg", { class: "minimap", width: 190, height: 190, viewBox: "0 0 190 190" });
   M.viewer.el.append(M.mini);
   M.viewer.onClick = onViewClick;
-  M.viewer.onDblClick = (u, v) => { if (M.mode === "shot" && UI.state.shot) send("sample_add", { u, v }); };
+  M.viewer.onDblClick = (u, v) => { if (M.mode === "shot" && UI.state.shot && !isRunning(UI.state)) send("sample_add", { u, v }); };
   M.viewer.onHandle = () => redrawOverlay();
   M.viewer.onHandleEnd = () => { const hnd = M.viewer.handles && M.viewer.handles[0]; if (hnd && M.dragNo != null) send("sample_move", { no: M.dragNo, u: hnd[0], v: hnd[1] }); };
   M.viewer.onApply = redrawOverlay;
   M.leftPrep = h("div", { class: "viewbox", id: "m-view" }, M.head, M.viewer.el, M.news);
-  M.leftRun = h("div", { class: "col hidden", id: "m-run-left" });
   M.right = h("div", { class: "col", id: "m-right" });
-  M.leftWrap = h("div", { class: "col", id: "m-left" }, M.leftPrep, M.leftRun);
+  M.leftWrap = h("div", { class: "col", id: "m-left" }, M.leftPrep);
   pane.replaceChildren(M.leftWrap, M.right);
   UI.logRenders = UI.logRenders || [];
   UI.logRenders.push(renderNews);
@@ -95,39 +45,69 @@ function renderNews() {
   const l = (UI.logTail || []).slice(-1)[0];
   M.news.replaceChildren(h("span", { class: "t" + (l ? " " + l.lv : ""), text: l ? l.t + "  " + l.msg : "소식 없음" }), h("button", { class: "btn sm", "data-act": "log-all", text: "기록 보기" }));
 }
+/* 기록 보기: [기록] [시리얼] 탭. 시리얼 = 보낸 줄 · 받은 줄 원문(실장비 첫 시험에서 확인용) */
 UI.acts["log-all"] = () => {
-  const box = h("div", { class: "loglines mono scroll" }, UI.log.slice(-300).map((l) => h("div", { class: l.lv, text: l.t + "  " + l.msg })));
-  box.style.height = "620px"; box.style.flexDirection = "column"; box.style.fontSize = "13px";
-  openWin(h("div", {}, h("h2", { text: "기록 전체" }), box, h("div", { class: "btns" }, h("button", { class: "btn", text: "닫기", onclick: closeWin }))), "big");
+  let tab = "log", timer = null;
+  const box = h("div", { class: "loglines mono scroll logbox" });
+  const draw = async () => {
+    if (tab === "log") box.replaceChildren(...UI.log.slice(-300).map((l) => h("div", { class: l.lv, text: l.t + "  " + l.msg })));
+    else {
+      try {
+        const j = await (await fetch("/serial.json?n=300")).json();
+        box.replaceChildren(...j.rows.map((r) => h("div", { class: r.d === "->" ? "tx" : "rx", text: r.t + "  " + r.d + "  " + r.x })));
+        box.scrollTop = box.scrollHeight;
+      } catch (e) { box.replaceChildren(h("div", { text: "시리얼 기록을 못 읽음" })); }
+    }
+  };
+  const tb = h("div", { class: "seg" });
+  const mkTabs = () => tb.replaceChildren(...[["log", "기록"], ["serial", "시리얼"]].map(([k, l]) => h("button", { class: "btn sm" + (tab === k ? " on" : ""), text: l, onclick: () => { tab = k; mkTabs(); draw(); } })));
+  mkTabs(); draw();
+  timer = setInterval(() => { if (tab === "serial") draw(); }, 1000);
+  openWin(h("div", {}, h("h2", { text: "기록 보기" }), tb, box, h("div", { class: "btns" }, h("button", { class: "btn", text: "닫기", onclick: () => { clearInterval(timer); closeWin(); } }))), "big");
 };
 
 function refreshLive() {
   const s = UI.state;
-  if (!s || UI.tab !== "measure" || M.mode !== "live" || !M.viewer) return;
+  if (!s || UI.tab !== "measure" || M.mode !== "live" || !M.viewer || isRunning(s)) return;
   const sz = s.camera.size || [1280, 960];
   M.viewer.set("/preview.jpg", sz[0], sz[1], Date.now());
 }
 
 function renderMeasure(s) {
   if (!M.prepBuilt) buildPrep();
-  const run = s.run, running = run && ["running", "paused", "stopping"].includes(run.state);
-  M.leftPrep.classList.toggle("hidden", !!running);
-  M.leftRun.classList.toggle("hidden", !running);
+  const running = isRunning(s);
   if (UI.tab !== "measure") return;
-  if (running) renderRunLeft(s); else renderPrepLeft(s);
+  renderLeft(s, running);
+  const run = s.run;
   const sig = JSON.stringify([running, s.samples, s.sel, s.calib.status, s.shot && [s.shot.id, s.shot.cam && s.shot.cam.shift_mm], s.camera.cap_text, s.camera.busy, s.phase, s.start_block, s.active_condition,
-    s.conditions, s.can_undo, M.mode_run, M.showSteps, run && [run.state, run.cur, run.waiting, run.done, run.paused, Object.keys(run.results)], s.stage && [s.stage.locked, s.stage.z_ok], s.ref && s.ref.time,
-    s.settings.relay.items, s.temp.kind]);
+    s.conditions, s.can_undo, M.showSteps, M.cond, run && [run.state, run.cur, run.waiting, run.done, run.paused, Object.keys(run.results).length, run.steps.map((x) => x.state), run.warns.length],
+    s.stage && [s.stage.locked, s.stage.z_ok], s.ref && s.ref.time, s.settings.relay.items, s.contact.z, s.relays && s.relays.owners]);
   if (sig !== M.rightSig) { M.rightSig = sig; if (running) renderRunRight(s); else renderPrepRight(s); }
   if (running) updateRunDynamic(s);
 }
+/* 시간이 흘러 바뀌는 값(남은 시간 · 경과)은 버튼을 다시 만들지 않고 제자리에서 고친다 */
+function updateRunDynamic(s) {
+  const run = s.run, li = $$("#run-steps li");
+  run.steps.forEach((st, i) => { const v = li[i] && li[i].querySelector(".val"); if (v && v.textContent !== (st.value || "")) v.textContent = st.value || ""; });
+  const pt = $("#run-prog-t");
+  if (pt) pt.textContent = run.done + " / " + run.n + "  ·  경과 " + mmss(run.elapsed) + "  ·  남은 시간 " + (run.remain == null ? "—" : "약 " + mmss(run.remain));
+  const cs = $("#run-cur");
+  if (cs && run.cur_sample) cs.textContent = xy(run.cur_sample.X, run.cur_sample.Y);
+}
 
-/* ---- 준비: 왼쪽 ---- */
-function renderPrepLeft(s) {
+/* ---- 왼쪽 ---- */
+function renderLeft(s, running) {
   const sh = s.shot;
-  const seg = h("div", { class: "seg" }, btn("실시간", "m-mode", { m: "live" }, M.mode === "live" ? "on" : ""), btn("촬영 사진", "m-mode", { m: "shot" }, M.mode === "shot" ? "on" : ""));
-  const seg2 = h("div", { class: "seg" }, btn("판 맞춤", "m-fit", { m: "plate" }, M.zoom === "plate" ? "on" : ""), btn("전체", "m-fit", { m: "all" }, M.zoom === "all" ? "on" : ""));
-  M.head.replaceChildren(seg, h("span", { class: "sub", text: M.mode === "shot" ? (sh ? "촬영 " + sh.time : "촬영 없음") : "실시간" }), h("span", { class: "grow" }), seg2);
+  if (running) {
+    M.mode = "shot";
+    M.head.replaceChildren(h("b", { text: "측정 중 · 판 맞춤 촬영 사진" }), h("span", { class: "sub", text: sh ? "촬영 " + sh.time : "" }), h("span", { class: "grow" }),
+      h("span", { class: "legend" }, ...[["done", "완료"], ["cur", "진행"], ["wait", "대기"], ["err", "오류"]].map(([k, l]) => h("span", {}, h("i", { class: "lg-" + k }), l))));
+    M.zoom = "plate";
+  } else {
+    const seg = h("div", { class: "seg" }, btn("실시간", "m-mode", { m: "live" }, M.mode === "live" ? "on" : ""), btn("촬영 사진", "m-mode", { m: "shot" }, M.mode === "shot" ? "on" : ""));
+    const seg2 = h("div", { class: "seg" }, btn("판 맞춤", "m-fit", { m: "plate" }, M.zoom === "plate" ? "on" : ""), btn("전체", "m-fit", { m: "all" }, M.zoom === "all" ? "on" : ""));
+    M.head.replaceChildren(seg, h("span", { class: "sub", text: M.mode === "shot" ? (sh ? "촬영 " + sh.time : "촬영 없음") : "실시간" }), h("span", { class: "grow" }), seg2);
+  }
   M.viewer.mode = M.zoom;
   if (M.mode === "shot") {
     if (sh) { M.viewer.area = sh.area || s.calib.area; M.viewer.set("/shot.jpg", sh.size[0], sh.size[1], sh.id); }
@@ -137,9 +117,9 @@ function renderPrepLeft(s) {
     M.viewer.area = s.calib.area;
     if (!M.viewer.W) M.viewer.set("/preview.jpg", sz[0], sz[1], Date.now());
   }
-  /* 선택한 샘플은 끌어서 위치 수정 */
+  /* 선택한 샘플은 끌어서 위치 수정(측정 중에는 못 끈다) */
   const sp = s.samples.find((p) => p.no === s.sel);
-  if (M.mode === "shot" && sp && !s.camera.busy && M.viewer.hd < 0) { M.viewer.handles = [[sp.u, sp.v]]; M.dragNo = sp.no; } else if (M.viewer.hd < 0) { M.viewer.handles = null; M.dragNo = null; }
+  if (!running && M.mode === "shot" && sp && !s.camera.busy && M.viewer.hd < 0) { M.viewer.handles = [[sp.u, sp.v]]; M.dragNo = sp.no; } else if (M.viewer.hd < 0) { M.viewer.handles = null; M.dragNo = null; }
   M.viewer.message(s.camera.cap_text && s.camera.busy ? s.camera.busy + " · " + s.camera.cap_text : "");
   redrawOverlay();
   renderNews();
@@ -152,7 +132,7 @@ UI.acts["m-fit"] = (a) => { M.zoom = a.m; M.viewer.fit(a.m, M.viewer.area); rend
 
 function onViewClick(u, v) {
   const s = UI.state;
-  if (M.mode !== "shot" || !s.shot) return;
+  if (M.mode !== "shot" || !s.shot || isRunning(s)) return;
   let best = null, bd = 1e9;
   s.samples.forEach((p) => { const d = Math.hypot(p.u - u, p.v - v); if (d < bd) { bd = d; best = p; } });
   if (best && bd < 60 / M.viewer.k + 25) send("sample_select", { no: best.no });
@@ -165,7 +145,7 @@ function sampleBBox(p) {
   }
   return [p.u - 12, p.v - 12, p.u + 12, p.v + 12];
 }
-/* 쿨러 구역 경계: 판 사각형(사진 프레임) 위의 투영 변환으로 mm 격자를 사진에 그린다(장비 설정 7 에서만 쓴다) */
+/* 쿨러 구역 경계: 판 사각형(사진 프레임) 위의 투영 변환으로 mm 격자를 사진에 그린다(장비 설정 8 에서만 쓴다) */
 function projective(src, dst) {
   const A = [], b = [];
   for (let i = 0; i < 4; i++) {
@@ -203,22 +183,25 @@ function redrawOverlay() {
     if (s.calib.area && M.mode === "live") v.svg.append(sv("polygon", { points: s.calib.area.map((p) => p.join(",")).join(" "), fill: "none", stroke: "#2f6fdb", "stroke-width": v.px(2), "stroke-dasharray": v.px(8) + " " + v.px(5) }));
     return;
   }
+  const running = isRunning(s);
   const k = v.k, lw = (n) => n / k;
   const area = s.shot.area || s.calib.area;
   if (area) v.svg.append(sv("polygon", { points: area.map((p) => p.join(",")).join(" "), fill: "none", stroke: "#8fb4f2", "stroke-width": lw(1.5), "stroke-dasharray": lw(8) + " " + lw(5) }));
   const items = s.samples.map((p) => ({ bbox: sampleBBox(p), p }));
   items.forEach(({ p }) => {
-    const sel = p.no === s.sel, col = sel ? "#2f6fdb" : p.excluded ? "#9aa1a8" : p.weak ? "#e08a1e" : "#f2f4f6";
-    const sw = lw(sel ? 4 : 1.6);
-    if (p.verts && p.verts.length >= 3) v.svg.append(sv("polygon", { points: p.verts.map((q) => q.join(",")).join(" "), fill: "none", stroke: col, "stroke-width": sw, "stroke-dasharray": p.excluded ? lw(5) + " " + lw(4) : null }));
-    else v.svg.append(sv("circle", { cx: p.u, cy: p.v, r: lw(12), fill: "none", stroke: col, "stroke-width": sw }));
+    const rs = running ? sampleState(s, p) : null;
+    const sel = !running && p.no === s.sel, col = rs ? SCOL[rs] : sel ? "#2f6fdb" : p.excluded ? "#9aa1a8" : p.weak ? "#e08a1e" : "#f2f4f6";
+    const sw = lw(rs ? (rs === "cur" ? 5 : 3.5) : sel ? 4 : 1.6);
+    const fill = rs && rs !== "skip" ? col : "none";
+    if (p.verts && p.verts.length >= 3) v.svg.append(sv("polygon", { points: p.verts.map((q) => q.join(",")).join(" "), fill, "fill-opacity": rs ? 0.28 : null, stroke: col, "stroke-width": sw, "stroke-dasharray": p.excluded ? lw(5) + " " + lw(4) : null }));
+    else v.svg.append(sv("circle", { cx: p.u, cy: p.v, r: lw(12), fill, "fill-opacity": rs ? 0.28 : null, stroke: col, "stroke-width": sw }));
     if (sel) drawPin(v, s, p, lw);                                   // 핀은 선택한 샘플에만
   });
   const bw = lw(30), bh = lw(20);
   const pl = placeBadges(items, v.W, v.H, bw, bh);                  // 번호는 항상 보인다
   items.forEach(({ p }, i) => {
-    const { box, from } = pl[i], sel = p.no === s.sel;
-    const col = sel ? "#2f6fdb" : p.weak ? "#e08a1e" : "#2b3138";
+    const { box, from } = pl[i], rs = running ? sampleState(s, p) : null, sel = !running && p.no === s.sel;
+    const col = rs ? SCOL[rs] : sel ? "#2f6fdb" : p.weak ? "#e08a1e" : "#2b3138";
     const cx = (box[0] + box[2]) / 2, cy = (box[1] + box[3]) / 2;
     v.svg.append(sv("line", { x1: from[0], y1: from[1], x2: cx, y2: cy, stroke: col, "stroke-width": lw(1) }));
     v.svg.append(sv("rect", { x: box[0], y: box[1], width: bw, height: bh, rx: lw(3), fill: col, opacity: 0.94 }));
@@ -265,7 +248,7 @@ function drawMinimap(s) {
   const sc = Math.min(160 / (x1 - x0), 150 / (y1 - y0));
   const P = (x, y) => [15 + (y - y0) * sc, 20 + (x - x0) * sc];
   m.append(sv("polygon", { points: am.map((p) => P(p[0], p[1]).join(",")).join(" "), fill: "#fff", stroke: "#8fb4f2", "stroke-dasharray": "4 3" }));
-  s.samples.forEach((p) => { if (p.X == null) return; const q = P(p.X, p.Y); m.append(sv("circle", { cx: q[0], cy: q[1], r: p.no === s.sel ? 5 : 3, fill: p.no === s.sel ? "#2f6fdb" : p.weak ? "#e08a1e" : "#5a626b" })); });
+  s.samples.forEach((p) => { if (p.X == null) return; const q = P(p.X, p.Y), rs = sampleState(s, p); m.append(sv("circle", { cx: q[0], cy: q[1], r: p.no === s.sel || rs === "cur" ? 5 : 3, fill: rs ? SCOL[rs] : p.no === s.sel ? "#2f6fdb" : p.weak ? "#e08a1e" : "#5a626b" })); });
   if (s.stage.x != null) { const q = P(s.stage.x, s.stage.y); m.append(sv("path", { d: "M" + (q[0] - 6) + " " + q[1] + "H" + (q[0] + 6) + "M" + q[0] + " " + (q[1] - 6) + "V" + (q[1] + 6), stroke: "#d03a3a", "stroke-width": 2 })); }
   m.append(sv("text", { x: 176, y: 14, "text-anchor": "end", "font-size": 11, fill: "#5a626b" }, "가로 Y → · 세로 X ↓"));
 }
@@ -279,11 +262,10 @@ function renderPrepRight(s) {
   const r = M.right, sh = s.shot, sel = s.samples.find((p) => p.no === s.sel);
   const busy = !!s.camera.busy;
   const noStage = !s.stage;
-  const runBusy = s.run && ["running", "paused"].includes(s.run.state);
   /* 1 촬영 */
   const shift = sh && sh.cam ? sh.cam.shift_mm : 0, warnMm = s.settings.fixed.cam_shift_warn_mm;
   const card1 = h("div", { class: "card" }, h("h3", {}, h("span", { class: "n", text: "1" }), "촬영"),
-    h("div", { class: "row" }, btn("촬영", "capture", null, "primary lg", "촬영 위치로 가서 한 장 찍고 칩을 찾습니다.", busy ? s.camera.busy + " 중" : runBusy ? "측정 중" : s.calib.area ? (s.ref ? "" : "빈 판 사진 필요 · 장비 설정 3") : "판 영역 필요 · 장비 설정 2"),
+    h("div", { class: "row" }, btn("촬영", "capture", null, "primary lg", "촬영 위치로 가서 한 장 찍고 칩을 찾습니다.", busy ? s.camera.busy + " 중" : s.calib.area ? (s.ref ? "" : "빈 판 사진 필요 · 장비 설정 4") : "판 영역 필요 · 장비 설정 3"),
       h("span", { class: "grow num", text: sh ? "인식 " + s.samples.length + " · 확인 필요 " + s.n_weak : "촬영 전" }),
       shift > warnMm ? h("span", { class: "chip warn", text: "카메라 이동 " + f1(shift, 1) + " mm" }) : null));
   /* 2 샘플 */
@@ -309,10 +291,9 @@ function renderPrepRight(s) {
   const block = s.start_block.why;
   const startBtn = btn("측정 시작 · " + nTarget + "개", "mstart", null, "primary lg block", "선택한 측정 조건으로 측정을 시작합니다.", block || (nTarget ? "" : "측정 대상 없음"));
   const card3 = h("div", { class: "card" }, h("h3", {}, h("span", { class: "n", text: "3" }), "측정"),
-    h("div", { class: "row" }, sel_, h("span", { class: "grow sub", text: cv ? estText(cv) : "" }), btn(M.showSteps ? "단계 접기 ▴" : "단계 보기 ▾", "steps-toggle", null, "sm"), btn("편집", "cond-edit", null, "sm", "측정 조건을 편집합니다.", runBusy ? "측정 중" : "")),
+    h("div", { class: "row" }, sel_, h("span", { class: "grow sub", text: cv ? estText(cv) : "" }), btn(M.showSteps ? "단계 접기 ▴" : "단계 보기 ▾", "steps-toggle", null, "sm"), btn("편집", "cond-edit", null, "sm", "측정 조건의 단계를 고칩니다.")),
     M.showSteps ? h("ol", { class: "steps" }, (cv ? cv.steps : []).map((st) => h("li", {}, h("span", { text: (st.i + 1) + ". " + st.text })))) : null,
     issues.length ? h("div", { class: "row wrap" }, issues) : null,
-    h("div", { class: "row" }, ...[["continuous", "연속"], ["confirm", "샘플마다 확인"]].map(([v, l]) => btn(l, "mmode", { m: v }, "sm " + (M.mode_run === v ? "on" : "")))),
     startBtn, h("div", { class: "why", text: block || "" }), !block && (s.start_block.notes || []).length ? h("div", { class: "sub3", text: s.start_block.notes.join(" · ") }) : null);
   r.replaceChildren(card1, card2, card3);
 }
@@ -321,10 +302,9 @@ function readyIssues(s, cv) {
   const st = s.settings, relays = st.relay.items, hn = st.heater.relay, out = [];
   const types = (cv ? cv.steps : []).map((x) => x.type);
   const chip = (t) => h("span", { class: "chip warn", text: t });
-  if ((types.includes("heat") || types.includes("wait_temp") || types.includes("cool")) && s.temp.kind === "none") out.push(chip("온도 센서 없음"));
+  if (types.includes("contact") && s.contact.z == null) out.push(chip("접촉 높이 필요 · 장비 설정 7"));
   if (types.includes("heat") && !(relays[hn - 1] && relays[hn - 1].enabled)) out.push(chip("히트건 릴레이 사용 안 함"));
   if (types.includes("cooler") && !(st.cooler.zones.cells || []).some((c) => relays[c.relay - 1] && relays[c.relay - 1].enabled)) out.push(chip("쿨러 릴레이 사용 안 함"));
-  if (types.includes("measure") && s.meter.driver === "none") out.push(chip("계측기 미연결 · 온도만 기록"));
   return out.slice(0, 1);
 }
 UI.acts.sel = (a) => send("sample_select", a);
@@ -333,84 +313,74 @@ UI.acts.goto = (a) => send("goto_sample", a);
 UI.acts.exclude = (a) => send("sample_exclude", a);
 UI.acts.confirm_s = (a) => send("sample_confirm", a);
 UI.acts.delete = (a) => send("sample_delete", a);
-UI.acts.mmode = (a) => { M.mode_run = a.m; M.rightSig = ""; render(); };
 UI.acts["steps-toggle"] = () => { M.showSteps = !M.showSteps; M.rightSig = ""; render(); };
+
+/* 측정 조건 편집: 단계 목록 + 위/아래/삭제 + 단계 추가 + 값 칸(대기 · 히트건 시간, 쿨러 대상) - 서버가 검증한 뒤 저장 */
+const STEP_NAMES = { contact: "접촉 높이로 내리기", cooler: "쿨러", heat: "히트건", wait: "대기", confirm: "확인 대기", z_top: "Z 맨 위" };
 UI.acts["cond-edit"] = () => {
   const s = UI.state, cur = s.conditions.find((c) => c.name === (M.cond || s.active_condition)) || s.conditions[0];
   const orig = (s.settings.condition.items || []).find((c) => c.name === cur.name);
-  const ta = h("textarea", { class: "mono", rows: 22, cols: 90, spellcheck: "false" });
-  ta.value = JSON.stringify(orig, null, 1);
-  openWin(h("div", {}, h("h2", { text: "측정 조건을 편집할까요?" }), h("div", { class: "sub", text: "단계 목록을 고치면 서버가 검증한 뒤 저장합니다." }), ta,
+  const work = JSON.parse(JSON.stringify(orig));
+  const box = h("div", { class: "stepedit" });
+  const maxHeat = s.settings.heater.max_on_s;
+  const draw = () => {
+    box.replaceChildren(...work.steps.map((st, i) => {
+      const num = (key, lab, mx) => h("span", { class: "row" }, h("input", { type: "number", value: st[key], step: "any", min: 0, max: mx, onchange: (e) => { st[key] = Number(e.target.value); } }), h("span", { class: "sub", text: lab }));
+      let body = null;
+      if (st.type === "wait") body = num("s", "s");
+      else if (st.type === "heat") body = num("s", "s · 상한 " + maxHeat + " s", maxHeat);
+      else if (st.type === "cooler") body = h("span", { class: "row" },
+        h("select", { onchange: (e) => { st.action = e.target.value; } }, [["on", "켜기"], ["off", "끄기"]].map(([v, l]) => h("option", { value: v, text: l, selected: st.action === v }))),
+        h("select", { onchange: (e) => { st.target = e.target.value; } }, [["sample", "샘플 구역"], ["all", "전부"]].map(([v, l]) => h("option", { value: v, text: l, selected: st.target === v }))));
+      const fixed = st.type === "move_sample";
+      return h("div", { class: "row se" }, h("b", { class: "n", text: i + 1 }), h("span", { class: "nm", text: fixed ? "샘플 위로 이동" : STEP_NAMES[st.type] || st.type }), body, h("span", { class: "grow" }),
+        fixed ? null : h("button", { class: "btn sm", text: "↑", onclick: () => { if (i > 1) { [work.steps[i - 1], work.steps[i]] = [work.steps[i], work.steps[i - 1]]; draw(); } } }),
+        fixed ? null : h("button", { class: "btn sm", text: "↓", onclick: () => { if (i < work.steps.length - 1) { [work.steps[i + 1], work.steps[i]] = [work.steps[i], work.steps[i + 1]]; draw(); } } }),
+        fixed ? null : h("button", { class: "btn sm", text: "삭제", onclick: () => { work.steps.splice(i, 1); draw(); } }));
+    }));
+  };
+  draw();
+  const add = h("button", { class: "btn sm", text: "단계 추가 ▾" });
+  const defs = { contact: { type: "contact" }, cooler: { type: "cooler", action: "on", target: "sample" }, heat: { type: "heat", s: 20 }, wait: { type: "wait", s: 5 }, confirm: { type: "confirm" }, z_top: { type: "z_top" } };
+  add.addEventListener("click", (e) => { e.stopPropagation(); popMenu(add, Object.keys(defs).map((k) => ({ label: STEP_NAMES[k], fn: () => { work.steps.push(JSON.parse(JSON.stringify(defs[k]))); draw(); } }))); });
+  openWin(h("div", {}, h("h2", { text: "'" + cur.name + "' 측정 조건을 고칠까요?" }), h("div", { class: "sub", text: "첫 단계(샘플 위로 이동)는 고정입니다. 저장하면 서버가 검증합니다." }), box, h("div", { class: "row" }, add),
     h("div", { class: "btns" }, h("button", { class: "btn", text: "닫기", onclick: closeWin }),
       h("button", { class: "btn primary", text: "저장", onclick: async () => {
-        let obj; try { obj = JSON.parse(ta.value); } catch (e) { toast("형식 오류", true); return; }
-        const items = s.settings.condition.items.map((c) => (c.name === cur.name ? obj : c));
+        const items = s.settings.condition.items.map((c) => (c.name === cur.name ? work : c));
         const r = await send("settings_save", { patch: { "condition.items": items } });
         if (r.ok) { closeWin(); toast("저장"); }
       } }))), "big");
 };
 UI.acts.mstart = async () => {
   const s = UI.state;
-  const go = async (okWeak) => { const r = await send("measure_start", { condition: M.cond || s.active_condition, mode: M.mode_run, ok_weak: okWeak }); if (r.ok) toast("측정 시작"); };
+  const go = async (okWeak) => { const r = await send("measure_start", { condition: M.cond || s.active_condition, ok_weak: okWeak }); if (r.ok) toast("측정 시작"); };
   if (s.n_weak > 0) dialog("확인 필요 샘플이 남았습니다. 그대로 측정할까요?", "확인 필요 " + s.n_weak + "개. 위치를 확인하지 않고 측정하면 공구가 어긋날 수 있습니다.", [{ label: "사진 확인" }, { label: "그대로 측정", cls: "primary", fn: () => go(true) }]);
   else go(false);
 };
 
-/* ---- 측정 중 ---- */
-function renderRunLeft(s) {
-  if (!M.runBuilt) {
-    M.graphBox = h("div", { class: "graph" });
-    M.minip = h("div", { class: "minip" });
-    M.tableBox = h("div", { class: "scroll" });
-    M.leftRun.append(M.graphBox, h("div", { class: "row", id: "run-low" }, h("div", { class: "card" }, h("h3", { text: "진행" }), M.minip), h("div", { class: "card grow scroll" }, h("h3", { text: "측정 기록" }), M.tableBox)));
-    M.runBuilt = true;
-  }
-}
-function updateRunDynamic(s) {
-  const run = s.run;
-  const cur = run.cur;
-  M.graphBox.replaceChildren(h("div", { class: "gh" }, h("b", { text: (cur != null ? cur + "번 샘플 · 온도" : "온도") }), h("span", { class: "big mono", text: f1(run.cur_temp) + " °C" }),
-    h("span", { class: "sub", text: run.text || (run.waiting || (run.state === "stopping" ? "중지 중" : "")) })), drawGraph(1170, 330, run));
-  M.minip.style.gridTemplateColumns = "repeat(5, 52px)";
-  M.minip.replaceChildren(...s.samples.map((p) => h("div", { class: "m " + (p.no === cur ? "cur" : run.results[p.no] ? "done" : run.order.includes(p.no) ? "" : "skip"), text: p.no })));
-  const chans = (s.settings.meter.channels || []).map((c) => c.name);
-  const rows = Object.values(run.results).sort((a, b) => a.no - b.no);
-  M.tableBox.replaceChildren(h("table", { class: "tb" }, h("tr", {}, ["번호", "접촉 Z", "최고 온도", "가열", "냉각", ...chans.map((c) => "측정값 " + c), "결과"].map((t) => h("th", { text: t }))),
-    ...rows.map((r) => h("tr", { class: r.status === "확인 필요" ? "check" : r.status === "실패" || r.status === "오류" ? "fail" : "" },
-      [r.no, f1(r.contact_z, 2), f1(r.t_max), f1(r.heat_s, 0), f1(r.cool_s, 0), ...chans.map((c) => (r.values[c] != null ? r.values[c] : "—")), r.status].map((t) => h("td", { text: String(t) }))))));
-  const hw = $("#hw-cells");
-  if (hw) updateHw(hw, s);
-  const pg = $("#run-prog");
-  if (pg) { pg.replaceChildren(h("div", { text: run.done + " / " + run.n + "  ·  경과 " + mmss(run.elapsed) + "  ·  남은 시간 " + (run.remain == null ? "—" : "약 " + mmss(run.remain)) }), h("div", { class: "bar" }, h("i"))); pg.querySelector("i").style.width = (run.n ? (100 * run.done) / run.n : 0) + "%"; }
-  const stl = $("#run-steps");
-  if (stl) stl.replaceChildren(...run.steps.map((st) => h("li", { class: st.state }, h("span", { text: (st.state === "done" ? "✓ " : "") + (st.i + 1) + ". " + st.text }), h("span", { class: "val", text: st.value || "" }))));
-}
-function updateHw(box, s) {
-  const run = s.run, rl = s.relays || { owners: {}, heater_on: false };
-  const co = Object.keys(rl.owners).filter((n) => rl.owners[n] === "cooler");
-  const c = (k, v, cls) => h("div", { class: "h " + (cls || "") }, h("div", { class: "k", text: k }), h("div", { class: "v", text: v }));
-  /* 이상일 때만 강조(히트건 켜짐은 진행 표시라 주홍) */
-  box.replaceChildren(c("히트건", rl.heater_on ? "켜짐" : "꺼짐", rl.heater_on ? "heat" : ""), c("쿨러", co.length ? "켜짐 R" + co.join(",R") : "꺼짐", ""),
-    c("접촉", s.settings.contact.driver === "none" ? "없음" : s.stage && s.stage.z != null ? "Z " + f1(s.stage.z, 2) + " mm" : "—", s.settings.contact.driver === "none" ? "warn" : ""),
-    c("온도 센서", s.temp.kind === "none" ? "없음" : "정상", s.temp.kind === "none" ? "warn" : ""),
-    c("계측기", s.meter.driver === "none" ? "미연결" : "연결", s.meter.driver === "none" ? "warn" : ""),
-    c("기록 파일", run.warns.length ? run.warns[0] : (run.dir || "").split(/[\\/]/).pop(), run.warns.length ? "warn" : ""));
-}
+/* ---- 측정 중: 오른쪽 ---- */
 function renderRunRight(s) {
-  const run = s.run, cur = s.samples.find((p) => p.no === run.cur);
+  const run = s.run, cs = run.cur_sample;
   const paused = run.paused || run.state === "paused";
+  const rl = s.relays || { owners: {}, heater_on: false };
+  const co = Object.keys(rl.owners).filter((n) => Number(n) !== Number(rl.heater) && rl.owners[n]);
   const card1 = h("div", { class: "card" }, h("h3", { text: "현재 샘플" }), h("div", { class: "row" }, h("span", { class: "num", text: (run.cur != null ? run.cur + "번" : "—") }),
-    h("span", { class: "grow", text: cur ? xy(cur.X, cur.Y) : "" }), h("span", { class: "chip", text: cur && cur.cooler ? "쿨러 " + cur.cooler : "쿨러 —" })));
-  const card2 = h("div", { class: "card" }, h("h3", { text: "단계 · " + run.cond }), h("ul", { class: "steps", id: "run-steps" }));
-  const card3 = h("div", { class: "card" }, h("h3", { text: "장비 상태" }), h("div", { class: "hw", id: "hw-cells" }));
-  const card4 = h("div", { class: "card" }, h("h3", { text: "전체 진행" }), h("div", { id: "run-prog" }));
+    h("span", { class: "grow mono", id: "run-cur", text: cs ? xy(cs.X, cs.Y) : "" }), h("span", { class: "chip", text: cs && cs.cooler ? "쿨러 " + cs.cooler : "쿨러 —" })));
+  const waitBox = run.waiting ? h("div", { class: "waitbox" }, h("div", { class: "sub", text: "별도 프로그램으로 측정하는 동안 핀을 샘플에 댄 채 기다립니다." }),
+    btn("다음", "manswer", { v: "next" }, "primary xl", "측정을 마쳤으면 눌러 다음 단계로 이어갑니다.")) : null;
+  const stepsEl = h("ul", { class: "steps", id: "run-steps" }, run.steps.map((st) => h("li", { class: st.state }, h("span", { text: (st.state === "done" ? "✓ " : "") + (st.i + 1) + ". " + st.text }), h("span", { class: "val", text: st.value || "" }))));
+  const card2 = h("div", { class: "card" }, h("h3", { text: "단계 · " + run.cond }), stepsEl, waitBox);
+  const card3 = h("div", { class: "card" }, h("h3", { text: "릴레이" }), h("div", { class: "hw" },
+    h("div", { class: "h " + (co.length ? "ok" : "") }, h("div", { class: "k", text: "쿨러" }), h("div", { class: "v", text: co.length ? "켜짐 R" + co.join(",R") : "꺼짐" })),
+    h("div", { class: "h " + (rl.heater_on ? "heat" : "") }, h("div", { class: "k", text: "히트건" }), h("div", { class: "v", text: rl.heater_on ? "켜짐" : "꺼짐" }))));
+  const pct = run.n ? (100 * run.done) / run.n : 0;
+  const bar = h("i"); bar.style.width = pct + "%";
+  const card4 = h("div", { class: "card" }, h("h3", { text: "전체 진행" }), h("div", { id: "run-prog-t", text: run.done + " / " + run.n + "  ·  경과 " + mmss(run.elapsed) + "  ·  남은 시간 " + (run.remain == null ? "—" : "약 " + mmss(run.remain)) }),
+    h("div", { class: "bar" }, bar), run.warns.length ? h("div", { class: "why", text: run.warns[0] }) : null);
   let ctl;
-  if (run.waiting === "다음 샘플 확인") ctl = h("div", { class: "row" }, btn("다음 샘플", "manswer", { v: "next" }, "primary lg"), btn("다시 측정", "manswer", { v: "redo" }, "lg"), btn("중지", "mstop", null, "danger lg"));
-  else if (run.waiting) ctl = h("div", { class: "row" }, btn("계속", "manswer", { v: "next" }, "primary lg"), btn("중지", "mstop", null, "danger lg"));
-  else if (paused) ctl = h("div", { class: "row" }, btn("다시 시작", "mresume", null, "primary lg"), btn("중지", "mstop", null, "danger lg"));
+  if (paused) ctl = h("div", { class: "row" }, btn("다시 시작", "mresume", null, "primary lg"), btn("중지", "mstop", null, "danger lg"));
   else ctl = h("div", { class: "row" }, btn("일시정지", "mpause", null, "lg"), btn("중지", "mstop", null, "danger lg"));
-  const jog = paused ? h("div", { class: "sub3", text: "일시정지 중 · 장비 설정에서 조그와 기준점 기록을 쓸 수 있음" }) : null;
-  M.right.replaceChildren(...[card1, card2, card3, card4, ctl, jog].filter(Boolean));
+  M.right.replaceChildren(card1, card2, card3, card4, ctl);
 }
 UI.acts.mpause = () => send("measure_pause");
 UI.acts.mresume = () => send("measure_resume");

@@ -149,6 +149,9 @@ BOOT_QUIET_S = 1.0            # 이만큼 조용하면 배너가 끝난 것으�
 MOVE_TIMEOUT_S = 30.0         # 가장 긴 이동 248mm 가 v6000 에서 약 7초
 HOME_TIMEOUT_S = 90.0         # 원점 탐색은 스트로크 전체를 훑을 수 있다
 LINE_TIMEOUT_S = 5.0
+WRITE_TIMEOUT_S = 1.0         # serial.Serial write_timeout - USB 가 막혀 쓰기가 영원히 안 끝나는 일을 막는다(비상정지 '!' 포함)
+FZ_SEARCH_PULSE = 1600        # fz 탐색 상한 10 mm(펌웨어 HOME_SEARCH_MAX)
+FZ_TIMEOUT_S = 25.0
 POLL_S = 0.2                  # 한 번 읽기에 기다리는 시간 (포트 설정은 여기서 고정)
 
 DONE_MARK = " | X="           # 이동 보고 줄
@@ -179,6 +182,10 @@ class StageError(Exception):
 
 class StageTimeout(StageError):
     """응답이 시간 안에 오지 않음. 호출 쪽(core/motion.py)이 '!' + 재동기를 한다."""
+
+
+class StageWriteTimeout(StageError):
+    """시리얼 쓰기가 write_timeout 안에 끝나지 않음 - 통신 끊김으로 다룬다."""
 
 
 class StageGuard(StageError):
@@ -285,6 +292,7 @@ class Stage:
         self.dry_hang = False          # 검증용: 이동 완료가 영영 오지 않는 척(이동 시간 한도 시험)
         self.wd_tripped_at = None
         self.profile = None            # 마지막으로 보낸 (가속도, 시작 속도)
+        self.eeprom_line = ""          # 부팅 배너의 EEPROM 줄
 
     # ---- 로그 ----------------------------------------------------------
     def _log(self, arrow, text):
@@ -304,8 +312,9 @@ class Stage:
     # ---- 열기/닫기 ------------------------------------------------------
     def open(self):
         if self.dry:
-            self.banner = ("=== 3-AXIS %s ===\n  X 0~%d  Y 0~%d  Z 0~%d\n(dry) 시리얼 없이 실행"
-                           % (DRY_FW, 39620, 39640, 7200))
+            self.eeprom_line = "  EEPROM: " + ("기록 없음" if DRY_NO_HOME else "마지막 저장 위치 복원")
+            self.banner = ("=== 3-AXIS %s ===\n  X 0~%d  Y 0~%d  Z 0~%d\n%s\n(dry) 시리얼 없이 실행"
+                           % (DRY_FW, 39620, 39640, 7200, self.eeprom_line))
             self.fw_version = DRY_FW
             self._log("--", self.banner)
             self._dry_alive = True
@@ -320,7 +329,11 @@ class Stage:
         else:
             self.port_name = self.port_name or "FAKE"
         try:
-            self.ser = (SERIAL_FACTORY or serial.Serial)(self.port_name, BAUD, timeout=POLL_S) if SERIAL_FACTORY is None else SERIAL_FACTORY(self.port_name, BAUD, POLL_S)
+            if SERIAL_FACTORY is None:
+                self.ser = serial.Serial(self.port_name, BAUD, timeout=POLL_S, write_timeout=WRITE_TIMEOUT_S)
+            else:
+                self.ser = SERIAL_FACTORY(self.port_name, BAUD, POLL_S)
+                self.ser.write_timeout = WRITE_TIMEOUT_S
         except Exception as e:
             raise StageError("%s 열기 실패 (다른 프로그램이 사용 중인지 확인)\n"
                              "  %s\n"
@@ -343,6 +356,17 @@ class Stage:
         self.fw_version = _fw_of(self.banner)
         self.needs_home = "원점없음" in self.banner
         return self.banner
+
+    def eeprom_state(self):
+        """연결 시 EEPROM 상태: restored(마지막 저장 위치 복원) | unsaved(save 없이 꺼짐) | none(기록 없음) | ''(모름)."""
+        t = self.eeprom_line or self.banner or ""
+        if "복원" in t:
+            return "restored"
+        if "save 하지 않고" in t or "위치 불신" in t:
+            return "unsaved"
+        if "기록 없음" in t:
+            return "none"
+        return ""
 
     def close(self):
         self._dry_alive = False
@@ -376,9 +400,19 @@ class Stage:
                 print("  (dry) %s" % cmd)
                 self._dry_rx()
                 return
-            self.ser.write((cmd + chr(10)).encode("ascii"))
-            self.ser.flush()
+            self._ser_write((cmd + chr(10)).encode("ascii"))
             self._log("->", cmd)
+
+    def _ser_write(self, data):
+        """쓰기 한 번. write_timeout 을 넘으면 StageWriteTimeout + 통신 끊김 사건(경보 · 링크 끊김 처리)."""
+        try:
+            self.ser.write(data)
+            self.ser.flush()
+        except Exception as e:                              # noqa: BLE001
+            if e.__class__.__name__ == "SerialTimeoutException":
+                self._event("write_timeout", "쓰기 시간 초과")
+                raise StageWriteTimeout("쓰기 시간 초과 · 통신 끊김") from e
+            raise StageError("쓰기 실패: %s" % e) from e
 
     def _drain(self):
         """보내기 전에 들어와 있던 줄을 비운다 - 이전 명령의 완료 보고 · RS 가 이번 명령의 응답으로 읽히지 않게(응답은 요청한 명령에 맞춘다)."""
@@ -399,6 +433,8 @@ class Stage:
             if not ln.strip():
                 continue
             self._log("<-", "(버림) " + ln)
+            if "EEPROM:" in ln:
+                self.eeprom_line = ln.strip()
             if "3-AXIS" in ln:
                 self.speed_pps = None
                 self.profile = None
@@ -794,6 +830,35 @@ class Stage:
             raise
 
     @_tx
+    def find_zero(self, axis, search_pulse=None):
+        """펌웨어 fz: 끝단 쪽으로 최대 search_pulse(기본 10 mm)를 느리게 밀고 → 2 mm 물러나 0 으로 등록 → EEPROM 저장.
+        응답 "--- 원점 설정 완료 (저장됨) ---" 이면 성공, "--- 중단됨 ... ---" 이면 실패. 세대 검사는 쓰기 직전(write_guard)이 한다."""
+        ax = str(axis).lower()
+        if ax not in ("x", "y", "z"):
+            raise StageError("축은 x, y, z 중 하나여야 합니다: %s" % axis)
+        n = int(search_pulse or FZ_SEARCH_PULSE)
+        if not 1 <= n <= FZ_SEARCH_PULSE:
+            raise StageError("탐색은 1~%d 펄스" % FZ_SEARCH_PULSE)
+        cmd = "fz %s %d" % (ax, n)
+        self._write(cmd)
+        if self.dry:
+            self._dry_wait("원점 잡기", None)
+            self._dry_xy[ax] = 0.0
+            self._dry_homed[ax] = True
+            if ax in self._dry_off:
+                self._dry_off[ax] = 0.0                     # 끝단에 닿아 다시 잡았으니 실제 위치 = 보고 위치
+            return "(dry) %s" % cmd
+        try:
+            ln = self._collect(FZ_TIMEOUT_S, lambda t: ("원점 설정 완료" in t) or ("중단됨" in t), "원점 잡기")
+        except StageTimeout as e:
+            e.resynced = self.resync()
+            raise
+        if "중단됨" in ln:
+            self._aborted = True
+            raise StageError("비상정지로 중단됨 · 원점 설정 안 됨")
+        return ln
+
+    @_tx
     def set_zero(self, axis="xy"):
         """지금 서 있는 자리를 0 으로 등록한다(zx / zy / z)."""
         ax = str(axis).lower()
@@ -843,12 +908,14 @@ class Stage:
             return True
         cmds = ["r all 0"] if relays_off else ["r %d 0" % int(n) for n in (off_relays or ())]
         data = "!" + chr(10) + "".join(c + chr(10) for c in cmds)
+        got = self._wlock.acquire(timeout=1.5)              # 쓰기 잠금도 영원히 기다리지 않는다(다른 쓰기가 막혀 있어도 '!' 는 나간다)
         try:
-            with self._wlock:                               # 거래 잠금은 기다리지 않는다 - '!' 와 릴레이 끄기가 한 번의 쓰기로 나간다
-                self.ser.write(data.encode("ascii"))
-                self.ser.flush()
-        except Exception as e:             # noqa: BLE001
+            self._ser_write(data.encode("ascii"))           # 거래 잠금은 기다리지 않는다 - '!' 와 릴레이 끄기가 한 번의 쓰기로 나간다
+        except StageError as e:
             raise StageError("비상정지 전송 실패: %s" % e)
+        finally:
+            if got:
+                self._wlock.release()
         self._log("->", "! (abort)" + (" + " + " + ".join(cmds) if cmds else ""))     # 로그는 쓴 뒤에(파일 I/O 가 '!' 를 늦추지 않게)
         threading.Thread(target=self._after_abort, daemon=True, name="abort-drain").start()
         return True

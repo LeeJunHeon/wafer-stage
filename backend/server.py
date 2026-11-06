@@ -144,6 +144,13 @@ async def favicon():
     return Response(status_code=204)
 
 
+@app.get("/serial.json")
+def serial_json(n: int = 200):
+    """기록 보기 "시리얼" 탭: 보낸 줄 · 받은 줄 원문(최근 n 줄)."""
+    rows = list(APP.serial_log)[-max(1, min(int(n), 400)):] if APP else []
+    return JSONResponse({"rows": [{"t": t, "d": d, "x": x} for t, d, x in rows]}, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/health")
 async def health():
     return JSONResponse({"ok": True})

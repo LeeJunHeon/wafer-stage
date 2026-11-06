@@ -164,3 +164,16 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 .zgrid > div { background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; min-width: 0; }
 .zgrid select { width: 100%; }
 .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+
+/* ---- v2 실장비판 추가 ---- */
+.btn.xl { height: 64px; padding: 0 40px; font-size: 24px; font-weight: 800; width: 100%; }
+.waitbox { margin-top: 8px; padding: 10px; background: var(--warn-bg); border: 2px solid var(--warn); border-radius: 5px; display: flex; flex-direction: column; gap: 8px; }
+.axes { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.axrow { display: flex; align-items: center; gap: 10px; } .axrow .chip { width: 80px; justify-content: center; } .axrow .btn { flex: 1; }
+.rlrow { display: flex; align-items: center; gap: 8px; padding: 2px 0; border-bottom: 1px solid #e3e6e9; } .rlrow label.chk { width: 70px; }
+.stepedit { display: flex; flex-direction: column; gap: 5px; margin: 8px 0; max-height: 520px; overflow: auto; }
+.se { background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; } .se .n { width: 22px; } .se .nm { width: 150px; font-weight: 700; } .se input[type=number] { width: 80px; }
+.logbox { height: 620px; flex-direction: column; font-size: 13px; margin-top: 8px; } .logbox div { white-space: pre; } .logbox .tx { color: #9fd4ff; } .logbox .rx { color: #d8dde2; }
+.legend i.lg-done { border-color: var(--ok); background: var(--ok); } .legend i.lg-cur { border-color: var(--sel); background: var(--sel); } .legend i.lg-wait { border-color: #8a929b; background: #8a929b; } .legend i.lg-err { border-color: var(--err); background: var(--err); }
+.legend > span { display: inline-flex; align-items: center; margin-left: 8px; font-size: 13px; }
+.band .btn { height: 28px; background: #fff; color: var(--ink); }

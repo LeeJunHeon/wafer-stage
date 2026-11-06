@@ -139,7 +139,12 @@ function render() {
 }
 function renderLog() { for (const fn of UI.logRenders || []) fn(); }
 
-const PILL = { "대기": "ok", "촬영 중": "busy", "이동 중": "busy", "일시정지": "warn", "중지 중": "warn", "비상정지": "err", "오류": "err", "연결 안 됨": "idle" };
+const PILL = { "대기": "ok", "촬영 중": "busy", "이동 중": "busy", "연결 중": "busy", "일시정지": "warn", "확인 대기": "warn", "중지 중": "warn", "비상정지": "err", "오류": "err", "연결 안 됨": "idle" };
+function relayText(s) {
+  const rl = s.relays || { owners: {}, heater_on: false };
+  const co = Object.keys(rl.owners).filter((n) => Number(n) !== Number(rl.heater) && rl.owners[n]).length;
+  return { co, heat: !!rl.heater_on };
+}
 function renderHead(s) {
   const p = $("#pill");
   const ph = UI.connected ? s.phase : "연결 안 됨";
@@ -148,31 +153,36 @@ function renderHead(s) {
   const st = s.stage, c = s.calib, running = s.run && ["running", "paused", "stopping"].includes(s.run.state);
   const cells = [];
   const mk = (k, v, cls) => h("div", { class: "cell " + (cls || "") }, h("div", { class: "k", text: k }), h("div", { class: "v", text: v }));
+  const rt = relayText(s);
   if (!running) {
     cells.push(mk("스테이지", !st ? "연결 안 됨" : "연결 · " + st.origin_text, !st ? "err" : (st.z_ok && st.xy_ok && !st.locked ? "ok" : "warn")));
     cells.push(mk("카메라", s.camera.open ? "연결 · " + (s.camera.size ? s.camera.size.join("×") : "") : "연결 안 됨", s.camera.open ? "ok" : "err"));
     cells.push(mk("좌표 보정", c.status === "done" ? "완료" : c.status === "invalid" ? c.text : "필요", c.status === "done" ? "ok" : c.status === "invalid" ? "err" : "warn"));
-    cells.push(mk("온도", s.temp.c == null ? "센서 없음" : s.temp.c + " °C", s.temp.c == null ? "" : "ok"));
-    cells.push(mk("계측기", s.meter.driver === "none" ? "미연결" : "연결", s.meter.driver === "none" ? "" : "ok"));
+    cells.push(mk("릴레이", "쿨러 " + (rt.co ? rt.co + "개 켜짐" : "꺼짐") + " · 히트건 " + (rt.heat ? "켜짐" : "꺼짐"), rt.heat ? "heat" : rt.co ? "ok" : ""));
   } else {
-    cells.push(mk("스테이지 위치", st ? xy(st.x, st.y) + " · Z " + f1(st.z) : "—", "ok"));
-    cells.push(mk("히트건", s.relays && s.relays.heater_on ? "켜짐" : "꺼짐", s.relays && s.relays.heater_on ? "heat" : "ok"));
-    const co = s.relays ? Object.keys(s.relays.owners).filter((n) => s.relays.owners[n] === "cooler").length : 0;
-    cells.push(mk("쿨러", co ? "켜짐 " + co + "개" : "꺼짐", co ? "ok" : ""));
-    cells.push(mk("온도", s.temp.c == null ? "센서 없음" : s.temp.c + " °C", "ok"));
-    cells.push(mk("계측기", s.meter.driver === "none" ? "미연결 · 온도만 기록" : "연결", ""));
+    cells.push(mk("위치", st ? xy(st.x, st.y) + " · Z " + f1(st.z) : "—", "ok"));
+    cells.push(mk("쿨러", rt.co ? "켜짐 " + rt.co + "개" : "꺼짐", rt.co ? "ok" : ""));
+    cells.push(mk("히트건", rt.heat ? "켜짐" : "꺼짐", rt.heat ? "heat" : "ok"));
   }
   const box = $("#cells");
   box.replaceChildren(...cells);
-  const band = $("#band");
-  const al = s.alarm;
-  if (al) {
-    band.className = "band " + (/비상정지|오류|재부팅/.test(al.text) ? "err" : "");
-    band.replaceChildren(h("span", { text: al.text }), h("span", { class: "next", text: al.next ? "· " + al.next : "" }));
-  } else if (st && st.locked) {
-    band.className = "band err";
-    band.replaceChildren(h("span", { text: "비상정지 잠금" }), h("span", { class: "next", text: "· 회복: " + st.recovery.join(" → ") }));
-  } else band.className = "band hidden";
+  /* 띠: 경보 또는 원점 회복. 띠의 모든 안내는 누를 수 있는 버튼이다(막다른 상태 없음) */
+  const band = $("#band"), bd = s.band;
+  const sig = JSON.stringify(bd);
+  if (bd) {
+    if (band.dataset.sig !== sig) {
+      band.dataset.sig = sig;
+      band.className = "band " + (bd.err ? "err" : "");
+      band.replaceChildren(h("span", { text: bd.text }), h("span", { class: "next", text: bd.next ? "· " + bd.next : "" }), h("span", { class: "grow" }),
+        ...(bd.actions || []).map((a) => h("button", { class: "btn sm", text: a.label, "data-tip": a.tip || null, onclick: () => bandAct(a) })));
+    }
+  } else { band.dataset.sig = ""; band.className = "band hidden"; }
+}
+function bandAct(a) {
+  const go = async () => { const r = await send(a.act, a.args || {}); if (r.ok && a.act === "origin") toast((a.args.axis || "").toUpperCase() + " 원점 잡기 완료"); };
+  if (a.act === "capture" && UI.acts.capture) { UI.acts.capture(); return; }
+  if (a.confirm) dialog(a.label + " 할까요?", (a.tip || "") + " 끝단에 닿는 드르륵 소리는 정상입니다.", [{ label: "취소" }, { label: a.label, cls: "primary", fn: go }]);
+  else go();
 }
 
 /* 종료 요청(창 X): 화면이 확인을 받는다 */

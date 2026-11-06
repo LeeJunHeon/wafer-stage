@@ -1,20 +1,22 @@
-/* setup.js - 장비 설정 탭: 안내형 7단계(카메라 · 판 영역 · 빈 판 사진 · 좌표 보정 · 헤드 위치 보정 · 공구 오프셋 · 측정 장비) + 고급 설정.
-   보기 탭은 없다: 단계에 맞는 화면을 자동으로 보인다(카메라 · 좌표 보정 · 헤드 · 공구: 실시간 / 판 영역 · 쿨러 구역: 빈 판 사진 / 클릭이 필요할 때만 정지 화면). */
+/* setup.js - 장비 설정 탭: 안내형 8단계(스테이지 · 카메라 · 판 영역 · 빈 판 사진 · 좌표 보정 · 헤드 위치 보정 · 접촉 높이 · 릴레이) + 고급 설정.
+   보기 탭은 없다: 단계에 맞는 화면을 자동으로 보인다(스테이지 · 카메라 · 헤드 · 접촉 높이: 실시간 / 판 영역 · 릴레이: 빈 판 사진 / 클릭이 필요할 때만 정지 화면). */
 "use strict";
-const S = { step: 1, zoom: "plate", viewer: null, built: false, jogStep: 1, area: null, leftSig: "", rightSig: "", freeze: false, showRef: false, tipClick: false, showPts: false, showHead: false, viewKey: "" };
-const STEPS = ["카메라", "판 영역", "빈 판 사진", "좌표 보정", "헤드 위치 보정", "공구 오프셋", "측정 장비"];
+const S = { step: 1, zoom: "plate", viewer: null, built: false, jogStep: 1, area: null, leftSig: "", rightSig: "", freeze: false, showRef: false, showPts: false, showHead: false, viewKey: "", ctNo: null };
+const STEPS = ["스테이지", "카메라", "판 영역", "빈 판 사진", "좌표 보정", "헤드 위치 보정", "접촉 높이", "릴레이"];
+const EEPROM_TEXT = { restored: "원점 복원됨", unsaved: "저장 안 하고 꺼짐 · 원점 없음", none: "기록 없음" };
 const rate = (r) => (r == null ? "" : r < 0.3 ? "좋음" : r < 0.8 ? "주의" : "나쁨");
 
 function stepInfo(s, i) {
-  const c = s.calib, st = s.settings;
+  const c = s.calib, st = s.settings, sg = s.stage;
   switch (i) {
-    case 1: return ["done", "완료", (s.camera.size ? s.camera.size.join("×") : st.width + "×" + st.height) + " · 노출 " + st.exposure];
-    case 2: return c.area ? ["done", "완료", c.size_mm ? c.size_mm[0] + " × " + c.size_mm[1] + " mm" : "지정함"] : ["need", "필요", "사진에서 네 꼭짓점"];
-    case 3: return s.ref ? ["done", "완료", s.ref.time] : ["need", "필요", "판을 비우고 촬영"];
-    case 4: return [c.status, c.status === "done" ? "완료" : c.status === "invalid" ? "무효" : "필요", c.text];
-    case 5: return [c.head.status, c.head.status === "done" ? "완료" : c.head.status === "invalid" ? "무효" : "필요", c.head.text];
-    case 6: { const t = s.tool; const set = (t.dx_mm || t.dy_mm); return [set ? "done" : "opt", set ? "완료" : "선택", t.name + " · dx " + f1(t.dx_mm, 2) + " · dy " + f1(t.dy_mm, 2)]; }
-    case 7: { const ok = s.temp.kind !== "none"; return [ok ? "done" : "opt", ok ? "완료" : "선택", "온도 " + (ok ? "있음" : "없음") + " · 계측기 " + (s.meter.driver === "none" ? "미연결" : "연결")]; }
+    case 1: { if (!sg) return ["need", "필요", "스테이지 연결 안 됨"]; const ok = sg.z_ok && sg.xy_ok && !sg.locked; return [ok ? "done" : "need", ok ? "완료" : "필요", (s.port || "") + " · " + (s.fw || "") + " · " + (ok ? "원점 정상" : "원점 없음")]; }
+    case 2: return ["done", "완료", (s.camera.size ? s.camera.size.join("×") : st.width + "×" + st.height) + " · 노출 " + st.exposure];
+    case 3: return c.area ? ["done", "완료", c.size_mm ? c.size_mm[0] + " × " + c.size_mm[1] + " mm" : "지정함"] : ["need", "필요", "사진에서 네 꼭짓점"];
+    case 4: return s.ref ? ["done", "완료", s.ref.time] : ["need", "필요", "판을 비우고 촬영"];
+    case 5: return [c.status, c.status === "done" ? "완료" : c.status === "invalid" ? "무효" : "필요", c.text];
+    case 6: return [c.head.status, c.head.status === "done" ? "완료" : c.head.status === "invalid" ? "무효" : "필요", c.head.text];
+    case 7: { const z = s.contact.z; return z == null ? ["need", "필요", "샘플에서 핀이 닿는 높이"] : ["done", "완료", "Z " + f1(z, 2) + " mm"]; }
+    case 8: { const used = st.relay.items.map((r, n) => (r.enabled && n + 1 !== st.heater.relay ? n + 1 : null)).filter(Boolean); return ["done", "완료", "쿨러 " + (used.length ? "R" + Math.min(...used) + "–R" + Math.max(...used) : "없음") + " · 히트건 R" + st.heater.relay]; }
   }
 }
 function lockedBy(s) { return s.run && ["running", "paused", "stopping"].includes(s.run.state) ? "측정 중 · 변경 잠김" : ""; }
@@ -22,8 +24,8 @@ function lockedBy(s) { return s.run && ["running", "paused", "stopping"].include
 /* 단계에 맞는 화면 */
 function viewFor(s) {
   if (S.freeze) return "snap";
-  if (S.step === 2 || S.step === 7) return s.ref ? "ref" : "live";
-  if (S.step === 3 && S.showRef && s.ref) return "ref";
+  if (S.step === 3 || S.step === 8) return s.ref ? "ref" : "live";
+  if (S.step === 4 && S.showRef && s.ref) return "ref";
   return "live";
 }
 
@@ -47,7 +49,7 @@ function buildSetup() {
 function renderSetup(s) {
   if (!S.built) buildSetup();
   if (UI.tab !== "setup") return;
-  const items = [1, 2, 3, 4, 5, 6, 7].map((i) => {
+  const items = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => {
     const [cls, st, sum] = stepInfo(s, i);
     return h("div", { class: "sitem " + cls + (S.step === i ? " sel" : ""), "data-act": "su-step", "data-args": JSON.stringify({ i }) }, h("div", { class: "no", text: i }),
       h("div", { class: "grow" }, h("div", { class: "t", text: STEPS[i - 1] }), h("div", { class: "s", text: sum })), h("div", { class: "st", text: st }));
@@ -55,19 +57,19 @@ function renderSetup(s) {
   const lsig = JSON.stringify(items.map((e) => e.outerHTML)) + S.step;
   if (lsig !== S.leftSig) {
     S.leftSig = lsig;
-    S.list.replaceChildren(...items, h("div", { class: "sub3", text: "카메라를 옮기면 2–5 다시 설정 · 가열 측정에는 6 · 7 필요" }),
+    S.list.replaceChildren(...items, h("div", { class: "sub3", text: "카메라를 옮기면 3–6 다시 설정" }),
       h("div", { class: "row" }, btn("고급 설정", "su-adv", null, "", "속도 · 가동범위 · 촬영 위치 · 대기 위치 · 검출 값 등 모든 설정을 엽니다."),
-        btn("이전 설정 가져오기", "su-import", null, "sm", "이전 프로그램의 포트 · 카메라 · 가동범위 · 속도 · 위치 · 릴레이 · 쿨러 · 공구 · 온도 설정을 읽어 옵니다. 보정 파일은 가져오지 않습니다.", lockedBy(s))));
+        btn("이전 설정 가져오기", "su-import", null, "sm", "이전 프로그램의 포트 · 카메라 · 가동범위 · 속도 · 위치 · 릴레이 · 쿨러 설정을 읽어 옵니다. 가져온 뒤 스테이지를 다시 연결합니다. 보정 파일은 가져오지 않습니다.", lockedBy(s))));
   }
   renderSetupView(s);
-  const sig = JSON.stringify([S.step, lockedBy(s), s.calib, s.ref, s.stage && [s.stage.locked, s.stage.z_ok, s.stage.xy_ok, s.stage.moving], s.camera.busy, s.settings.photohome, s.tool, s.verify, S.jogStep, S.freeze, S.showPts, S.showHead, S.showRef,
-    s.temp.kind, s.settings.relay.items, s.settings.cooler, s.settings.heater, s.settings.temp, s.settings.contact, s.settings.meter, s.settings.width, s.settings.exposure, s.settings.wb_temperature]);
+  const sig = JSON.stringify([S.step, lockedBy(s), s.calib, s.ref, s.stage && [s.stage.locked, s.stage.z_ok, s.stage.xy_ok, s.stage.moving, s.stage.done, s.stage.fw_homed, s.stage.z > 0.05], s.camera.busy, s.settings.photohome, s.tool, s.verify, S.jogStep, S.freeze, S.showPts, S.showHead, S.showRef,
+    s.eeprom, s.port, s.fw, s.contact, s.samples.length, s.sel, S.ctNo, s.settings.relay.items, s.settings.cooler, s.settings.heater, s.settings.width, s.settings.exposure, s.settings.wb_temperature]);
   if (sig !== S.rightSig) { S.rightSig = sig; renderPanel(s); }
   const pos = $("#su-pos");
   if (pos && s.stage) pos.textContent = xy(s.stage.x, s.stage.y) + " · Z " + f1(s.stage.z, 2);
 }
-UI.acts["su-step"] = (a) => { S.step = a.i; S.leftSig = ""; S.rightSig = ""; S.area = null; S.freeze = false; S.showRef = false; S.tipClick = false; render(); };
-UI.acts["su-next"] = () => { if (S.step < 7) UI.acts["su-step"]({ i: S.step + 1 }); };
+UI.acts["su-step"] = (a) => { S.step = a.i; S.leftSig = ""; S.rightSig = ""; S.area = null; S.freeze = false; S.showRef = false; render(); };
+UI.acts["su-next"] = () => { if (S.step < 8) UI.acts["su-step"]({ i: S.step + 1 }); };
 
 function renderSetupView(s) {
   const v = S.viewer, kind = viewFor(s), sz = s.camera.size || [1280, 960];
@@ -76,16 +78,16 @@ function renderSetupView(s) {
   const title = { live: "실시간", ref: "빈 판 사진", snap: "정지 화면" }[kind];
   S.vhead.replaceChildren(h("b", { text: title + " · " + STEPS[S.step - 1] }), h("span", { class: "grow" }),
     h("div", { class: "seg" }, btn("판 맞춤", "su-fit", { m: "plate" }, S.zoom === "plate" ? "on" : ""), btn("전체", "su-fit", { m: "all" }, S.zoom === "all" ? "on" : "")));
-  S.vfoot.replaceChildren(h("span", { text: S.step === 4 ? "점선 = 판 영역 · 번호 = 기준점" : S.step === 7 ? "점선 격자 = 쿨러 구역" : "점선 = 판 영역" }), h("span", { class: "grow" }), h("span", { class: "mono", text: s.camera.text }));
+  S.vfoot.replaceChildren(h("span", { text: S.step === 5 ? "점선 = 판 영역 · 번호 = 기준점" : S.step === 8 ? "점선 격자 = 쿨러 구역" : S.step === 6 && kind === "snap" ? "주황 상자 = 헤드 마커(정렬에서 뺀 영역)" : "점선 = 판 영역" }), h("span", { class: "grow" }), h("span", { class: "mono", text: s.camera.text }));
   v.mode = S.zoom;
   v.area = s.calib.area;
   if (kind === "snap") v.set("/snap.jpg", sz[0], sz[1], S.snapV);
   else if (kind === "ref") v.set("/ref.jpg", sz[0], sz[1], s.ref.id);
   else if (!v.W) v.set("/preview.jpg", sz[0], sz[1], Date.now());
-  if (S.step === 2) { if (!S.area) S.area = (s.calib.area || defaultArea(sz)).map((p) => p.slice()); v.handles = S.area; } else v.handles = null;
+  if (S.step === 3) { if (!S.area) S.area = (s.calib.area || defaultArea(sz)).map((p) => p.slice()); v.handles = S.area; } else v.handles = null;
   v.message(s.camera.cap_text && s.camera.busy ? s.camera.busy + " · " + s.camera.cap_text : "");
   $$(".hint", v.el).forEach((e) => e.remove());
-  if (S.freeze) v.el.append(h("div", { class: "hint", text: S.tipClick ? "가열 자국을 클릭" : "핀 가운데와 같은 점을 클릭" }));
+  if (S.freeze && S.step === 5) v.el.append(h("div", { class: "hint", text: "핀 가운데와 같은 점을 클릭" }));
   redrawSetup();
 }
 function defaultArea(sz) { const w = sz[0], h_ = sz[1]; return [[w * 0.25, h_ * 0.2], [w * 0.75, h_ * 0.2], [w * 0.75, h_ * 0.8], [w * 0.25, h_ * 0.8]]; }
@@ -103,17 +105,22 @@ function redrawSetup() {
   v.clear();
   if (!v.W) return;
   const k = v.k, lw = (n) => n / k;
-  const area = S.step === 2 && S.area ? S.area : s.calib.area;
+  const area = S.step === 3 && S.area ? S.area : s.calib.area;
   if (area) v.svg.append(sv("polygon", { points: area.map((p) => p.join(",")).join(" "), fill: "rgba(47,111,219,.08)", stroke: "#8fb4f2", "stroke-width": lw(2), "stroke-dasharray": lw(9) + " " + lw(6) }));
-  if (S.step === 2 && S.area) S.area.forEach((p, i) => { v.svg.append(sv("circle", { cx: p[0], cy: p[1], r: lw(9), fill: "#2f6fdb", stroke: "#fff", "stroke-width": lw(2) })); v.svg.append(sv("text", { x: p[0] + lw(12), y: p[1] - lw(10), "font-size": lw(15), fill: "#fff", "font-weight": 700 }, String(i + 1))); });
-  if (S.step === 4 || S.step === 5) {
-    const pts = S.step === 4 ? s.calib.points : s.calib.head.pairs;
+  if (S.step === 3 && S.area) S.area.forEach((p, i) => { v.svg.append(sv("circle", { cx: p[0], cy: p[1], r: lw(9), fill: "#2f6fdb", stroke: "#fff", "stroke-width": lw(2) })); v.svg.append(sv("text", { x: p[0] + lw(12), y: p[1] - lw(10), "font-size": lw(15), fill: "#fff", "font-weight": 700 }, String(i + 1))); });
+  if (S.step === 5 || S.step === 6) {
+    const pts = S.step === 5 ? s.calib.points : s.calib.head.pairs;
     pts.forEach((p, i) => {
       v.svg.append(sv("circle", { cx: p.u, cy: p.v, r: lw(8), fill: "none", stroke: "#e08a1e", "stroke-width": lw(2.5) }));
       v.svg.append(sv("text", { x: p.u + lw(10), y: p.v - lw(8), "font-size": lw(15), fill: "#ffe08a", "font-weight": 700 }, String(p.no || i + 1)));
     });
   }
-  if (S.step === 7 && area && s.calib.status === "done") drawZones(v, s, area, lw);
+  if (S.step === 8 && area && s.calib.status === "done") drawZones(v, s, area, lw);
+  /* 헤드 마커 상자(위치 확인 결과): 정지 화면에 정렬에서 뺀 영역을 그린다 */
+  if (S.step === 6 && viewFor(s) === "snap" && s.verify && s.verify.box) {
+    v.svg.append(sv("polygon", { points: s.verify.box.map((q) => q.join(",")).join(" "), fill: "rgba(224,138,30,.15)", stroke: "#e08a1e", "stroke-width": lw(3) }));
+    v.svg.append(sv("text", { x: s.verify.box[0][0], y: s.verify.box[0][1] - lw(8), "font-size": lw(16), fill: "#ffcd7a", "font-weight": 700 }, "헤드 마커"));
+  }
 }
 
 /* 좌표 보정 클릭: 판 꼭짓점 · 칩 가운데 가까이면 자동으로 붙는다(후보 버튼 줄은 없다) */
@@ -126,19 +133,16 @@ function snapCandidate(u, v, k) {
 }
 async function onSetupClick(u, v) {
   const s = UI.state, fr = frameOfView();
-  if (S.step === 4 && S.freeze) {
+  if (S.step === 5 && S.freeze) {
     const c = snapCandidate(u, v, S.viewer.k);
     const r = c ? await send("calib_click", { u: c.u, v: c.v, frame: "ref", src: c.src, shot: c.src === "sample" && s.shot ? s.shot.id + ":" + c.no : null }) : await send("calib_click", { u, v, frame: "snap" });
     if (r.ok) { S.freeze = false; S.viewKey = ""; toast(c ? "기준점 기록 · 가까운 점에 붙임" : "기준점 기록"); }
-  } else if (S.step === 6 && S.tipClick && fr === "snap") {
-    const r = await send("tool_m2_click", { u, v, frame: "snap" });
-    if (r.ok) { S.tipClick = false; S.freeze = false; S.viewKey = ""; toast("공구 오프셋 저장"); }
   }
 }
 
 /* ---- 조그 ---- */
 function onJogKey(e) {
-  if (UI.tab !== "setup" || S.step !== 4) return;
+  if (UI.tab !== "setup" || ![1, 5, 7].includes(S.step)) return;
   const t = e.target;
   if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
   const map = { ArrowLeft: ["y", 1], ArrowRight: ["y", -1], ArrowUp: ["x", 1], ArrowDown: ["x", -1], PageUp: ["z", -1], PageDown: ["z", 1] };
@@ -180,25 +184,44 @@ function renderPanel(s) {
         h("div", { class: "col" }, b("Z↑", "z", -1), b("Z↓", "z", 1))),
       sg && sg.z > 0.5 ? h("div", { class: "why", text: "Z 가 내려가 있음 · 다른 점으로 가기 전 Z↑" }) : null);
   };
-  const foot = (extra) => h("div", { class: "foot" }, extra, S.step < 7 ? btn("다음 단계", "su-next", null, stepDone(s, S.step) ? "primary" : "") : null);
+  const foot = (extra) => h("div", { class: "foot" }, extra, S.step < 8 ? btn("다음 단계", "su-next", null, stepDone(s, S.step) ? "primary" : "") : null);
+  const axisBtn = (ax) => {
+    const sg = s.stage;
+    let why = lock || (nostage ? "스테이지 연결 안 됨" : "");
+    if (!why && ax !== "z") why = !sg.z_ok ? "Z 원점 먼저" : (sg.z != null && Math.abs(sg.z) > 0.05 ? "Z 맨 위 먼저 · Z↑" : "");
+    if (!why && sg.moving) why = "이동 중";
+    const have = ax === "z" ? sg && sg.z_ok : sg && (sg.xy_ok || sg.done[ax]);
+    return h("div", { class: "axrow" }, h("span", { class: "chip " + (have ? "ok" : "warn"), text: ax.toUpperCase() + " " + (have ? "있음" : "없음") }),
+      btn(ax.toUpperCase() + " 원점 잡기", "su-origin", { axis: ax }, have ? "" : "primary", ax.toUpperCase() + " 를 끝단 쪽으로 최대 10 mm 밀어 2 mm 물러난 자리를 원점으로 잡고 저장합니다.", why));
+  };
   if (S.step === 1) {
+    const sg = s.stage, miss = sg ? (!sg.z_ok ? "z" : !(sg.xy_ok || sg.done.x) ? "x" : !(sg.xy_ok || sg.done.y) ? "y" : null) : null;
+    const hint = miss ? (sg.fw_homed[miss] ? miss.toUpperCase() + " · 펌웨어 위치가 남아 있어 끝단 3 mm 앞까지 자동으로 다가간 뒤 잡습니다." : miss.toUpperCase() + " · 조그로 끝단 10 mm 안까지 옮긴 뒤 누르세요.") : "원점이 모두 있습니다.";
+    kids.push(card("스테이지", h("div", { class: "kv" }, h("span", { text: "포트" }), h("b", { text: s.port || "—" }), h("span", { text: "펌웨어" }), h("b", { text: s.fw || "—" }),
+      h("span", { text: "연결 시 저장 기록" }), h("b", { text: EEPROM_TEXT[s.eeprom] || "—" })),
+      h("div", { class: "axes" }, axisBtn("z"), axisBtn("x"), axisBtn("y")),
+      h("div", { class: "sub", text: hint }), h("div", { class: "sub3", text: "순서 Z → X → Y · 끝단에 닿는 드르륵 소리는 정상입니다." }),
+      h("div", { class: "row" }, btn("대기 위치로", "su-park", null, "", "대기 위치(설정)로 옮기고 위치를 저장합니다.", lock || (nostage ? "스테이지 연결 안 됨" : !(sg.z_ok && sg.xy_ok && !sg.locked) ? "원점 필요" : "")))));
+    kids.push(jogCard());
+    kids.push(foot());
+  } else if (S.step === 2) {
     kids.push(card("카메라", h("div", { class: "kv" }, ...field("카메라 번호", numInput("f-ci", st.camera_index, 1)), ...field("가로", numInput("f-w", st.width, 1)), ...field("세로", numInput("f-h", st.height, 1)),
       ...field("노출", numInput("f-ex", st.exposure)), ...field("화이트밸런스 K", numInput("f-wb", st.wb_temperature, 100)),
       ...field("초점", selInput("f-fm", st.focus_mode, [["fixed", "고정"], ["auto", "자동"]]))),
       h("div", { class: "row" }, btn("저장", "su-save-cam", null, "primary", "", lock), moreBtn([{ label: "초점 다시 맞추기", fn: () => UI.acts["su-focus"](), why: lock }])),
-      h("div", { class: "sub3", text: "카메라 설정을 바꾸면 2–5 를 다시 확인" })), foot());
-  } else if (S.step === 2) {
+      h("div", { class: "sub3", text: "카메라 설정을 바꾸면 3–6 을 다시 확인" })), foot());
+  } else if (S.step === 3) {
     const sz = c.size_mm;
     kids.push(card("판 영역", h("div", { class: "sub", text: "사진에서 네 꼭짓점을 끌어 판 사각형에 맞춥니다." }),
       h("div", { class: "kv" }, h("span", { text: "실측 크기" }), h("b", { text: sz ? sz[0] + " × " + sz[1] + " mm" : "좌표 보정 뒤 표시" })),
       h("div", { class: "row" }, btn("적용", "su-area", null, "primary", "", lock), moreBtn([{ label: "초기화", fn: () => UI.acts["su-area-reset"]() }]))), foot());
-  } else if (S.step === 3) {
+  } else if (S.step === 4) {
     const hist = (s.ref && s.ref.history) || [];
     kids.push(card("빈 판 사진", h("div", { class: "sub", text: "판 위의 샘플을 모두 치웁니다. 촬영 위치로 자동 이동한 뒤 찍습니다." }),
       h("div", { class: "row" }, btn("촬영 위치로 이동 · 촬영", "su-ref", null, "primary", "", lock || (c.area ? "" : "판 영역 필요") || (s.camera.busy ? s.camera.busy + " 중" : ""))),
       S.refRes ? h("div", { class: "sub", text: "교체 결과 · " + (S.refRes.moved ? "이동 " + S.refRes.moved.shift_px + " px · 잔차 " + S.refRes.moved.resid + " · 성공" : "기하 이동 없음") }) : null,
       hist.length ? h("div", { class: "row" }, h("span", { class: "sub grow", text: "이력 " + hist.length + "개" }), moreBtn(hist.slice(0, 8).map((x) => ({ label: x.time + " 로 되돌리기", fn: () => UI.acts["su-ref-restore"]({ id: x.id }), why: lock })))) : null), foot());
-  } else if (S.step === 4) {
+  } else if (S.step === 5) {
     const n = c.points.length;
     kids.push(card("좌표 보정", h("ol", { class: "sub" }, h("li", { text: "핀 가운데를 기준점에 맞추기 · Z 는 판 위 1–2 mm" }), h("li", { text: "위치 기록 → 자동으로 한 장 찍힘" }), h("li", { text: "사진에서 같은 점 클릭 (꼭짓점 · 칩 가운데는 자동으로 붙음)" })),
       h("div", { class: "row" }, btn("위치 기록 · " + (n + 1) + "번 점", "su-record", null, "primary", "", lock || (nostage ? "스테이지 연결 안 됨" : "")),
@@ -210,49 +233,45 @@ function renderPanel(s) {
       ...c.warnings.map((w) => h("div", { class: "why", text: w })),
       h("div", { class: "row" }, btn("적용 · 5점부터", "su-capply", null, "primary", "", lock || (n >= c.min_apply ? "" : "기준점 " + n + "개 · " + c.min_apply + "개부터"))),
       h("div", { class: "sub3", text: c.text }), foot()));
-  } else if (S.step === 5) {
+  } else if (S.step === 6) {
     const hc = c.head, v = s.verify;
     kids.push(card("헤드 위치 보정", h("div", { class: "sub", text: "격자 n×n 으로 자동 이동 · 촬영해 헤드 마커 위치를 잽니다." }),
       h("div", { class: "row" }, btn("자동 보정", "su-head", null, "primary", "", lock || (c.status === "done" ? "" : "좌표 보정 필요") || (nostage ? "스테이지 연결 안 됨" : "")),
         moreBtn([{ label: "지금 위치 확인", fn: () => UI.acts["su-verify"](), why: lock || (hc.status === "done" ? "" : "헤드 위치 보정 필요") }])),
       h("div", { class: "row" }, h("span", { class: "grow", text: hc.pairs.length ? "점 " + hc.pairs.length + (hc.rms != null ? " · 잔차 " + f1(hc.rms, 2) + " mm · " + rate(hc.rms) : "") : "아직 안 함" }), btn(S.showHead ? "점 접기 ▴" : "점 보기 ▾", "su-hpts", null, "sm")),
       S.showHead ? h("div", { class: "scroll" }, h("table", { class: "tb" }, h("tr", {}, ["X", "Y", "잔차"].map((t) => h("th", { text: t }))), ...hc.pairs.map((p) => h("tr", {}, h("td", { text: f1(p.x) }), h("td", { text: f1(p.y) }), h("td", { text: p.res_mm != null ? f1(p.res_mm, 2) : "—" }))))) : null,
-      v ? h("div", { class: "row wrap" }, h("span", { class: "chip " + (v.verdict === "정상" ? "ok" : "warn"), text: "위치 확인 " + v.verdict + " · 차이 " + f1(v.d, 2) + " mm" }),
-        v.verdict !== "정상" ? btn("적용 (sp)", "su-apply-pos", null, "primary sm", "위치 확인 결과를 스테이지 위치로 적용합니다. 비상정지 회복의 마지막 단계입니다.") : null) : null), foot());
-  } else if (S.step === 6) {
-    const t = s.tool;
-    kids.push(card("공구 오프셋 · " + t.name, h("div", { class: "kv" }, h("span", { text: "dx" }), h("b", { text: f1(t.dx_mm, 2) + " mm" }), h("span", { text: "dy" }), h("b", { text: f1(t.dy_mm, 2) + " mm" })),
-      h("h3", { text: "방법 1 · 같은 점에 핀 · 공구" }), h("div", { class: "sub", text: "핀 가운데를 한 점에 맞춰 기록 → 공구 끝을 같은 점에 맞춰 기록" }),
-      h("div", { class: "row" }, btn("핀 위치 기록", "su-m1", { which: "pointer" }, "", "", lock || (nostage ? "스테이지 연결 안 됨" : "")), btn("공구 위치 기록", "su-m1", { which: "tool" }, "primary", "", lock || (nostage ? "스테이지 연결 안 됨" : ""))),
-      h("h3", { text: "방법 2 · 가열 자국 클릭" }), h("div", { class: "sub", text: "시간 한도 안에서 가열하면 자동으로 한 장 찍힙니다. 자국을 누르세요." }),
-      h("div", { class: "row" }, btn("가열 3 s", "su-m2", { seconds: 3 }, "", "히트건 릴레이를 3 초만 켭니다.", lock || (c.status === "done" ? "" : "좌표 보정 필요"))),
-      drawTip(t)), foot());
+      v ? h("div", { class: "row wrap" }, v.d != null ? h("span", { class: "chip " + (v.verdict === "정상" ? "ok" : "warn"), text: "위치 확인 " + v.verdict + " · 차이 " + f1(v.d, 2) + " mm" }) : h("span", { class: "chip warn", text: v.why || "위치 확인 못 함" }),
+        v.d != null && v.verdict !== "정상" ? btn("적용 (sp)", "su-apply-pos", null, "primary sm", "위치 확인 결과를 스테이지 위치로 적용합니다. 비상정지 회복의 마지막 단계입니다.") : null,
+        S.freeze ? btn("실시간으로", "su-rec-cancel", null, "sm") : null) : null), foot());
   } else if (S.step === 7) {
+    const ctr = s.contact, withX = s.samples.filter((p) => p.X != null);
+    if (S.ctNo == null || !withX.some((p) => p.no === S.ctNo)) S.ctNo = (withX.find((p) => p.no === s.sel) || withX[0] || {}).no;
+    const sg = s.stage;
+    const base = lock || (nostage ? "스테이지 연결 안 됨" : sg && !(sg.z_ok && sg.xy_ok && !sg.locked) ? "원점 필요 · 단계 1" : "");
+    const noS = withX.length ? "" : "샘플 필요 · 측정 탭에서 촬영";
+    const sel = h("select", { id: "ct-no", onchange: (e) => { S.ctNo = Number(e.target.value); S.rightSig = ""; } }, withX.map((p) => h("option", { value: p.no, text: p.no + "번 · " + xy(p.X, p.Y), selected: p.no === S.ctNo })));
+    kids.push(card("접촉 높이", h("div", { class: "sub", text: "샘플 하나를 고르고 [샘플 위로] → Z 조그(0.1 mm)로 핀이 닿을 때까지 내립니다 → [지금 높이를 접촉 높이로]." }),
+      h("div", { class: "row" }, sel, btn("샘플 위로", "su-ct-goto", null, "", "고른 샘플 위로 공구를 옮깁니다(Z 를 먼저 올립니다).", base || noS)),
+      h("div", { class: "row" }, btn("지금 높이를 접촉 높이로", "su-ct-save", null, "primary", "지금 Z 높이(절대값)를 접촉 높이로 저장합니다. 고른 샘플 위일 때만 저장됩니다.", base || noS || (sg && sg.z < 0.1 ? "Z 를 먼저 내리기" : ""))),
+      h("div", { class: "kv" }, h("span", { text: "현재 값" }), h("b", { text: ctr.z == null ? "비어 있음 · 측정 시작 불가" : "Z " + f1(ctr.z, 2) + " mm" })),
+      h("div", { class: "row" }, btn("접촉 높이로 내려 보기", "su-ct-try", null, "", "저장한 높이까지 내립니다. 마지막 " + ctr.approach + " mm 는 느리게 내립니다.", base || noS || (ctr.z == null ? "접촉 높이 필요" : "")),
+        btn("Z 맨 위", "su-ztop", null, "", "Z 를 맨 위로 올립니다.", base),
+        moreBtn([{ label: "접촉 높이 지우기", fn: () => send("contact_clear"), why: lock || (ctr.z == null ? "저장한 값 없음" : "") }]))));
+    kids.push(jogCard());
+    kids.push(foot());
+  } else if (S.step === 8) {
     const zr = st.cooler.zones, hn = st.heater.relay;
     const relayOpts = Array.from({ length: 10 }, (_, i) => i + 1).filter((n) => n !== hn);
     const zcells = zr.cells.map((cl, i) => h("div", {}, h("div", { class: "sub3", text: "칸 " + (i + 1) }), selInput("m-z" + i, cl.relay, relayOpts.map((n) => [n, "R" + n]))));
-    const used = st.relay.items.map((r, i) => (r.enabled && i + 1 !== hn ? i + 1 : null)).filter(Boolean);
-    kids.push(card("측정 장비", h("div", { class: "kv" }, ...field("온도 센서", selInput("m-td", st.temp.driver, [["none", "센서 없음"], ["dummy", "더미(시뮬레이션 전용)"]])),
-      ...field("현재 값", h("b", { text: s.temp.c == null ? "—" : s.temp.c + " °C" })),
-      ...field("계측기", selInput("m-md", st.meter.driver, [["none", "없음"], ["dummy", "더미(시뮬레이션 전용)"]])),
-      ...field("접촉", selInput("m-cd", st.contact.driver, [["none", "사용 안 함"], ["dummy", "더미(시뮬레이션 전용)"], ["manual", "수동"]]))),
-      h("div", { class: "row" }, h("span", { class: "sub grow", text: "히트건 R" + hn + " · 쿨러 " + (used.length ? "R" + Math.min(...used) + "–R" + Math.max(...used) : "없음") }), btn("변경", "su-relays", null, "sm", "릴레이 사용 · 히트건 릴레이를 정합니다.", lock)),
+    const rows = st.relay.items.map((r, i) => h("div", { class: "rlrow" }, h("label", { class: "chk" }, h("input", { type: "checkbox", id: "rl-" + i, checked: r.enabled, disabled: !!lock }), "R" + (i + 1)),
+      h("span", { class: "grow", text: i + 1 === hn ? "히트건" : "쿨러" }),
+      btn("2 s 켜 보기", "su-rl-test", { n: i + 1 }, "sm", "이 릴레이를 2 초만 켰다 끕니다.", lock || (nostage ? "스테이지 연결 안 됨" : "") || (r.enabled ? "" : "사용 안 함") || (s.stage && s.stage.locked ? "비상정지 잠금" : ""))));
+    kids.push(card("릴레이", h("div", { class: "sub", text: "히트건 R" + hn + " · 쿨러 R1–R9. 쓰는 릴레이만 켜 둡니다." }), ...rows,
       h("h3", { text: "쿨러 구역 " + zr.rows + "×" + zr.cols }), h("div", { class: "zgrid" }, ...zcells),
-      h("div", { class: "row" }, btn("저장", "su-save-dev", null, "primary", "", lock), btn("온도 확인", "su-test-temp", null, "sm"))), foot());
+      h("div", { class: "row" }, btn("저장", "su-save-dev", null, "primary", "", lock))));
   }
   P.replaceChildren(...kids);
 }
-function drawTip(t) {
-  const W = 200, Hh = 110, svg = sv("svg", { width: W, height: Hh, viewBox: "0 0 " + W + " " + Hh });
-  const w = Number(t.tip_w_mm || 10), hh = Number(t.tip_h_mm || 2), a = (t.tip_angle_deg * Math.PI) / 180, sc = 6;
-  const pt = (x, y) => [100 + (Math.cos(a) * x - Math.sin(a) * y) * sc, 55 - (Math.sin(a) * x + Math.cos(a) * y) * sc];
-  const pts = t.tip_shape === "circle" ? null : [pt(-w / 2, -hh / 2), pt(w / 2, -hh / 2), pt(w / 2, hh / 2), pt(-w / 2, hh / 2)];
-  svg.append(sv("line", { x1: 10, y1: 55, x2: 190, y2: 55, stroke: "#c3c7cc" }), sv("line", { x1: 100, y1: 5, x2: 100, y2: 105, stroke: "#c3c7cc" }));
-  svg.append(pts ? sv("polygon", { points: pts.map((p) => p.join(",")).join(" "), fill: "rgba(47,111,219,.25)", stroke: "#2f6fdb" }) : sv("circle", { cx: 100, cy: 55, r: (w / 2) * sc, fill: "rgba(255,90,31,.25)", stroke: "#ff5a1f" }));
-  svg.append(sv("text", { x: 192, y: 50, "text-anchor": "end", "font-size": 11, fill: "#5a626b" }, "X →"), sv("text", { x: 104, y: 14, "font-size": 11, fill: "#5a626b" }, "Y ↑"));
-  return h("div", {}, svg, h("div", { class: "sub3", text: "공구 끝 " + w + " × " + hh + " mm · 각도 " + t.tip_angle_deg + "° (스테이지 기준 · 0° = 긴 변이 X)" }));
-}
-
 /* ---- 동작 ---- */
 UI.acts["su-save-cam"] = saveFields({ camera_index: "f-ci", width: "f-w", height: "f-h", exposure: "f-ex", wb_temperature: "f-wb", focus_mode: "f-fm" });
 UI.acts["su-focus"] = async () => { const r = await send("focus_refind"); if (r.ok) toast(r.res && r.res.msg ? r.res.msg : "초점 완료"); };
@@ -277,38 +296,33 @@ UI.acts["su-head"] = async () => {
   const a = await send("head_apply");                    // 자동 보정 하나로 끝: 잔차가 한도 안이면 바로 적용
   toast(a.ok ? "헤드 위치 보정 · 점 " + r.res.n + " · 잔차 " + r.res.rms + " mm · 적용" : "적용 못 함 · " + (a.msg || ""), !a.ok);
 };
-UI.acts["su-verify"] = async () => { const r = await send("verify_position"); if (r.ok) toast("위치 확인 · 차이 " + r.res.d + " mm"); };
+UI.acts["su-verify"] = async () => {
+  const r = await send("verify_position");
+  S.snapV = Date.now(); S.freeze = true; S.viewKey = ""; S.rightSig = ""; render();      // 헤드 마커 상자를 정지 화면에 그린다(실패해도 보인다)
+  if (r.ok) toast("위치 확인 · 차이 " + r.res.d + " mm");
+};
 UI.acts["su-apply-pos"] = () => dialog("위치를 적용할까요?", "스테이지 위치를 마커로 잰 값으로 바꿉니다.", [{ label: "취소" }, { label: "적용", cls: "primary", fn: () => send("apply_position") }]);
-UI.acts["su-m1"] = async (a) => { const r = await send("tool_m1", a); if (r.ok && r.res.dx != null) toast("공구 오프셋 dx " + r.res.dx + " dy " + r.res.dy); };
-UI.acts["su-m2"] = async (a) => { const r = await send("tool_m2_heat", a); if (r.ok) { S.tipClick = true; await takeSnap(); } };
+UI.acts["su-origin"] = (a) => {
+  const sg = UI.state.stage, X = a.axis.toUpperCase();
+  const tip = X + " 를 끝단 쪽으로 최대 10 mm 밀어 2 mm 물러난 자리를 원점으로 잡고 저장합니다. " + (sg && sg.fw_homed[a.axis]
+    ? "펌웨어 위치가 남아 있어 끝단 3 mm 앞까지 자동으로 다가간 뒤 잡습니다. 실제 위치가 그보다 7 mm 넘게 멀면 틀린 원점이 잡히니 끝단 가까이인지 눈으로 확인하십시오." : "먼저 조그로 끝단 10 mm 안까지 옮겨 두어야 합니다.");
+  bandAct({ act: "origin", args: { axis: a.axis }, label: X + " 원점 잡기", tip, confirm: true });
+};
+UI.acts["su-park"] = async () => { const r = await send("goto_named", { name: "park" }); if (r.ok) toast("대기 위치 · 위치 저장"); };
+UI.acts["su-ztop"] = () => send("z_top");
+UI.acts["su-ct-goto"] = () => send("goto_sample", { no: S.ctNo });
+UI.acts["su-ct-save"] = async () => { const r = await send("contact_save", { no: S.ctNo }); if (r.ok) toast("접촉 높이 저장 · Z " + r.res.z + " mm"); };
+UI.acts["su-ct-try"] = async () => { const r = await send("contact_try", { no: S.ctNo }); if (r.ok) toast("접촉 높이까지 내림"); };
+UI.acts["su-rl-test"] = async (a) => { const r = await send("relay_test", a); if (r.ok) toast("R" + a.n + " · 2 s 켰다 껐습니다"); };
 UI.acts["su-save-dev"] = async () => {
-  const patch = {};
-  const v = (id) => { const e = $("#" + id); return e ? e.value : null; };
-  if (v("m-td")) patch["temp.driver"] = v("m-td");
-  if (v("m-md")) patch["meter.driver"] = v("m-md");
-  if (v("m-cd")) patch["contact.driver"] = v("m-cd");
-  const z = JSON.parse(JSON.stringify(UI.state.settings.cooler.zones));
+  const st = UI.state.settings;
+  const z = JSON.parse(JSON.stringify(st.cooler.zones));
   z.cells.forEach((c, i) => { const e = $("#m-z" + i); if (e) c.relay = Number(e.value); });
-  patch["cooler.zones"] = z;
-  const r = await send("settings_save", { patch });
+  const items = st.relay.items.map((r, i) => Object.assign({}, r, { enabled: $("#rl-" + i) ? $("#rl-" + i).checked : r.enabled }));
+  const r = await send("settings_save", { patch: { "cooler.zones": z, "relay.items": items } });
   if (r.ok) toast("저장");
 };
-UI.acts["su-relays"] = () => {
-  const st = UI.state.settings;
-  const hs = selInput("rl-h", st.heater.relay, Array.from({ length: 10 }, (_, i) => [i + 1, "R" + (i + 1)]));
-  const boxes = st.relay.items.map((r, i) => h("label", { class: "chk" }, h("input", { type: "checkbox", id: "rl-" + i, checked: r.enabled }), "R" + (i + 1)));
-  openWin(h("div", {}, h("h2", { text: "릴레이를 바꿀까요?" }), h("div", { class: "kv" }, ...field("히트건 릴레이", hs)), h("div", { class: "sub", text: "쓰는 릴레이를 고릅니다. 히트건 릴레이는 쿨러 칸 후보에서 빠집니다." }), h("div", { class: "row wrap" }, boxes),
-    h("div", { class: "btns" }, h("button", { class: "btn", text: "취소", onclick: closeWin }), h("button", { class: "btn primary", text: "저장", onclick: async () => {
-      const items = st.relay.items.map((r, i) => Object.assign({}, r, { enabled: $("#rl-" + i).checked }));
-      const hn = Number($("#rl-h").value);
-      const zones = JSON.parse(JSON.stringify(st.cooler.zones));
-      zones.cells.forEach((c) => { if (c.relay === hn) c.relay = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].find((n) => n !== hn); });
-      const r = await send("settings_save", { patch: { "relay.items": items, "heater.relay": hn, "cooler.zones": zones } });
-      if (r.ok) { closeWin(); toast("저장"); }
-    } }))));
-};
-UI.acts["su-test-temp"] = () => toast(UI.state.temp.c == null ? "온도 읽기 실패 · 센서 없음" : "온도 " + UI.state.temp.c + " °C", UI.state.temp.c == null);
-UI.acts["su-import"] = () => dialog("이전 프로그램 설정을 가져올까요?", "포트 · 카메라 · 가동범위 · 속도 · 위치 · 릴레이 · 쿨러 · 공구 · 온도 설정을 읽어 옵니다. 보정 파일은 가져오지 않으니 다시 보정하십시오.", [{ label: "취소" }, { label: "가져오기", cls: "primary", fn: async () => { const r = await send("settings_import_old"); if (r.ok) toast("가져옴 · " + r.res.imported.length + "개 항목"); } }]);
+UI.acts["su-import"] = () => dialog("이전 프로그램 설정을 가져올까요?", "포트 · 카메라 · 가동범위 · 속도 · 위치 · 릴레이 · 쿨러 설정을 읽어 오고 스테이지를 다시 연결합니다. 보정 파일은 가져오지 않으니 다시 보정하십시오.", [{ label: "취소" }, { label: "가져오기", cls: "primary", fn: async () => { const r = await send("settings_import_old"); if (r.ok) toast("가져옴 · " + r.res.imported.length + "개 항목"); } }]);
 
 /* ---- 고급 설정: 스키마로 자동 생성 ---- */
 UI.acts["su-adv"] = async () => {

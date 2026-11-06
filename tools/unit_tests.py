@@ -70,26 +70,48 @@ class DegenerateTest(unittest.TestCase):
 
 
 class ConditionsTest(unittest.TestCase):
-    def test_repeat_exact_range(self):
-        import conditions as c
-        steps = [{"type": "move_sample"}, {"type": "wait", "s": 1}, {"type": "wait", "s": 2}, {"type": "wait", "s": 3},
-                 {"type": "repeat", "from": 2, "to": 3, "count": 3}]
-        flat = [i for i, _ in c.expand(steps)]
-        # 첫 통과 0,1,2,3 + 구간(2~3 = 인덱스 1,2)을 2번 더. 4번째 단계(인덱스 3)는 구간 밖이라 한 번만.
-        self.assertEqual(flat, [0, 1, 2, 3, 1, 2, 1, 2])
+    VALS = {"relay": {"items": [{"enabled": True}] * 10}, "heater": {"relay": 10, "max_on_s": 120.0}, "limits": {"z_max_mm": 45}}
 
-    def test_repeat_invalid_skipped_and_rejected(self):
+    def test_steps_are_the_seven_only(self):
         import conditions as c
-        steps = [{"type": "move_sample"}, {"type": "wait", "s": 1}, {"type": "repeat", "from": 1, "to": 2, "count": 2}]
-        self.assertIsNotNone(c._validate_repeat(steps[2], 2, steps))
-        self.assertEqual([i for i, _ in c.expand(steps)], [0, 1])
+        self.assertEqual(set(c.STEP_TYPES), {"move_sample", "contact", "cooler", "heat", "wait", "confirm", "z_top"})
+        for old in ("repeat", "measure", "wait_temp", "cool", "relay", "z", "log"):
+            self.assertIsNotNone(c.validate_step({"type": old}, self.VALS, 45))
 
-    def test_heater_relay_rejected(self):
+    def test_heat_step_limited_by_max_on_s(self):
         import conditions as c
-        vals = {"relay": {"items": [{"enabled": True}] * 10}, "heater": {"relay": 10}, "limits": {"z_max_mm": 45}}
-        self.assertIn("히트건 전용", c.validate_step({"type": "relay", "n": 10, "on": True}, vals, 45))
-        self.assertIn("히트건 전용", c.validate_step({"type": "cooler", "action": "on", "target": "n", "n": 10}, vals, 45))
-        self.assertIsNone(c.validate_step({"type": "relay", "n": 3, "on": True}, vals, 45))
+        self.assertIsNone(c.validate_step({"type": "heat", "s": 120}, self.VALS, 45))
+        self.assertIn("상한", c.validate_step({"type": "heat", "s": 121}, self.VALS, 45))
+        self.assertIsNotNone(c.validate_step({"type": "heat", "s": 0}, self.VALS, 45))
+        v = dict(self.VALS, heater={"relay": 10, "max_on_s": 30.0})
+        self.assertIn("상한", c.validate_step({"type": "heat", "s": 31}, v, 45))
+
+    def test_default_conditions_valid_and_three(self):
+        import conditions as c
+        names = [r["name"] for r in c.default_conditions()]
+        self.assertEqual(names, ["접촉 시험", "수동 측정", "가열"])
+        for r in c.default_conditions():
+            e, _w = c.validate_condition(r, self.VALS, 45, prefix="c")
+            self.assertEqual(e, {}, r["name"])
+            self.assertTrue(c.ends_at_top(r), r["name"])
+        types = [s["type"] for s in c.default_heat_condition()["steps"]]
+        self.assertEqual(types, ["move_sample", "cooler", "contact", "wait", "heat", "wait", "cooler", "z_top"])
+
+    def test_contact_and_first_step_rules(self):
+        import conditions as c
+        r = {"name": "x", "steps": [{"type": "contact"}]}
+        e, _w = c.validate_condition(r, self.VALS, 45, prefix="c")
+        self.assertIn("c.steps[0]", e)
+        r = {"name": "x", "steps": [{"type": "move_sample"}, {"type": "contact"}]}
+        e, w = c.validate_condition(r, self.VALS, 45, prefix="c")
+        self.assertEqual(e, {})
+        self.assertTrue([x for x in w if "맨 위" in x])          # 내린 채 끝남 경고
+
+    def test_describe_is_one_sentence(self):
+        import conditions as c
+        self.assertEqual(c.describe({"type": "heat", "s": 20}), "히트건 20 s")
+        self.assertEqual(c.describe({"type": "cooler", "action": "on", "target": "sample"}), "쿨러 샘플 구역 켜기")
+        self.assertEqual(c.describe({"type": "cooler", "action": "off", "target": "all"}), "쿨러 전부 끄기")
 
 
 class SchemaTest(unittest.TestCase):
@@ -193,22 +215,90 @@ class MotionTest(unittest.TestCase):
             m.move_xy(10, 10)
         self.assertEqual(c.exception.code, "locked")
         with self.assertRaises(motion_mod.MotionError) as c:
-            m.apply_position(10, 10)                           # Z 원점 등록 전에는 적용 거절
+            m.apply_position(10, 10)                           # Z 원점 잡기 전에는 적용 거절
         self.assertEqual(c.exception.code, "no_z")
         self.assertFalse([x for x in sent if x.startswith("sp")])
-        m.register_z_origin()
-        self.assertTrue(m.estop_locked, "Z 등록만으로 풀리면 안 됨")
+        self.assertEqual(m.recovery_steps()[0], "Z 원점 잡기")
+        m.find_origin("z")
+        self.assertTrue(any(x.startswith("fz z") for x in sent))
+        self.assertTrue(m.estop_locked, "Z 원점만으로 풀리면 안 됨")
         with self.assertRaises(motion_mod.MotionError):
             m.move_xy(10, 10)
         m.apply_position(10, 10)
         self.assertFalse(m.estop_locked)
         m.move_xy(20, 20)
 
+    def test_recovery_by_axis_origins(self):
+        m, st, sent = make_motion()
+        m.estop()
+        with self.assertRaises(motion_mod.MotionError) as c:
+            m.find_origin("x")                                  # Z 원점 먼저
+        self.assertEqual(c.exception.code, "no_z")
+        m.find_origin("z")
+        m.find_origin("x")
+        self.assertTrue(m.estop_locked)
+        self.assertEqual(m.recovery_steps(), ["Y 원점 잡기"])
+        m.find_origin("y")
+        self.assertFalse(m.estop_locked)
+        self.assertTrue(m.z_ok and m.xy_ok)
+        m.move_xy(20, 20)
+
+    def test_find_origin_xy_lifts_z_by_jog_then_approaches(self):
+        m, st, sent = make_motion()
+        st._dry_xy.update(x=60.0, y=40.0, z=0.0)
+        m.z_ok = m.xy_ok = False
+        m.estop_locked = True
+        m.find_origin("z")
+        st._dry_xy["z"] = 3.0
+        sent.clear()
+        m.find_origin("x")                                      # Z 가 내려가 있으면 상대 조그로 먼저 올린 뒤(절대 이동이 잠겨 있어도) 진행
+        self.assertEqual(st._dry_xy["z"], 0.0)
+        self.assertTrue(sent.index("jz -480") < [i for i, x in enumerate(sent) if x.startswith("fz x")][0], sent)
+        self.assertTrue([x for x in sent if x.startswith("jx -")], sent)          # 60 mm -> 끝단 3 mm 앞까지 자동 접근
+        self.assertEqual(sent[-1].split()[:2], ["fz", "x"])
+
+    def test_write_timeout_locks_position_and_z(self):
+        from core.stage import StageWriteTimeout
+        m, st, sent = make_motion()
+        def boom(*a, **k):
+            raise StageWriteTimeout("쓰기 시간 초과")
+        with self.assertRaises(motion_mod.MotionError) as c:
+            m._run("Z 이동", boom)
+        self.assertEqual(c.exception.code, "timeout")
+        self.assertFalse(m.xy_ok)
+        self.assertFalse(m.z_ok)
+        self.assertTrue(st._aborted)
+
+    def test_z_timeout_drops_z_origin(self):
+        from core.stage import StageTimeout
+        m, st, sent = make_motion()
+        def boom(*a, **k):
+            raise StageTimeout("응답 없음")
+        with self.assertRaises(motion_mod.MotionError):
+            m._run("Z 접촉 높이", boom)
+        self.assertFalse(m.z_ok)
+
+    def test_descend_contact_slow_last_leg_and_xy_check(self):
+        m, st, sent = make_motion()
+        m.slow_pps = 1500
+        m.descend_contact(20.0, 2.0)
+        mz = [x for x in sent if x.startswith("mz")]
+        self.assertEqual(mz, ["mz 18.00", "mz 20.00"])
+        self.assertIn("v 1500", sent)
+        def no(st_):
+            raise motion_mod.MotionError("샘플 위가 아님", "not_over")
+        sent.clear()
+        with self.assertRaises(motion_mod.MotionError):
+            m.descend_contact(20.0, 2.0, check_xy=no)
+        self.assertFalse([x for x in sent if x.startswith("mz")])
+        with self.assertRaises(motion_mod.MotionError):
+            m.descend_contact(99.0, 2.0)                         # 가동범위 밖
+
     def test_sp_refused_when_estop_during_shot(self):
         m, st, sent = make_motion()
         g = m.gen
         m.estop()
-        m.register_z_origin()
+        m.find_origin("z")
         with self.assertRaises(motion_mod.MotionError) as c:
             m.apply_position(5, 5, expect_gen=g)
         self.assertEqual(c.exception.code, "estop")
@@ -288,6 +378,16 @@ class PowerTest(unittest.TestCase):
             m.move_xy(5, 5)
         self.assertEqual(c.exception.code, "heater")
         self.assertFalse(self.p.heater_ok)
+
+    def test_heater_on_failure_marks_unconfirmed(self):
+        m, st, sent = make_motion()
+        p = power_mod.Power(st, 10)
+        def bad(n, on):
+            raise stage_mod.StageError("응답 없음")
+        st.relay_set = bad
+        with self.assertRaises(power_mod.PowerError):
+            p.heater_on("heat")
+        self.assertFalse(p.heater_ok)                          # Hub 가 끄기를 확인될 때까지 다시 보낸다
 
     def test_heater_for_always_turns_off(self):
         calls = []
@@ -409,30 +509,19 @@ class Section0Test(unittest.TestCase):
         self.assertTrue([x for x in sent if x.startswith("jz")])
         with self.assertRaises(motion_mod.MotionError):
             m.jog("z", 3)                                           # 아래쪽은 거절
-        m.register_z_origin()
+        st._dry_xy["z"] = 0.0
+        m.find_origin("z")
         m.jog("x", 5)
         self.assertTrue([x for x in sent if x.startswith("jx")])
 
-    def test_origin_registration_backs_off_gap(self):
-        m, st, sent = make_motion()
-        m.estop()
-        m.origin_gap_mm = 2.0
-        m.register_z_origin()
-        i_j, i_z = sent.index("jz 320"), sent.index("zz")
-        self.assertLess(i_j, i_z)
-        m.apply_position(10, 10)
-        sent.clear()
-        m.register_xy_origin()
-        self.assertEqual([c for c in sent if c[0] in "jz"][:3], ["jx 320", "jy 320", "z"])
-
-    def test_origin_backoff_is_gen_checked(self):
+    def test_origin_fz_is_gen_checked(self):
         m, st, sent = make_motion()
         g = m.gen
         m.estop()
         with self.assertRaises(motion_mod.MotionError) as c:
-            m.register_z_origin(gen=g)
+            m.find_origin("z", gen=g)
         self.assertEqual(c.exception.code, "estop")
-        self.assertNotIn("zz", sent)
+        self.assertFalse([x for x in sent if x.startswith("fz")])
 
     def test_pre_xy_always_sends_heater_off_and_checks_rs(self):
         m, st, sent = make_motion()
