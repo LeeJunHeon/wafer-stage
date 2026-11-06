@@ -427,7 +427,7 @@ function renderRunRight(s) {
   else if (paused) ctl = h("div", { class: "row" }, btn("다시 시작", "mresume", null, "primary lg"), btn("중지", "mstop", null, "danger lg"));
   else ctl = h("div", { class: "row" }, btn("일시정지", "mpause", null, "lg"), btn("중지", "mstop", null, "danger lg"));
   const jog = paused ? h("div", { class: "sub3", text: "일시정지 중 · 장비 설정에서 조그와 기준점 기록을 쓸 수 있음" }) : null;
-  M.right.replaceChildren(card1, card2, card3, card4, ctl, jog);
+  M.right.replaceChildren(...[card1, card2, card3, card4, ctl, jog].filter(Boolean));
 }
 UI.acts.mpause = () => send("measure_pause");
 UI.acts.mresume = () => send("measure_resume");

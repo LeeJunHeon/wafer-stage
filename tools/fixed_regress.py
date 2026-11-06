@@ -197,11 +197,11 @@ def main():
         print("정답 항목 없음: %s" % tdir)
         return 2
     params = params_with(a.set)
-    if a.loo:
-        return loo(items, params, out_root)
     global REF_PATH, TRUTH_DIR
     REF_PATH = a.ref
     TRUTH_DIR = tdir
+    if a.loo:
+        return loo(items, params, out_root)
     rows = evaluate(items, params, out_root)
     print("[단일 사진 경로]")
     tot = print_table(rows)

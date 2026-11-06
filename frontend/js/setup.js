@@ -62,7 +62,7 @@ function renderSetupView(s) {
   const v = S.viewer, seg = h("div", { class: "seg" }, ...[["live", "실시간"], ["snap", "단발 촬영"], ["shot", "촬영 사진"], ["ref", "빈 판 사진"]].map(([k, l]) => btn(l, "su-view", { k }, S.view === k ? "on" : "")));
   S.vhead.replaceChildren(seg, btn("지금 한 장", "su-snap", null, "sm", "지금 자리에서 단발 촬영을 합니다.", s.camera.busy ? s.camera.busy + " 중" : ""), h("span", { class: "grow" }),
     btn("판 맞춤", "su-fit", { m: "plate" }, "sm " + (S.zoom === "plate" ? "on" : "")), btn("전체", "su-fit", { m: "all" }, "sm " + (S.zoom === "all" ? "on" : "")), btn("−", "su-zoom", { f: 0.8 }, "sm"), btn("+", "su-zoom", { f: 1.25 }, "sm"));
-  S.vfoot.replaceChildren(h("span", { text: "점선 = 판 영역 · 번호 = 기준점 · 상자 = 헤드 마커" }), h("span", { class: "grow" }), h("span", { class: "mono", text: s.camera.text }));
+  S.vfoot.replaceChildren(h("span", { text: "점선 = 판 영역 · 번호 = 기준점" }), h("span", { class: "grow" }), h("span", { class: "mono", text: s.camera.text }));
   const sz = s.camera.size || [1280, 960];
   v.mode = S.zoom;
   v.area = s.calib.area;
@@ -104,9 +104,6 @@ function redrawSetup() {
       v.svg.append(sv("text", { x: uv[0] + lw(10), y: uv[1] - lw(8), "font-size": lw(15), fill: "#ffe08a", "font-weight": 700 }, String(p.no || i + 1)));
       void q; void toView;
     });
-  }
-  if (S.step === 4 && s.calib.area) {
-    s.calib.area.forEach((p, i) => v.svg.append(sv("text", { x: p[0], y: p[1] - lw(6), "text-anchor": "middle", "font-size": lw(14), fill: "#8fb4f2" }, "꼭짓점 " + (i + 1))));
   }
   if (S.view === "snap" || S.view === "live") S.hint = "";
 }
