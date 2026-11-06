@@ -8,6 +8,7 @@
 python run.py              # 창(pywebview)
 python run.py --no-window  # 서버만 - 브라우저로 http://127.0.0.1:8000/
 python run.py --dry        # 시리얼 없이(이동 흉내) + 합성 카메라
+python run.py --fake-serial # 펌웨어 흉내(tools/fake_v11.py) + 합성 카메라 - 진짜 시리얼 코드 경로로 시험
 python run.py --image P    # 촬영 대신 그 사진
 python run.py --cleanup    # 창 없이 남은 이전 실행 정리
 ```
@@ -170,4 +171,4 @@ python run.py --cleanup    # 창 없이 남은 이전 실행 정리
 `..\data_v2\runs\<YYYYMMDD_HHMMSS>_<측정 조건>\` — `run.json`(측정 조건 · 설정 사본 · 보정 식별자 · 촬영 폴더 · 시작/끝 · 결과) · `samples.csv` · `sample_NN.csv`(시각 s · 온도 °C · 히트건 · 쿨러 · Z · 계측기 채널) · `plate_fit.jpg`. CSV 는 UTF-8 BOM.
 
 ## 검증
-`python tools/unit_tests.py` · `python tools/fixed_regress.py [--loo]` · `python tools/align_measure.py` · `python tools/e2e.py [이름일부]` · `python tools/shots.py OUT` · `python tools/exit_test.py`.
+`python tools/unit_tests.py` · `E2E_MODE=fake python tools/e2e.py`(fake-serial) · `python tools/stress_fake.py 300`(동시성 부하) · `python tools/clicks.py`(클릭 수) · `python tools/fixed_regress.py [--loo]` · `python tools/align_measure.py` · `python tools/e2e.py [이름일부]` · `python tools/shots.py OUT` · `python tools/exit_test.py`.

@@ -147,9 +147,9 @@ def describe(step, values=None):
         return "접촉 탐색 시작 %s · 스텝 %s mm · 최대 %s" % (_ref_text(step, "start", values), _fmt(_num(step.get("step_mm"))),
                                                       _ref_text(step, "max", values))
     if t == "wait_temp":
-        return "온도 대기 %s %s °C · 최대 %s s" % (step.get("cond"), _fmt(_num(step.get("target_c"))), _fmt(_num(step.get("max_s"))))
+        return "온도 대기 %s °C %s · 최대 %s s" % (_fmt(_num(step.get("target_c"))), "이하" if step.get("cond") == "<=" else "이상", _fmt(_num(step.get("max_s"))))
     if t == "cool":
-        return "냉각 대기 %s %s °C · 최대 %s s" % (step.get("cond"), _fmt(_num(step.get("target_c"))), _fmt(_num(step.get("max_s"))))
+        return "냉각 대기 %s °C %s · 최대 %s s" % (_fmt(_num(step.get("target_c"))), "이하" if step.get("cond") == "<=" else "이상", _fmt(_num(step.get("max_s"))))
     if t == "heat":
         e = step.get("end")
         cond = ("%s °C" % _fmt(_num(step.get("target_c")))) if e == "temp" else (

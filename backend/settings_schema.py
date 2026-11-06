@@ -55,10 +55,10 @@ def _relays_default():
 def _tools_default(z_work=44.0):
     return [
         {"name": TOOL_POINTER, "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": 0.0,
-         "tip_shape": "rect", "tip_w_mm": 10.0, "tip_h_mm": 2.0, "tip_angle_deg": None,
+         "tip_shape": "rect", "tip_w_mm": 10.0, "tip_h_mm": 2.0, "tip_angle_deg": 90.0,
          "tip_angle_img_deg": 90.0, "note": "스테이지 좌표가 가리키는 점"},
         {"name": TOOL_HEATGUN, "dx_mm": 0.0, "dy_mm": 0.0, "z_work_mm": float(z_work),
-         "tip_shape": "circle", "tip_w_mm": 5.0, "tip_h_mm": 5.0, "tip_angle_deg": None,
+         "tip_shape": "circle", "tip_w_mm": 5.0, "tip_h_mm": 5.0, "tip_angle_deg": 90.0,
          "tip_angle_img_deg": 0.0, "note": "노즐이 비스듬해 가열 중심은 오프셋 보정으로 잡는다"},
     ]
 

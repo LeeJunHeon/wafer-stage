@@ -159,6 +159,20 @@ WD_MARK = "통신 끊김"          # 펌웨어 V11 통신 감시가 릴레이를
 WARN_MARK = "[!]"
 
 
+import functools  # noqa: E402
+
+SERIAL_FACTORY = None               # 시험용(tools/fake_v11.py): fn(port, baud, timeout) -> pyserial 모양 객체. 설정되면 진짜 시리얼 대신 쓴다
+
+
+def _tx(fn):
+    """거래 잠금: 명령 쓰기부터 그 응답(완료 줄 · ST · RS) 수집까지를 한 덩어리로. 입력 비우기(_drain)는 이 안에서만 일어나므로 다른 거래의 응답을 지우지 않는다."""
+    @functools.wraps(fn)
+    def w(self, *a, **k):
+        with self._txn:
+            return fn(self, *a, **k)
+    return w
+
+
 class StageError(Exception):
     pass
 
@@ -266,7 +280,8 @@ class Stage:
         self.on_event = None
         # 쓰기 직전 검사. fn(cmd) 가 StageGuard 를 던지면 시리얼에 쓰지 않는다('!' 와 읽기 전용 명령은 검사하지 않는다).
         self.write_guard = None
-        self._wlock = threading.RLock()
+        self._wlock = threading.RLock()                    # 쓰기 잠금(짧다): '!' 도 이것만 잡는다
+        self._txn = threading.RLock()                      # 거래 잠금: 명령 + 응답 수집
         self.dry_hang = False          # 검증용: 이동 완료가 영영 오지 않는 척(이동 시간 한도 시험)
         self.wd_tripped_at = None
         self.profile = None            # 마지막으로 보낸 (가속도, 시작 속도)
@@ -300,9 +315,12 @@ class Stage:
             import serial
         except ImportError:
             raise StageError("pyserial 이 필요합니다:  pip install pyserial")
-        self.port_name = pick_port(self.port_name)
+        if SERIAL_FACTORY is None:
+            self.port_name = pick_port(self.port_name)
+        else:
+            self.port_name = self.port_name or "FAKE"
         try:
-            self.ser = serial.Serial(self.port_name, BAUD, timeout=POLL_S)
+            self.ser = (SERIAL_FACTORY or serial.Serial)(self.port_name, BAUD, timeout=POLL_S) if SERIAL_FACTORY is None else SERIAL_FACTORY(self.port_name, BAUD, POLL_S)
         except Exception as e:
             raise StageError("%s 열기 실패 (다른 프로그램이 사용 중인지 확인)\n"
                              "  %s\n"
@@ -492,7 +510,8 @@ class Stage:
                            % (what, deadline_s, seen[-1] if seen else "(없음)"))
 
     # ---- 명령 ----------------------------------------------------------
-    def status(self):
+    @_tx
+    def status(self, timeout=None):
         """'st' -> ST 줄을 dict 로. 펄스와 mm 를 함께 담는다."""
         if self.dry:
             x, y, z = self._dry_xy["x"], self._dry_xy["y"], self._dry_xy["z"]
@@ -502,7 +521,7 @@ class Stage:
                     "homed_z": self._dry_homed["z"],
                     "dirty": False, "x_mm": x, "y_mm": y, "z_mm": z, "raw": "(dry)"}
         self._write("st")
-        ln = self._collect(LINE_TIMEOUT_S, lambda s: s.startswith("ST "), "st")
+        ln = self._collect(timeout or LINE_TIMEOUT_S, lambda s: s.startswith("ST "), "st")
         d = {}
         for tok in ln.split():
             if "=" in tok:
@@ -558,6 +577,7 @@ class Stage:
             self._dry_busy = False
             self._dry_rx()                 # 펌웨어는 이동이 끝나는 순간 타이머를 다시 시작한다
 
+    @_tx
     def _move(self, cmd, what, deadline_s=None):
         if self._aborted:
             raise StageError("비상정지 상태 · 원점 등록 후 사용")
@@ -588,6 +608,7 @@ class Stage:
         self._ensure_speed(speed or DEFAULT_SPEED_PPS)
         return self._move("mz %.2f" % float(mm), "Z 이동", deadline_s)
 
+    @_tx
     def resync(self, quiet_s=0.6, max_s=4.0):
         """시간 초과 뒤 재동기: '!' 로 이동을 끊고 들어오는 줄을 조용해질 때까지 버린 뒤 st 로 응답이 맞는지 확인한다. 성공하면 True."""
         self._aborted = True                                # 위치를 못 믿는다 - Motion 이 잠금 상태를 정한다
@@ -625,6 +646,7 @@ class Stage:
             raise StageError("펌웨어 V%d 필요 (%s · 지금 %s)"
                              % (int(min_major), what, self.fw_version))
 
+    @_tx
     def _ensure_speed(self, pps):
         """속도가 다를 때만 v 를 보낸다.
 
@@ -643,6 +665,7 @@ class Stage:
                     break
         self.speed_pps = pps
 
+    @_tx
     def set_profile(self, accel, start_pps):
         """가속도(a)·시작 속도(b)를 펌웨어로 보낸다. 같으면 보내지 않는다."""
         want = (int(accel), int(start_pps))
@@ -657,6 +680,7 @@ class Stage:
                         break
         self.profile = want
 
+    @_tx
     def set_position(self, x_mm, y_mm):
         """지금 위치를 (x, y) 로 세팅한다(sp). 사진 호밍이 잰 실제 위치로 맞출 때 쓴다.
 
@@ -675,6 +699,7 @@ class Stage:
             self._collect(LINE_TIMEOUT_S, lambda t: "PC 위치로 세팅" in t, "위치 세팅")
         return self.status()
 
+    @_tx
     def watchdog(self, ms):
         """펌웨어 통신 감시 시간(V11). 0 = 끔."""
         self._need_fw(11, "통신 감시")
@@ -687,6 +712,7 @@ class Stage:
         self._collect(LINE_TIMEOUT_S, lambda t: "통신 감시" in t, "통신 감시")
         return ms
 
+    @_tx
     def forget(self):
         """펌웨어의 원점 기록을 지운다(비상정지 뒤).
 
@@ -738,6 +764,7 @@ class Stage:
             out = self._jog_chunk(ax, chunk)
         return out
 
+    @_tx
     def _jog_chunk(self, ax, pulse):
         """jx/jy 한 번(8000 펄스 이하). 보고 줄을 기다려 돌려준다."""
         cmd = "j%s %d" % (ax, pulse)
@@ -756,6 +783,7 @@ class Stage:
                              lambda s: (DONE_MARK in s) or (ALREADY_MARK in s),
                              "수동 이동(%s)" % ax)
 
+    @_tx
     def set_zero(self, axis="xy"):
         """지금 서 있는 자리를 0 으로 등록한다(zx / zy / z)."""
         ax = str(axis).lower()
@@ -804,14 +832,52 @@ class Stage:
         if self.ser is None:
             return True
         try:
-            extra = "" if relays_off else "".join("r %d 0" % int(n) + chr(10) for n in (off_relays or ()))
-            data = "!" + chr(10) + ("r all 0" + chr(10) if relays_off else extra)
             with self._wlock:
-                self.ser.write(data.encode("ascii"))
+                self.ser.write(b"!" + bytes([10]))
                 self.ser.flush()
-            return True
         except Exception as e:             # noqa: BLE001
             raise StageError("비상정지 전송 실패: %s" % e)
+        self._abort_relays(relays_off, off_relays)
+        return True
+
+    def _abort_relays(self, relays_off, off_relays):
+        """'!' 다음 거래로 릴레이를 끈다(진행 중이던 이동의 수집이 "[!] 중단" 으로 끝나 잠금이 풀리길 잠깐 기다린다). 못 얻으면 쓰기 잠금만으로 보낸다."""
+        cmds = ["r all 0"] if relays_off else ["r %d 0" % int(n) for n in (off_relays or ())]
+        if not cmds:
+            return
+        got = self._txn.acquire(timeout=1.5)
+        try:
+            for c in cmds:
+                with self._wlock:
+                    self._log("->", c)
+                    self.ser.write((c + chr(10)).encode("ascii"))
+                    self.ser.flush()
+            if got:                                         # 응답은 읽어 버린다(다음 거래가 엇갈리지 않게)
+                t0 = time.time()
+                while time.time() - t0 < 0.4:
+                    if self._readline() is None:
+                        break
+        except Exception as e:             # noqa: BLE001
+            raise StageError("비상정지 릴레이 끄기 실패: %s" % e)
+        finally:
+            if got:
+                self._txn.release()
+
+    def txn_try(self):
+        return self._txn.acquire(blocking=False)
+
+    def txn_release(self):
+        self._txn.release()
+
+    def ping(self):
+        """통신 감시 유지 신호: 거래 잠금을 **기다리지 않고** 'st' 한 번. 블로킹 이동 중이면(잠금을 못 얻으면) 보내지 않는다(펌웨어도 그때는 판정 안 함). 보냈으면 True."""
+        if not self._txn.acquire(blocking=False):
+            return False
+        try:
+            self.status()
+            return True
+        finally:
+            self._txn.release()
 
     def reset_abort(self):
         """원점을 다시 잡았으므로 잠금을 푼다."""
@@ -827,6 +893,7 @@ class Stage:
         except KeyError:
             raise StageError("%s 줄을 해석할 수 없습니다: %s" % (head, ln))
 
+    @_tx
     def relay_set(self, n, on):
         """릴레이 n(1~10)을 켜거나 끈다. 펌웨어가 돌려주는 RS 상태를 돌려준다.
 
@@ -843,6 +910,7 @@ class Stage:
             return list(self._dry_relay)
         return self._read_bits(cmd, "RS", "R", N_RELAY, "릴레이")
 
+    @_tx
     def relay_all_off(self):
         self._need_fw(10, "릴레이")
         self._write("r all 0")
@@ -851,6 +919,7 @@ class Stage:
             return list(self._dry_relay)
         return self._read_bits("r all 0", "RS", "R", N_RELAY, "릴레이")
 
+    @_tx
     def relay_status(self):
         """'rs' -> [bool]*10 (True = 켜짐, 극성과 무관한 논리 상태)."""
         self._need_fw(10, "릴레이")
@@ -859,6 +928,7 @@ class Stage:
             return list(self._dry_relay)
         return self._read_bits("rs", "RS", "R", N_RELAY, "릴레이 상태")
 
+    @_tx
     def save(self):
         if self._aborted:
             # 비상정지 뒤의 위치는 신뢰할 수 없다. EEPROM 에 굳히면 다음 전원에서

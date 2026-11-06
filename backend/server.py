@@ -60,7 +60,7 @@ def _asset_v():
 async def lifespan(_app):
     global APP, _LOOP
     _LOOP = asyncio.get_running_loop()
-    APP = App(dry=_ARGS.dry, image=_ARGS.image)
+    APP = App(dry=_ARGS.dry, image=_ARGS.image, fake=_ARGS.fake_serial)
     logger.subscribe(lambda e: _LOOP.call_soon_threadsafe(lambda: asyncio.ensure_future(_bcast({"type": "log", "e": e}))))
     try:
         await asyncio.to_thread(APP.connect)                 # dry 는 가상 스테이지, 실제 모드는 설정의 포트(없으면 자동 탐색)
@@ -82,6 +82,18 @@ async def lifespan(_app):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+def _state_json():
+    return json.dumps({"type": "state", "state": APP.state(), "log": APP.log_tail()}, ensure_ascii=False, default=_jd)
+
+
+async def _bcast_raw(data):
+    for ws in list(CLIENTS):
+        try:
+            await ws.send_text(data)
+        except Exception:                                            # noqa: BLE001
+            CLIENTS.discard(ws)
 
 
 async def _bcast(msg):
@@ -114,7 +126,8 @@ async def _broadcaster():
         if APP.version != last_v or now - last_t > 1.0:
             last_v, last_t = APP.version, now
             try:
-                await _bcast({"type": "state", "state": APP.state(), "log": APP.log_tail()})
+                data = await asyncio.to_thread(_state_json)      # 상태 만들기 · 직렬화는 루프 밖에서(비상정지 요청이 루프에서 늦지 않게)
+                await _bcast_raw(data)
             except Exception as e:                                   # noqa: BLE001
                 logger.log("상태 전송 실패 · " + logger.short(e), "warn")
 
@@ -183,7 +196,7 @@ async def run_file(name, file):
 
 
 @app.post("/estop")
-async def http_estop():
+def http_estop():
     """비상정지 우회로: WS 가 끊겨도 도착한다. 잠금을 기다리지 않는다."""
     APP.estop()
     return JSONResponse({"ok": True})
@@ -254,6 +267,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--image", default=None)
+    ap.add_argument("--fake-serial", action="store_true", help="tools/fake_v11.py 펌웨어 흉내(시험용)")
     ap.add_argument("--no-window", action="store_true")
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--cleanup", action="store_true")

@@ -42,6 +42,8 @@ class Viewer {
       if (Math.abs(dx) + Math.abs(dy) > 4) { this.drag.moved = true; this.el.classList.add("drag"); }
       if (this.drag.moved) { this.tx = this.drag.tx + dx; this.ty = this.drag.ty + dy; this.userMoved = true; this.apply(); }
     });
+    this.onDblClick = null;
+    this.el.addEventListener("dblclick", (e) => { const p = this.toImg(e.clientX, e.clientY); if (p && this.onDblClick) this.onDblClick(p[0], p[1], e); });
     window.addEventListener("mouseup", (e) => {
       if (this.hd >= 0) { this.hd = -1; if (this.onHandleEnd) this.onHandleEnd(); return; }
       const d = this.drag; this.drag = null; this.el.classList.remove("drag");

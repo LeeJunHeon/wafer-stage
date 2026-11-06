@@ -42,8 +42,11 @@ def _stamp():
 
 
 class App:
-    def __init__(self, dry=False, image=None, settings_path=None):
+    def __init__(self, dry=False, image=None, settings_path=None, fake=False):
         self.dry = dry
+        self.fake = fake                             # --fake-serial: tools/fake_v11.py 를 진짜 시리얼 자리에 꽂는다(Stage 코드 경로는 그대로)
+        self.sim = dry or fake                       # 더미 드라이버 · 합성 카메라 · 시간 배율은 시뮬레이션에서만
+        self.link_lost_count = 0
         self.image = image
         self.cfg = store.Settings(settings_path)
         for d in (paths.DATA_DIR, paths.SHOTS_DIR, paths.RUNS_DIR, paths.LOGS_DIR, paths.REF_HISTORY_DIR):
@@ -51,7 +54,7 @@ class App:
         self.stage = self.motion = self.power = self.hub = None
         self.calib = calibstore.Calib()
         self.head = calibstore.HeadCalib()
-        self.vision = vision_mod.Vision(self.cfg, self._true_xy, dry, image)
+        self.vision = vision_mod.Vision(self.cfg, self._true_xy, self.sim, image)
         self.lock = threading.RLock()
         self.version = 0
         self.busy = ""                               # 촬영 | 위치 확인 | 헤드 위치 보정 | 공구 가열 | 빈 판 사진 …
@@ -88,7 +91,11 @@ class App:
         self._dirty.set()
 
     def _true_xy(self):
-        return self.stage.dry_true_xy() if self.stage is not None else (0.0, 0.0)
+        if self.stage is None:
+            return (0.0, 0.0)
+        if self.stage.dry:
+            return self.stage.dry_true_xy()
+        return self.stage.ser.true_xy() if hasattr(self.stage.ser, "true_xy") else (self.pos["x"] or 0.0, self.pos["y"] or 0.0)
 
     def ids(self):
         return {"ref": (self.ref_meta or {}).get("id"), "calib": self.calib.d.get("created"), "calib_ref": self.calib.d.get("ref_id"),
@@ -119,6 +126,11 @@ class App:
         if self.stage is not None:
             return
         port = self.cfg.get("serial_port")
+        if self.fake:
+            import sys as _sys
+            _sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+            import fake_v11
+            stage_mod.SERIAL_FACTORY = lambda *_a: fake_v11.FakeV11(time_scale=float(os.environ.get("WAFER2_FAKE_SCALE", "0.05")))
         st = stage_mod.Stage(port=port, dry=self.dry)
         st.on_line = lambda arrow, text: None
         st.open()
@@ -131,15 +143,25 @@ class App:
         self.power = power_mod.Power(st, heater_n=self.cfg.get("heater.relay"), log=logger.log)
         self.motion.pre_xy = self.power.pre_xy
         self.motion.on_reboot = self._on_reboot
+        _prev = st.on_event
+
+        def _ev(kind, line):
+            if _prev:
+                _prev(kind, line)
+            if kind == "wd_trip":
+                self._on_link_lost(line)
+        st.on_event = _ev
         self._apply_motion_cfg()
-        self.hub = measure.Hub(self.cfg, self.power, self.motion, self.dry)
+        self.hub = measure.Hub(self.cfg, self.power, self.motion, self.sim)
+        self.hub.comm_fail = self._comm_fail
+        self.hub.comm_ok = lambda: setattr(self, "poll_fail", 0)
         self.hub.configure()
         self.hub.start()
         self._init_firmware()
         self.motion.sync_from_status()
         self.vision.true_xy = self._true_xy
         self.touch()
-        threading.Thread(target=self._poll, name="poll", daemon=True).start()
+        threading.Thread(target=self._keepalive, name="keepalive", daemon=True).start()
         logger.log("스테이지 연결 · %s" % (st.fw_version or "?"))
 
     def _apply_motion_cfg(self):
@@ -176,26 +198,42 @@ class App:
             self.touch()
         threading.Thread(target=work, daemon=True).start()
 
-    def _poll(self):
+    def _on_link_lost(self, line):
+        """펌웨어가 통신 끊김으로 릴레이를 전부 껐다: 경보 + 측정 중이면 그 샘플을 오류로(Run._check 가 본다)."""
+        self.link_lost_count += 1
+        no_reply = "응답" in str(line)
+        if self.power and not no_reply:
+            self.power.owners.clear()                       # 펌웨어가 껐다(통신 감시)
+        logger.log("통신 끊김 · " + ("응답 없음" if no_reply else "릴레이 꺼짐"), "err", raw=line)
+        self.set_alarm("통신 끊김 · " + ("응답 없음" if no_reply else "릴레이 꺼짐"), "연결 확인 뒤 다시 시작")
+        if no_reply and self.power:
+            threading.Thread(target=lambda: self.power.all_off(), daemon=True).start()      # 닿는 대로 히트건 끄기를 다시 보낸다
+
+    def _comm_fail(self):
+        self.poll_fail += 1
+        if self.poll_fail == 3:
+            self._on_link_lost("응답 없음 · 연속 실패")
+
+    def _keepalive(self):
+        """통신 감시 유지 신호 + 상태 읽기. 바쁨 · 일시정지 · 확인 대기와 상관없이 wd/3 이하 간격으로 st 를 거래 잠금을 거쳐 보낸다.
+        블로킹 이동 중이면(잠금을 못 얻으면) 그 이동이 끝날 때까지 건너뛴다(펌웨어도 그때는 판정하지 않는다)."""
         while not self.stop_poll.is_set():
-            period = max(0.5, float(self.cfg.get("status_poll_s")))
-            time.sleep(period)
-            m = self.motion
-            if m is None or m.moving or self.busy:
-                continue
-            if not m.lock.acquire(blocking=False):
+            wd = int(self.cfg.get("relay.watchdog_ms") or 0)
+            period = 1.0 if wd <= 0 else max(0.15, min(1.0, wd / 3000.0))
+            self.stop_poll.wait(period)
+            st = self.stage
+            if st is None or self.shutting:
                 continue
             try:
-                st = m.status()
-                self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
-                self.poll_fail = 0
+                if st.txn_try():
+                    try:
+                        d = st.status(timeout=1.5)
+                    finally:
+                        st.txn_release()
+                    self.pos.update(x=d["x_mm"], y=d["y_mm"], z=d.get("z_mm"))
+                    self.poll_fail = 0
             except Exception as e:                      # noqa: BLE001
-                self.poll_fail += 1                      # 한 번 실패로 연결을 끊지 않는다
-                if self.poll_fail >= 3:
-                    self.set_alarm("스테이지 응답 없음 · 연결 확인", "")
-                    logger.log("상태 읽기 연속 실패 · " + logger.short(e), "warn")
-            finally:
-                m.lock.release()
+                self._comm_fail()                        # 한 번 실패로 연결을 끊지 않는다 · 연속 3회면 통신 끊김(측정 중이면 오류, 공구 가열이면 실패)
             self.touch()
 
     # ------------------------------------------------------------------
@@ -358,7 +396,7 @@ class App:
         mm_px = self._mm_px()
         params = copy.deepcopy(self.cfg.values)
         r = sense.detect_shot(img, c.area, c.d.get("exclude"), params, mm_px, ref=ref, ref_id=self.ref_id() or "",
-                              use_diff=self._use_diff(), log=lambda *m: logger.log(" ".join(str(x) for x in m)))
+                              use_diff=self._use_diff(), log=lambda *m: logger.log(" ".join(str(x) for x in m), "detail"))
         det = r["det"]
         coords_ok = bool(r["coords_ok"]) and c.ready(self.ref_id(), self._size()) and (ref is None or r["A"] is not None)
         if ref is not None and r["A"] is None:
@@ -388,7 +426,7 @@ class App:
             self.set_alarm(why, "장비 설정에서 확인") if r["cam"] and not r["cam"].get("ok", True) or r["fail"] else None
         elif self.alarm and "카메라 위치" in self.alarm["text"]:
             self.set_alarm(None)
-        logger.log("촬영 · 인식 %d · 확인 필요 %d · 경로 %s" % (len(samples), sum(1 for s in samples if s["weak"]), r["path"]))
+        logger.log("촬영 · 인식 %d · 확인 필요 %d" % (len(samples), sum(1 for s in samples if s["weak"])))
 
     def _mk_sample(self, no, s, with_xy, A):
         ru, rv = s.get("ref_u"), s.get("ref_v")
@@ -996,7 +1034,10 @@ class App:
             with self.motion.op(gen):
                 st = self.motion.status()
                 self.tool_tmp["P0"] = (st["x_mm"], st["y_mm"])
-                self.power.heater_for(s, cancel=lambda: self.motion.gen != gen)
+                n0 = self.link_lost_count
+                self.power.heater_for(s, cancel=lambda: self.motion.gen != gen or self.link_lost_count != n0)
+                if self.link_lost_count != n0:
+                    raise AppError("통신 끊김 · 가열 실패")
         finally:
             self._end()
         return {"P0": self.tool_tmp["P0"]}
@@ -1057,10 +1098,10 @@ class App:
         needs = conditions.needs_temp(cond)
         if needs and tk == "none":
             return "온도 센서 없음 · 장비 설정 7", []
-        if needs and tk == "dummy" and not self.dry:
+        if needs and tk == "dummy" and not self.sim:
             return "온도 드라이버가 더미 · 실제 장비에서 시작 안 함", []
         if "contact" in steps and not (self.cfg.get("contact.driver") != "none" and self.hub.contact is not None):
-            return ("접촉 드라이버가 더미 · 실제 장비에서 시작 안 함" if (self.cfg.get("contact.driver") == "dummy" and not self.dry)
+            return ("접촉 드라이버가 더미 · 실제 장비에서 시작 안 함" if (self.cfg.get("contact.driver") == "dummy" and not self.sim)
                     else "접촉 드라이버 없음 · 장비 설정 7"), []
         if "measure" in steps and isinstance(self.hub.meter, __import__("devices").NoMeter):
             notes.append("계측기 미연결 · 온도만 기록")
@@ -1162,12 +1203,23 @@ class App:
     # 결과
     # ------------------------------------------------------------------
     def results_list(self):
+        """측정 폴더 목록(run.json 은 수정 시각이 바뀐 것만 다시 읽는다 - 폴더가 많아도 상태 전송이 느려지지 않게)."""
         out = []
+        cache = self.__dict__.setdefault("_rl_cache", {})
         try:
             for n in sorted(os.listdir(paths.RUNS_DIR), reverse=True):
-                j = store.read_json(os.path.join(paths.RUNS_DIR, n, "run.json"))
-                if j:
-                    out.append({"name": n, "state": j.get("state"), "n": len(j.get("results") or {}), "summary": j.get("summary")})
+                fp = os.path.join(paths.RUNS_DIR, n, "run.json")
+                try:
+                    mt = os.path.getmtime(fp)
+                except OSError:
+                    continue
+                c = cache.get(n)
+                if c is None or c[0] != mt:
+                    j = store.read_json(fp)
+                    c = (mt, None if not j else {"name": n, "state": j.get("state"), "n": len(j.get("results") or {}), "summary": j.get("summary")})
+                    cache[n] = c
+                if c[1]:
+                    out.append(c[1])
         except OSError:
             pass
         return out
@@ -1203,22 +1255,45 @@ class App:
 
     def c_dry(self, a, gen):
         """검증 전용(dry 에서만): 합성 카메라 세계 · 멈춤 · 재부팅 · 탈조 …"""
-        if not self.dry:
-            raise AppError("dry 에서만")
+        if not self.sim:
+            raise AppError("시뮬레이션에서만")
         op = a["op"]
+        fk = self.stage.ser if (self.stage is not None and not self.stage.dry) else None
         if op == "world":
             kw = {k: (tuple(v) if isinstance(v, list) and k in ("shift_px", "tilt") else v) for k, v in a["kw"].items()}
             self.vision.set_world(**kw)
             if self.vision.synth:
                 self.vision.synth.cache.clear()
         elif op == "hang":
-            self.stage.dry_hang = bool(a.get("on", True))
+            if fk is not None:
+                fk.hang_move = bool(a.get("on", True))
+            else:
+                self.stage.dry_hang = bool(a.get("on", True))
+        elif op == "cut" and fk is not None:
+            fk.cut_link(float(a["s"]))
+        elif op == "bang" and fk is not None:
+            return {"t": fk.bang_times[-1] if fk.bang_times else None}
+        elif op == "freeze" and fk is not None:
+            fk.freeze(float(a["s"]))
+        elif op == "drop" and fk is not None:
+            fk.drop_next(int(a.get("n", 1)))
+        elif op == "latency" and fk is not None:
+            fk.latency = float(a["s"])
         elif op == "reboot":
-            self.stage._event("reboot", "=== 3-AXIS V11 ===")
+            if fk is not None:
+                fk.reboot()
+            else:
+                self.stage._event("reboot", "=== 3-AXIS V11 ===")
         elif op == "slip":
-            self.stage.dry_slip(a["dx"], a["dy"])
+            if fk is not None:
+                fk.slip(a["dx"], a["dy"])
+            else:
+                self.stage.dry_slip(a["dx"], a["dy"])
         elif op == "z":
-            self.stage._dry_xy["z"] = float(a["mm"])
+            if fk is not None:
+                fk.set_z_mm(float(a["mm"]))
+            else:
+                self.stage._dry_xy["z"] = float(a["mm"])
         elif op == "temp_fail":
             self.hub.temp.fail = bool(a.get("on", True))
         elif op == "truth":
@@ -1229,7 +1304,10 @@ class App:
             return {"H": synth_cam.plate_homography(sy.w, sy.h).tolist(), "chips": [list(c) for c in sy.world["chips"]],
                     "size": [sy.w, sy.h], "quad_mm": [list(q) for q in synth_cam.PLATE_QUAD_MM]}
         elif op == "slow":
-            stage_mod.DRY_MOVE_S = float(a["s"])
+            if fk is not None:
+                fk.time_scale = float(a["s"]) / 1.333 if float(a["s"]) > 0 else 0.05          # 8000 펄스 조그 한 조각이 s 초
+            else:
+                stage_mod.DRY_MOVE_S = float(a["s"])
         elif op == "fault":
             measure.FAULT[a["name"]] = a.get("on", True)
         elif op == "cam_delay":
@@ -1325,7 +1403,7 @@ class App:
         shot = self.shot
         temp = None if self.hub is None else self.hub.latest[1]
         st = {
-            "v": self.version, "dry": self.dry, "phase": self.phase(), "alarm": self.alarm,
+            "v": self.version, "dry": self.sim, "phase": self.phase(), "alarm": self.alarm,
             "stage": None if m is None else {
                 "connected": True, "x": self.pos["x"], "y": self.pos["y"], "z": self.pos["z"], "moving": m.moving, "locked": m.estop_locked,
                 "z_ok": m.z_ok, "xy_ok": m.xy_ok, "recovery": m.recovery_steps(), "gen": m.gen,
@@ -1364,14 +1442,16 @@ class App:
             return {"why": logger.short(e), "notes": []}
 
     def _cond_view(self, c):
-        return {"name": c["name"], "steps": [{"i": i, "type": s["type"], "text": conditions.describe(s, self.cfg.values)} for i, s in enumerate(c["steps"])]}
+        est = conditions.estimate_sample_s(c, self.cfg.values, 6.0, float(self.cfg.get("motion.speed_pps")) / 160.0)
+        return {"name": c["name"], "est_s": round(est), "steps": [{"i": i, "type": s["type"], "text": conditions.describe(s, self.cfg.values)} for i, s in enumerate(c["steps"])]}
 
     @staticmethod
     def _pub(s):
         return {k: s.get(k) for k in ("no", "u", "v", "ru", "rv", "verts", "X", "Y", "cooler", "weak", "excluded", "manual", "source")}
 
     def log_tail(self):
-        return logger.recent(3)
+        """화면 아래 한 줄 소식: 쉬운 말 로그만(내부 용어가 든 detail 은 로그 전체 보기에만)."""
+        return [e for e in logger.recent(40) if e["lv"] in ("info", "warn", "err")][-1:]
 
 
 __all__ = ["App", "AppError", "datetime", "tip"]

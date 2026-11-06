@@ -89,6 +89,19 @@ function dialog(title, body, buttons) {
   openWin(h("div", {}, h("h2", { text: title }), h("div", { text: body }), h("div", { class: "btns" }, bs)));
 }
 
+/* "⋯" 보조 동작 메뉴: items = [{label, fn, why}] (why 가 있으면 비활성 + 사유 툴팁) */
+function popMenu(anchor, items) {
+  closePop();
+  const r = anchor.getBoundingClientRect(), sc = UI.scale || 1;
+  const m = h("div", { class: "pop", id: "pop" }, items.map((it) => h("button", { class: "btn sm block" + (it.why ? " dis" : ""), text: it.label, "data-tip": it.why || null,
+    onclick: () => { if (it.why) return; closePop(); it.fn(); } })));
+  m.style.left = Math.min(window.innerWidth - 240, r.left) + "px"; m.style.top = r.bottom + 4 + "px";
+  $("#stage").append(m);
+  setTimeout(() => document.addEventListener("click", closePop, { once: true }), 0);
+}
+function closePop() { const p = $("#pop"); if (p) p.remove(); }
+function moreBtn(items) { const b = h("button", { class: "btn sm", text: "⋯", "data-tip": "더 보기" }); b.addEventListener("click", (e) => { e.stopPropagation(); popMenu(b, items); }); return b; }
+
 /* ---- 스케일 ---- */
 function fit() {
   const sc = Math.min(window.innerWidth / 1920, window.innerHeight / 1040);

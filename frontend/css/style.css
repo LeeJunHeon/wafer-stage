@@ -155,3 +155,12 @@ table.tb tr { cursor: pointer; }
 .setgrid input[type=text] { width: 100%; }
 .selrow b { font-size: 16px; }
 ol.steps { list-style: none; padding: 0; margin: 6px 0; }
+
+.pop { position: absolute; z-index: 800; background: #fff; border: 1px solid var(--line); border-radius: 5px; padding: 4px; box-shadow: 0 4px 18px rgba(0,0,0,.25); min-width: 180px; display: flex; flex-direction: column; gap: 3px; }
+.news { background: #1f2429; color: #d8dde2; border-radius: 4px; padding: 5px 10px; font-size: 13px; flex: none; display: flex; gap: 8px; align-items: center; height: 34px; }
+.news .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hint { position: absolute; left: 12px; top: 12px; background: var(--sel); color: #fff; padding: 6px 12px; border-radius: 4px; font-weight: 700; }
+.zgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 6px 0; }
+.zgrid > div { background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; min-width: 0; }
+.zgrid select { width: 100%; }
+.foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }

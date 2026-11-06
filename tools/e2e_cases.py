@@ -231,7 +231,7 @@ c09.patch = {"sim": {"time_scale": 3.0}}
 @case("10 이동 시간 초과 · 재동기")
 def c10(c):
     ready_capture(c)
-    c.dry("hang", on=True)
+    c.dry("hang", on=True, s=9.0)
     t0 = time.time()
     ok, r = c.send("move_xy", x=60, y=60, timeout=90)
     check(not ok and "시간 초과" in str(r), "시간 초과 보고 (%s) %.1f s" % (r, time.time() - t0))
@@ -373,3 +373,90 @@ def c18(c):
 
 
 _ = e2e
+
+
+# ---------------------------------------------------------------------------
+# 추가 시나리오 (통신 감시 유지 신호 · 링크 · 줄 잃음 · 비상정지 지연)
+# ---------------------------------------------------------------------------
+@case("19 공구 가열 12 s · 통신 감시 5000 ms")
+def c19(c):
+    ok, r = c.send("tool_m2_heat", seconds=12, timeout=60)
+    check(ok, "공구 가열 12 s 가 끊기지 않고 끝남 (%s)" % (r,))
+    c.pump(1.0)
+    check(not c.state["alarm"], "통신 끊김 경보 없음 (%s)" % (c.state["alarm"],))
+    check(not c.state["relays"]["heater_on"], "히트건 꺼짐")
+    check(c.state["settings"]["relay"]["watchdog_ms"] == 5000, "통신 감시 기본값 5000 ms")
+
+
+@case("20 링크 멈춤 · 경보 · 오류")
+def c20(c):
+    if e2e.MODE != "fake":
+        print("  (fake-serial 전용)")
+        return
+    ready_capture(c)
+    ok, r = start_run(c, "가열 측정", nos=[1])
+    check(ok, "측정 시작")
+    check(c.wait(lambda s: s["relays"] and s["relays"]["heater_on"], 60, "가열"), "가열 중")
+    c.dry("cut", s=14.0)
+    check(wait_run(c, 90) and c.state["run"]["state"] == "error", "측정이 오류로 끝남 (%s)" % (c.state["run"] or {}).get("state"))
+    check("통신 끊김" in ((c.state["alarm"] or {}).get("text") or ""), "경보 · 통신 끊김 (%s)" % (c.state["alarm"],))
+    check(c.state["run"]["results"].get("1", {}).get("status") == "오류", "샘플 결과 = 오류")
+    time.sleep(10)
+    c.pump(2.0)
+    check(not c.state["relays"]["heater_on"], "링크가 돌아온 뒤 히트건 꺼짐")
+
+
+c20.patch = {"sim": {"time_scale": 3.0}}
+
+
+@case("21 줄 하나 잃음")
+def c21(c):
+    if e2e.MODE != "fake":
+        print("  (fake-serial 전용)")
+        return
+    ready_capture(c)
+    c.dry("drop", n=1)
+    time.sleep(4.0)
+    c.pump(1.0)
+    check(c.state["stage"]["connected"] and not c.state["alarm"], "한 줄을 잃어도 연결 유지 · 경보 없음 (%s)" % (c.state["alarm"],))
+    ok, r = c.send("move_xy", x=50, y=50)
+    check(ok, "그 뒤 이동 정상 (%s)" % (r,))
+
+
+@case("22 비상정지 지연")
+def c22(c):
+    if e2e.MODE != "fake":
+        print("  (fake-serial 전용)")
+        return
+    import json as _json
+    import time as _t
+    ready_capture(c)
+    runs = os.path.join(c.data, "runs")
+    for i in range(200):                                    # 측정 폴더 200개
+        d = os.path.join(runs, "20250101_%06d_더미" % i)
+        os.makedirs(d, exist_ok=True)
+        _json.dump({"state": "done", "results": {str(k): {"status": "완료"} for k in range(1, 10)}, "summary": {"완료": 9}}, open(os.path.join(d, "run.json"), "w", encoding="utf-8"))
+    lat = {}
+
+    def estop_ms():
+        t0 = _t.monotonic()
+        c.http("/estop", "POST")
+        ok, r = c.dry("bang")
+        return (r["t"] - t0) * 1000.0 if r and r.get("t") else 9999.0
+
+    ok, r = start_run(c, "가열 측정", nos=[1, 2, 3])
+    c.wait(lambda s: s["relays"] and s["relays"]["heater_on"], 60)
+    lat["측정 중"] = estop_ms()
+    wait_run(c, 60)
+    recover(c)
+    c.dry("cam_delay", s=0.3)
+    i = c.send_nowait("capture")
+    time.sleep(1.0)
+    lat["촬영 · 검출 중"] = estop_ms()
+    c.wait_ack(i, 60)
+    c.dry("cam_delay", s=0.0)
+    recover(c)
+    lat["결과 목록 200개 · 대기"] = estop_ms()
+    for k, v in lat.items():
+        check(v <= 100.0, "비상정지 지연 %s = %.0f ms (기준 100 ms 이하)" % (k, v))
+    print("  비상정지 지연(ms): " + ", ".join("%s %.0f" % kv for kv in lat.items()))

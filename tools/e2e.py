@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 from websockets.sync.client import connect  # noqa: E402
 
 W, H = 1280, 960
+MODE = os.environ.get("E2E_MODE", "dry")          # dry | fake (fake-serial: tools/fake_v11.py 를 시리얼 자리에)
 FAILS = []
 CHECKS = [0]
 
@@ -54,8 +55,7 @@ class Client:
                 "capture": {"settle_s": 0.2, "fresh_frames": 5},
                 "temp": {"driver": "dummy", "period_s": 0.2}, "contact": {"driver": "dummy"}, "meter": {"driver": "dummy"},
                 "sim": {"time_scale": 60.0, "contact_z_mm": 20.0}, "autosave_s": 60,
-                "relay": {"items": [{"enabled": True, "name": "R%d" % (i + 1), "max_on_s": 0} for i in range(10)], "watchdog_ms": 0,
-                          "on_estop": "off", "on_stop": "off", "on_error": "off", "on_exit": "off"},
+                "relay": {"items": [{"enabled": True, "name": "R%d" % (i + 1), "max_on_s": 0} for i in range(10)],                           "on_estop": "off", "on_stop": "off", "on_error": "off", "on_exit": "off"},
                 "photohome": {"grid_n": 3, "grid_margin_mm": 20.0}, "capture_xy": [10.0, 90.0], "park_xy": [10.0, 20.0],
                 "calib": {"area_size_mm": [160.0, 160.0]}, "heater": {"relay": 10, "max_c": 400.0, "sensor_fail_n": 3},
                 "tool": {"active": "히트건"}}
@@ -67,7 +67,7 @@ class Client:
                  WAFER2_SYNTH_H=str(H), WAFER2_NO_SHELL="1", WAFER_STAGE_DRY_MOVE_S="0")
         e.update(env or {})
         self.log = open(os.path.join(self.tmp, "server.log"), "w", encoding="utf-8")
-        self.proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "run.py"), "--dry", "--no-window", "--port", str(self.port)],
+        self.proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "run.py"), "--fake-serial" if MODE == "fake" else "--dry", "--no-window", "--port", str(self.port)],
                                      env=e, stdout=self.log, stderr=subprocess.STDOUT, cwd=ROOT)
         self.ws = None
         self.state = {}

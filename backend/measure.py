@@ -47,6 +47,8 @@ class Hub:
         self.rec_t0 = 0.0
         self.lock = threading.Lock()
         self.extra = {}
+        self.comm_fail = None                         # fn() - 상태 읽기 실패 보고(App 이 꽂는다)
+        self.comm_ok = None
 
     # ---- 드라이버 ----------------------------------------------------
     def configure(self):
@@ -150,9 +152,13 @@ class Hub:
         if not self.motion.lock.acquire(blocking=False):
             return getattr(self, "_zc", None)
         try:
-            self._zc = self.motion.stage.status().get("z_mm")
+            self._zc = self.motion.stage.status(timeout=1.0).get("z_mm")
+            if self.comm_ok:
+                self.comm_ok()
             return self._zc
         except Exception:                                   # noqa: BLE001
+            if self.comm_fail:
+                self.comm_fail()                            # 응답이 없으면 유지 신호와 같은 실패 횟수에 더한다(통신 끊김 감지)
             return None
         finally:
             self.motion.lock.release()
@@ -215,6 +221,7 @@ class Run:
         self.live = {}                                 # 현재 단계 실시간 값
         self.gen = app.motion.gen
         self.csv_names = {}
+        self.link0 = app.link_lost_count
         self.live_text = ""
         self.bands = []                                # 현재 샘플의 단계 구간 [{name, t0, t1}] (기록 시각 기준)
         self.ctx_cur = None
@@ -263,6 +270,8 @@ class Run:
             time.sleep(0.03)
 
     def _check(self):
+        if self.app.link_lost_count != self.link0:
+            raise FailLink()
         if self._cancelled():
             raise StopRun()
         self._wait_if_paused()
@@ -691,6 +700,11 @@ class Run:
 
 class FailStep(Exception):
     pass
+
+
+class FailLink(Exception):
+    def __init__(self):
+        super().__init__("통신 끊김 · 릴레이 꺼짐")
 
 
 def store_runs():

@@ -61,7 +61,7 @@ function renderResults(s) {
   if (!r) right = h("div", { class: "card grow", text: "표에서 샘플을 고르면 상세가 보입니다." });
   else {
     const gbox = h("div", { class: "graph" });
-    if (R.curve && R.curve.no === r.no) gbox.append(drawGraph(560, 300, { series: R.curve.rows, targets: tgOf(d), bands: [], t_now: null }));
+    if (R.curve && R.curve.no === r.no) gbox.append(drawGraph(560, 300, { series: R.curve.rows, targets: tgOf(d), bands: [], t_now: null, ended: true }));
     else { gbox.append(h("div", { class: "sub", text: "곡선 불러오는 중" })); loadCurve(R.name, r.no).then((rows) => { R.curve = { no: r.no, rows: rows || [] }; R.sig = ""; render(); }); }
     const cell = (k, v) => h("div", { class: "stat" }, h("div", { class: "l", text: k }), h("div", { class: "num", text: v }));
     right = h("div", { class: "col" }, h("div", { class: "card" }, h("h3", { text: r.no + "번 샘플 · " + r.status })), gbox,
