@@ -198,7 +198,7 @@ function renderPanel(s) {
     const sg = s.stage, miss = sg ? (!sg.z_ok ? "z" : !(sg.xy_ok || sg.done.x) ? "x" : !(sg.xy_ok || sg.done.y) ? "y" : null) : null;
     const hint = miss ? (sg.fw_homed[miss] ? miss.toUpperCase() + " · 펌웨어 위치가 남아 있어 끝단 3 mm 앞까지 자동으로 다가간 뒤 잡습니다." : miss.toUpperCase() + " · 조그로 끝단 10 mm 안까지 옮긴 뒤 누르세요.") : "원점이 모두 있습니다.";
     kids.push(card("스테이지", h("div", { class: "kv" }, h("span", { text: "포트" }), h("b", { text: s.port || "—" }), h("span", { text: "펌웨어" }), h("b", { text: s.fw || "—" }),
-      h("span", { text: "연결 시 저장 기록" }), h("b", { text: EEPROM_TEXT[s.eeprom] || "—" })),
+      h("span", { text: "저장 기록" }), h("b", { text: EEPROM_TEXT[s.eeprom] || "—" })),
       h("div", { class: "axes" }, axisBtn("z"), axisBtn("x"), axisBtn("y")),
       h("div", { class: "sub", text: hint }), h("div", { class: "sub3", text: "순서 Z → X → Y · 끝단에 닿는 드르륵 소리는 정상입니다." }),
       h("div", { class: "row" }, btn("대기 위치로", "su-park", null, "", "대기 위치(설정)로 옮기고 위치를 저장합니다.", lock || (nostage ? "스테이지 연결 안 됨" : !(sg.z_ok && sg.xy_ok && !sg.locked) ? "원점 필요" : "")))));

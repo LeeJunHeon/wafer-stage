@@ -70,6 +70,7 @@ class Vision:
         self.lock = threading.RLock()
         self.preview_jpg = None
         self.preview_on = False
+        self.preview_n = 0                                       # 만든 실시간 프레임 수(성능 측정용)
         self._th = None
         self._stop = threading.Event()
         self.last_error = ""
@@ -146,6 +147,7 @@ class Vision:
                         st = self.fs.latest()
                         if st is not None:
                             self.preview_jpg = jpeg(st.frame, int(self.cfg.get("preview_max_w")), 70)
+                            self.preview_n += 1
                             self.size = (st.frame.shape[1], st.frame.shape[0])
                 except Exception as e:                           # noqa: BLE001
                     self.last_error = str(e)

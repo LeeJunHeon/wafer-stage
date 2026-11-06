@@ -252,6 +252,11 @@ class Motion:
             if not self.z_ok and not (ax == "z" and mm < 0):
                 raise MotionError("Z 원점 잡기 먼저 · 지금은 Z 위쪽 조그만", "no_z")
             with self.op(g):
+                if (ax == "z" and self.z_ok) or (ax in ("x", "y") and self.xy_ok):
+                    cur = self.stage.status().get(ax + "_mm")        # 원점이 있는 축은 가동범위 밖으로 몰지 않는다(펌웨어가 그 축 원점을 풀어 버린다)
+                    hi = stage_mod.limits_mm()[ax + "_max_mm"]
+                    if cur is None or not (0.0 <= cur + float(mm) <= hi + 1e-9):
+                        raise MotionError("가동범위 밖 · %s 조그 %+g mm 거절" % (ax.upper(), float(mm)), "range")
                 if ax in ("x", "y") and self.pre_xy:
                     self.pre_xy()                                 # X · Y 조그도 히트건 끄기 확인 뒤에(Z 위쪽 조그는 예외)
                 self.moving = True

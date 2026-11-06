@@ -27,18 +27,17 @@ def main():
         out["촬영→인식 s"] = time.time() - t0
         e2e.check(ok and len(c.state["samples"]) == len(t["chips"]), "4080×3060 촬영 · 인식 %d / %d · %.1f s" % (len(c.state["samples"]), len(t["chips"]), out["촬영→인식 s"]))
         e2e.check(e2e.chips_err(c, t) < 0.8, "좌표 오차 %.2f mm" % e2e.chips_err(c, t))
-        # 실시간 프레임: 미리보기 JPEG 가 몇 번 바뀌는가
-        c.send("settings_save", patch={"preview_fps": 4})
-        import hashlib
-        seen, n, t0, t_end = set(), 0, time.time(), time.time() + 6.0
-        while time.time() < t_end:
-            code, body = c.http("/preview.jpg")
-            n += 1
-            seen.add(hashlib.md5(body).hexdigest())
-            time.sleep(0.05)
-        fps = len(seen) / 6.0
+        # 실시간 프레임: 서버가 만든 미리보기 프레임 수(화면이 실시간을 켠 것처럼 preview 켬)
+        import json as _json
+        c.ws.send(_json.dumps({"cmd": "preview", "on": True}))
+        c.pump(1.0)
+        n0, t0 = c.state["camera"]["preview_n"], time.time()
+        c.pump(6.0)
+        n1 = c.state["camera"]["preview_n"]
+        fps = (n1 - n0) / (time.time() - t0)
         out["실시간 프레임 fps"] = fps
-        e2e.check(len(seen) >= 2, "실시간 프레임 %d 장 / 6 s (%.1f fps) · 요청 %d" % (len(seen), fps, n))
+        code, body = c.http("/preview.jpg")
+        e2e.check(fps >= 1.5 and len(body) > 1000, "실시간 프레임 %.1f fps · 한 장 %d KB (설정 preview_fps 4)" % (fps, len(body) // 1024))
         # 비상정지 지연
         lat = {}
 
@@ -54,6 +53,11 @@ def main():
         c.wait_ack(i, 30)
         c.dry("slow", s=0.0)
         ec.recover(c)
+        c.send("move_xy", x=10.0, y=90.0)                      # 촬영 위치(합성 카메라의 렌더 결과가 캐시에 있는 자리) - 합성 렌더(테스트 전용 · 수 초)가 측정을 흐리지 않게
+        tw = time.time()
+        c.send("capture", timeout=300)                         # 한 번 더 찍어 캐시를 데운다 - 합성 렌더가 캐시에서 나오므로 이동 · 프레임 받기 · 정렬 · 검출만의 시간이다
+        out["촬영→인식 s (합성 렌더 제외)"] = time.time() - tw
+        e2e.check(out["촬영→인식 s (합성 렌더 제외)"] < 10.0, "4080×3060 촬영→인식(합성 렌더 제외) %.1f s" % out["촬영→인식 s (합성 렌더 제외)"])
         c.dry("cam_delay", s=0.5)
         i = c.send_nowait("capture")
         time.sleep(1.0)

@@ -234,7 +234,7 @@ def c09(c):
     recover(c)
     # (조그 조각 대기 중)
     c.dry("slow", s=0.4)
-    i = c.send_nowait("jog", axis="x", mm=120.0)
+    i = c.send_nowait("jog", axis="x", mm=-120.0)
     time.sleep(0.6)
     estop_http(c)
     c.wait_ack(i, 30)
@@ -267,6 +267,19 @@ def c09(c):
 
 
 c09.patch = {"sim": {"time_scale": 3.0}}
+
+
+@case("09b 조그는 원점 있는 축을 가동범위 밖으로 안 몬다")
+def c09b(c):
+    ready_capture(c)
+    ok, r = c.send("jog", axis="z", mm=-5.0)
+    check(not ok and "가동범위" in str(r), "맨 위에서 Z↑ 거절 (%s)" % (r,))
+    ok, r = c.send("jog", axis="x", mm=-500.0)
+    check(not ok and "가동범위" in str(r), "X 가동범위 밖 거절 (%s)" % (r,))
+    ok, r = c.send("jog", axis="z", mm=5.0)
+    check(ok, "Z↓ 는 됨 (%s)" % (r,))
+    ok, r = c.send("jog", axis="z", mm=-5.0)
+    check(ok, "Z↑ (내려간 만큼) 는 됨 (%s)" % (r,))
 
 
 @case("10 이동 시간 초과 · 재동기")

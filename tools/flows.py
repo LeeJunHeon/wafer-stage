@@ -124,8 +124,15 @@ def flow_a(p):
         pg.pg.wait_for_timeout(1500)
         for _ in range(3):
             pg.pg.click('[data-act="su-jstep"][data-args*="10"]')
-            pg.pg.click('[data-act="su-jog"][data-args*="\\"z\\""][data-args*="1}"]')
+            pg.pg.click("[data-act='su-jog'][data-args*='\"axis\":\"z\"'][data-args*='\"sign\":1}']")      # Z↓ (sign 1 · Z↑ 는 -1)
             pg.pg.wait_for_timeout(400)
+        try:
+            pg.pg.wait_for_selector('[data-act="su-ct-save"]', timeout=6000)
+        except Exception:
+            pg.shot("a_dbg_ct_save")
+            print("  (접촉 높이 저장 버튼 비활성) " + pg.pg.inner_text("#tab-setup")[-600:].replace(chr(10), " | "), flush=True)
+            print("  (state) z=%s locked=%s samples=%s" % (c.pump(0.3)["stage"]["z"], c.state["stage"]["locked"], len(c.state["samples"])), flush=True)
+            raise
         pg.pg.click('[data-act="su-ct-save"]')
         pg.pg.wait_for_timeout(800)
         z = c.pump(0.5)["contact"]["z"]

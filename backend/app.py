@@ -280,13 +280,14 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _on_link_lost(self, line):
-        """펌웨어가 통신 끊김으로 릴레이를 전부 껐다: 경보 + 측정 중이면 그 샘플을 오류로(Run._check 가 본다)."""
-        self.link_lost_count += 1
+        """펌웨어가 통신 끊김으로 릴레이를 전부 껐다: 경보 + 측정 중이면 그 샘플을 오류로(Run._check 가 본다).
+        경보를 먼저 세운 뒤 카운터를 올린다 - 측정이 오류로 끝나는 순간 화면에 경보가 이미 있게."""
         no_reply = "응답" in str(line)
         if self.power and not no_reply:
             self.power.owners.clear()                       # 펌웨어가 껐다(통신 감시)
         logger.log("통신 끊김 · " + ("응답 없음" if no_reply else "릴레이 꺼짐"), "err", raw=line)
         self.set_alarm("통신 끊김 · " + ("응답 없음" if no_reply else "릴레이 꺼짐"), "연결 확인 뒤 다시 시작")
+        self.link_lost_count += 1
         if no_reply and self.power and not getattr(self, "_alloff_running", False):
             def _off():
                 self._alloff_running = True
@@ -1702,6 +1703,8 @@ class App:
             return "이동 중"
         if self.alarm and self.alarm["text"].startswith("측정 오류"):
             return "오류"
+        if not (m.z_ok and m.xy_ok):
+            return "원점 필요"
         return "대기"
 
     def calib_view(self):
@@ -1731,7 +1734,7 @@ class App:
                 "origin_text": "원점 정상" if (m.z_ok and m.xy_ok and not m.estop_locked) else "원점 없음"},
             "camera": {"open": self.vision.cam is not None, "size": self.vision.size, "text": "%s×%s · 노출 %s · %s K" % (
                 *(self.vision.size or (cfg.get("width"), cfg.get("height"))), cfg.get("exposure"), cfg.get("wb_temperature")),
-                "cap_text": self.cap_text, "cap_error": self.cap_error, "busy": self.busy},
+                "cap_text": self.cap_text, "cap_error": self.cap_error, "busy": self.busy, "preview_n": self.vision.preview_n},
             "calib": self.calib_view(),
             "ref": None if not self.ref_meta else dict(self.ref_meta, history=self.ref_history()),
             "shot": None if not shot else {"id": shot["id"], "time": shot["time"], "size": shot["size"], "coords_ok": shot["coords_ok"],

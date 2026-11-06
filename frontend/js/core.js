@@ -32,7 +32,7 @@ function btn(label, act, args, cls, tip, disWhy) {
 function connect() {
   const ws = new WebSocket("ws://" + location.host + "/ws");
   UI.ws = ws;
-  ws.onopen = () => { UI.connected = true; $("#band") && render(); };
+  ws.onopen = () => { UI.connected = true; UI.previewOn = null; $("#band") && render(); };
   ws.onclose = () => { UI.connected = false; render(); setTimeout(connect, 1000); };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
@@ -136,10 +136,17 @@ function render() {
   for (const t of ["measure", "results", "setup"]) $("#tab-" + t).classList.toggle("hidden", UI.tab !== t);
   $$("#tabs .tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === UI.tab));
   for (const fn of UI.renders) fn(s);
+  syncPreview(s);
+}
+/* 실시간 화면이 필요할 때만 서버가 미리보기를 만든다(측정 탭 실시간 · 장비 설정의 실시간 단계) */
+function syncPreview(s) {
+  let want = false;
+  try { want = (UI.tab === "measure" && typeof M !== "undefined" && M.mode === "live" && !isRunning(s)) || (UI.tab === "setup" && typeof viewFor === "function" && viewFor(s) === "live"); } catch (e) { want = false; }
+  if (want !== UI.previewOn && UI.ws && UI.ws.readyState === 1) { UI.previewOn = want; UI.ws.send(JSON.stringify({ cmd: "preview", on: want })); }
 }
 function renderLog() { for (const fn of UI.logRenders || []) fn(); }
 
-const PILL = { "대기": "ok", "촬영 중": "busy", "이동 중": "busy", "연결 중": "busy", "일시정지": "warn", "확인 대기": "warn", "중지 중": "warn", "비상정지": "err", "오류": "err", "연결 안 됨": "idle" };
+const PILL = { "원점 필요": "warn", "대기": "ok", "촬영 중": "busy", "이동 중": "busy", "연결 중": "busy", "일시정지": "warn", "확인 대기": "warn", "중지 중": "warn", "비상정지": "err", "오류": "err", "연결 안 됨": "idle" };
 function relayText(s) {
   const rl = s.relays || { owners: {}, heater_on: false };
   const co = Object.keys(rl.owners).filter((n) => Number(n) !== Number(rl.heater) && rl.owners[n]).length;

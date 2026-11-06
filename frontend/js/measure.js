@@ -22,6 +22,7 @@ function buildPrep() {
   M.head = h("div", { class: "vhead" });
   M.news = h("div", { class: "news" });
   M.mini = sv("svg", { class: "minimap", width: 190, height: 190, viewBox: "0 0 190 190" });
+  M.mini.classList.add("hidden");
   M.viewer.el.append(M.mini);
   M.viewer.onClick = onViewClick;
   M.viewer.onDblClick = (u, v) => { if (M.mode === "shot" && UI.state.shot && !isRunning(UI.state)) send("sample_add", { u, v }); };
@@ -264,10 +265,12 @@ function renderPrepRight(s) {
   const noStage = !s.stage;
   /* 1 촬영 */
   const shift = sh && sh.cam ? sh.cam.shift_mm : 0, warnMm = s.settings.fixed.cam_shift_warn_mm;
+  const capWhy = busy ? s.camera.busy + " 중" : s.calib.area ? (s.ref ? "" : "빈 판 사진 필요 · 장비 설정 4") : "판 영역 필요 · 장비 설정 3";
   const card1 = h("div", { class: "card" }, h("h3", {}, h("span", { class: "n", text: "1" }), "촬영"),
-    h("div", { class: "row" }, btn("촬영", "capture", null, "primary lg", "촬영 위치로 가서 한 장 찍고 칩을 찾습니다.", busy ? s.camera.busy + " 중" : s.calib.area ? (s.ref ? "" : "빈 판 사진 필요 · 장비 설정 4") : "판 영역 필요 · 장비 설정 3"),
+    h("div", { class: "row" }, btn("촬영", "capture", null, "primary lg", "촬영 위치로 가서 한 장 찍고 칩을 찾습니다.", capWhy),
       h("span", { class: "grow num", text: sh ? "인식 " + s.samples.length + " · 확인 필요 " + s.n_weak : "촬영 전" }),
-      shift > warnMm ? h("span", { class: "chip warn", text: "카메라 이동 " + f1(shift, 1) + " mm" }) : null));
+      shift > warnMm ? h("span", { class: "chip warn", text: "카메라 이동 " + f1(shift, 1) + " mm" }) : null),
+    capWhy && !busy ? h("div", { class: "why", text: capWhy }) : null);
   /* 2 샘플 */
   const nTarget = s.samples.filter((p) => !p.excluded).length;
   const grid = h("div", { class: "sgrid" }, s.samples.map((p) => h("div", { class: "sc" + (p.no === s.sel ? " sel" : "") + (p.weak ? " weak" : "") + (p.excluded ? " exc" : ""), "data-act": "sel", "data-args": JSON.stringify({ no: p.no }) },

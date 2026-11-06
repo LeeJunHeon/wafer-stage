@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 
 
 def main():
-    c = e2e.Client(patch={"sim": {"time_scale": 200.0}})
+    c = e2e.Client(patch={"sim": {"time_scale": 20.0}, "condition": {"active": "가열"}})           # 가열 측정이 몇 초 걸리게(화면이 측정 중 상태를 본다)
     clicks, dialogs = [0], [0]
     try:
         e2e.full_setup(c)                                # 장비 설정이 끝난 상태(설정 · 보정 파일은 데이터 폴더에 남는다)

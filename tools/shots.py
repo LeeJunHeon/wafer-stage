@@ -78,6 +78,7 @@ def main(out):
             c.dry("slow", s=0.0)
             ec.start_run(c, ec.MANUAL, nos=[2, 3])
             c.wait(lambda s_: s_["run"] and s_["run"]["waiting"] == "확인 대기", 120)
+            tab("measure")
             shot("08b_run_confirm_wait", 900)
             c.send("measure_answer", value="next")
             c.wait(lambda s_: s_["run"] and s_["run"]["waiting"] == "확인 대기", 120)
