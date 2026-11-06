@@ -105,6 +105,11 @@ class Hub:
                 t = None
             now = self.clock.now()
             on = bool(self.power.owners.get(heater_n)) or not self.power.heater_ok      # 끄기 미확인이면 계속 재시도
+            if not self.power.heater_ok and not self.power.owners.get(heater_n):
+                try:
+                    self.power.heater_off()                 # 온도 드라이버와 무관하게 끄기 확인이 될 때까지 재시도
+                except PowerError:
+                    pass
             if t is None:
                 self.fail_n += 1
             else:

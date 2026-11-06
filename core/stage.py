@@ -369,15 +369,16 @@ class Stage:
             g = self.write_guard
             if g is not None and cmd not in self.SAFE_CMDS and not (cmd.startswith("r ") and cmd.endswith(" 0")):
                 g(cmd)                                      # 거절하면 StageGuard - 아래 쓰기에 닿지 않는다
-            self._log("->", cmd)
             if not self.dry:
                 self._drain()
             if self.dry:
+                self._log("->", cmd)
                 print("  (dry) %s" % cmd)
                 self._dry_rx()
                 return
             self.ser.write((cmd + chr(10)).encode("ascii"))
             self.ser.flush()
+            self._log("->", cmd)
 
     def _drain(self):
         """보내기 전에 들어와 있던 줄을 비운다 - 이전 명령의 완료 보고 · RS 가 이번 명령의 응답으로 읽히지 않게(응답은 요청한 명령에 맞춘다)."""
@@ -592,8 +593,12 @@ class Stage:
                 pass
             return "(dry) %s" % cmd
         # 완료는 이동 보고 줄, 또는 '이미 그 위치'(움직일 필요가 없던 경우).
-        return self._collect(deadline_s or MOVE_TIMEOUT_S,
-                             lambda s: (DONE_MARK in s) or (ALREADY_MARK in s), what)
+        try:
+            return self._collect(deadline_s or MOVE_TIMEOUT_S,
+                                 lambda s: (DONE_MARK in s) or (ALREADY_MARK in s), what)
+        except StageTimeout as e:
+            e.resynced = self.resync()                      # 같은 거래 안에서 '!' + 재동기(대기 스레드가 끼어들지 못한다)
+            raise
 
     def move_x_mm(self, mm, speed=None, deadline_s=None):
         self._ensure_speed(speed or DEFAULT_SPEED_PPS)
@@ -780,9 +785,13 @@ class Stage:
                     self._dry_homed[ax] = False
             self._dry_xy[ax] = nxt
             return "(dry) %s" % cmd
-        return self._collect(MOVE_TIMEOUT_S,
-                             lambda s: (DONE_MARK in s) or (ALREADY_MARK in s),
-                             "수동 이동(%s)" % ax)
+        try:
+            return self._collect(MOVE_TIMEOUT_S,
+                                 lambda s: (DONE_MARK in s) or (ALREADY_MARK in s),
+                                 "수동 이동(%s)" % ax)
+        except StageTimeout as e:
+            e.resynced = self.resync()
+            raise
 
     @_tx
     def set_zero(self, axis="xy"):
@@ -819,9 +828,9 @@ class Stage:
         (pyserial 의 write 는 스레드 안전하고, 진행 중이던 이동은 보고 줄에
         "[!] 중단" 이 붙어 돌아온다).
         """
-        self._log("->", "! (abort)" + (" + r all 0" if relays_off else ""))
         self._aborted = True
         if self.dry:
+            self._log("->", "! (abort)" + (" + r all 0" if relays_off else ""))
             self._dry_rx()
             if relays_off:
                 self._dry_relay = [False] * N_RELAY
@@ -832,37 +841,29 @@ class Stage:
             return True
         if self.ser is None:
             return True
+        cmds = ["r all 0"] if relays_off else ["r %d 0" % int(n) for n in (off_relays or ())]
+        data = "!" + chr(10) + "".join(c + chr(10) for c in cmds)
         try:
-            with self._wlock:
-                self.ser.write(b"!" + bytes([10]))
+            with self._wlock:                               # 거래 잠금은 기다리지 않는다 - '!' 와 릴레이 끄기가 한 번의 쓰기로 나간다
+                self.ser.write(data.encode("ascii"))
                 self.ser.flush()
         except Exception as e:             # noqa: BLE001
             raise StageError("비상정지 전송 실패: %s" % e)
-        self._abort_relays(relays_off, off_relays)
+        self._log("->", "! (abort)" + (" + " + " + ".join(cmds) if cmds else ""))     # 로그는 쓴 뒤에(파일 I/O 가 '!' 를 늦추지 않게)
+        threading.Thread(target=self._after_abort, daemon=True, name="abort-drain").start()
         return True
 
-    def _abort_relays(self, relays_off, off_relays):
-        """'!' 다음 거래로 릴레이를 끈다(진행 중이던 이동의 수집이 "[!] 중단" 으로 끝나 잠금이 풀리길 잠깐 기다린다). 못 얻으면 쓰기 잠금만으로 보낸다."""
-        cmds = ["r all 0"] if relays_off else ["r %d 0" % int(n) for n in (off_relays or ())]
-        if not cmds:
+    def _after_abort(self):
+        """'!' 뒤 들어오는 응답(중단 보고 · RS)을 거래 잠금이 풀린 뒤 비워 다음 거래와 엇갈리지 않게 한다."""
+        if not self._txn.acquire(timeout=3.0):
             return
-        got = self._txn.acquire(timeout=1.5)
         try:
-            for c in cmds:
-                with self._wlock:
-                    self._log("->", c)
-                    self.ser.write((c + chr(10)).encode("ascii"))
-                    self.ser.flush()
-            if got:                                         # 응답은 읽어 버린다(다음 거래가 엇갈리지 않게)
-                t0 = time.time()
-                while time.time() - t0 < 0.4:
-                    if self._readline() is None:
-                        break
-        except Exception as e:             # noqa: BLE001
-            raise StageError("비상정지 릴레이 끄기 실패: %s" % e)
+            t0 = time.time()
+            while time.time() - t0 < 0.4:
+                if self._readline() is None:
+                    break
         finally:
-            if got:
-                self._txn.release()
+            self._txn.release()
 
     def txn_try(self):
         return self._txn.acquire(blocking=False)

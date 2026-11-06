@@ -154,7 +154,7 @@ class App:
         self._apply_motion_cfg()
         self.hub = measure.Hub(self.cfg, self.power, self.motion, self.sim)
         self.hub.comm_fail = self._comm_fail
-        self.hub.comm_ok = lambda: setattr(self, "poll_fail", 0)
+        self.hub.comm_ok = self._comm_ok
         self.hub.configure()
         self.hub.start()
         self._init_firmware()
@@ -209,9 +209,26 @@ class App:
         if no_reply and self.power:
             threading.Thread(target=lambda: self.power.all_off(), daemon=True).start()      # 닿는 대로 히트건 끄기를 다시 보낸다
 
+    def _confirm_heater_off(self):
+        """비상정지 뒤 RS 로 히트건 꺼짐을 확인한다. 못 하면 재시도하고, 끝내 못 하면 경보."""
+        if not self.power:
+            return
+        for _ in range(6):
+            try:
+                self.power.heater_off()
+                return
+            except PowerError:
+                time.sleep(0.5)
+        self.set_alarm("히트건 끄기 미확인 · 전원을 직접 끊을 것", "비상정지 뒤 RS 확인 실패")
+
+    def _comm_ok(self):
+        self.poll_fail = 0
+        self._link_alarmed = False
+
     def _comm_fail(self):
         self.poll_fail += 1
-        if self.poll_fail == 3:
+        if self.poll_fail >= 3 and not getattr(self, "_link_alarmed", False):
+            self._link_alarmed = True
             self._on_link_lost("응답 없음 · 연속 실패")
 
     def _keepalive(self):
@@ -231,7 +248,7 @@ class App:
                     finally:
                         st.txn_release()
                     self.pos.update(x=d["x_mm"], y=d["y_mm"], z=d.get("z_mm"))
-                    self.poll_fail = 0
+                    self._comm_ok()
             except Exception as e:                      # noqa: BLE001
                 self._comm_fail()                        # 한 번 실패로 연결을 끊지 않는다 · 연속 3회면 통신 끊김(측정 중이면 오류, 공구 가열이면 실패)
             self.touch()
@@ -253,6 +270,7 @@ class App:
             self.power.owners.clear() if policy_off else self.power.owners.pop(heater, None)
         if self.run:
             self.run.stop()
+        threading.Thread(target=self._confirm_heater_off, daemon=True, name="estop-heater").start()
         self.pending_verify = None
         self.set_alarm("비상정지 · 이동 잠김", "회복: " + " → ".join(self.motion.recovery_steps()))
         logger.log("비상정지", "err")
@@ -309,6 +327,13 @@ class App:
             raise AppError("%s · %s" % (k, errs[k]))
         if self.motion:
             self._apply_motion_cfg()
+            if "relay.watchdog_ms" in a["patch"] and self.motion.lock.acquire(blocking=False):
+                try:
+                    self.stage.watchdog(int(self.cfg.get("relay.watchdog_ms")))
+                except Exception:                           # noqa: BLE001
+                    pass
+                finally:
+                    self.motion.lock.release()
             if self.power:
                 self.power.heater_n = int(self.cfg.get("heater.relay"))
             self.hub.configure()
@@ -1269,6 +1294,14 @@ class App:
                 fk.hang_move = bool(a.get("on", True))
             else:
                 self.stage.dry_hang = bool(a.get("on", True))
+        elif op == "cpu":
+            end = time.time() + float(a["s"])
+
+            def burn():
+                while time.time() < end:
+                    sum(range(2000))
+            for _ in range(int(a.get("n", 4))):
+                threading.Thread(target=burn, daemon=True).start()
         elif op == "cut" and fk is not None:
             fk.cut_link(float(a["s"]))
         elif op == "bang" and fk is not None:

@@ -180,14 +180,12 @@ class FakeV11:
             return ln
 
     def _peek_abort(self):
-        """블로킹 이동 중 '!' 가 들어왔는지(그 줄만 지운다)."""
+        """블로킹 이동 중 '!' 를 본다. **버퍼 맨 앞 바이트만** 본다(.ino 의 Serial.peek()) - 앞에 다른 줄이 있으면 이동이 끝날 때까지 무시된다."""
         with self.cv:
-            lines = bytes(self.inbuf).split(b"\n")
-            for k, ln in enumerate(lines[:-1]):
-                if ln.strip() == b"!":
-                    off = sum(len(x) + 1 for x in lines[:k])
-                    del self.inbuf[off: off + len(ln) + 1]
-                    return True
+            if self.inbuf[:1] == b"!":
+                i = self.inbuf.find(b"\n")
+                del self.inbuf[: (i + 1) if i >= 0 else 1]
+                return True
         return False
 
     def _run(self):

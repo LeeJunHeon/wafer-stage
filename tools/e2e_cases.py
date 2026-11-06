@@ -457,6 +457,13 @@ def c22(c):
     c.dry("cam_delay", s=0.0)
     recover(c)
     lat["결과 목록 200개 · 대기"] = estop_ms()
+    c.dry("slow", s=0.5)
+    c.dry("cpu", s=6.0, n=6)                                # 서버 안에서 파이썬 스레드 6개가 CPU 를 태운다(GIL 경쟁)
+    i = c.send_nowait("jog", axis="x", mm=60.0)
+    time.sleep(0.4)
+    lat["이동 중 + CPU 부하 스레드 6개"] = estop_ms()
+    c.wait_ack(i, 30)
+    c.dry("slow", s=0.0)
     for k, v in lat.items():
         check(v <= 100.0, "비상정지 지연 %s = %.0f ms (기준 100 ms 이하)" % (k, v))
     print("  비상정지 지연(ms): " + ", ".join("%s %.0f" % kv for kv in lat.items()))

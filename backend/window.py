@@ -165,7 +165,7 @@ def run(fastapi_app, host, port, no_window, server_holder):
             _fail("이미 실행 중 · 창 없이 남은 프로세스 PID %s · python run.py --cleanup 으로 정리" % alive, no_window)
             return 1
     port = find_free_port(host, port) or port
-    cfg = uvicorn.Config(fastapi_app, host=host, port=port, log_level="warning")
+    cfg = uvicorn.Config(fastapi_app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=3)
     server = uvicorn.Server(cfg)
     server.install_signal_handlers = lambda: None
     server_holder["server"] = server

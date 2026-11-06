@@ -116,8 +116,10 @@ class Motion:
         self.estop_locked = True
         self.z_ok = False
         self.xy_ok = False
-        self.log("비상정지 · 세대 %d" % self.gen)
-        return self.stage.abort(relays_off=relays_off, off_relays=off_relays)
+        try:
+            return self.stage.abort(relays_off=relays_off, off_relays=off_relays)      # '!' 를 먼저 쓴다
+        finally:
+            self.log("비상정지 · 세대 %d" % self.gen)
 
     def _reboot(self, line):
         self.gen += 1
@@ -154,7 +156,7 @@ class Motion:
         except StageGuard as e:
             raise MotionError("비상정지로 중단", "estop") from e
         except StageTimeout as e:
-            ok = self.stage.resync()
+            ok = e.resynced if hasattr(e, "resynced") else self.stage.resync()
             self.xy_ok = False                         # 위치를 못 믿는다 - 위치 확인 뒤 다시
             self.log("%s 시간 초과 · 정지 + 재동기 %s · %s" % (what, "성공" if ok else "실패", e))
             raise MotionError("%s 시간 초과 · 위치 확인 필요%s" % (what, "" if ok else " · 재동기 실패"), "timeout") from e

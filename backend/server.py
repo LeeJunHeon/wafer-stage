@@ -169,29 +169,29 @@ async def preview():
 
 
 @app.get("/shot.jpg")
-async def shot_jpg():
+def shot_jpg():
     return _img_resp(APP.shot["img"] if APP.shot else None, APP.shot["id"] if APP.shot else 0)
 
 
 @app.get("/ref.jpg")
-async def ref_jpg():
+def ref_jpg():
     return _img_resp(APP.ref_img(), APP.ref_id())
 
 
 @app.get("/snap.jpg")
-async def snap_jpg():
+def snap_jpg():
     return _img_resp(APP.snap["img"] if APP.snap else None, APP.snap["id"] if APP.snap else 0)
 
 
 @app.get("/refhist/{name}.jpg")
-async def refhist(name):
+def refhist(name):
     from core import imgio
     img = imgio.imread_u(os.path.join(paths.REF_HISTORY_DIR, name + ".png"))
     return _img_resp(img, name)
 
 
 @app.get("/run/{name}/{file}")
-async def run_file(name, file):
+def run_file(name, file):
     fp = os.path.join(paths.RUNS_DIR, name, os.path.basename(file))
     if not os.path.exists(fp):
         return Response(status_code=404)
@@ -236,7 +236,7 @@ async def _shutdown():
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     CLIENTS.add(ws)
-    await ws.send_text(json.dumps({"type": "state", "state": APP.state(), "log": APP.log_tail(), "hello": True}, ensure_ascii=False, default=_jd))
+    await ws.send_text(await asyncio.to_thread(_state_json))
     tasks = set()
     try:
         while True:
@@ -269,6 +269,7 @@ app.mount("/static", StaticFiles(directory=FRONT), name="static")
 
 def main(argv=None):
     global _ARGS
+    sys.setswitchinterval(0.0002)                             # 파이썬 스레드 전환을 잘게: 비상정지 쓰기가 다른 스레드에 밀려 늦지 않게
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry", action="store_true")
     ap.add_argument("--image", default=None)
