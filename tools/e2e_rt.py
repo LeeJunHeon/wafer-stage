@@ -119,6 +119,7 @@ def c31(c):
     cool_on = [x for x in cmds if x.startswith("r ") and x.endswith(" 1") and x != "r 10 1"]
     check(len(cool_on) >= 1 and set(cool_on) == {"r %d 1" % relay}, "쿨러 켬 = 샘플 구역(쿨러 %s) 릴레이 R%s 하나 (%s)" % (s["cooler"], relay, sorted(set(cool_on))))
     # 결과 탭 목록
+    c.wait(lambda s: s["rt"]["results"], 20, "결과 목록")
     res = c.state["rt"]["results"]
     check(res and res[0]["name"] == "1-1_" and res[0]["status"] in ("완료", "done") and res[0]["cycle"] == "3 / 3", "결과 목록 (%s)" % (res[:1],))
     code, body = c.http("/rt_data/" + res[0]["dir"])
@@ -222,7 +223,7 @@ def c38(c):
     at_contact(c)
     ok, r = c.send("rt_start")
     check(wait_phase(c, "가열", 90), "가열 단계")
-    check(c.state["relays"]["heater_on"], "히트건 켜짐 확인")
+    check(c.wait(lambda s: s["relays"]["heater_on"], 20, "히트건 켜짐"), "히트건 켜짐 확인")
     t1 = time.monotonic()
     c.http("/estop", "POST")
     okb, rb = c.dry("bang")
