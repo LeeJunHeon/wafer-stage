@@ -112,6 +112,7 @@ def flow_a(p):
         pg.pg.reload()
         pg.pg.wait_for_timeout(1500)
         pg.pg.click('#tabs .tab[data-tab="measure"]')
+        pg.pg.click('[data-act="m-sub"][data-args*="tour"]')          # 샘플 순회 화면
         pg.pg.click('[data-act="capture"]')
         pg.clicks += 1
         pg.pg.wait_for_function("document.querySelectorAll('.sgrid .sc').length >= 9", timeout=90000)
@@ -150,6 +151,7 @@ def flow_a(p):
         check("r 1 1" in "|".join(ec.serial_cmds(c)) and "r 1 0" in "|".join(ec.serial_cmds(c)), "릴레이 1 을 켰다 끔")
         # 측정
         pg.pg.click('#tabs .tab[data-tab="measure"]')
+        pg.pg.click('[data-act="m-sub"][data-args*="tour"]')          # 샘플 순회 화면
         pg.pg.wait_for_timeout(800)
         pg.pg.click('[data-act="mstart"]')
         pg.clicks += 1
@@ -258,6 +260,7 @@ def flow_dblclick(p):
         c.send("capture")
         pg = Page(c, p)
         pg.pg.click('#tabs .tab[data-tab="measure"]')
+        pg.pg.click('[data-act="m-sub"][data-args*="tour"]')          # 샘플 순회 화면
         pg.pg.wait_for_function("document.querySelectorAll('.sgrid .sc').length >= 9", timeout=30000)
         pg.pg.wait_for_timeout(1200)
         n0 = len(c.pump(0.3)["samples"])

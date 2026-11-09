@@ -146,7 +146,7 @@ function syncPreview(s) {
 }
 function renderLog() { for (const fn of UI.logRenders || []) fn(); }
 
-const PILL = { "원점 필요": "warn", "대기": "ok", "촬영 중": "busy", "이동 중": "busy", "연결 중": "busy", "일시정지": "warn", "확인 대기": "warn", "중지 중": "warn", "비상정지": "err", "오류": "err", "연결 안 됨": "idle" };
+const PILL = { "원점 필요": "warn", "대기": "ok", "촬영 중": "busy", "이동 중": "busy", "연결 중": "busy", "일시정지": "warn", "확인 대기": "warn", "중지 중": "warn", "비상정지": "err", "오류": "err", "연결 안 됨": "idle", "R–T 측정 중": "busy", "속도 측정 중": "busy" };
 function relayText(s) {
   const rl = s.relays || { owners: {}, heater_on: false };
   const co = Object.keys(rl.owners).filter((n) => Number(n) !== Number(rl.heater) && rl.owners[n]).length;

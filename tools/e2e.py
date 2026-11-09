@@ -275,7 +275,8 @@ def c03(c):
 
 
 def run_cases(names):
-    import e2e_cases  # noqa: F401  (시나리오 04~18 등록)
+    import e2e_cases  # noqa: F401  (시나리오 04~30 등록)
+    import e2e_rt  # noqa: F401  (R–T 측정 시나리오 31~ 등록)
     sel = [n for n in CASES if not names or any(k in n for k in names)]
     for n in sel:
         print("== %s" % n, flush=True)

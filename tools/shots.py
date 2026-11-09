@@ -34,6 +34,8 @@ def main(out):
 
             def tab(t):
                 pg.click('#tabs .tab[data-tab="%s"]' % t)
+                if t == "measure":
+                    pg.click('[data-act="m-sub"][data-args*="tour"]')          # 샘플 순회 화면
 
             shot("01_measure_empty")
             for i in range(1, 9):

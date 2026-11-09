@@ -57,12 +57,23 @@ function frame(svg, W, H, m, xr, yr, o) {
 /* 많은 점은 path 하나로(둥근 끝 선 = 점) */
 function dots(g, pts, col, r) { if (!pts.length) return; g.append(svgEl("path", { d: pts.map((p) => "M" + p[0].toFixed(1) + " " + p[1].toFixed(1) + "h0").join(""), stroke: col, "stroke-width": r * 2, "stroke-linecap": "round", fill: "none" })); }
 function poly(g, pts, col, w, dash) { if (pts.length < 2) return; g.append(svgEl("path", { d: "M" + pts.map((p) => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L"), stroke: col, "stroke-width": w, fill: "none", "stroke-linejoin": "round", "stroke-dasharray": dash || null })); }
-/* 오른쪽 바깥 띠에 읽는 값을 적고 지시선으로 마지막 점과 잇는다 */
-function readout(f, last, lines, col) {
-  const { m, W, H } = f;
-  const x0 = f.m.l + f.pw + 14, y0 = Math.max(m.t + 18, Math.min(m.t + f.ph - 8 - lines.length * 18, last ? last[1] - 18 : m.t + 18));
-  if (last && last[0] >= m.l && last[0] <= m.l + f.pw) f.g.parentNode.append(svgEl("path", { d: "M" + last[0] + " " + last[1] + "L" + (m.l + f.pw) + " " + last[1] + "L" + (x0 - 4) + " " + (y0 + 8), stroke: col, "stroke-width": 1.2, fill: "none" }));
-  lines.forEach((t, i) => f.g.parentNode.append(svgEl("text", { x: x0, y: y0 + 12 + i * 18, "font-size": i === 0 ? 15 : 13, "font-weight": i === 0 ? 700 : 400, fill: i === 0 ? col : "#3b434b" }, t)));
+/* 읽는 값은 오른쪽 바깥 띠에 적고 지시선으로 마지막 점과 잇는다. 지시선은 데이터 점과 가장 덜 겹치는 방향(오른쪽 · 위 · 아래)으로 그림 밖까지 나간 뒤 바깥 띠를 따라 글자에 닿는다. */
+function readout(f, last, lines, col, all) {
+  const { m } = f, svg = f.g.parentNode, right = m.l + f.pw, bottom = m.t + f.ph;
+  const x0 = right + 14, y0 = Math.max(m.t + 18, Math.min(bottom - 8 - lines.length * 18, last ? last[1] - 18 : m.t + 18));
+  if (last && last[0] >= m.l && last[0] <= right) {
+    const near = (ax, ay, bx, by) => (all || []).filter((p) => { if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 9) return false; const dx = bx - ax, dy = by - ay, t = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / (dx * dx + dy * dy || 1))); return Math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy)) < 5; }).length;
+    const cand = [["r", near(last[0], last[1], right, last[1])], ["u", near(last[0], last[1], last[0], m.t)], ["d", near(last[0], last[1], last[0], bottom)]];
+    cand.sort((a, b) => a[1] - b[1]);
+    const dir = cand[0][0], ty = y0 + 8;
+    let d;
+    if (dir === "r") d = "M" + last[0] + " " + last[1] + "L" + right + " " + last[1] + "L" + (x0 - 4) + " " + ty;
+    else if (dir === "u") d = "M" + last[0] + " " + last[1] + "L" + last[0] + " " + (m.t - 5) + "L" + (x0 - 4) + " " + (m.t - 5) + "L" + (x0 - 4) + " " + ty;
+    else d = "M" + last[0] + " " + last[1] + "L" + last[0] + " " + (bottom + 4) + "L" + (x0 - 4) + " " + (bottom + 4) + "L" + (x0 - 4) + " " + ty;
+    svg.append(svgEl("path", { d, stroke: col, "stroke-width": 1.2, fill: "none" }));
+    svg.append(svgEl("circle", { cx: last[0], cy: last[1], r: 5.5, fill: "none", stroke: col, "stroke-width": 1.6 }));
+  }
+  lines.forEach((t, i) => svg.append(svgEl("text", { x: x0, y: y0 + 12 + i * 18, "font-size": i === 0 ? 15 : 13, "font-weight": i === 0 ? 700 : 400, fill: i === 0 ? col : "#3b434b" }, t)));
 }
 
 /* ---- 저항–온도 그래프 ---- */
@@ -85,7 +96,7 @@ function drawRT(svg, s) {
   [["가열", C_HEAT], ["냉각", C_COOL]].forEach(([l, c]) => { svg.append(svgEl("circle", { cx: x + 6, cy: 18, r: 5, fill: c })); svg.append(svgEl("text", { x: x + 16, y: 23, "font-size": 13, fill: "#3b434b" }, l)); x += 64; });
   svg.append(svgEl("text", { x: x + 6, y: 23, "font-size": 13, fill: "#5a626b" }, "회차가 늦을수록 진하게" + (cyc > 1 ? " · 1~" + cyc + "회" : "")));
   const last = pts.length ? pts[pts.length - 1] : null;
-  readout(f, last ? [f.px(last.T), f.py(last.R)] : null, last ? [last.ph + " " + last.cy + "회", f1(last.T, 1) + " °C", fmtE(last.R) + " Ω"] : ["값 없음"], last ? PHASE_COL(last.ph) : "#8a929b");
+  readout(f, last ? [f.px(last.T), f.py(last.R)] : null, last ? [last.ph + " " + last.cy + "회", f1(last.T, 1) + " °C", fmtE(last.R) + " Ω"] : ["값 없음"], last ? PHASE_COL(last.ph) : "#8a929b", pts.map((p) => [f.px(p.T), f.py(p.R)]));
 }
 
 /* ---- 온도–시간 그래프 ---- */
@@ -114,8 +125,8 @@ function drawTt(svg, s) {
     svg.append(svgEl("line", { x1: a, x2: a, y1: m.t - 10, y2: m.t, stroke: "#8a929b" }));
     if (b - a > 44) svg.append(svgEl("text", { x: (a + b) / 2, y: m.t - 14, "text-anchor": "middle", "font-size": 12, fill: PHASE_COL(sg.ph) }, sg.ph === "예비 냉각" ? "예비 냉각" : sg.ph + " " + sg.cy));
   });
-  svg.append(svgEl("line", { x1: m.l + f.pw - 120, x2: m.l + f.pw - 90, y1: 14, y2: 14, stroke: "#2b3138", "stroke-dasharray": "6 4", "stroke-width": 1.5 }));
-  svg.append(svgEl("text", { x: m.l + f.pw - 84, y: 18, "font-size": 12, fill: "#3b434b" }, "목표 온도선"));
+  svg.append(svgEl("line", { x1: m.l + f.pw + 14, x2: m.l + f.pw + 44, y1: H - 22, y2: H - 22, stroke: "#2b3138", "stroke-dasharray": "6 4", "stroke-width": 1.5 }));
+  svg.append(svgEl("text", { x: m.l + f.pw + 50, y: H - 18, "font-size": 12, fill: "#3b434b" }, "목표 온도선"));
   const last = tv.length ? tv[tv.length - 1] : null;
   readout(f, last ? [X(last.t), f.py(last.T)] : null, last ? [f1(last.T, 1) + " °C", last.tgt != null ? "목표 " + f1(last.tgt, 1) + " °C" : "목표선 없음(최대)", last.h ? "히트건 켜짐" : "히트건 꺼짐"] : ["값 없음"], last ? PHASE_COL(last.ph) : "#8a929b");
 }
@@ -238,8 +249,7 @@ function renderHereRight(s) {
     h("div", { class: "rtbig" }, h("div", {}, h("div", { class: "k", text: "온도" }), h("div", { class: "v", id: "rt-T", text: "—" })), h("div", {}, h("div", { class: "k", text: "저항" }), h("div", { class: "v", id: "rt-R", text: "—" })),
       h("div", {}, h("div", { class: "k", text: "전류" }), h("div", { class: "v", id: "rt-I", text: "—" }))),
     h("div", { class: "row" }, h("b", { id: "rt-phase", text: phaseText }), h("span", { class: "grow" }), h("span", { class: "sub", id: "rt-el", text: "" }), h("span", { class: "chip", id: "rt-heat", text: "히트건 꺼짐" }), h("span", { class: "chip", id: "rt-cool", text: "쿨러 꺼짐" })),
-    spd, run && run.warns && run.warns.length ? h("div", { class: "why", text: run.warns[run.warns.length - 1] }) : null,
-    run && run.nas && run.nas.ok === false ? h("div", { class: "why", text: "NAS 미복사 · " + (run.nas.pending || []).length + "개" }) : null,
+    spd, run && run.warns && run.warns.length ? h("div", { class: "why one", "data-tip": run.warns.join(" / "), text: run.warns[run.warns.length - 1] + (run.warns.length > 1 ? "  (+" + (run.warns.length - 1) + ")" : "") }) : null,
     h("div", { class: "row" }, btn("측정 시작", "rt-start", null, "primary lg grow", "예비 냉각 → 출력 켬 → 가열 · 냉각 반복을 시작합니다. 핀이 접촉 높이에 있어야 합니다.", startWhy), btn("중지", "rt-stop", null, "danger lg", "측정을 멈추고 히트건 · 출력을 끕니다.", active ? "" : "측정 중 아님")),
     h("div", { class: "why", text: startWhy && !active ? startWhy : "" }));
   T.right.replaceChildren(pos, cond, stat);

@@ -183,7 +183,8 @@ class NasCopier(threading.Thread):
             if local not in self.pending:
                 self.pending.append(local)
             if self.ok is not False:
-                self.warn("NAS 에 쓰지 못함 · 측정은 계속 · 끝난 뒤 다시 복사 (%s)" % str(e)[:40])
+                self.warn("NAS 에 쓰지 못함 · 측정은 계속 · 끝난 뒤 다시 복사")
+                logger.log("NAS 쓰기 오류 · %s" % e, "detail")
             self.ok = False
 
 
@@ -258,8 +259,8 @@ class RTRun:
 
     # ---- 시작 조건 ----------------------------------------------------
     @staticmethod
-    def start_block(app, mode="rt", check_pin=True):
-        """시작할 수 없는 사유 한 줄 | ""."""
+    def start_block(app, mode="rt", check_pin=True, fresh=False):
+        """시작할 수 없는 사유 한 줄 | "". fresh = 위치를 장비에서 지금 읽는다(시작 순간 · 순회 단계). 화면 상태용은 주기 갱신값."""
         if app.motion is None:
             return "스테이지 연결 안 됨"
         if not app.k2110 or not app.k2110.is_open:
@@ -272,7 +273,7 @@ class RTRun:
             cz = app.cfg.get("contact_z_mm")
             if cz is None:
                 return "접촉 높이 필요 · 장비 설정 7"
-            z = app.pos.get("z")
+            z = None if fresh else app.pos.get("z")
             try:
                 z = app.motion.status().get("z_mm") if z is None else z
             except Exception:                                   # noqa: BLE001
@@ -321,6 +322,8 @@ class RTRun:
             logger.log("R–T 측정 예외 · " + logger.short(e), "err", raw=repr(e))
             status, msg = ERROR, "오류 · " + logger.short(e, 40)
         finally:
+            if status == ERROR and app.motion.gen != self.gen:       # 비상정지로 쓰기가 취소된 것은 오류가 아니라 중단이다
+                status, msg = STOPPED, "비상정지로 중단"
             self._finish(status, msg)
 
     @property
@@ -403,6 +406,7 @@ class RTRun:
         """읽기 → 비상 차단/값 없음 검사 → 히트건 판단 → 기록. done_fn(T, now) 이 참이면 끝."""
         p = self.p
         t_phase = self.clock.now()
+        self._last_valid = self._prev_valid = None             # 단계 사이의 릴레이 쓰기 시간은 갱신 한도에 세지 않는다
         self.phase, self.cycle = phase, cyc
         while True:
             self._check()
@@ -425,6 +429,7 @@ class RTRun:
             tgt = target_fn(T, now) if target_fn else None
             fin = done_fn(T, now)
             on = bool(self.heat.on) if fin else self._drive_heater(now, want_fn(T, tgt))
+            self._last_valid = self.clock.now()                  # 히트건 · 릴레이 쓰기에 걸린 시간은 온도 갱신 한도에 세지 않는다(장비가 늦는 것만 센다)
             if trip:
                 self.trips += 1
                 if self.trips == 1:
@@ -571,13 +576,16 @@ class RTRun:
             app.power.heater_off()
         except (PowerError, StageError) as e:
             errs.append("히트건 끄기 실패 · " + logger.short(e))
-        for _ in range(2):
+        self.out_off_failed = False
+        for k in range(2):
             try:
                 if self.k2450 is not None and self.k2450.is_open:
                     self.k2450.output(False)
                 break
             except inst.VisaError as e:
-                errs.append("K2450 출력 끄기 실패 · " + logger.short(e))
+                if k == 1:
+                    self.out_off_failed = True                   # 통신이 돌아오면 앱이 다시 끈다(App.on_rt_end)
+                    errs.append("K2450 출력 끄기 실패 · 통신 복구 시 다시 끔")
         for f in (self._cyc_f, self._mrg_f):
             try:
                 if f:

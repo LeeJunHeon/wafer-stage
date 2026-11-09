@@ -356,7 +356,7 @@ class Run:
         일시정지는 이 단계가 끝난 뒤에 듣는다(히트건 제어를 멈추지 않는다)."""
         import rt as rt_mod
         app = self.app
-        why = rt_mod.RTRun.start_block(app, "rt", check_pin=True)
+        why = rt_mod.RTRun.start_block(app, "rt", check_pin=True, fresh=True)
         if why:
             raise FailStep(why)
         if not s.get("cooler_relay"):

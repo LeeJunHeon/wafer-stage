@@ -1690,7 +1690,7 @@ class App:
         cc = z["cells"][row * z["cols"] + col]
         return [int(cc["relay"])] if cc.get("relay") else []
 
-    def rt_block(self, mode="rt"):
+    def rt_block(self, mode="rt", fresh=False):
         import rt as rt_mod
         if self.busy:
             return "%s 중 · 끝난 뒤" % self.busy
@@ -1698,7 +1698,7 @@ class App:
             return "측정 중"
         if self.rt is not None and self.rt.active:
             return "R–T 측정 중"
-        why = rt_mod.RTRun.start_block(self, mode, check_pin=True)
+        why = rt_mod.RTRun.start_block(self, mode, check_pin=True, fresh=fresh)
         if why:
             return why
         hn = int(self.cfg.get("heater.relay"))
@@ -1718,10 +1718,18 @@ class App:
 
     def _rt_launch(self, mode, gen, speed_s=20.0):
         import rt as rt_mod
-        why = self.rt_block(mode)
+        why = self.rt_block(mode, fresh=True)
         if why:
             raise AppError(why)
         p = rt_mod.params(self.cfg)
+        from core import instruments as inst
+        try:                                                  # 시작 조건 '온도 값 정상': 열전대를 한 번 읽어 본다
+            self.k2110.configure(p["tc_type"], "REAL")
+            t0 = self.k2110.read_temp()
+        except inst.VisaError as e:
+            raise AppError(logger.short(e))
+        if t0 is None:
+            raise AppError("온도 값 없음 · 열전대 확인")
         self.hub.configure()
         self.hub.start()
         self._apply_motion_cfg()
@@ -1775,7 +1783,23 @@ class App:
             raise AppError("NAS 에 쓰지 못함 · 경로 확인")
         return {}
 
+    def _inst_off_retry(self, secs=120.0):
+        """K2450 출력을 못 껐으면(통신 끊김) 통신이 돌아올 때까지 1 s 마다 다시 끈다."""
+        end = time.time() + secs
+        while time.time() < end and not self.shutting:
+            d = self.k2450
+            if d is None or not d.is_open:
+                return
+            try:
+                d.output(False)
+                logger.log("K2450 출력 끔 · 통신 복구", "warn")
+                return
+            except Exception:                              # noqa: BLE001
+                time.sleep(1.0)
+
     def on_rt_end(self, rr):
+        if getattr(rr, "out_off_failed", False):
+            threading.Thread(target=self._inst_off_retry, name="inst-off-retry", daemon=True).start()
         if self.busy in ("R–T 측정", "속도 측정"):
             self._end()
         if rr.status == "오류":
@@ -2015,6 +2039,8 @@ class App:
             if r.state == "paused" or r.paused:
                 return "일시정지"
             return "측정 중 %d / %d" % (min(len(r.results) + 1, len(r.samples)), len(r.samples))
+        if self.rt is not None and self.rt.active:
+            return "R–T 측정 중" if self.rt.mode == "rt" else "속도 측정 중"
         if self.busy == "촬영" or self.busy == "빈 판 사진" or self.busy == "위치 확인":
             return "촬영 중"
         if self.busy or m.moving:
