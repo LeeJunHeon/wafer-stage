@@ -1797,7 +1797,7 @@ class App:
             return "히트건 릴레이 사용 안 함 · 장비 설정 8", []
         errs, _w = conditions.validate_condition(cond, self.cfg.values, self.cfg.get("limits.z_max_mm"), prefix="c")
         if errs:
-            return "순회 단계 오류 · " + next(iter(errs.values())), []
+            return "측정 단계 오류 · " + next(iter(errs.values())), []
         for n in conditions.relays_used(cond, self.cfg.values):
             if not self.cfg.get("relay.items")[n - 1].get("enabled"):
                 return "R%d 사용 안 함 · 장비 설정 8" % n, []
@@ -2189,6 +2189,11 @@ class App:
         root = os.path.join(paths.DATA_DIR, "measure")
         try:
             mt = os.path.getmtime(root)
+            for n in os.listdir(root):                          # 기록 파일(rt.json)이 새로 생기거나 바뀌면 목록을 다시 만든다
+                try:
+                    mt = max(mt, os.path.getmtime(os.path.join(root, n, "rt.json")))
+                except OSError:
+                    pass
         except OSError:
             return []
         c = self._rt_cache.get("list")

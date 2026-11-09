@@ -6,7 +6,7 @@ const SET = { sch: null, vals: null, defs: null, edits: {}, cur: null, errs: {},
 const SET_DESC = {
   camera: "카메라 번호 · 해상도 · 노출 · 화이트밸런스 · 초점", stage: "속도 · 가동범위 · 조그 · 끝단 이동", position: "대기 위치 · 촬영 위치", photohome: "위치 확인(헤드 마커) 기준",
   tool: "핀(공구) 모양 · 크기", relay: "릴레이 사용 · 이름 · 감시", measure: "히트건 · 접촉 높이 · 시뮬레이터", rt: "저항–온도(R–T) 측정 조건: 전압 · 온도 · 속도 · 안전 · 저장 위치",
-  condition: "샘플 순회에서 샘플마다 실행할 단계", detect: "샘플 검출 값", advanced: "속도 · 가동범위 등 자주 바꾸지 않는 값",
+  condition: "샘플 측정에서 샘플마다 실행할 단계", detect: "샘플 검출 값", advanced: "속도 · 가동범위 등 자주 바꾸지 않는 값",
 };
 const SET_PLACE = { "rt.emergency_c": "비우면 최고 온도 + 10" };
 const SET_GROUP_ALIAS = { save: "저장" };

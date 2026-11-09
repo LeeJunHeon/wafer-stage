@@ -11,7 +11,7 @@ async function loadRun(name) {
 
 /* R–T 측정 기록: 시각 · File name · 회차 · 결과 · [그래프 보기] [폴더 열기] */
 function kindBar(s, kind) {
-  return h("div", { class: "msub" }, h("div", { class: "seg" }, btn("샘플 순회 기록", "r-kind", { k: "tour" }, kind === "tour" ? "on" : ""), btn("R–T 측정 기록", "r-kind", { k: "rt" }, kind === "rt" ? "on" : "")));
+  return h("div", { class: "msub" }, h("div", { class: "seg" }, btn("샘플 측정 기록", "r-kind", { k: "tour" }, kind === "tour" ? "on" : ""), btn("R–T 측정 기록", "r-kind", { k: "rt" }, kind === "rt" ? "on" : "")));
 }
 function renderRtResults(s) {
   const pane = $("#tab-results"), list = (s.rt && s.rt.results) || [];

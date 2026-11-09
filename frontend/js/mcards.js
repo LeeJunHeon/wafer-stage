@@ -95,7 +95,7 @@ function cardRun(s) {
   /* 단계(샘플 쪽) */
   if (tgt === "samples") {
     const sel_ = h("select", { class: "msel", disabled: locked, onchange: (e) => { M.cond = e.target.value; send("settings_save", { patch: { "condition.active": M.cond } }); } }, conds.map((c) => h("option", { value: c.name, text: c.name, selected: c.name === act })));
-    parts.push(h("div", { class: "row wrap" }, h("span", { class: "sub", text: "측정 단계" }), sel_, h("span", { class: "grow sub", text: cv ? estText(cv) : "" }), btn(MC.showSteps ? "단계 접기 ▴" : "단계 보기 ▾", "steps-toggle", null, "sm"), btn("편집", "cond-edit", null, "sm", "측정 단계를 고칩니다.", locked ? "측정 중" : "")));
+    parts.push(h("div", { class: "row wrap" }, h("span", { class: "sub", text: "측정 단계" }), sel_, h("span", { class: "grow sub nowrap", text: cv ? estText(cv) : "" }), btn(MC.showSteps ? "단계 접기 ▴" : "단계 보기 ▾", "steps-toggle", null, "sm"), btn("편집", "cond-edit", null, "sm", "측정 단계를 고칩니다.", locked ? "측정 중" : "")));
     if (MC.showSteps) parts.push(h("ol", { class: "steps" }, (cv ? cv.steps : []).map((st) => h("li", {}, h("span", { text: (st.i + 1) + ". " + st.text })))));
   }
   /* 파일 이름 · 저장 위치 */
@@ -149,7 +149,7 @@ function updateMeasureDynamic(s) {
   const live = run && (run.state === "running" || run.state === "stopping");
   if (run) {
     set("m-T", run.T == null ? "—" : f1(run.T, 1) + " °C"); set("m-R", run.R == null ? "—" : fmtE(run.R) + " Ω"); set("m-I", run.I == null ? "—" : fmtE(run.I) + " A");
-    set("m-phase", live ? phaseLabel(run) : run.status ? run.status + (run.message && run.status !== "완료" ? " · " + run.message : "") : "대기");
+    set("m-phase", live ? phaseLabel(run) : run.status ? run.status + (run.message && run.status !== "완료" && run.message !== run.status ? " · " + run.message : "") : "대기");
     set("m-el", live || run.status ? "경과 " + mmss(run.elapsed) : "");
   } else { set("m-T", "—"); set("m-R", "—"); set("m-I", "—"); set("m-phase", "대기"); set("m-el", ""); }
   const stOk = !!(s.dev && s.dev.stage && s.dev.stage.state === "ok");

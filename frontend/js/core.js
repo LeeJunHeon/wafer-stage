@@ -72,7 +72,7 @@ document.addEventListener("mousemove", (e) => {
   t.textContent = el.getAttribute("data-tip");
   t.classList.remove("hidden");
   const sc = UI.scale || 1;
-  t.style.left = Math.min(window.innerWidth - 400, e.clientX + 14) + "px"; t.style.top = (e.clientY + 18) + "px";
+  t.style.left = Math.max(4, Math.min(window.innerWidth - t.offsetWidth - 8, e.clientX + 14)) + "px"; t.style.top = Math.max(4, Math.min(window.innerHeight - t.offsetHeight - 8, e.clientY + 18)) + "px";
 });
 
 /* 창은 showModal 을 쓰지 않는다: 막(#dimmer) + 창(#win) 을 보이고, 비상정지 버튼(#head z-index)은 막 위에 남는다. */
@@ -154,7 +154,7 @@ function renderHead(s) {
   p.className = "pill " + (ph.startsWith("측정 중") ? "busy" : (PILL[ph] || "idle"));
   const st = s.stage, c = s.calib, running = s.run && ["running", "paused", "stopping"].includes(s.run.state);
   const cells = [];
-  const mk = (k, v, cls) => h("div", { class: "cell " + (cls || "") }, h("div", { class: "k", text: k }), h("div", { class: "v", text: v }));
+  const mk = (k, v, cls) => h("div", { class: "cell " + (cls || ""), "data-tip": k + " · " + v }, h("div", { class: "k", text: k }), h("div", { class: "v", text: v }));
   const rt = relayText(s);
   if (!running) {
     const dv = s.dev || {};
@@ -162,7 +162,7 @@ function renderHead(s) {
     cells.push(mk("스테이지", stOk ? (s.dry ? "가상 · " : "연결 · ") + st.origin_text : devText(dv.stage), stOk ? (st.z_ok && st.xy_ok && !st.locked ? "ok" : "warn") : (dv.stage && dv.stage.text === "통신 끊김") ? "err" : DEV_CLS[(dv.stage || {}).state] || ""));
     cells.push(mk("카메라", s.camera.open ? "연결 · " + (s.camera.size ? s.camera.size.join("×") : "") : devText(dv.camera), DEV_CLS[(dv.camera || {}).state] || ""));
     cells.push(mk("좌표 보정", c.status === "done" ? "완료" : c.status === "invalid" ? c.text : "필요", c.status === "done" ? "ok" : c.status === "invalid" ? "err" : "warn"));
-    cells.push(mk("릴레이", stOk ? "쿨러 " + (rt.co ? rt.co + "개 켜짐" : "꺼짐") + " · 히트건 " + (rt.heat ? "켜짐" : "꺼짐") : "알 수 없음", stOk ? (rt.heat ? "heat" : rt.co ? "ok" : "") : ""));
+    cells.push(mk("릴레이", stOk ? "쿨러 " + (rt.co ? rt.co + "개 켜짐" : "꺼짐") + " · 히트건 " + (rt.heat ? "켜짐" : "꺼짐") : "알 수 없음", (stOk ? (rt.heat ? "heat" : rt.co ? "ok" : "") : "") + " relay"));
   } else {
     cells.push(mk("위치", st ? xy(st.x, st.y) + " · Z " + f1(st.z) : "—", "ok"));
     cells.push(mk("쿨러", rt.co ? "켜짐 " + rt.co + "개" : "꺼짐", rt.co ? "ok" : ""));

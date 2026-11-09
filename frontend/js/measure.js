@@ -302,7 +302,7 @@ UI.acts["cond-edit"] = () => {
   const add = h("button", { class: "btn sm", text: "단계 추가 ▾" });
   const defs = { contact: { type: "contact" }, cooler: { type: "cooler", action: "on", target: "sample" }, heat: { type: "heat", s: 20 }, wait: { type: "wait", s: 5 }, confirm: { type: "confirm" }, z_top: { type: "z_top" } };
   add.addEventListener("click", (e) => { e.stopPropagation(); popMenu(add, Object.keys(defs).map((k) => ({ label: STEP_NAMES[k], fn: () => { work.steps.push(JSON.parse(JSON.stringify(defs[k]))); draw(); } }))); });
-  openWin(h("div", {}, h("h2", { text: "'" + cur.name + "' 순회 단계를 고칠까요?" }), h("div", { class: "sub", text: "첫 단계(샘플 위로 이동)는 고정입니다. 저장하면 서버가 검증합니다." }), box, h("div", { class: "row" }, add),
+  openWin(h("div", {}, h("h2", { text: "'" + cur.name + "' 측정 단계를 고칠까요?" }), h("div", { class: "sub", text: "첫 단계(샘플 위로 이동)는 고정입니다. 저장하면 서버가 검증합니다." }), box, h("div", { class: "row" }, add),
     h("div", { class: "btns" }, h("button", { class: "btn", text: "닫기", onclick: closeWin }),
       h("button", { class: "btn primary", text: "저장", onclick: async () => {
         const items = s.settings.condition.items.map((c) => (c.name === cur.name ? work : c));

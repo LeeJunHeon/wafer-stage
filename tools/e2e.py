@@ -75,7 +75,7 @@ class Client:
         t0 = time.time()
         while time.time() - t0 < 40:
             try:
-                self.ws = connect("ws://127.0.0.1:%d/ws" % self.port, max_size=None)
+                self.ws = connect("ws://127.0.0.1:%d/ws" % self.port, max_size=None, ping_interval=None)
                 break
             except OSError:
                 time.sleep(0.3)
