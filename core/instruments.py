@@ -134,8 +134,8 @@ class _Dev:
 
     def _log(self, c):
         self.cmds.append(c)
-        if len(self.cmds) > 400:
-            del self.cmds[:100]
+        if len(self.cmds) > 20000:
+            del self.cmds[:5000]
 
     def write(self, cmd):
         if self.res is None:
@@ -170,16 +170,35 @@ class _Dev:
         return self.res is not None
 
 
+def _drain_errors(dev):
+    """장비 오류 큐(SYST:ERR?)를 비우며 읽는다. 오류 문구 목록."""
+    out = []
+    for _ in range(8):
+        try:
+            r = dev.query("SYST:ERR?")
+        except VisaError:
+            break
+        if r.startswith("0") or not r:
+            break
+        out.append(r)
+    return out
+
+
 class K2110(_Dev):
     """Keithley 2110 5½ 자리 멀티미터 - K형 열전대 온도(°C, 기준점 내부)."""
 
     def configure(self, tc_type="K", rjun="REAL"):
         self.write("*RST")
-        self.write("SENS:FUNC \"TEMP\"")
-        self.write("SENS:TEMP:TRAN TC")
+        self.write("SENS:FUNC \"TCO\"")
         self.write("SENS:TCO:TYPE %s" % tc_type)
         self.write("SENS:TCO:RJUN:RSEL %s" % rjun)
-        self.write("UNIT:TEMP C")
+        self.write("UNIT Cel")
+        self.check_errors()
+
+    def check_errors(self):
+        errs = _drain_errors(self)
+        if errs:
+            raise VisaError("K2110 설정 오류 · " + errs[0][:40])
 
     def read_temp(self):
         """1회 읽기(°C). 열전대 끊김 · 범위 넘음이면 None."""
@@ -189,7 +208,7 @@ class K2110(_Dev):
 class K2450(_Dev):
     """Keithley 2450 - 전압 소스, 전류 측정. 전류 한도(ILIMit)를 항상 건다."""
 
-    def check_scpi(self):
+    def check_scpi(self):  # noqa: D102 - K2450
         """명령 세트 확인. SCPI 가 아니면 (False, 안내)."""
         try:
             lang = self.query("*LANG?").upper()
@@ -218,6 +237,9 @@ class K2450(_Dev):
         self.write(":SENS:CURR:AVER:COUN %d" % int(p["filter_n"]))
         self.write(":SENS:CURR:AVER ON")
         self.write(":SENS:AZER:ONCE")
+        errs = _drain_errors(self)
+        if errs:
+            raise VisaError("K2450 설정 오류 · " + errs[0][:40])
 
     def set_range(self, r):
         self.write(":SENS:CURR:RANG %.6g" % float(r))

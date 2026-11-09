@@ -351,6 +351,15 @@ class Run:
         else:
             raise FailStep("알 수 없는 단계")
 
+    def _rt_dir(self, no):
+        """샘플의 R–T 폴더. 다시 측정이면 이전 폴더를 덮지 않고 _2, _3 …"""
+        base = os.path.join(self.run_dir, "rt_%02d" % no)
+        d, n = base, 1
+        while os.path.exists(d):
+            n += 1
+            d = "%s_%d" % (base, n)
+        return d
+
     def _rt(self, s, view):
         """R–T 측정 한 번(측정 탭의 '이 위치 측정' 과 같은 코드). 핀은 접촉 높이에 있어야 한다. 파일 이름 = File name + 샘플 번호 + _.
         일시정지는 이 단계가 끝난 뒤에 듣는다(히트건 제어를 멈추지 않는다)."""
@@ -362,12 +371,14 @@ class Run:
         if not s.get("cooler_relay"):
             raise FailStep("샘플 구역에 쿨러 없음")
         p = rt_mod.params(app.cfg)
-        rr = rt_mod.RTRun(app, p, "%s%s_" % (p["file_name"], s["no"]), run_dir=os.path.join(self.run_dir, "rt_%02d" % int(s["no"])),
+        rr = rt_mod.RTRun(app, p, "%s%s_" % (p["file_name"], s["no"]), run_dir=self._rt_dir(int(s["no"])),
                           cancel_fn=self._cancelled, relays=[int(s["cooler_relay"])], z_top_end=False, gen=self.gen)
         app.rt = rr
         th = threading.Thread(target=rr.run, name="rt-run", daemon=True)
         th.start()
         while not rr.finished.wait(0.2):
+            if not th.is_alive():
+                break
             lt = "%s %d/%d" % (rr.phase, rr.cycle, int(p["repeat"]))
             if rr.last["T"] is not None:
                 lt += " · %.1f °C" % rr.last["T"]
@@ -375,12 +386,12 @@ class Run:
             self.live_text = "R–T 측정 · " + lt
             if self._cancelled() or self.app.link_lost_count != self.link0:
                 rr.stop()
-        th.join(10.0)
+        th.join(2.0)
         view["value"] = ""
-        if rr.status == rt_mod.STOPPED:
+        if rr.status == rt_mod.STOPPED or (not rr.status and self._cancelled()):
             raise StopRun()
         if rr.status != rt_mod.OK:
-            raise FailStep(rr.message or "R–T 측정 오류")
+            raise RuntimeError(rr.message or "R–T 측정 오류")      # 안전 사유(온도 · 통신 · 히트건)는 샘플 하나가 아니라 순회 전체를 멈춘다
         s["rt_dir"] = rr.run_dir
 
     def _confirm(self, view):

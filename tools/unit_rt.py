@@ -128,7 +128,7 @@ class ScpiTest(unittest.TestCase):
         app = StubApp()
         app.k2450.configure({"terminal": "FRONT", "four_wire": True, "volt": 1.0, "ilim_a": 0.01, "range_mode": "step", "start_range": 0.001, "nplc": 1.0, "filter_n": 10})
         self.assertEqual(app.lab.dev["2450"].err, [])
-        cmds = [c for c in app.k2450.cmds if c != "*IDN?"]
+        cmds = [c for c in app.k2450.cmds if c not in ("*IDN?", "SYST:ERR?")]
         want = ["*RST", ":ROUT:TERM FRON", ":SENS:CURR:RSEN ON", ":SOUR:FUNC VOLT", ":SOUR:VOLT:ILIM 0.01", ":SOUR:VOLT 1",
                 ":SENS:FUNC \"CURR\"", ":SENS:CURR:RANG:AUTO OFF", ":SENS:CURR:RANG 0.001", ":SENS:CURR:NPLC 1", ":SENS:CURR:AVER:TCON REP",
                 ":SENS:CURR:AVER:COUN 10", ":SENS:CURR:AVER ON", ":SENS:AZER:ONCE"]
@@ -155,6 +155,16 @@ class ScpiTest(unittest.TestCase):
         self.assertEqual((s["tc_type"], s["rjun"], s["unit"]), ("K", "REAL", "C"))
         t = app.k2110.read_temp()
         self.assertAlmostEqual(t, 25.0, delta=0.5)
+
+    def test_k2110_manual_syntax_and_error_queue(self):
+        app = StubApp()
+        app.k2110.configure("K", "REAL")
+        cmds = [c for c in app.k2110.cmds if c not in ("*IDN?",)]
+        self.assertEqual(cmds, ["*RST", 'SENS:FUNC "TCO"', "SENS:TCO:TYPE K", "SENS:TCO:RJUN:RSEL REAL", "UNIT Cel", "SYST:ERR?"])
+        # 문법이 틀린 명령은 오류 큐에 쌓이고 configure 가 거절한다
+        app.k2110.write("SENS:TEMP:TRAN TC")
+        with self.assertRaises(inst.VisaError):
+            app.k2110.check_errors()
 
     def test_tc_open_is_none(self):
         app = StubApp(fault={"tc_open": True})
@@ -420,6 +430,36 @@ class RunTest(unittest.TestCase):
         self.assertEqual(rr.status, rt_mod.OK)
         self.assertTrue(any("전류 한도" in w for w in rr.warns))
         self.assertSafe(app, rr)
+
+    def test_no_rise_when_thermocouple_not_on_plate(self):
+        app = StubApp()
+        app.lab.pin_down = lambda: False                 # 핀이 들려 열전대가 공기 온도를 잰다(판은 오르는데 값은 안 오름)
+        rr = app.make(short_params(max_temp=85.0, break_temp=25.0, repeat=1))
+        rr.run()
+        self.assertEqual(rr.status, rt_mod.ERROR)
+        self.assertTrue("안 오름" in rr.message or "시간 한도" in rr.message, rr.message)
+        self.assertSafe(app, rr)
+
+    def test_exception_in_setup_still_finishes(self):
+        app = StubApp()
+        rr = app.make(short_params())
+        rr.run_dir = os.path.join(tempfile.mkdtemp(), "f")
+        open(rr.run_dir, "w").write("파일")               # 폴더를 못 만든다
+        rr.run()
+        self.assertEqual(rr.status, rt_mod.ERROR)
+        self.assertTrue(rr.finished.is_set())
+        self.assertIn(rr.state, ("error",))
+        self.assertSafe(app, rr)
+
+    def test_overflow_jumps_range_and_trip_not_recorded(self):
+        app = StubApp()
+        rr = app.make(short_params(max_temp=85.0, break_temp=25.0, repeat=1))
+        rr.run()
+        rngs = [float(c.split()[-1]) for c in app.k2450.cmds if c.startswith(":SENS:CURR:RANG ") and "AUTO" not in c]
+        # 범위가 3e5 Ω(3 µA) → 2e2 Ω(5 mA)로 갈 때 한 번에 한도(10 mA) 범위로 올라간다
+        self.assertIn(1e-2, rngs)
+        for a, b in zip(rngs, rngs[1:]):
+            self.assertFalse(b > a * 10.5 and b < 1e-2, (a, b))
 
     def test_range_steps_follow_current(self):
         app = StubApp()

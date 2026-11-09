@@ -10,7 +10,18 @@
 측정 조건(단계 목록)대로 이동 · 접촉 높이로 내리기 · 쿨러 · 히트건 · 대기 · 확인 대기를 한다. 정확도 요구: 공구 지점이 샘플 위 ±1~2 mm.
 
 ## 범위 (2026-11 실장비 시험판)
-**이 프로그램 = 카메라 샘플 인식 + 모터 제어 + 쿨러 · 히트건 릴레이.** 측정(온도 · 계측기 · 접촉 판정)은 별도 프로그램이 맡는다 - 온도 센서 · 계측기 · 접촉 드라이버 · 온도 단계 · 온도 그래프는 지웠다(나중에 연동할 때 다시 설계). 공구 오프셋 보정은 없다(오프셋 0 유지).
+**이 프로그램 = 카메라 샘플 인식 + 모터 제어 + 쿨러 · 히트건 릴레이 + R–T 측정(저항–온도).** 접촉 판정 · 앞 시험판의 온도 단계 · 계측기 단계는 지웠다. 측정은 `backend/rt.py` 한 덩어리로 다시 들어왔다(2026-11):
+모터는 사람이 조그로 핀을 샘플에 대고(측정 탭 "이 위치 측정") 온도를 바꿔 가며 저항을 잰다. 샘플 순회는 측정 조건의 단계 `rt`(R–T 측정)로 같은 코드를 부른다. 공구 오프셋 보정은 없다(오프셋 0 유지).
+
+### R–T 측정 (backend/rt.py · core/instruments.py)
+- 장비(pyvisa, NI-VISA): **K2110** = K형 열전대 °C(기준점 내부) · **K2450** = 전압 소스 + 전류 측정, 저항 = Set voltage ÷ 전류. 드라이버가 없으면 "장비 통신 드라이버 없음 · NI-VISA 설치 필요" 로 안내하고 프로그램은 계속 돈다. 장비는 [장비 연결](측정 탭) · [연결 시험](장비 설정 8)을 누를 때만 연다(시작 때 자동으로 열지 않는다). K2450 은 연결 때 `*LANG?` 로 SCPI 를 확인하고 아니면 "K2450 명령 세트를 SCPI 로 · 장비 메뉴" 로 거절.
+- SCPI(매뉴얼 확인): 2450 `*RST` → `:ROUT:TERM FRON|REAR` → `:SENS:CURR:RSEN ON|OFF`(4단자) → `:SOUR:FUNC VOLT` → `:SOUR:VOLT:ILIM <A>`(전류 한도) → `:SOUR:VOLT <V>` → `:SENS:FUNC "CURR"` → `:SENS:CURR:RANG:AUTO OFF` + `:SENS:CURR:RANG <A>` → `:SENS:CURR:NPLC` → `:SENS:CURR:AVER:TCON REP` · `:COUN n` · `:AVER ON` → `:SENS:AZER:ONCE`; 출력 `:OUTP ON|OFF`(예비 냉각이 끝난 뒤에만 켬) · `:READ?` · `:SOUR:VOLT:ILIM:TRIP?`. 2110 `SENS:TCO:TYPE K` · `SENS:TCO:RJUN:RSEL REAL` · `UNIT:TEMP C` · `READ?`(9.91E37 = 열전대 끊김 → "값 없음").
+- 흐름: 장비 설정 → 쿨러 켬 · 히트건 끔 → 예비 냉각(목표 미만 + 유지) → K2450 출력 켬 → #repeat 회 [가열(max temp 초과까지) → 냉각(temp to break 미만까지)] → 끝(히트건 끔 · 출력 끔 · 쿨러 끔 · Z 맨 위; 뒤 둘은 설정). 기록 주기는 장비가 읽는 속도(최소 간격 설정 `rt.min_interval_s`).
+- **온도 제어**(히트건은 켜기/끄기만): 목표 온도선(가열 = 시작 온도에서 `rt.heat_rate` °C/분, 냉각 = 최고 온도에서 `rt.cool_rate`, 0 = 최대). 실제 온도가 선보다 띠(`rt.band_c` 0.5)만큼 낮으면 켜고 높으면 끈다. 최소 켜짐/꺼짐 2 s, 연속 켜짐 상한 `heater.max_on_s`(120 s: 넘으면 강제로 끄고 최소 꺼짐 뒤 이어 감 + 경고). 속도 "최대"는 가열 내내 켜고 냉각 내내 끈다. 냉각 중에는 선보다 빨리 식을 때만 잠깐 켜서 늦춘다. "최대 속도 재기" = 히트건만 n s · 쿨러만 n s 의 °C/분.
+- 전류 범위 단계 변경(기존 LabVIEW 하위 VI 방식): 전류가 범위의 1.05 배를 넘으면 10배씩 올리고, 한 단계 아래 범위의 0.95 배 아래로 떨어지면 내린다(`instruments.next_range`). 범위 넘음(9.91E37)이면 한 단계 올린다. 장비 자동 범위도 고를 수 있다. 전류 한도 걸림은 경고만 하고 측정을 계속한다(저항 하한값 기록).
+- 파일(기존 프로그램과 같다): PC `..\data_v2\measure\<시각>_<File name>\` 에 `[File name][Set voltage 소수 2자리]V_[회차].dat` · `..._merged.dat`(머리글 `Temp<탭>Resistance`, 값 `%.7E`, 이어 쓰기, 줄끝 CRLF) + 제어 기록 `control.csv`(PC 에만) + `rt.json`. NAS(`rt.file_path`)에는 기존 파일만 별도 스레드로 복사 - 못 쓰면 경고만 · 측정은 계속 · 끝난 뒤 다시 복사 · [NAS 로 다시 복사]. 같은 이름이 NAS 에 있으면 `_1` 을 붙인다. 샘플 순회의 파일 이름 = File name + 샘플 번호 + `_`.
+
+
 
 ## 구조 (v2)
 서버가 상태의 주인이고 화면은 HTML(순수 JS)이다. 화면은 요청만 보내고 서버 state 로만 바뀐다. 오프라인 전제(CDN · 웹폰트 금지, 맑은 고딕 · Consolas).
@@ -24,6 +35,7 @@
   - zones.py(쿨러 구역) · tip.py(공구 끝) · labels.py(라벨 배치) · paths.py
 - core/ 추가: motion.py **이동 계층**(이동 잠금 하나 · 비상정지 세대 · Z 올림 ST 확인 · 시간 한도 + 재동기 · 회복 순서) · power.py **전원 계층**(릴레이 켠 주체 기록 ·
   히트건 전용) · framesrc.py **카메라 계층**(프레임마다 단조 시각 · frame_after) · 다른 모듈은 시리얼에 직접 쓰지 않는다.
+- core/instruments.py(pyvisa K2110 · K2450 · SCPI · 범위 단계 · 저항 계산) · backend/rt.py(R–T 측정 RTRun · HeatCtl · NasCopier · 파일) · frontend/js/rt.js(이 위치 측정 화면 · 그래프) · tools/fake_visa.py · unit_rt.py · e2e_rt.py · shots_rt.py
 - backend/: server.py(FastAPI · /ws · POST /estop · 정적) · app.py(서버 상태 · 명령 c_<이름>(args, gen)) · measure.py(시계 · 히트건 끄기 재시도 Hub · 측정 Run · 결과 저장) ·
   calibstore.py(좌표 보정 · 헤드 위치 보정, 기준 프레임) · vision.py(카메라 서비스) · store.py(설정 저장소 · 이전 설정 가져오기) · settings_schema.py · conditions.py ·
   devices.py(가상 시계 - 시뮬레이션 전용 시간 배율) · window.py(창 · 뮤텍스 · 종료) · logger.py
@@ -173,11 +185,19 @@
 19. **다시 연결**(설정 가져오기 · [다시 연결])은 이동 · 작업 중 거절한다(비상정지가 '!' 를 못 보내는 틈 방지). 새 이동 계층의 비상정지 세대는 옛 것보다 크게 시작한다. 비상정지 잠금은 `data/estop.lock` 으로 디스크에 남겨 회복 전에 껐다 켜도 이어진다(펌웨어는 fz · sp 때 다른 축 위치까지 "신뢰" 로 저장한다).
 20. **원점 오차 주의**: fz 는 끝단 접촉을 모른다(10 mm 를 밀고 2 mm 물러난 자리를 0 으로 등록). 펌웨어 위치가 남아 있으면 끝단 3 mm 앞까지 접근하므로 실제 위치가 7 mm 넘게 멀면 틀린 원점이 잡힌다 → 버튼 확인창에 경고, X · Y 는 헤드 위치 보정이 있으면 fz 뒤 사진 위치 확인(경고 한도 초과면 경보 + [적용] · [위치 확인]). Z 이동이 시간 초과 · 쓰기 시간 초과면 Z 원점을 잃은 것으로 본다.
 
+21. **R–T 측정 안전 경로**: 어떤 끝(완료 · 오류 · 중지 · 비상정지 · 통신 끊김 · 종료)에서도 `RTRun._finish` 가 히트건 끄기(power 계층, RS 확인) → K2450 출력 끄기 → 쿨러 끄기(오류 · 중지는 항상) → Z 맨 위(비상정지 · 잠금이면 안 함) 순으로 한다. 비상정지는 `App.estop()` 가 R–T 를 멈추고 별도 스레드로 출력도 끈다(`_inst_off`). 출력을 못 끄면(통신 끊김) 통신이 돌아올 때까지 1 s 마다 다시 끈다(`_inst_off_retry`).
+22. 판단은 매 읽기마다: 비상 차단 온도(기본 max+10 °C) 이상 · 온도 값 없음(열전대 끊김) · 온도 갱신 한도(3 s) · 단계 시간 한도 · 비상정지 세대 · 링크 끊김 카운터. 온도 값이 없으면 히트건부터 끈다. 장비 통신 오류는 측정을 오류로 끝낸다. 비상정지로 쓰기가 취소된 것은 오류가 아니라 "중지됨".
+23. R–T 측정 중에는 조그 · Z 맨 위 · 수동 릴레이 · 이동 · 촬영 · 샘플 순회 시작 · 종료를 거절한다(`App._no_run` · `rt.active`). 시작 조건: 장비 연결 · 열전대 값 정상(시작 때 한 번 읽음) · 핀이 접촉 높이(±0.5 mm, 장비에서 지금 읽음) · 접촉 높이 설정 · 히트건/쿨러 릴레이 사용. 샘플 순회의 R–T 단계는 일시정지를 보지 않는다(히트건 제어를 멈추지 않는다).
+24. NAS 는 측정 스레드가 만지지 않는다(`NasCopier` 별도 스레드). 시뮬레이션 시간 압축(`sim.time_scale`)에서 릴레이 쓰기 시간은 온도 갱신 한도에 세지 않는다.
+
 ## fake-serial (tools/fake_v11.py)
 펌웨어 V11 흉내(pyserial 모양). `python run.py --fake-serial` 로 진짜 Stage 코드 경로(입력 비우기 · 수집 · 재동기 · RS 해석 · 배너 감지)를 그대로 타고 dry 가 가리던 동시성 문제를 본다.
 앱이 쓰는 명령 전부 + 배너 · 완료 줄 · "이미 그 위치" · [거부] · [!] 중단 · 통신 감시(받은 줄마다 lastRx, 블로킹 이동 중 판정 안 함). 이동은 거리 · 속도로 시간이 걸리고 응답은 별도 스레드.
 명령 fz x|y|z · save · EEPROM 상태(restored 복원 / unsaved 저장 안 하고 꺼짐 / none 기록 없음: `WAFER2_FAKE_EEPROM`) 를 흉내 낸다.
 시험 조작: latency · drop_next(줄 잃음) · reboot(eeprom=) · freeze · cut_link(링크 끊김) · slip · time_scale · block_write(쓰기 막힘). e2e: `E2E_MODE=fake python tools/e2e.py` (dry 는 기본). 부하: `python tools/stress_fake.py 300`.
+
+## fake-visa (tools/fake_visa.py)
+가짜 K2110 · K2450(SCPI 문자열을 매뉴얼 문법 그대로 받고 모르는 명령은 오류 큐에 쌓는다) + 열 모델(히트건 켜짐 → 125 °C 쪽으로, 쿨러 → 10 °C 쪽으로, 판 시정시 60 s · 열전대 지연 1.5 s, 핀이 접촉 높이가 아니면 공기 온도) + VO2 저항 고리(가열 ~66 °C · 냉각 ~58 °C 에서 3e5 ↔ 2e2 Ω, 한도 10 mA). 오류 조작 `lab.fault`: tc_open(열전대 끊김) · disconnect(연결 끊김) · ilim(전류 한도 걸림) · slow(느린 응답). `--dry` · `--fake-serial` 이면 앱이 이것을 VISA 자리에 꽂는다(`App._lab_install`). e2e 는 `dry` 명령의 `lab` 조작으로 오류를 만든다. 실장비 열 특성(시정시 · 히트건 힘)은 다르니 속도 설정은 실제 [최대 속도 재기] 로 정한다.
 
 ## 펌웨어 후보 (호스트로 못 고치는 것 - 펌웨어는 고치지 않는다)
 - fz 에 끝단 접촉 판정이 없다(끝단이 10 mm 안에 없어도 "원점 설정 완료"). 명령 줄에 무결성 검사가 없다(줄이 이어 붙으면 앞자리 숫자만 읽어 실행). `!` 는 이동 중 · 입력 버퍼 맨 앞일 때만 유효. fz · sp 의 EEPROM 저장이 다른 축 위치까지 "신뢰" 로 굳힌다. fz 중간 `delay(500)` 동안 `!` 를 안 본다.
@@ -193,6 +213,9 @@
 
 ## 검증 방법
 - `python tools/unit_tests.py` — 단위 시험(프레임 변환 · 퇴화 거절 · 구간 반복 · 설정 검증 …)
+- `python tools/unit_rt.py` — R–T 단위 시험(SCPI 문자열 · 범위 단계 · 저항 계산 · 파일 이름 · 형식 · 히트건 켜고 끄기 · 목표선 추종 오차 보고 · 오류 경로마다 히트건/출력 꺼짐)
+- `python tools/e2e.py 31 32 …` — R–T e2e(31~45: 이 위치 측정 3회 · NAS · 열전대 끊김 · 비상 차단 · 연결 끊김 · 시간 한도 · 비상정지 · 중지 · 종료 · 시작 거절 · 연결 시험 · 샘플 순회 R–T 단계 · 속도 재기 · 추종)
+- `python tools/shots_rt.py` — R–T 화면 흐름(playwright 클릭) + 스크린샷
 - `python tools/flows.py` — 화면 흐름(playwright 클릭: 첫 실행 원점 → 설정 → 촬영 → 측정, 비상정지 회복 두 경우, 막다른 상태 점검)
 - `python tools/perf4080.py` — 4080×3060 촬영→인식 시간 · 실시간 프레임
 - `python tools/fixed_regress.py [--loo] [--update]` — ..\data_v2	ruth 전 항목, 단일 / 빈 판 사진 두 경로. `tools/fixed_regress_base.json` 보다 나쁘면 exit 1.

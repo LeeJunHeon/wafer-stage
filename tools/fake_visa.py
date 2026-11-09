@@ -194,16 +194,14 @@ class _Res:
         s = self.s
         if u == "*RST":
             s["unit"] = "?"
-        elif u.startswith("SENS:FUNC"):
-            pass
-        elif u.startswith("SENS:TEMP:TRAN"):
-            pass
+        elif u in ('SENS:FUNC"TCO"', 'SENS:FUNC"TCOUPLE"'):
+            s["func"] = "TCO"
         elif u.startswith("SENS:TCO:TYPE"):
             s["tc_type"] = u.split("TYPE", 1)[1]
         elif u.startswith("SENS:TCO:RJUN:RSEL"):
             s["rjun"] = u.split("RSEL", 1)[1]
-        elif u.startswith("UNIT:TEMP"):
-            s["unit"] = u.split("TEMP", 1)[1]
+        elif u == "UNITCEL":
+            s["unit"] = "C"
         else:
             self.err.append("unknown: " + c)
 
@@ -213,6 +211,8 @@ class _Res:
         lab, s = self.lab, self.s
         if u == "*IDN?":
             return ("KEITHLEY INSTRUMENTS,MODEL 2450,SIM0001,1.7.0\n" if self.kind == "2450" else "KEITHLEY INSTRUMENTS INC.,MODEL 2110,SIM0002,02.03-02.03-02.02\n")
+        if u == "SYST:ERR?":
+            return ('-113,"Undefined header"\n' if self.err else '0,"No error"\n') if not self.err else ('-113,"Undefined header; %s"\n' % self.err.pop(0))
         if u == "*LANG?":
             return "SCPI\n" if getattr(lab, "lang", "SCPI") == "SCPI" else "TSP\n"
         if self.kind == "2110" and u == "READ?":

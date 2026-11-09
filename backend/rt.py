@@ -35,6 +35,8 @@ RT_KEYS = ["k2110_addr", "k2450_addr", "precool_c", "hold_s", "max_temp", "break
            "cooler_off_end", "z_top_end"]
 Z_TOL_MM = 0.5                         # 핀이 접촉 높이라고 보는 허용 오차
 MAX_POINTS = 200000
+NO_RISE_S = 45.0                      # 히트건을 이만큼 연속으로 켰는데
+NO_RISE_C = 0.5                       # 온도가 이만큼도 안 오르면 오류(열전대가 판에서 떨어졌거나 핀이 들림)
 
 
 class RTStop(Exception):
@@ -146,7 +148,6 @@ class NasCopier(threading.Thread):
         self.pending = []                 # 못 쓴 로컬 경로
         self.done = []
         self.ok = None                    # None 아직 · True · False
-        self._stop = False
 
     def put(self, local):
         self.q.put(local)
@@ -226,6 +227,10 @@ class RTRun:
         self._range = float(self.p["start_range"])
         self._last_valid = None
         self._prev_valid = None
+        self.out_on = False
+        self._progress = time.monotonic()
+        self._guard_stop = threading.Event()
+        self._on_t0 = self._on_T0 = None
         self._last_rec = -1e9
         self._ctl = None
         self._cyc_f = None
@@ -290,14 +295,17 @@ class RTRun:
         self.t0 = time.time()
         gen = app.motion.gen if self.gen_arg is None else self.gen_arg
         self.gen = gen
-        os.makedirs(self.run_dir, exist_ok=True)
-        self.nas = NasCopier((self.p.get("file_path") or "").strip(), self._warn) if self.mode == "rt" and (self.p.get("file_path") or "").strip() else None
-        if self.nas:
-            self.nas.start()
-        self._open_ctl()
-        self._write_meta()
         status, msg = OK, ""
+        self._progress = time.monotonic()
+        self._guard_stop = threading.Event()
+        threading.Thread(target=self._guard, name="rt-guard", daemon=True).start()
         try:
+            os.makedirs(self.run_dir, exist_ok=True)
+            self.nas = NasCopier((self.p.get("file_path") or "").strip(), self._warn) if self.mode == "rt" and (self.p.get("file_path") or "").strip() else None
+            if self.nas:
+                self.nas.start()
+            self._open_ctl()
+            self._write_meta()
             with app.motion.op(gen):
                 self._setup()
                 if self.mode == "speed":
@@ -305,6 +313,7 @@ class RTRun:
                 else:
                     self._prechill()
                     self.k2450.output(True)
+                    self.out_on = True
                     for cyc in range(1, int(self.p["repeat"]) + 1):
                         self._open_cycle(cyc)
                         self._heating(cyc)
@@ -325,6 +334,18 @@ class RTRun:
             if status == ERROR and app.motion.gen != self.gen:       # 비상정지로 쓰기가 취소된 것은 오류가 아니라 중단이다
                 status, msg = STOPPED, "비상정지로 중단"
             self._finish(status, msg)
+
+    def _guard(self):
+        """독립 감시(데드맨): 측정 루프가 한 바퀴도 못 돌고 오래 멈추면(VISA 가 막힘 · 스레드 예외) 히트건을 끈다. 실제 시간 기준."""
+        scale = max(0.01, float(getattr(self.clock, "scale", 1.0)))
+        limit = float(self.p["stale_s"]) / scale + 2.0
+        while not self._guard_stop.wait(0.5):
+            if self.app.power is not None and self.app.power.owners.get(self.app.power.heater_n) and time.monotonic() - self._progress > limit:
+                logger.log("R–T 측정 루프 멈춤 · 히트건 강제로 끔", "err")
+                try:
+                    self.app.power.heater_off()
+                except Exception:                                    # noqa: BLE001
+                    pass
 
     @property
     def k2110(self):
@@ -365,7 +386,7 @@ class RTRun:
         """온도 · 전류 한 번. 열전대 끊김이면 T None. 장비 통신 오류는 예외."""
         T = self.k2110.read_temp()
         I, trip = (None, False)
-        if self.mode == "rt":
+        if self.mode == "rt" and self.out_on:
             I, trip = self.k2450.read()
         now = self.clock.now()
         R = inst.resistance(self.p["volt"], I) if self.mode == "rt" else None
@@ -375,10 +396,11 @@ class RTRun:
         return T, I, R, trip, now
 
     def _range_step(self, I, trip):
-        if self.mode != "rt" or self.p["range_mode"] != "step" or trip:
+        if self.mode != "rt" or self.p["range_mode"] != "step" or not self.out_on:
             return
-        if I is None:                                            # 범위 넘음 - 한 단계 올린다
-            new = min(inst.RANGES[-1], self._range * 10.0)
+        if I is None:                                            # 범위 넘음 - 한도 전류를 덮는 범위까지 한 번에 올린다(전이 구간 점을 잃지 않게)
+            need = float(self.p["ilim_a"])
+            new = next((r for r in inst.RANGES if r >= need * 0.999 and r > self._range), inst.RANGES[-1])
         else:
             new = inst.next_range(self._range, I)
         if abs(new - self._range) > 1e-15:
@@ -397,6 +419,7 @@ class RTRun:
             self._warn("히트건 연속 켜짐 상한 %g s · 강제로 끔 · 최소 꺼짐 시간 뒤 이어 감" % self.heat.max_on)
         cur = bool(app.power.owners.get(app.power.heater_n))
         if on and not cur:
+            self._check()                                        # 읽는 동안 중지 · 비상정지가 왔으면 켜지 않는다
             app.power.set(app.power.heater_n, True, HEAT)
         elif not on and (cur or ev or bypass or not app.power.heater_ok):
             app.power.heater_off()
@@ -411,7 +434,7 @@ class RTRun:
         while True:
             self._check()
             T, I, R, trip, now = self._read()
-            self._range_step(I, trip)
+            self._progress = time.monotonic()
             if T is None:                                         # 열전대 끊김 · 범위 넘음: 히트건부터 끈다
                 self._drive_heater(now, False, bypass=True)
                 if self._last_valid is None or now - self._last_valid > float(p["stale_s"]):
@@ -425,17 +448,29 @@ class RTRun:
                 self._drive_heater(now, False, bypass=True)
                 raise RTFail("비상 차단 온도 %.0f °C 이상 · 히트건 끔" % float(p["emergency_c"]))
             if now - t_phase > limit_s:
+                self._drive_heater(now, False, bypass=True)
                 raise RTFail("시간 한도 초과 · %s" % phase)
+            self._range_step(I, trip)
             tgt = target_fn(T, now) if target_fn else None
             fin = done_fn(T, now)
             on = bool(self.heat.on) if fin else self._drive_heater(now, want_fn(T, tgt))
+            if on and not fin:                                   # 켜 놓았는데 온도가 안 오르면(열전대가 판에서 떨어짐 · 핀 들림) 오류
+                if self._on_t0 is None:
+                    self._on_t0, self._on_T0 = now, T
+                elif now - self._on_t0 >= NO_RISE_S and T - self._on_T0 < NO_RISE_C:
+                    self._drive_heater(now, False, bypass=True)
+                    raise RTFail("히트건을 켰는데 온도가 안 오름 · 열전대 · 핀 확인")
+                elif T - self._on_T0 >= NO_RISE_C:
+                    self._on_t0, self._on_T0 = now, T
+            else:
+                self._on_t0 = self._on_T0 = None
             self._last_valid = self.clock.now()                  # 히트건 · 릴레이 쓰기에 걸린 시간은 온도 갱신 한도에 세지 않는다(장비가 늦는 것만 센다)
             if trip:
                 self.trips += 1
                 if self.trips == 1:
                     self._warn("전류 한도 걸림 · 저항이 낮아 전류가 한도에 닿음")
             self._log_point(now, T, tgt, R, I, trip, phase, cyc, on)
-            if record and R is not None and now - self._last_rec >= float(p["min_interval_s"]):
+            if record and R is not None and not trip and now - self._last_rec >= float(p["min_interval_s"]):
                 self._last_rec = now
                 self._write_row(T, R)
             if fin:
@@ -567,6 +602,35 @@ class RTRun:
 
     # ---- 끝 -----------------------------------------------------------
     def _finish(self, status, msg):
+        """끝 처리 바깥 틀: 안쪽이 예외를 던져도 상태 · 끝 신호 · 앱 통지는 반드시 한다."""
+        try:
+            self._finish_inner(status, msg)
+        except Exception as e:                                   # noqa: BLE001
+            logger.log("R–T 끝 처리 예외 · " + logger.short(e), "err", raw=repr(e))
+            try:
+                self.app.power.heater_off()
+            except Exception:                                    # noqa: BLE001
+                pass
+            if not self.status:
+                self.status, self.message = ERROR, "끝 처리 오류 · " + logger.short(e, 30)
+                self.state = "error"
+        finally:
+            self._guard_stop.set()
+            if self.state in ("running", "stopping", "ready"):
+                self.state = {OK: "done", STOPPED: "stopped"}.get(self.status, "error")
+            self.finished.set()
+            try:
+                self.app.on_rt_end(self)
+            except Exception:                                    # noqa: BLE001
+                pass
+            if self.nas is not None and self.mode == "rt":       # NAS 복사 대기는 끝 신호 뒤에(느린 네트워크가 화면 · 순회를 붙잡지 않게)
+                try:
+                    self.nas.join(30.0)
+                    self._write_meta()
+                except Exception:                                # noqa: BLE001
+                    pass
+
+    def _finish_inner(self, status, msg):
         """어떤 경우에도: 히트건 끔 + K2450 출력 끔 → 쿨러 끔(설정) → Z 맨 위(설정)."""
         app = self.app
         self.state = "stopping" if status != OK else "running"
@@ -574,7 +638,7 @@ class RTRun:
         try:
             self.heat.force_off(self.clock.now())
             app.power.heater_off()
-        except (PowerError, StageError) as e:
+        except Exception as e:                                   # noqa: BLE001
             errs.append("히트건 끄기 실패 · " + logger.short(e))
         self.out_off_failed = False
         for k in range(2):
@@ -582,7 +646,7 @@ class RTRun:
                 if self.k2450 is not None and self.k2450.is_open:
                     self.k2450.output(False)
                 break
-            except inst.VisaError as e:
+            except Exception as e:                                   # noqa: BLE001
                 if k == 1:
                     self.out_off_failed = True                   # 통신이 돌아오면 앱이 다시 끈다(App.on_rt_end)
                     errs.append("K2450 출력 끄기 실패 · 통신 복구 시 다시 끔")
@@ -601,7 +665,7 @@ class RTRun:
             for n in list(self.cooler_on):
                 try:
                     app.power.set(n, False, "cooler")
-                except (PowerError, StageError):
+                except Exception:                                # noqa: BLE001
                     pass
             self.cooler_on = []
         if self.z_top_end and app.motion.gen == self.gen and app.motion.z_ok and not app.motion.estop_locked:
@@ -625,11 +689,8 @@ class RTRun:
             if self._mrg_f is not None or getattr(self, "_mrg_path", None):
                 self.nas.put(self._mrg_path)
             self.nas.finish()
-            self.nas.join(30.0)
         self.state = {OK: "done", STOPPED: "stopped"}.get(status, "error")
         self._write_meta()
-        self.finished.set()
-        app.on_rt_end(self)
 
     def retry_nas(self):
         """[NAS 로 다시 복사]: 못 쓴 파일 + 합친 파일 전부를 다시 시도(별도 스레드 · 호출자는 기다린다)."""
