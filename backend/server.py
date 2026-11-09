@@ -151,6 +151,30 @@ def serial_json(n: int = 200):
     return JSONResponse({"rows": [{"t": t, "d": d, "x": x} for t, d, x in rows]}, headers={"Cache-Control": "no-store"})
 
 
+@app.get("/rt.json")
+def rt_json(since: int = 0, id: str = ""):
+    """R–T 측정 그래프용 점: since 번째부터. id 가 지금 측정(stamp)과 다르면 처음부터 다시 준다."""
+    r = APP.rt if APP else None
+    if r is None:
+        return JSONResponse({"id": "", "n": 0, "points": []}, headers={"Cache-Control": "no-store"})
+    if id != r.stamp + r.mode:
+        since = 0
+    pts = r.points[max(0, int(since)):][:4000]
+    return JSONResponse({"id": r.stamp + r.mode, "n": max(0, int(since)) + len(pts), "total": len(r.points), "points": pts}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/rt_data/{name}")
+def rt_data(name: str):
+    """결과 탭 [그래프 보기]: 측정 폴더의 회차 파일(.dat)들을 [[T, R], ...] 로."""
+    import rt as rt_mod
+    d = os.path.join(paths.DATA_DIR, "measure", os.path.basename(name))
+    try:
+        files = sorted(f for f in os.listdir(d) if f.endswith(".dat") and not f.endswith("merged.dat"))
+    except OSError:
+        return JSONResponse({"cycles": []})
+    return JSONResponse({"cycles": [{"file": f, "pts": rt_mod.read_dat(os.path.join(d, f))} for f in files]})
+
+
 @app.get("/health")
 async def health():
     return JSONResponse({"ok": True})

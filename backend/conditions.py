@@ -12,6 +12,8 @@
   wait         {"s": 5.0}   대기
   confirm      사람이 [다음] 을 누를 때까지 대기(별도 프로그램으로 측정하는 동안 핀을 샘플에 댄 채 기다리는 용도)
   z_top        Z 맨 위
+  rt           R–T 측정(지금 측정 조건 - 측정 탭 "이 위치 측정" 과 같은 코드). 핀이 접촉 높이에 있어야 하고,
+               파일 이름은 File name + 샘플 번호 + "_" 다. 쿨러는 샘플 구역을 측정 내내 켜 둔다
 """
 
 import math
@@ -31,6 +33,7 @@ STEP_TYPES = {
     "wait": "대기",
     "confirm": "확인 대기",
     "z_top": "Z 맨 위",
+    "rt": "R–T 측정",
 }
 
 
@@ -140,6 +143,8 @@ def describe(step, values=None):
         return "확인 대기"
     if t == "z_top":
         return "Z 맨 위"
+    if t == "rt":
+        return "R–T 측정"
     return "알 수 없는 단계"
 
 
@@ -244,6 +249,8 @@ def step_relays(st, values):
         return zone_relay_list(values)
     if t == "heat":
         return [heater_relay_n(values)]
+    if t == "rt":
+        return [heater_relay_n(values)] + zone_relay_list(values)
     return []
 
 
@@ -270,7 +277,11 @@ def uses_contact(r):
 
 
 def uses_heat(r):
-    return any(isinstance(s, dict) and s.get("type") == "heat" for s in r.get("steps") or [])
+    return any(isinstance(s, dict) and s.get("type") in ("heat", "rt") for s in r.get("steps") or [])
+
+
+def uses_rt(r):
+    return any(isinstance(s, dict) and s.get("type") == "rt" for s in r.get("steps") or [])
 
 
 def relays_used(r, values=None):
@@ -304,6 +315,8 @@ def estimate_step_s(step, values, move_s, z_speed_mm_s):
         return 0.5 + abs(z or 0.0) / max(z_speed_mm_s, 1e-6)
     if t in ("wait", "heat"):
         return _num(step.get("s")) or 0.0
+    if t == "rt":
+        return 1800.0
     if t == "cooler":
         return 0.3
     return 0.0

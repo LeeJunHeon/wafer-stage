@@ -70,6 +70,11 @@ class App:
         self.next_no = 1
         self.run = None
         self.last_run = None
+        self.k2110 = self.k2450 = None               # 측정 장비(VISA) - [장비 연결] 을 누를 때만 연다
+        self.lab = None                              # 시뮬레이션의 가짜 장비 세계(tools/fake_visa.py)
+        self.inst_info = {"k2110": None, "k2450": None, "msg": "", "test": None}
+        self.rt = None                               # R–T 측정(지금 또는 마지막)
+        self._rt_cache = {}
         self.pos = {"x": None, "y": None, "z": None}
         self.fw_homed = {"x": False, "y": False, "z": False}   # 펌웨어 ST 의 원점 플래그(남아 있으면 끝단 앞까지 자동 접근)
         self.poll_fail = 0
@@ -359,6 +364,9 @@ class App:
             self.power.owners.clear() if policy_off else self.power.owners.pop(heater, None)
         if self.run:
             self.run.stop()
+        if self.rt is not None and self.rt.active:
+            self.rt.stop()
+        threading.Thread(target=self._inst_off, daemon=True, name="estop-inst").start()      # K2450 출력 끄기(VISA 는 느릴 수 있어 별도 스레드)
         threading.Thread(target=self._confirm_heater_off, daemon=True, name="estop-heater").start()
         self.pending_verify = None
         self._lock_file(True)
@@ -392,6 +400,8 @@ class App:
     def _no_run(self, what="이 동작"):
         if self.run and self.run.state in ("running", "paused", "stopping"):
             raise AppError("측정 중 · %s 못 함" % what)
+        if self.rt is not None and self.rt.active:
+            raise AppError("R–T 측정 중 · %s 못 함" % what)
 
     def _begin(self, name):
         with self.lock:
@@ -764,6 +774,8 @@ class App:
         self._need_stage()
         if self.run and self.run.state == "running" and not self.run.paused:
             raise AppError("측정 중 · 일시정지 뒤 가능")
+        if self.rt is not None and self.rt.active:
+            raise AppError("R–T 측정 중 · 이동 못 함")
         ax, mm = str(a["axis"]).lower(), float(a["mm"])
         if abs(mm) > float(self.cfg.get("jog.max_mm")):
             raise AppError("한 번 최대 %g mm" % self.cfg.get("jog.max_mm"))
@@ -789,6 +801,8 @@ class App:
 
     def c_z_top(self, a, gen):
         self._need_stage()
+        if self.rt is not None and self.rt.active:
+            raise AppError("R–T 측정 중 · 이동 못 함")
         self.motion.move_z(0.0, gen=gen)
 
     def c_origin(self, a, gen):
@@ -1341,6 +1355,8 @@ class App:
         n, on = int(a["n"]), bool(a["on"])
         if self.run and self.run.state == "running":
             raise AppError("측정 중 · 수동 릴레이 못 씀")
+        if self.rt is not None and self.rt.active:
+            raise AppError("R–T 측정 중 · 수동 릴레이 못 씀")
         if on and not self.cfg.get("relay.items")[n - 1].get("enabled"):
             raise AppError("R%d 사용 안 함 · 장비 설정 8" % n)
         if self.motion.estop_locked and on:
@@ -1389,6 +1405,13 @@ class App:
             return "%s 중 · 끝난 뒤" % self.busy, []
         if self.run and self.run.state in ("ready", "running", "paused", "stopping"):
             return "측정 중", []
+        if self.rt is not None and self.rt.active:
+            return "R–T 측정 중", []
+        if conditions.uses_rt(cond):
+            import rt as rt_mod
+            why = rt_mod.RTRun.start_block(self, "rt", check_pin=False)
+            if why:
+                return why, []
         if not self.shot or not self.samples:
             return "촬영 필요", []
         if not self.calib.ready(self.ref_id(), self._size()):
@@ -1509,6 +1532,280 @@ class App:
     # ------------------------------------------------------------------
     # 결과
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 측정 장비(VISA) · R–T 측정
+    # ------------------------------------------------------------------
+    def _lab_install(self):
+        """시뮬레이션: 가짜 장비 세계를 만들어 VISA 자리에 꽂는다(실장비에서는 호출하지 않는다)."""
+        if self.lab is not None:
+            return
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import fake_visa
+        clk = self.hub.clock
+
+        def heater():
+            return bool(self.power and self.power.owners.get(self.power.heater_n))
+
+        def cooler():
+            return bool(self.power and any(n != self.power.heater_n for n in self.power.owners))
+
+        def pin():
+            cz = self.cfg.get("contact_z_mm")
+            z = self.pos.get("z")
+            return cz is not None and z is not None and abs(float(z) - float(cz)) <= 0.5
+        self.lab = fake_visa.Lab(clock=clk.now, sleep=lambda s: time.sleep(s / clk.scale), heater_fn=heater, cooler_fn=cooler, pin_down_fn=pin)
+        fake_visa.install(self.lab)
+
+    def _inst_close(self, off=True):
+        for nm in ("k2450", "k2110"):
+            d = getattr(self, nm)
+            if d is None:
+                continue
+            try:
+                if off and nm == "k2450" and d.is_open:
+                    d.output(False)
+            except Exception:                              # noqa: BLE001
+                pass
+            d.close()
+            setattr(self, nm, None)
+
+    def _inst_off(self):
+        """비상정지 · 종료: K2450 출력 끄기(실패해도 계속)."""
+        d = self.k2450
+        if d is None or not d.is_open:
+            return
+        for _ in range(2):
+            try:
+                d.output(False)
+                return
+            except Exception:                              # noqa: BLE001
+                time.sleep(0.2)
+
+    def c_inst_list(self, a, gen):
+        from core import instruments as inst
+        if self.sim:
+            self._lab_install()
+        items, msg = inst.list_resources()
+        return {"items": items, "msg": msg}
+
+    def c_inst_connect(self, a, gen):
+        """K2110 · K2450 을 연다(읽기만 - *IDN? · 명령 세트). 출력은 켜지 않는다."""
+        from core import instruments as inst
+        self._no_run("장비 연결")
+        if self.sim:
+            self._lab_install()
+        self._inst_close()
+        info = {"k2110": None, "k2450": None, "msg": "", "test": self.inst_info.get("test")}
+        for nm, cls, addr in (("k2110", inst.K2110, self.cfg.get("rt.k2110_addr")), ("k2450", inst.K2450, self.cfg.get("rt.k2450_addr"))):
+            try:
+                d = cls(addr)
+                idn = d.open()
+                if nm == "k2450":
+                    ok, why = d.check_scpi()
+                    if not ok:
+                        d.close()
+                        info[nm] = {"ok": False, "addr": addr, "err": why}
+                        continue
+                setattr(self, nm, d)
+                info[nm] = {"ok": True, "addr": addr, "idn": idn}
+            except inst.VisaUnavailable as e:
+                info[nm] = {"ok": False, "addr": addr, "err": str(e)}
+                info["msg"] = str(e)
+            except inst.VisaError as e:
+                info[nm] = {"ok": False, "addr": addr, "err": logger.short(e)}
+        self.inst_info = info
+        logger.log("측정 장비 연결 · K2110 %s · K2450 %s" % ("연결" if info["k2110"] and info["k2110"]["ok"] else "안 됨", "연결" if info["k2450"] and info["k2450"]["ok"] else "안 됨"))
+        if not (info["k2110"] and info["k2110"]["ok"] and info["k2450"] and info["k2450"]["ok"]):
+            bad = [v["err"] for v in (info["k2110"], info["k2450"]) if v and not v["ok"]]
+            raise AppError(bad[0] if bad else "장비 연결 실패")
+        return {}
+
+    def c_inst_disconnect(self, a, gen):
+        self._no_run("장비 연결 끊기")
+        self._inst_close()
+        self.inst_info = {"k2110": None, "k2450": None, "msg": "", "test": None}
+
+    def c_inst_test(self, a, gen):
+        """연결 시험: 장비 이름 · 온도 1회 · 저항 1회. 저항 1회를 잴 때만 출력을 짧게 켜고 바로 끈다."""
+        import rt as rt_mod
+        from core import instruments as inst
+        self._no_run("연결 시험")
+        if not (self.k2110 and self.k2110.is_open and self.k2450 and self.k2450.is_open):
+            self.c_inst_connect({}, gen)
+        p = rt_mod.params(self.cfg)
+        res = {"k2110": self.k2110.idn_text, "k2450": self.k2450.idn_text, "temp": None, "R": None, "I": None, "err": ""}
+        self._begin("연결 시험")
+        try:
+            try:
+                self.k2110.configure(p["tc_type"], "REAL")
+                res["temp"] = self.k2110.read_temp()
+                self.k2450.configure({"terminal": p["terminal"], "four_wire": p["four_wire"], "volt": p["volt"], "ilim_a": p["ilim_a"],
+                                      "range_mode": p["range_mode"], "start_range": p["start_range"], "nplc": p["nplc"], "filter_n": p["filter_n"]})
+                self.k2450.output(True)
+                try:
+                    i, trip = self.k2450.read()
+                    if i is None and p["range_mode"] == "step":                       # 범위 넘음 - 한 단계 올려 한 번 더
+                        self.k2450.set_range(min(1.0, float(p["start_range"]) * 10.0))
+                        i, trip = self.k2450.read()
+                    res["I"] = i
+                    res["R"] = inst.resistance(p["volt"], i)
+                finally:
+                    self.k2450.output(False)
+            except inst.VisaError as e:
+                res["err"] = logger.short(e)
+        finally:
+            self._end()
+        self.inst_info["test"] = dict(res, t=time.strftime("%H:%M:%S"))
+        if res["err"]:
+            raise AppError(res["err"])
+        if res["temp"] is None:
+            raise AppError("온도 값 없음 · 열전대 확인")
+        return res
+
+    def cooler_relays_for(self, target, custom=""):
+        """쿨러 릴레이 목록. 샘플 구역은 지금 도구 위치(공구 오프셋 적용)가 속한 쿨러 구역."""
+        z = self.cfg.get("cooler.zones")
+        cells = z.get("cells") or []
+        if target == "all":
+            return sorted({int(c["relay"]) for c in cells if c.get("relay")})
+        if target == "custom":
+            return [int(x) for x in str(custom or "").split(",") if x.strip()]
+        c = self.calib
+        if c.H is None or not c.area:
+            return []
+        x, y = self.pos.get("x"), self.pos.get("y")
+        if x is None or y is None:
+            return []
+        tl = conditions.active_tool(self.cfg.values)
+        sx, sy = float(x) + float(tl.get("dx_mm") or 0.0), float(y) + float(tl.get("dy_mm") or 0.0)
+        u, v = c.mm_to_px(sx, sy)
+        size = c.measured_size_mm() or self.cfg.get("calib.area_size_mm")
+        Hp = geom.plate_homography(c.area, size)
+        lx, ly = geom.px_to_mm(Hp, u, v)
+        cell = zones.cell_at(z, size, lx, ly)
+        if cell is None:
+            return []
+        row, col = cell if isinstance(cell, tuple) else (cell // z["cols"], cell % z["cols"])
+        cc = z["cells"][row * z["cols"] + col]
+        return [int(cc["relay"])] if cc.get("relay") else []
+
+    def rt_block(self, mode="rt"):
+        import rt as rt_mod
+        if self.busy:
+            return "%s 중 · 끝난 뒤" % self.busy
+        if self.run and self.run.state in ("ready", "running", "paused", "stopping"):
+            return "측정 중"
+        if self.rt is not None and self.rt.active:
+            return "R–T 측정 중"
+        why = rt_mod.RTRun.start_block(self, mode, check_pin=True)
+        if why:
+            return why
+        hn = int(self.cfg.get("heater.relay"))
+        items = self.cfg.get("relay.items")
+        if not items[hn - 1].get("enabled"):
+            return "히트건 릴레이 사용 안 함 · 장비 설정 8"
+        try:
+            rl = self.cooler_relays_for(self.cfg.get("rt.cooler_target"), self.cfg.get("rt.cooler_custom"))
+        except Exception:                                    # noqa: BLE001
+            rl = []
+        if not rl:
+            return "쿨러 구역 없음 · 좌표 보정 또는 쿨러 선택"
+        off = [n for n in rl if not items[n - 1].get("enabled")]
+        if off:
+            return "R%d 사용 안 함 · 장비 설정 8" % off[0]
+        return ""
+
+    def _rt_launch(self, mode, gen, speed_s=20.0):
+        import rt as rt_mod
+        why = self.rt_block(mode)
+        if why:
+            raise AppError(why)
+        p = rt_mod.params(self.cfg)
+        self.hub.configure()
+        self.hub.start()
+        self._apply_motion_cfg()
+        if gen != self.motion.gen:
+            raise AppError("비상정지로 중단")
+        relays = self.cooler_relays_for(p["cooler_target"], p["cooler_custom"])
+        n0 = self.link_lost_count
+        self._begin("R–T 측정" if mode == "rt" else "속도 측정")
+        name = p["file_name"] if mode == "rt" else "speed_"
+        rr = rt_mod.RTRun(self, p, name, cancel_fn=lambda: self.link_lost_count != n0, relays=relays, mode=mode, speed_s=speed_s, gen=gen)
+        self.rt = rr
+        rr.thread = threading.Thread(target=rr.run, name="rt-run", daemon=True)
+        rr.thread.start()
+        logger.log("%s 시작 · %s" % ("R–T 측정" if mode == "rt" else "속도 측정", name))
+        return {"dir": rr.run_dir}
+
+    def c_rt_start(self, a, gen):
+        return self._rt_launch("rt", gen)
+
+    def c_rt_speed(self, a, gen):
+        """최대 속도 재기: 히트건만 n s · 쿨러만 n s 의 °C/분."""
+        return self._rt_launch("speed", gen, speed_s=float(a.get("s", 20.0)))
+
+    def c_rt_stop(self, a, gen):
+        if self.rt is None or not self.rt.active:
+            raise AppError("R–T 측정 중 아님")
+        self.rt.stop()
+
+    def c_rt_defaults(self, a, gen):
+        """측정 조건을 기본값으로(장비 주소는 그대로)."""
+        import rt as rt_mod
+        import settings_schema as sch
+        if self.rt is not None and self.rt.active:
+            raise AppError("R–T 측정 중 · 변경 잠김")
+        d = sch.defaults()["rt"]
+        patch = {"rt." + k: d[k] for k in rt_mod.RT_KEYS if k not in ("k2110_addr", "k2450_addr")}
+        ok, errs, _w = self.cfg.save(patch)
+        if not ok:
+            raise AppError("기본값 저장 실패 · " + next(iter(errs.values())))
+
+    def c_rt_nas_retry(self, a, gen):
+        """[NAS 로 다시 복사]: 마지막(또는 고른) R–T 측정의 파일을 NAS 로 다시 복사한다."""
+        r = self.rt
+        if r is None or r.active:
+            raise AppError("끝난 R–T 측정 없음")
+        try:
+            ok = r.retry_nas()
+        except Exception as e:                               # noqa: BLE001
+            raise AppError(logger.short(e))
+        if not ok:
+            raise AppError("NAS 에 쓰지 못함 · 경로 확인")
+        return {}
+
+    def on_rt_end(self, rr):
+        if self.busy in ("R–T 측정", "속도 측정"):
+            self._end()
+        if rr.status == "오류":
+            self.set_alarm("R–T 측정 오류 · " + rr.message[:50], "결과 탭에서 확인")
+        if rr.mode == "rt" and rr.status != "중지됨":
+            self._rt_cache.clear()
+        self._rt_cache.clear()
+        self.touch()
+
+    def rt_results(self):
+        import rt as rt_mod
+        root = os.path.join(paths.DATA_DIR, "measure")
+        try:
+            mt = os.path.getmtime(root)
+        except OSError:
+            return []
+        c = self._rt_cache.get("list")
+        if c is None or c[0] != mt:
+            c = (mt, rt_mod.list_results()[:40])
+            self._rt_cache["list"] = c
+        return c[1]
+
+    def rt_state(self):
+        import rt as rt_mod
+        r = self.rt
+        info = self.inst_info
+        return {"inst": {"k2110": info.get("k2110"), "k2450": info.get("k2450"), "msg": info.get("msg"), "test": info.get("test")},
+                "run": None if r is None else r.view(), "block": self.rt_block("rt"), "block_speed": self.rt_block("speed"),
+                "results": self.rt_results(), "keys": rt_mod.RT_KEYS}
+
     def results_list(self):
         """측정 폴더 목록(run.json 은 수정 시각이 바뀐 것만 다시 읽는다 - 폴더가 많아도 상태 전송이 느려지지 않게)."""
         out = []
@@ -1630,11 +1927,21 @@ class App:
             measure.FAULT[a["name"]] = a.get("on", True)
         elif op == "cam_delay":
             self.vision.synth.delay_s = float(a["s"])
+        elif op == "lab":                                  # 가짜 측정 장비 조작: fault(tc_open · disconnect · ilim · slow) · 모델 값
+            self._lab_install()
+            for k, v in (a.get("fault") or {}).items():
+                self.lab.fault[k] = v
+            for k, v in (a.get("set") or {}).items():
+                setattr(self.lab, k, v)
+            return {"T": self.lab.T, "Ts": self.lab.Ts, "R": self.lab.resistance(), "out": self.lab.out_on, "cmds": list((self.k2450.cmds if self.k2450 else [])[-60:]),
+                    "cmds2110": list((self.k2110.cmds if self.k2110 else [])[-20:]), "err": [d.err for d in self.lab.dev.values()]}
         return {}
 
     def c_shutdown_check(self, a, gen):
         if self.run and self.run.state in ("ready", "running", "paused", "stopping"):
             raise AppError("측정 중 · 중지한 뒤 종료")
+        if self.rt is not None and self.rt.active:
+            raise AppError("R–T 측정 중 · 중지한 뒤 종료")
         if self.busy:
             raise AppError("%s 중 · 끝난 뒤 종료" % self.busy)
         if self.motion and (self.motion.moving or not self.motion.lock.acquire(blocking=False)):
@@ -1652,6 +1959,15 @@ class App:
         if self.run and self.run.thread and self.run.thread.is_alive():
             self.run.stop()                                  # 측정 스레드를 먼저 멈추고 기다린다(릴레이를 끈 뒤 다시 켜지 못하게)
             self.run.thread.join(10.0)
+        if self.rt is not None and self.rt.active:
+            self.rt.stop()
+            th = getattr(self.rt, "thread", None)
+            if th is not None:
+                th.join(10.0)
+        try:
+            self._inst_close()                               # K2450 출력 끄고 닫기
+        except Exception:                                    # noqa: BLE001
+            pass
         try:
             if self.power:
                 if self.cfg.get("relay.on_exit") == "off":
@@ -1756,6 +2072,7 @@ class App:
             "tool": conditions.active_tool(cfg.values),
             "results": self.results_list()[:30] if not str(self.phase()).startswith("측정 중") else [],
             "start_block": self._start_block(),
+            "rt": self.rt_state(),
         }
         if self.last_run is not None and (self.run is self.last_run):
             st["run"] = self.last_run.view()

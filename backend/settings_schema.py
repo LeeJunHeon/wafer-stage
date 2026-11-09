@@ -34,6 +34,7 @@ TABS = [
     ("tool", "공구"),
     ("relay", "릴레이"),
     ("measure", "릴레이 · 접촉 높이"),
+    ("rt", "R–T 측정"),
     ("condition", "측정 순서"),
     ("detect", "검출"),
     ("advanced", "고급"),
@@ -317,6 +318,61 @@ ITEMS = [
     I("sim.time_scale", 1.0, "float", "measure", "시뮬레이터(테스트용)", "시간 배율",
       "대기 · 히트건 단계의 시간을 이 배율로 빠르게 합니다(시뮬레이션에서만, 검증용. 실장비에서는 1).",
       min=0.1, max=1000, step=0.5, apply="즉시", advanced=True),
+    # ---------------- R–T 측정 (저항–온도) ----------------
+    I("rt.k2110_addr", "USB0::0x05E6::0x2110::INSTR", "str", "rt", "측정 장비", "K2110 주소",
+      "온도(열전대)를 재는 Keithley 2110 의 VISA 주소입니다. 장비 설정 8 의 목록에서 고릅니다.", apply="다음 측정"),
+    I("rt.k2450_addr", "GPIB0::18::INSTR", "str", "rt", "측정 장비", "K2450 주소",
+      "전압을 걸고 전류를 재는 Keithley 2450 의 VISA 주소입니다.", apply="다음 측정"),
+    I("rt.precool_c", 24.5, "float", "rt", "온도", "예비 냉각 목표", "측정 전에 이 온도 미만이 될 때까지 쿨러로 식힙니다.",
+      min=-20, max=200, step=0.5, unit="°C", apply="다음 측정"),
+    I("rt.hold_s", 0.0, "float", "rt", "온도", "도달 뒤 유지", "예비 냉각 목표 미만에 닿은 뒤 이 시간만큼 더 유지합니다.",
+      min=0, max=3600, step=1, unit="s", apply="다음 측정"),
+    I("rt.max_temp", 85.0, "float", "rt", "온도", "최고 온도", "가열이 이 온도를 넘으면 냉각으로 바꿉니다.",
+      min=30, max=300, step=1, unit="°C", apply="다음 측정", validate="rt"),
+    I("rt.break_temp", 25.0, "float", "rt", "온도", "냉각 끝 온도", "냉각 중 이 온도 미만이 되면 그 회차를 끝냅니다.",
+      min=-20, max=200, step=0.5, unit="°C", apply="다음 측정", validate="rt"),
+    I("rt.repeat", 3, "int", "rt", "온도", "반복 횟수", "가열과 냉각을 한 회로 세는 반복 횟수입니다.",
+      min=1, max=50, step=1, apply="다음 측정"),
+    I("rt.heat_rate", 0.0, "float", "rt", "온도", "가열 속도", "0 은 최대입니다. 값이 있으면 목표 온도선을 이 속도로 올리고 히트건을 켜고 끄며 따라갑니다.",
+      min=0, max=600, step=0.5, unit="°C/분", apply="다음 측정"),
+    I("rt.cool_rate", 0.0, "float", "rt", "온도", "냉각 속도", "0 은 최대입니다. 값이 있으면 선보다 빨리 식을 때만 히트건을 잠깐씩 켜서 늦춥니다.",
+      min=0, max=600, step=0.5, unit="°C/분", apply="다음 측정"),
+    I("rt.band_c", 0.5, "float", "rt", "온도 제어", "띠", "실제 온도가 목표선보다 이만큼 낮으면 켜고 높으면 끕니다.",
+      min=0.05, max=20, step=0.05, unit="°C", apply="다음 측정"),
+    I("rt.min_on_s", 2.0, "float", "rt", "온도 제어", "최소 켜짐 시간", "히트건을 한 번 켜면 최소 이 시간은 켜 둡니다.",
+      min=0, max=60, step=0.5, unit="s", apply="다음 측정"),
+    I("rt.min_off_s", 2.0, "float", "rt", "온도 제어", "최소 꺼짐 시간", "히트건을 한 번 끄면 최소 이 시간은 꺼 둡니다.",
+      min=0, max=60, step=0.5, unit="s", apply="다음 측정"),
+    I("rt.emergency_c", None, "float", "rt", "안전", "비상 차단 온도", "이 온도 이상이면 히트건을 즉시 끄고 측정을 오류로 끝냅니다. 비우면 최고 온도 + 10 °C 입니다.",
+      nullable=True, min=30, max=400, step=1, unit="°C", apply="다음 측정", validate="rt"),
+    I("rt.phase_limit_s", 1800.0, "float", "rt", "안전", "단계 시간 한도", "예비 냉각 · 가열 · 냉각 한 단계가 이 시간을 넘으면 오류로 끝냅니다.",
+      min=10, max=86400, step=60, unit="s", apply="다음 측정"),
+    I("rt.min_interval_s", 0.0, "float", "rt", "기록", "최소 기록 간격", "0 이면 장비가 읽는 속도대로 기록합니다.",
+      min=0, max=60, step=0.1, unit="s", apply="다음 측정"),
+    I("rt.stale_s", 3.0, "float", "rt", "안전", "온도 갱신 한도", "온도 값이 없거나 이 시간 동안 새 값이 없으면 히트건을 끄고 오류로 끝냅니다.",
+      min=1, max=60, step=0.5, unit="s", apply="다음 측정"),
+    I("rt.volt", 1.0, "float", "rt", "K2450", "Set voltage", "시료에 거는 전압입니다. 저항은 이 값을 전류로 나눠 구합니다.",
+      min=0.001, max=200, step=0.1, unit="V", apply="다음 측정"),
+    I("rt.ilim_a", 0.01, "float", "rt", "K2450", "전류 한도", "전압 소스의 전류 한도입니다. 기존 프로그램에는 없던 값이라 기본 10 mA 로 둡니다.",
+      min=1e-6, max=1.0, step=0.001, unit="A", apply="다음 측정"),
+    I("rt.four_wire", True, "bool", "rt", "K2450", "4단자", "원격 감지(4단자)를 켭니다.", apply="다음 측정"),
+    I("rt.terminal", "FRONT", "enum", "rt", "K2450", "단자", "앞면 또는 뒷면 단자입니다.",
+      options=[{"value": "FRONT", "label": "앞"}, {"value": "REAR", "label": "뒤"}], apply="다음 측정"),
+    I("rt.filter_n", 10, "int", "rt", "K2450", "필터 개수", "반복 방식 평균 필터의 읽기 개수입니다.", min=1, max=100, step=1, apply="다음 측정"),
+    I("rt.nplc", 1.0, "float", "rt", "K2450", "적분", "전류 측정 적분 시간(전원 주기 수)입니다.", min=0.01, max=10, step=0.01, unit="NPLC", apply="다음 측정"),
+    I("rt.range_mode", "step", "enum", "rt", "K2450", "범위 방식",
+      "단계는 기존 프로그램처럼 전류가 범위 끝 근처일 때 10배씩 올리고 내립니다. 자동은 장비 자동 범위입니다.",
+      options=[{"value": "step", "label": "단계"}, {"value": "auto", "label": "장비 자동"}], apply="다음 측정"),
+    I("rt.start_range", 0.001, "float", "rt", "K2450", "시작 범위", "전류 측정 범위의 시작값입니다.", min=1e-8, max=1.0, step=0.001, unit="A", apply="다음 측정", validate="rt"),
+    I("rt.tc_type", "K", "enum", "rt", "열전대", "종류", "열전대 종류입니다. 기준점은 장비 내부입니다.",
+      options=[{"value": v, "label": v} for v in ("K", "J", "T", "E", "N", "R", "S", "B")], apply="다음 측정"),
+    I("rt.cooler_target", "sample", "enum", "rt", "쿨러", "쿨러", "샘플 구역은 지금 위치로 구역을 계산합니다. 직접은 아래 릴레이 번호를 씁니다.",
+      options=[{"value": "sample", "label": "샘플 구역"}, {"value": "all", "label": "전부"}, {"value": "custom", "label": "직접"}], apply="다음 측정"),
+    I("rt.cooler_custom", "", "str", "rt", "쿨러", "직접 선택", "쉼표로 나눈 릴레이 번호입니다(예 1,2,5). 쿨러 대상이 직접일 때만 씁니다.", apply="다음 측정", validate="rt"),
+    I("rt.file_path", "\\\\VanaM_NAS\\VanaM_VO2\\VO2 data", "str", "rt", "저장", "File path", "측정 파일을 한 번 더 복사할 NAS 폴더입니다. 못 쓰면 경고만 하고 측정은 계속합니다. 비우면 PC 에만 저장합니다.", apply="다음 측정"),
+    I("rt.file_name", "1-1_", "str", "rt", "저장", "File name", "파일 이름의 앞부분입니다. 뒤에 Set voltage · 회차가 붙습니다.", apply="다음 측정", validate="rt"),
+    I("rt.cooler_off_end", True, "bool", "rt", "끝", "끝나면 쿨러 끔", "측정이 끝나면 쿨러를 끕니다.", apply="다음 측정"),
+    I("rt.z_top_end", True, "bool", "rt", "끝", "끝나면 Z 맨 위", "측정이 끝나면 Z 를 맨 위로 올립니다.", apply="다음 측정"),
     # ---------------- 측정 순서 ----------------
     I("condition.items", conditions.default_conditions(), "list", "condition", "측정 조건", "측정 조건",
       "샘플마다 실행할 단계 순서입니다. 첫 단계는 샘플 위로 이동입니다.",
@@ -837,8 +893,33 @@ def _v_condition_active(key, v, values, errs, warns):
         errs[key] = "목록에 없는 측정 조건"
 
 
+def _v_rt(key, v, values, errs, warns):
+    mx, brk = _num(get_path(values, "rt.max_temp")), _num(get_path(values, "rt.break_temp"))
+    if key == "rt.break_temp" and mx is not None and brk is not None and brk >= mx:
+        errs[key] = "최고 온도(%g)보다 낮아야 함" % mx
+    elif key == "rt.emergency_c" and v is not None and mx is not None and v <= mx:
+        errs[key] = "최고 온도(%g)보다 높아야 함" % mx
+    elif key == "rt.start_range":
+        if not any(abs(math.log10(v / r)) < 1e-6 for r in (1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0)):
+            errs[key] = "10 nA~1 A 의 10배 단위"
+    elif key == "rt.cooler_custom":
+        txt = (v or "").strip()
+        if txt:
+            try:
+                ns = [int(x) for x in txt.split(",")]
+            except ValueError:
+                errs[key] = "릴레이 번호를 쉼표로"
+                return
+            hr = _num(get_path(values, "heater.relay"))
+            if any(n < 1 or n > N_RELAY or (hr is not None and n == int(hr)) for n in ns):
+                errs[key] = "1~10 (히트건 제외)"
+    elif key == "rt.file_name":
+        if not v or any(c in v for c in '\\/:*?"<>|'):
+            errs[key] = "파일 이름에 쓸 수 없는 글자 · 빈 값"
+
+
 VALIDATORS = {
-    "contact_z": _v_contact_z, "xy_in_limits": _v_xy_in_limits, "seed_grow": _v_seed_grow, "tol_warn": _v_tol_warn,
+    "rt": _v_rt, "contact_z": _v_contact_z, "xy_in_limits": _v_xy_in_limits, "seed_grow": _v_seed_grow, "tol_warn": _v_tol_warn,
     "head_id": _v_head_id, "jog_steps": _v_jog_steps, "touch_max": _v_touch_max,
     "markers": _v_markers, "zones": _v_zones, "area_size": _v_area_size, "tools": _v_tools, "tool_active": _v_tool_active,
     "relays": _v_relays, "conditions": _v_conditions, "condition_active": _v_condition_active,
