@@ -26,7 +26,7 @@ function frame(svg, W, H, m, xr, yr, o) {
   const lg = o.ylog, ly = (y) => Math.log10(Math.max(y, 1e-300));
   const py = lg ? (y) => m.t + ph - ((ly(y) - ly(yr[0])) / (ly(yr[1]) - ly(yr[0]))) * ph : (y) => m.t + ph - ((y - yr[0]) / (yr[1] - yr[0])) * ph;
   svg.append(svgEl("rect", { x: m.l, y: m.t, width: pw, height: ph, fill: "#fbfcfd", stroke: "#9aa1a8" }));
-  const xs = niceStep(xr[1] - xr[0], o.xticks || 10);
+  const xs = niceStep(xr[1] - xr[0], Math.max(3, Math.min(o.xticks || 10, Math.floor(pw / 62))));
   for (let x = Math.ceil(xr[0] / xs) * xs; x <= xr[1] + 1e-9; x += xs) {
     svg.append(svgEl("line", { x1: px(x), x2: px(x), y1: m.t, y2: m.t + ph, stroke: "#e1e5e9" }));
     svg.append(svgEl("text", { x: px(x), y: m.t + ph + 18, "text-anchor": "middle", "font-size": 13, fill: "#3b434b" }, o.xfmt ? o.xfmt(x) : String(Math.round(x * 100) / 100)));
@@ -59,6 +59,11 @@ function dots(g, pts, col, r) { if (!pts.length) return; g.append(svgEl("path", 
 function poly(g, pts, col, w, dash) { if (pts.length < 2) return; g.append(svgEl("path", { d: "M" + pts.map((p) => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L"), stroke: col, "stroke-width": w, fill: "none", "stroke-linejoin": "round", "stroke-dasharray": dash || null })); }
 /* 읽는 값은 오른쪽 바깥 띠에 적고 지시선으로 마지막 점과 잇는다. 지시선은 데이터 점과 가장 덜 겹치는 방향(오른쪽 · 위 · 아래)으로 그림 밖까지 나간 뒤 바깥 띠를 따라 글자에 닿는다. */
 function readout(f, last, lines, col, all) {
+  if (!last && lines.length === 1 && lines[0] === "값 없음") {                  // 데이터가 없으면 그래프 칸 안 가운데 옅은 안내
+    const svg0 = f.g.parentNode;
+    svg0.append(svgEl("text", { x: f.m.l + f.pw / 2, y: f.m.t + f.ph / 2, "text-anchor": "middle", "font-size": 15, fill: "#8a929b", opacity: 0.8 }, "측정하면 여기에 그려집니다"));
+    return;
+  }
   const { m } = f, svg = f.g.parentNode, right = m.l + f.pw, bottom = m.t + f.ph;
   const x0 = right + 14, y0 = Math.max(m.t + 18, Math.min(bottom - 8 - lines.length * 18, last ? last[1] - 18 : m.t + 18));
   if (last && last[0] >= m.l && last[0] <= right) {
@@ -78,7 +83,7 @@ function readout(f, last, lines, col, all) {
 
 /* ---- 저항–온도 그래프 ---- */
 function drawRT(svg, s) {
-  const W = 1200, H = 470, m = { l: 78, r: 190, t: 36, b: 52 };
+  const [W, H] = boxSize(svg, 1200, 470), m = { l: 66, r: Math.max(70, Math.min(150, W * 0.24)), t: 34, b: 48 };
   const pts = T.pts.filter((p) => p.T != null && p.R != null && (p.ph === "가열" || p.ph === "냉각"));
   const rg = UI.rtRange(pts.map((p) => p.T), pts.map((p) => p.R));
   const f = frame(svg, W, H, m, rg.x, rg.y, { ylog: true, xlabel: "온도 [°C]", ylabel: "저항 [Ω]", xticks: 13 });
@@ -96,13 +101,13 @@ function drawRT(svg, s) {
 
 /* ---- 온도–시간 그래프 ---- */
 function drawTt(svg, s) {
-  const W = 1200, H = 330, m = { l: 78, r: 190, t: 40, b: 70 };
+  const [W, H] = boxSize(svg, 1200, 330), m = { l: 66, r: Math.max(70, Math.min(150, W * 0.24)), t: 38, b: 64 };
   const pts = T.pts;
   const tmax = Math.max(60, ...pts.map((p) => p.t));
   const tv = pts.filter((p) => p.T != null);
   const ymin = Math.min(20, ...(tv.length ? tv.map((p) => p.T) : [20])), ymax = Math.max(90, ...(tv.length ? tv.map((p) => p.T) : [90]), ...pts.map((p) => p.tgt == null ? 0 : p.tgt));
   const unitMin = tmax > 600;
-  const f = frame(svg, W, H, m, [0, unitMin ? tmax / 60 : tmax], [Math.floor(ymin / 5) * 5, Math.ceil(ymax / 5) * 5], { xlabel: "Time [" + (unitMin ? "min" : "s") + "]", ylabel: "Temp [°C]", xticks: 12 });
+  const f = frame(svg, W, H, m, [0, unitMin ? tmax / 60 : tmax], [Math.floor(ymin / 5) * 5, Math.ceil(ymax / 5) * 5], { xlabel: "시간 [" + (unitMin ? "분" : "s") + "]", ylabel: "온도 [°C]", xticks: 12 });
   const X = (t) => f.px(unitMin ? t / 60 : t);
   const segs = [];
   pts.forEach((p) => { const k = p.ph + "|" + p.cy; const sg = segs[segs.length - 1]; if (sg && sg.k === k) { sg.a.push(p); } else segs.push({ k, ph: p.ph, cy: p.cy, a: [p] }); });
@@ -138,7 +143,7 @@ async function fetchPts() {
 }
 setInterval(() => {
   const s = UI.state;
-  if (!s || UI.tab !== "measure" || M.sub !== "here") return;
+  if (!s || UI.tab !== "measure") return;
   const run = s.rt && s.rt.run;
   const active = run && (run.state === "running" || run.state === "stopping");
   const need = active || (run && (run.n_points || 0) !== T.n) || !T.id;
@@ -146,150 +151,25 @@ setInterval(() => {
 }, 400);
 function redrawGraphs() { if (T.svgRT) drawRT(T.svgRT, UI.state); if (T.svgTt) drawTt(T.svgTt, UI.state); }
 
-/* ---- 화면 만들기 ---- */
+/* ---- 화면 만들기: 그래프 둘(카메라 아래) ---- */
+function boxSize(svg, dw, dh) { const p = svg.parentNode, w = p && p.clientWidth, hh = p && p.clientHeight; return w > 200 && hh > 120 ? [w, hh] : [dw, dh]; }
 function buildHere() {
+  if (T.built) return;
   T.svgRT = svgEl("svg", { class: "gsvg", id: "g-rt", preserveAspectRatio: "xMidYMid meet" });
   T.svgTt = svgEl("svg", { class: "gsvg", id: "g-tt", preserveAspectRatio: "xMidYMid meet" });
-  T.left = h("div", { class: "col", id: "rt-left" }, h("div", { class: "graph gbox", id: "gb-rt" }, T.svgRT), h("div", { class: "graph gbox", id: "gb-tt" }, T.svgTt));
-  T.right = h("div", { class: "col", id: "rt-right" });
+  T.graphs = h("div", { class: "mgraphs" }, h("div", { class: "graph gbox", id: "gb-rt" }, T.svgRT), h("div", { class: "graph gbox", id: "gb-tt" }, T.svgTt));
+  let raf = 0;
+  const ro = new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { if (T.svgRT && T.svgRT.parentNode.clientWidth) redrawGraphs(); }); });
+  ro.observe(T.graphs); ro.observe(T.svgRT.parentNode); ro.observe(T.svgTt.parentNode);
   T.built = true;
 }
 function rtEdit(s) { return s.settings.rt; }
 function rtLock(s) { const r = s.rt && s.rt.run; return r && (r.state === "running" || r.state === "stopping") ? "R–T 측정 중 · 변경 잠김" : ""; }
-function numField(s, key, unit, step, lock, nullable) {
-  const v = rtEdit(s)[key];
-  const inp = h("input", { type: "number", step: step || "any", value: v == null ? "" : v, disabled: !!lock, "data-key": key,
-    onchange: async (e) => { const raw = e.target.value; const val = raw === "" && nullable ? null : Number(raw); const r = await send("settings_save", { patch: { ["rt." + key]: val } }); if (!r.ok) { e.target.value = v == null ? "" : v; } } });
-  return h("span", { class: "fld" }, inp, h("span", { class: "u", text: unit || "" }));
-}
-function selField(s, key, opts, lock) {
-  const v = rtEdit(s)[key];
-  return h("select", { disabled: !!lock, onchange: (e) => send("settings_save", { patch: { ["rt." + key]: e.target.value } }) }, opts.map(([val, l]) => h("option", { value: val, text: l, selected: val === v })));
-}
-function txtField(s, key, lock, w) {
-  const v = rtEdit(s)[key];
-  return h("input", { type: "text", value: v == null ? "" : v, disabled: !!lock, class: w || "", onchange: async (e) => { const r = await send("settings_save", { patch: { ["rt." + key]: e.target.value } }); if (!r.ok) e.target.value = v; } });
-}
-function chkField(s, key, label, lock) {
-  const v = rtEdit(s)[key];
-  return h("label", { class: "chk" }, h("input", { type: "checkbox", checked: !!v, disabled: !!lock, onchange: (e) => send("settings_save", { patch: { ["rt." + key]: e.target.checked } }) }), label);
-}
-function kvRow(label, ...ctl) { return [h("label", { text: label }), h("span", { class: "row" }, ...ctl)]; }
-function group(name, title, ...kids) {
-  return h("div", { class: "grp" }, h("div", { class: "gtitle", "data-act": "rt-open", "data-args": JSON.stringify({ g: name }), text: (T.open[name] ? "▾ " : "▸ ") + title }), T.open[name] ? h("div", { class: "rtgrid" }, ...kids.flat()) : null);
-}
-
-function renderHere(s) {
-  if (!T.built) buildHere();
-  const rt = s.rt, run = rt.run, active = run && (run.state === "running" || run.state === "stopping");
-  const lock = rtLock(s), st = s.stage;
-  if (M.body.firstChild !== T.left) M.body.replaceChildren(T.left, T.right);
-  const sig = JSON.stringify([s.dev, s.settings.rt, rt.inst, rt.block, rt.block_speed, T.open, T.jog, T.sampleNo, s.samples.map((p) => p.no + ":" + p.X), st && [st.locked, st.z_ok, st.moving, st.z > 0.05], s.contact, active, run && [run.state, run.status, run.message, run.warns, run.nas, run.speed], s.camera.busy, s.phase === "이동 중", s.run && s.run.state]);
-  if (sig !== T.sig) { T.sig = sig; renderHereRight(s); }
-  updateHereDynamic(s);
-  if (T.pts.length && !T.drawn) { T.drawn = true; redrawGraphs(); }
-  if (!T.drawn) { T.drawn = true; redrawGraphs(); }
-}
-
-function renderHereRight(s) {
-  const rt = s.rt, run = rt.run, st = s.stage;
-  const active = run && (run.state === "running" || run.state === "stopping");
-  const lock = rtLock(s), tourBusy = s.run && ["running", "paused", "stopping"].includes(s.run.state);
-  const busyWhy = lock || (tourBusy ? "샘플 순회 중" : "") || (s.camera.busy ? s.camera.busy + " 중" : "") || (!st ? "스테이지 연결 안 됨" : "") || (st && st.locked ? "비상정지 잠금" : "") || (st && !(st.z_ok && st.xy_ok) ? "원점 필요" : "");
-  const moveWhy = busyWhy || (st && st.moving ? "이동 중" : "");
-  /* 위치 카드 */
-  const jb = (l, axis, mm, why) => btn(l, "rt-jog", { axis, mm }, "", "", why);
-  /* 조그 스텝: 기본 1 mm. 10 mm 이하만 보이고 큰 값(50 mm 등)은 "⋯" 안에 둔다(고르면 그 값이 보임) */
-  const allSteps = s.settings.jog.steps || [0.1, 1, 10, 50], small = allSteps.filter((v) => v <= 10), big = allSteps.filter((v) => v > 10);
-  const stepSel = h("div", { class: "row" }, ...small.map((v) => btn(String(v), "rt-jstep", { v }, "sm " + (T.jog === v ? "on" : ""))), big.includes(T.jog) ? btn(String(T.jog), "rt-jstep", { v: T.jog }, "sm on") : null,
-    big.length ? moreBtn(big.map((v) => ({ label: v + " mm", fn: () => { T.jog = v; T.sig = ""; render(); } }))) : null, h("span", { class: "sub3", text: "mm" }));
-  const pad = h("div", { class: "pad" }, h("span"), jb("Y−", "y", -T.jog, moveWhy), h("span"), jb("X−", "x", -T.jog, moveWhy), h("span", { class: "padc", text: "XY" }), jb("X+", "x", T.jog, moveWhy), h("span"), jb("Y+", "y", T.jog, moveWhy), h("span"));
-  const zpad = h("div", { class: "col zpad" }, jb("Z ↑", "z", -T.jog, moveWhy), jb("Z ↓", "z", T.jog, moveWhy));
-  const sampleSel = h("select", { onchange: (e) => { T.sampleNo = e.target.value ? Number(e.target.value) : null; T.sig = ""; } }, h("option", { value: "", text: "샘플 선택" }),
-    ...s.samples.filter((p) => p.X != null).map((p) => h("option", { value: p.no, text: p.no + "번 · " + Math.round(p.X) + ", " + Math.round(p.Y), selected: T.sampleNo === p.no })));
-  const pos = h("div", { class: "card" }, h("h3", { text: "위치" }),
-    h("div", { class: "row" }, h("b", { class: "mono", id: "rt-pos", text: st ? xy(st.x, st.y) + " · Z " + f1(st.z, 2) : "—" }), h("span", { class: "grow" }), h("span", { class: "sub", text: s.contact.z == null ? "접촉 높이 없음" : "접촉 높이 Z " + f1(s.contact.z, 2) + " mm" })),
-    h("div", { class: "row jrow" }, pad, zpad, h("div", { class: "col grow" }, stepSel,
-      h("div", { class: "row" }, btn("접촉 높이로 내리기", "rt-down", null, "primary", "저장한 접촉 높이까지 내립니다. 지금 X · Y 에서 그대로 내리니 핀이 샘플 위인지 눈으로 확인하십시오. 마지막 " + s.contact.approach + " mm 는 느리게 내립니다.", moveWhy || (s.contact.z == null ? "접촉 높이 필요 · 장비 설정 7" : "")),
-        btn("Z 맨 위", "rt-ztop", null, "", "Z 를 맨 위로 올립니다.", busyWhy)))),
-    h("div", { class: "row" }, sampleSel, btn("샘플 위로", "rt-goto", null, "sm", "고른 샘플 위로 공구를 옮깁니다(좌표 보정이 있을 때).", moveWhy || (T.sampleNo == null ? "샘플을 먼저 고름" : ""))));
-  /* 측정 조건 카드 */
-  const L = lock, cs = rtEdit(s);
-  const rows = [
-    group("temp", "온도", ...kvRow("예비 냉각 목표", numField(s, "precool_c", "°C", 0.5, L)), ...kvRow("도달 뒤 유지", numField(s, "hold_s", "s", 1, L)),
-      ...kvRow("최고 온도 (max temp)", numField(s, "max_temp", "°C", 1, L)), ...kvRow("냉각 끝 온도 (temp to break)", numField(s, "break_temp", "°C", 0.5, L)), ...kvRow("반복 횟수 (#repeat)", numField(s, "repeat", "회", 1, L)),
-      ...kvRow("가열 속도", numField(s, "heat_rate", "°C/분 (0 = 최대)", 0.5, L)), ...kvRow("냉각 속도", numField(s, "cool_rate", "°C/분 (0 = 최대)", 0.5, L))),
-    group("ctl", "온도 제어 · 안전", ...kvRow("띠", numField(s, "band_c", "°C", 0.05, L)), ...kvRow("최소 켜짐", numField(s, "min_on_s", "s", 0.5, L)), ...kvRow("최소 꺼짐", numField(s, "min_off_s", "s", 0.5, L)),
-      ...kvRow("비상 차단", numField(s, "emergency_c", "°C (비우면 최고 온도 + 10)", 1, L, true)), ...kvRow("단계 시간 한도", numField(s, "phase_limit_s", "s", 60, L)),
-      ...kvRow("온도 갱신 한도", numField(s, "stale_s", "s", 0.5, L)), ...kvRow("최소 기록 간격", numField(s, "min_interval_s", "s", 0.1, L))),
-    group("k", "K2450 · 열전대", ...kvRow("전압 (Set voltage)", numField(s, "volt", "V", 0.1, L)), ...kvRow("전류 한도", numField(s, "ilim_a", "A", 0.001, L)),
-      ...kvRow("평균 횟수 (Number of Filter Readings)", numField(s, "filter_n", "", 1, L)), ...kvRow("NPLC", numField(s, "nplc", "", 0.01, L)),
-      ...kvRow("범위 방식", selField(s, "range_mode", [["step", "단계(기존)"], ["auto", "장비 자동"]], L)), ...kvRow("시작 범위", numField(s, "start_range", "A", 0.001, L)),
-      ...kvRow("4단자 (4P)", chkField(s, "four_wire", "켬", L)), ...kvRow("단자", selField(s, "terminal", [["REAR", "뒷면 (REAR)"], ["FRONT", "앞면 (FRONT)"]], L)), ...kvRow("열린 회로 하한", numField(s, "open_a", "A", 1e-9, L)), ...kvRow("열전대", selField(s, "tc_type", ["K", "J", "T", "E", "N", "R", "S", "B"].map((v) => [v, v]), L), h("span", { class: "sub", text: "기준점 내부" }))),
-    group("misc", "쿨러 · 저장", ...kvRow("쿨러", selField(s, "cooler_target", [["sample", "샘플 구역"], ["all", "전부"], ["custom", "직접"]], L)),
-      ...(cs.cooler_target === "custom" ? kvRow("릴레이 번호", txtField(s, "cooler_custom", L)) : []),
-      ...kvRow("기본 폴더 (File path)", txtField(s, "file_path", L, "wide")), ...kvRow("날짜 폴더 자동", chkField(s, "date_folder", "연도 · YYYYMMDD 를 붙임", L)), ...kvRow("묶음 폴더", txtField(s, "batch_folder", L)),
-      ...kvRow("최종 경로", h("span", { class: "sub mono nasprev", id: "rt-nas-prev", text: UI.nasPath(cs.file_path, cs.date_folder, cs.batch_folder) || "PC 에만 저장" })),
-      ...kvRow("파일 이름 (File name)", txtField(s, "file_name", L)),
-      ...kvRow("끝나면", chkField(s, "cooler_off_end", "쿨러 끔", L), chkField(s, "z_top_end", "Z 맨 위", L))),
-  ];
-  const cond = h("div", { class: "card grow scroll", id: "rt-cond" }, h("div", { class: "row" }, h("h3", { class: "grow", text: "측정 조건" }), btn("기본값으로", "rt-defaults", null, "sm", "측정 조건을 기본값(기존 프로그램 값)으로 되돌립니다. 장비 주소는 그대로입니다.", lock)), ...rows);
-  /* 상태 카드 */
-  const ik = rt.inst, ok1 = ik.k2110 && ik.k2110.ok, ok2 = ik.k2450 && ik.k2450.ok;
-  const instRow = h("div", { class: "row wrap" },
-    h("span", { class: "grow" }), moreBtn([
-      { label: "장비 연결", fn: () => UI.acts["rt-connect"](), why: lock || (ok1 && ok2 ? "이미 연결됨" : "") },
-      { label: "최대 속도 재기 (히트건 20 s · 쿨러 20 s)", fn: () => send("rt_speed", { s: 20 }), why: active ? "측정 중" : rt.block_speed },
-      { label: "NAS 로 다시 복사", fn: async () => { const r = await send("rt_nas_retry"); if (r.ok) toast("NAS 로 복사함"); }, why: active ? "측정 중" : !run || run.mode !== "rt" ? "끝난 측정 없음" : "" },
-      { label: "결과 폴더 열기", fn: () => send("open_folder", { path: run && run.dir }), why: run ? "" : "측정 없음" }]));
-  const phaseText = !run ? "대기" : run.state === "running" || run.state === "stopping" ? phaseLabel(run) : run.status ? run.status + (run.message && run.status !== "완료" ? " · " + run.message : "") : "대기";
-  const gate = active ? null : gateOf(rt.block, s, { inst: true, down: true });
-  const startWhy = active ? "측정 중" : gate ? "시작할 수 없음 · 위 안내 먼저" : rt.block;
-  const spd = run && run.speed ? h("div", { class: "sub", text: "최대 속도 · 가열 " + run.speed.heat + " °C/분 · 냉각 " + run.speed.cool + " °C/분 (" + run.speed.s + " s 기준)" }) : null;
-  const stat = h("div", { class: "card", id: "rt-stat" }, h("h3", { text: "상태" }), instRow,
-    h("div", { class: "rtbig" }, h("div", {}, h("div", { class: "k", text: "온도" }), h("div", { class: "v", id: "rt-T", text: "—" })), h("div", {}, h("div", { class: "k", text: "저항" }), h("div", { class: "v", id: "rt-R", text: "—" })),
-      h("div", {}, h("div", { class: "k", text: "전류" }), h("div", { class: "v", id: "rt-I", text: "—" }))),
-    h("div", { class: "row" }, h("b", { id: "rt-phase", text: phaseText }), h("span", { class: "grow" }), h("span", { class: "sub", id: "rt-el", text: "" }), h("span", { class: "chip", id: "rt-heat", text: "히트건 꺼짐" }), h("span", { class: "chip", id: "rt-cool", text: "쿨러 꺼짐" })),
-    spd, run && run.warns && run.warns.length ? h("div", { class: "why one", "data-tip": run.warns.join(" / "), text: run.warns[run.warns.length - 1] + (run.warns.length > 1 ? "  (+" + (run.warns.length - 1) + ")" : "") }) : null,
-    h("div", { class: "row" }, btn("측정 시작", "rt-start", null, "primary lg grow", "예비 냉각 → 출력 켬 → 가열 · 냉각 반복을 시작합니다. 핀이 접촉 높이에 있어야 합니다.", startWhy), btn("중지", "rt-stop", null, "danger lg", "측정을 멈추고 히트건 · 출력을 끕니다.", active ? "" : "측정 중 아님")),
-    );
-  if (gate) stat.insertBefore(gateRow(gate), stat.lastChild);
-  T.right.replaceChildren(pos, cond, stat);
-}
 function phaseLabel(run) {
   const ph = run.phase || "";
   if (ph === "가열" || ph === "냉각") return ph + " " + run.cycle + " / " + run.repeat + "회";
   return ph || "시작 중";
 }
-function updateHereDynamic(s) {
-  const run = s.rt && s.rt.run, st = s.stage;
-  const set = (id, t) => { const e = $("#" + id); if (e && e.textContent !== t) e.textContent = t; };
-  if (st) set("rt-pos", xy(st.x, st.y) + " · Z " + f1(st.z, 2));
-  const live = run && (run.state === "running" || run.state === "stopping");
-  if (run) {
-    set("rt-T", run.T == null ? "—" : f1(run.T, 1) + " °C"); set("rt-R", run.R == null ? "—" : fmtE(run.R) + " Ω"); set("rt-I", run.I == null ? "—" : fmtE(run.I) + " A");
-    if (live) set("rt-phase", phaseLabel(run)); set("rt-el", live || run.status ? "경과 " + mmss(run.elapsed) : "");
-    const h_ = $("#rt-heat"), c_ = $("#rt-cool");
-    if (h_) { h_.textContent = "히트건 " + (run.heater ? "켜짐" : "꺼짐"); h_.className = "chip" + (run.heater ? " warn" : ""); }
-    if (c_) { c_.textContent = "쿨러 " + (run.cooler && run.cooler.length ? "켜짐 R" + run.cooler.join(",R") : "꺼짐"); c_.className = "chip" + (run.cooler && run.cooler.length ? " ok" : ""); }
-  }
-  /* 스테이지가 없으면 릴레이 상태는 알 수 없다 */
-  if (!(s.dev && s.dev.stage && s.dev.stage.state === "ok")) {
-    const h2 = $("#rt-heat"), c2 = $("#rt-cool");
-    if (h2) { h2.textContent = "히트건 —"; h2.className = "chip"; }
-    if (c2) { c2.textContent = "쿨러 —"; c2.className = "chip"; }
-  } else if (!run) {
-    const rl = s.relays || { owners: {}, heater_on: false }, h3 = $("#rt-heat"), c3 = $("#rt-cool");
-    const co = Object.keys(rl.owners).filter((n) => Number(n) !== Number(rl.heater) && rl.owners[n]);
-    if (h3) { h3.textContent = "히트건 " + (rl.heater_on ? "켜짐" : "꺼짐"); h3.className = "chip" + (rl.heater_on ? " warn" : ""); }
-    if (c3) { c3.textContent = "쿨러 " + (co.length ? "켜짐 R" + co.join(",R") : "꺼짐"); c3.className = "chip" + (co.length ? " ok" : ""); }
-  }
-  if (T.dirty) { T.dirty = false; redrawGraphs(); }
-}
-
-UI.acts["rt-open"] = (a) => { T.open[a.g] = !T.open[a.g]; T.sig = ""; render(); };
-UI.acts["rt-jstep"] = (a) => { T.jog = a.v; T.sig = ""; render(); };
-UI.acts["rt-jog"] = (a) => send("jog", { axis: a.axis, mm: a.mm });
 UI.acts["rt-down"] = async () => { const r = await send("contact_try", { free: true }); if (r.ok) toast("접촉 높이까지 내림"); };
 UI.acts["rt-ztop"] = () => send("z_top");
 UI.acts["rt-goto"] = () => { if (T.sampleNo != null) send("goto_sample", { no: T.sampleNo }); };

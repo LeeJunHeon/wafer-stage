@@ -99,9 +99,9 @@ def run_scenario(name, cfg, out, pw):
             pg.evaluate("send('inst_connect')")
             pg.wait_for_timeout(1500)
 
-        # ---- 측정 · 이 위치 측정 ----
+        # ---- 측정 화면(하나) ----
         goto_tab("measure")
-        shot("m1_here")
+        shot("m1_measure")
         head = pg.inner_text("#head")
         bands = pg.inner_text("#band") if pg.is_visible("#band") else ""
         s = state()
@@ -131,15 +131,13 @@ def run_scenario(name, cfg, out, pw):
             check("스테이지 연결 안 됨" in pg.inner_text("#gate") and pg.locator('#gate button:has-text("다시 연결")').count() == 1, "[%s] 시작 사유 = 스테이지 연결 안 됨 · [다시 연결]" % title)
             check("히트건 —" in txt and "쿨러 —" in txt, "[%s] 히트건 · 쿨러 상태 — (%s)" % (title, [l for l in txt.splitlines() if "히트건" in l][:1]))
 
-        # ---- 측정 · 샘플 순회 ----
-        pg.click('[data-act="m-sub"][data-args*="tour"]')
-        pg.wait_for_timeout(700)
-        shot("m2_tour")
+        # ---- 측정 화면: 샘플 · 사진 자리 ----
+        shot("m2_samples")
         txt = pg.inner_text("#tab-measure")
-        check(pg.locator("#tab-measure .why").count() == 0, "[%s] 순회 · 흩어진 빨간 문구 없음" % title)
+        check(pg.locator("#tab-measure .why").count() == 0, "[%s] 샘플 · 흩어진 빨간 문구 없음" % title)
         check("아직 촬영 안 함" in txt or name == "d_all", "[%s] 촬영 전 문구 = 작은 회색 안내" % title)
-        check(pg.locator("#tab-measure #gate").count() <= 1, "[%s] 순회 · 시작 사유 한 곳" % title)
-        check(no_broken(pg), "[%s] 깨진 이미지 없음 (tour)" % title)
+        check(pg.locator("#tab-measure #gate").count() <= 1, "[%s] 샘플 · 시작 사유 한 곳" % title)
+        check(no_broken(pg), "[%s] 깨진 이미지 없음 (samples)" % title)
         if not cam or name != "d_all":
             cap_dis = pg.evaluate("(() => { const b = [...document.querySelectorAll('#tab-measure .btn')].find((x) => x.textContent.trim() === '촬영'); return b ? b.classList.contains('dis') : null; })()")
             if name != "d_all":
@@ -147,17 +145,17 @@ def run_scenario(name, cfg, out, pw):
         # 실시간 · 촬영 사진 전환: 사진 자리가 빈 상태 안내
         pg.click('[data-act="m-mode"][data-args*="live"]')
         pg.wait_for_timeout(800)
-        shot("m3_tour_live")
-        ve = pg.inner_text("#m-view .empty") if pg.locator("#m-view .empty:not(.hidden)").count() else ""
+        shot("m3_live")
+        ve = pg.inner_text("#m-view .vp .empty") if pg.locator("#m-view .vp .empty:not(.hidden)").count() else ""
         if not cam:
             check("카메라 연결 안 됨" in ve and "다시 연결" in ve, "[%s] 실시간 자리 = 카메라 연결 안 됨 · [다시 연결] (%s)" % (title, ve))
         check(no_broken(pg), "[%s] 깨진 이미지 없음 (live)" % title)
         pg.click('[data-act="m-mode"][data-args*="shot"]')
         pg.wait_for_timeout(500)
         if name != "d_all":
-            ve = pg.inner_text("#m-view .empty") if pg.locator("#m-view .empty:not(.hidden)").count() else ""
+            ve = pg.inner_text("#m-view .vp .empty") if pg.locator("#m-view .vp .empty:not(.hidden)").count() else ""
             check("촬영 사진 없음" in ve and "촬영" in ve, "[%s] 촬영 사진 자리 = 촬영 사진 없음 · [촬영] (%s)" % (title, ve))
-            shot("m4_tour_shot")
+            shot("m4_shot")
 
         # ---- 결과 ----
         goto_tab("results")

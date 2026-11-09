@@ -2,7 +2,7 @@
    화면 원칙: 카드마다 주 동작 하나(보조는 ⋯) · 문제 있을 때만 상태 표시 · 모드 버튼 대신 사진을 직접 다룬다(끌어서 위치 수정 · 더블클릭으로 추가).
    온도 · 계측기는 이 프로그램에 없다(별도 프로그램). 남은 것은 이동 · 접촉 높이 · 쿨러 · 히트건 · 대기 · 확인 대기뿐. */
 "use strict";
-const M = { viewer: null, mode: "shot", zoom: "plate", rightSig: "", prepBuilt: false, cond: null, showSteps: false, dragNo: null, sub: "here", subSig: "" };
+const M = { viewer: null, mode: "live", zoom: "plate", rightSig: "", prepBuilt: false, cond: null, showSteps: false, dragNo: null, sub: "here", subSig: "" };
 const SCOL = { done: "#2b9a58", cur: "#2f6fdb", wait: "#8a929b", err: "#d03a3a", stop: "#e08a1e", skip: "#b9bdc2" };
 
 /* 카메라가 없을 때 사진 자리 안내 */
@@ -42,11 +42,10 @@ function buildPrep() {
   M.viewer.onHandleEnd = () => { const hnd = M.viewer.handles && M.viewer.handles[0]; if (hnd && M.dragNo != null) send("sample_move", { no: M.dragNo, u: hnd[0], v: hnd[1] }); };
   M.viewer.onApply = redrawOverlay;
   M.leftPrep = h("div", { class: "viewbox", id: "m-view" }, M.head, M.viewer.el, M.news);
-  M.right = h("div", { class: "col", id: "m-right" });
-  M.leftWrap = h("div", { class: "col", id: "m-left" }, M.leftPrep);
-  M.bar = h("div", { class: "msub" });
-  M.body = h("div", { class: "mrow" }, M.leftWrap, M.right);
-  pane.replaceChildren(h("div", { class: "col grow mwrap" }, M.bar, M.body));
+  buildHere();                                                            // R–T 그래프 둘(rt.js) - 카메라 아래
+  M.cardPos = h("div", { class: "card", id: "c-pos" }); M.cardSam = h("div", { class: "card", id: "c-samples" }); M.cardRun = h("div", { class: "card", id: "c-run" });
+  M.right = h("div", { class: "mright" }, h("div", { class: "mtop" }, M.cardPos, M.cardSam), M.cardRun);
+  pane.replaceChildren(h("div", { class: "mleft" }, M.leftPrep, T.graphs), M.right);
   UI.logRenders = UI.logRenders || [];
   UI.logRenders.push(renderNews);
   setInterval(refreshLive, 250);
@@ -83,42 +82,9 @@ UI.acts["log-all"] = () => {
 
 function refreshLive() {
   const s = UI.state;
-  if (!s || UI.tab !== "measure" || M.sub === "here" || M.mode !== "live" || !M.viewer || isRunning(s) || !s.camera.open) return;
+  if (!s || UI.tab !== "measure" || M.mode !== "live" || !M.viewer || isRunning(s) || !s.camera.open) return;
   const sz = s.camera.size || [1280, 960];
   M.viewer.set("/preview.jpg", sz[0], sz[1], Date.now());
-}
-
-function renderMeasure(s) {
-  if (!M.prepBuilt) buildPrep();
-  const running = isRunning(s);
-  if (UI.tab !== "measure") return;
-  if (running) M.sub = "tour";                                           // 샘플 순회 중에는 순회 화면만
-  const rtRun = s.rt && s.rt.run && (s.rt.run.state === "running" || s.rt.run.state === "stopping");
-  if (rtRun && M.sub !== "here") M.sub = "here";
-  const subSig = JSON.stringify([M.sub, running, rtRun]);
-  if (subSig !== M.subSig) {
-    M.subSig = subSig;
-    M.bar.replaceChildren(h("div", { class: "seg" }, btn("이 위치 측정", "m-sub", { m: "here" }, M.sub === "here" ? "on" : "", "핀을 조그로 샘플에 대고 저항–온도(R–T)를 잽니다.", running ? "샘플 순회 중" : ""),
-      btn("샘플 순회", "m-sub", { m: "tour" }, M.sub === "tour" ? "on" : "", "촬영한 샘플을 차례로 돌며 순회 단계대로 측정합니다.", rtRun ? "R–T 측정 중" : "")));
-    if (M.sub === "tour") { M.body.replaceChildren(M.leftWrap, M.right); M.rightSig = ""; }
-  }
-  if (M.sub === "here") { renderHere(s); return; }
-  renderLeft(s, running);
-  const run = s.run;
-  const sig = JSON.stringify([running, s.samples, s.sel, s.calib.status, s.shot && [s.shot.id, s.shot.cam && s.shot.cam.shift_mm], s.camera.cap_text, s.camera.busy, s.phase, s.start_block, s.active_condition,
-    s.conditions, s.can_undo, M.showSteps, M.cond, run && [run.state, run.cur, run.waiting, run.done, run.paused, Object.keys(run.results).length, run.steps.map((x) => x.state), run.warns.length],
-    s.stage && [s.stage.locked, s.stage.z_ok], s.ref && s.ref.time, s.settings.relay.items, s.contact.z, s.relays && s.relays.owners, s.dev, s.camera.state, s.camera.open]);
-  if (sig !== M.rightSig) { M.rightSig = sig; if (running) renderRunRight(s); else renderPrepRight(s); }
-  if (running) updateRunDynamic(s);
-}
-/* 시간이 흘러 바뀌는 값(남은 시간 · 경과)은 버튼을 다시 만들지 않고 제자리에서 고친다 */
-function updateRunDynamic(s) {
-  const run = s.run, li = $$("#run-steps li");
-  run.steps.forEach((st, i) => { const v = li[i] && li[i].querySelector(".val"); if (v && v.textContent !== (st.value || "")) v.textContent = st.value || ""; });
-  const pt = $("#run-prog-t");
-  if (pt) pt.textContent = run.done + " / " + run.n + "  ·  경과 " + mmss(run.elapsed) + "  ·  남은 시간 " + (run.remain == null ? "—" : "약 " + mmss(run.remain));
-  const cs = $("#run-cur");
-  if (cs && run.cur_sample) cs.textContent = xy(run.cur_sample.X, run.cur_sample.Y);
 }
 
 /* ---- 왼쪽 ---- */
@@ -132,7 +98,7 @@ function renderLeft(s, running) {
   } else {
     const seg = h("div", { class: "seg" }, btn("실시간", "m-mode", { m: "live" }, M.mode === "live" ? "on" : ""), btn("촬영 사진", "m-mode", { m: "shot" }, M.mode === "shot" ? "on" : ""));
     const seg2 = h("div", { class: "seg" }, btn("판 맞춤", "m-fit", { m: "plate" }, M.zoom === "plate" ? "on" : ""), btn("전체", "m-fit", { m: "all" }, M.zoom === "all" ? "on" : ""));
-    M.head.replaceChildren(seg, h("span", { class: "sub", text: M.mode === "shot" ? (sh ? "촬영 " + sh.time : "촬영 없음") : "실시간" }), h("span", { class: "grow" }), seg2);
+    M.head.replaceChildren(seg, h("span", { class: "sub", text: M.mode === "shot" ? (sh ? "촬영 " + sh.time : "촬영 없음") : "" }), h("span", { class: "grow" }), seg2);
   }
   M.viewer.mode = M.zoom;
   if (M.mode === "shot") {
@@ -156,16 +122,17 @@ function renderLeft(s, running) {
   const ce = s.camera.cap_error;
   if (ce && Date.now() / 1000 - ce.id < 8) M.viewer.el.append(h("div", { class: "cap-err", text: "촬영 실패 · " + ce.text }));
 }
-UI.acts["m-sub"] = (a) => { M.sub = a.m; M.subSig = ""; if (a.m === "here") T.sig = ""; render(); };
 UI.acts["m-mode"] = (a) => { M.mode = a.m; M.viewer.W = 0; M.viewer.key = null; if (UI.ws) UI.ws.send(JSON.stringify({ cmd: "preview", on: a.m === "live" })); render(); };
 UI.acts["m-fit"] = (a) => { M.zoom = a.m; M.viewer.fit(a.m, M.viewer.area); render(); };
 
 function onViewClick(u, v) {
   const s = UI.state;
-  if (M.mode !== "shot" || !s.shot || isRunning(s)) return;
+  if (isRunning(s)) return;
   let best = null, bd = 1e9;
   s.samples.forEach((p) => { const d = Math.hypot(p.u - u, p.v - v); if (d < bd) { bd = d; best = p; } });
-  if (best && bd < 60 / M.viewer.k + 25) send("sample_select", { no: best.no });
+  if (best && bd < 60 / M.viewer.k + 25) { send("sample_select", { no: best.no }); return; }
+  const mm = pxToMm(s, u, v);                                              // 빈 곳을 한 번 누르면 그 자리 좌표를 X · Y 칸에 채운다
+  if (mm) { MC.mv.x = f1(mm[0], 1); MC.mv.y = f1(mm[1], 1); MC.mvPx = [u, v]; MC.sigs.pos = ""; render(); redrawOverlay(); }
 }
 
 function sampleBBox(p) {
@@ -211,6 +178,7 @@ function redrawOverlay() {
   v.clear();
   if (M.mode !== "shot" || !s.shot) {
     if (s.calib.area && M.mode === "live") v.svg.append(sv("polygon", { points: s.calib.area.map((p) => p.join(",")).join(" "), fill: "none", stroke: "#2f6fdb", "stroke-width": v.px(2), "stroke-dasharray": v.px(8) + " " + v.px(5) }));
+    drawStageMarks(v, s);
     return;
   }
   const running = isRunning(s);
@@ -239,7 +207,17 @@ function redrawOverlay() {
   });
   const hd = v.handles && v.handles[0];
   if (hd) v.svg.append(sv("circle", { cx: hd[0], cy: hd[1], r: lw(6), fill: "#2f6fdb", stroke: "#fff", "stroke-width": lw(2) }));
+  drawStageMarks(v, s);
   drawMinimap(s);
+}
+/* 좌표 보정이 있으면 지금 핀 위치 십자(빨강)와 클릭으로 정한 이동 목표(파랑 원)를 사진 위에 그린다 */
+function drawStageMarks(v, s) {
+  const lw = (n) => n / v.k, st = s.stage;
+  if (st && st.x != null && s.calib.area_mm) {
+    const q = mmToPx(s, st.x, st.y);
+    if (q && isFinite(q[0])) v.svg.append(sv("path", { d: "M" + (q[0] - lw(14)) + " " + q[1] + "H" + (q[0] + lw(14)) + "M" + q[0] + " " + (q[1] - lw(14)) + "V" + (q[1] + lw(14)), stroke: "#ff3b30", "stroke-width": lw(3) }));
+  }
+  if (MC.mvPx) v.svg.append(sv("circle", { cx: MC.mvPx[0], cy: MC.mvPx[1], r: lw(9), fill: "none", stroke: "#2f6fdb", "stroke-width": lw(3) }));
 }
 function drawPin(v, s, p, lw) {
   const tool = s.tool, jac = pinJac(s);
@@ -288,53 +266,13 @@ function estText(c) {
   const sec = c.est_s || 0;
   return c.steps.length + "단계 · 샘플당 약 " + (sec >= 90 ? Math.round(sec / 60) + "분" : sec + "초");
 }
-function renderPrepRight(s) {
-  const r = M.right, sh = s.shot, sel = s.samples.find((p) => p.no === s.sel);
-  const busy = !!s.camera.busy;
-  const noStage = !s.stage;
-  /* 1 촬영 */
-  const shift = sh && sh.cam ? sh.cam.shift_mm : 0, warnMm = s.settings.fixed.cam_shift_warn_mm;
-  const capWhy = captureWhy(s);
-  const card1 = h("div", { class: "card" }, h("h3", {}, h("span", { class: "n", text: "1" }), "촬영"),
-    h("div", { class: "row" }, btn("촬영", "capture", null, "primary lg", "촬영 위치로 가서 한 장 찍고 칩을 찾습니다.", capWhy),
-      sh ? h("span", { class: "grow", text: "샘플 " + s.samples.length + "개 인식 · " + (s.n_weak ? "확인 필요 " + s.n_weak + "개" : "확인 필요 없음") }) : h("span", { class: "grow hint0", text: "아직 촬영 안 함" }),
-      shift > warnMm ? h("span", { class: "chip warn", text: "카메라 이동 " + f1(shift, 1) + " mm" }) : null));
-  /* 2 샘플 */
-  const nTarget = s.samples.filter((p) => !p.excluded).length;
-  const grid = h("div", { class: "sgrid" }, s.samples.map((p) => h("div", { class: "sc" + (p.no === s.sel ? " sel" : "") + (p.weak ? " weak" : "") + (p.excluded ? " exc" : ""), "data-act": "sel", "data-args": JSON.stringify({ no: p.no }) },
-    h("b", { text: p.no }), h("span", { text: p.X == null ? "—" : Math.round(p.X) + ", " + Math.round(p.Y) }))));
-  const selrow = sel ? h("div", { class: "selrow" }, h("b", { text: sel.no + "번" }), h("span", { text: xy(sel.X, sel.Y) }),
-    btn("이동", "goto", { no: sel.no }, "sm", "이 샘플 위로 공구를 옮깁니다.", sel.X == null ? "좌표 없음 · 좌표 보정 필요" : noStage ? "스테이지 연결 안 됨" : ""),
-    btn(sel.excluded ? "측정 포함" : "측정 제외", "exclude", { no: sel.no, on: !sel.excluded }, "sm"), btn("삭제", "delete", { no: sel.no }, "sm"),
-    sel.weak ? btn("확인 완료", "confirm_s", { no: sel.no }, "sm") : null)
-    : h("div", { class: "sub3", text: sh ? "선택 = 누르기 · 위치 수정 = 끌기 · 추가 = 빈 곳 더블클릭" : "촬영하면 샘플이 보입니다" });
-  const more = moreBtn([
-    { label: "현재 위치를 샘플로", fn: () => send("sample_here"), why: sh ? (s.calib.status === "done" ? "" : "좌표 보정 필요") : "촬영 필요" },
-    { label: "되돌리기 (Ctrl+Z)", fn: () => send("undo_edit"), why: s.can_undo ? "" : "되돌릴 편집 없음" },
-  ]);
-  const card2 = h("div", { class: "card" }, h("h3", {}, h("span", { class: "n", text: "2" }), "샘플"),
-    h("div", { class: "row" }, h("span", { class: "grow", text: s.samples.length + "개 · 측정 대상 " + nTarget }), more), grid, selrow);
-  /* 3 측정 */
-  const conds = s.conditions, act = M.cond && conds.find((c) => c.name === M.cond) ? M.cond : s.active_condition;
-  const cv = conds.find((c) => c.name === act) || conds[0];
-  const sel_ = h("select", { onchange: (e) => { M.cond = e.target.value; send("settings_save", { patch: { "condition.active": M.cond } }); } }, conds.map((c) => h("option", { value: c.name, text: c.name, selected: c.name === act })));
-  const block = s.start_block.why;
-  const startBtn = btn("측정 시작 · " + nTarget + "개", "mstart", null, "primary lg block", "선택한 순회 단계로 측정을 시작합니다.", gateOf(block, s, { camera: !s.samples.length, inst: ((cv ? cv.steps : []).some((x) => x.type === "rt")) }) ? "시작할 수 없음 · 위 안내 먼저" : (nTarget ? "" : "측정 대상 없음"));
-  const usesRt = (cv ? cv.steps : []).some((x) => x.type === "rt");
-  const gate = gateOf(block, s, { camera: !s.samples.length, inst: usesRt });
-  const card3 = h("div", { class: "card" }, h("h3", {}, h("span", { class: "n", text: "3" }), "순회"),
-    h("div", { class: "row" }, sel_, h("span", { class: "grow sub", text: cv ? estText(cv) : "" }), btn(M.showSteps ? "단계 접기 ▴" : "단계 보기 ▾", "steps-toggle", null, "sm"), btn("편집", "cond-edit", null, "sm", "순회 단계를 고칩니다.")),
-    M.showSteps ? h("ol", { class: "steps" }, (cv ? cv.steps : []).map((st) => h("li", {}, h("span", { text: (st.i + 1) + ". " + st.text })))) : null,
-    gateRow(gate), startBtn, !gate && (s.start_block.notes || []).length ? h("div", { class: "sub3", text: s.start_block.notes.join(" · ") }) : null);
-  r.replaceChildren(card1, card2, card3);
-}
 UI.acts.sel = (a) => send("sample_select", a);
 UI.acts.capture = () => send("capture");
 UI.acts.goto = (a) => send("goto_sample", a);
 UI.acts.exclude = (a) => send("sample_exclude", a);
 UI.acts.confirm_s = (a) => send("sample_confirm", a);
 UI.acts.delete = (a) => send("sample_delete", a);
-UI.acts["steps-toggle"] = () => { M.showSteps = !M.showSteps; M.rightSig = ""; render(); };
+UI.acts["steps-toggle"] = () => { MC.showSteps = !MC.showSteps; MC.sigs.run = ""; render(); };
 
 /* 측정 조건 편집: 단계 목록 + 위/아래/삭제 + 단계 추가 + 값 칸(대기 · 히트건 시간, 쿨러 대상) - 서버가 검증한 뒤 저장 */
 const STEP_NAMES = { contact: "접촉 높이로 내리기", cooler: "쿨러", heat: "히트건", wait: "대기", confirm: "확인 대기", z_top: "Z 맨 위" };
@@ -379,33 +317,8 @@ UI.acts.mstart = async () => {
   else go(false);
 };
 
-/* ---- 측정 중: 오른쪽 ---- */
-function renderRunRight(s) {
-  const run = s.run, cs = run.cur_sample;
-  const paused = run.paused || run.state === "paused";
-  const rl = s.relays || { owners: {}, heater_on: false };
-  const co = Object.keys(rl.owners).filter((n) => Number(n) !== Number(rl.heater) && rl.owners[n]);
-  const card1 = h("div", { class: "card" }, h("h3", { text: "현재 샘플" }), h("div", { class: "row" }, h("span", { class: "num", text: (run.cur != null ? run.cur + "번" : "—") }),
-    h("span", { class: "grow mono", id: "run-cur", text: cs ? xy(cs.X, cs.Y) : "" }), h("span", { class: "chip", text: cs && cs.cooler ? "쿨러 " + cs.cooler : "쿨러 —" })));
-  const waitBox = run.waiting ? h("div", { class: "waitbox" }, h("div", { class: "sub", text: "별도 프로그램으로 측정하는 동안 핀을 샘플에 댄 채 기다립니다." }),
-    btn("다음", "manswer", { v: "next" }, "primary xl", "측정을 마쳤으면 눌러 다음 단계로 이어갑니다.")) : null;
-  const stepsEl = h("ul", { class: "steps", id: "run-steps" }, run.steps.map((st) => h("li", { class: st.state }, h("span", { text: (st.state === "done" ? "✓ " : "") + (st.i + 1) + ". " + st.text }), h("span", { class: "val", text: st.value || "" }))));
-  const card2 = h("div", { class: "card" }, h("h3", { text: "단계 · " + run.cond }), stepsEl, waitBox);
-  const card3 = h("div", { class: "card" }, h("h3", { text: "릴레이" }), h("div", { class: "hw" },
-    h("div", { class: "h " + (co.length ? "ok" : "") }, h("div", { class: "k", text: "쿨러" }), h("div", { class: "v", text: co.length ? "켜짐 R" + co.join(",R") : "꺼짐" })),
-    h("div", { class: "h " + (rl.heater_on ? "heat" : "") }, h("div", { class: "k", text: "히트건" }), h("div", { class: "v", text: rl.heater_on ? "켜짐" : "꺼짐" }))));
-  const pct = run.n ? (100 * run.done) / run.n : 0;
-  const bar = h("i"); bar.style.width = pct + "%";
-  const card4 = h("div", { class: "card" }, h("h3", { text: "전체 진행" }), h("div", { id: "run-prog-t", text: run.done + " / " + run.n + "  ·  경과 " + mmss(run.elapsed) + "  ·  남은 시간 " + (run.remain == null ? "—" : "약 " + mmss(run.remain)) }),
-    h("div", { class: "bar" }, bar), run.warns.length ? h("div", { class: "why", text: run.warns[0] }) : null);
-  let ctl;
-  if (paused) ctl = h("div", { class: "row" }, btn("다시 시작", "mresume", null, "primary lg"), btn("중지", "mstop", null, "danger lg"));
-  else ctl = h("div", { class: "row" }, btn("일시정지", "mpause", null, "lg"), btn("중지", "mstop", null, "danger lg"));
-  M.right.replaceChildren(card1, card2, card3, card4, ctl);
-}
 UI.acts.mpause = () => send("measure_pause");
 UI.acts.mresume = () => send("measure_resume");
 UI.acts.manswer = (a) => send("measure_answer", { value: a.v });
 UI.acts.mstop = () => dialog("측정을 중지할까요?", "지금 단계를 끊고 히트건을 끈 뒤 Z 를 올리고 대기 위치로 돌아갑니다.", [{ label: "계속 측정" }, { label: "중지", cls: "danger", fn: () => send("measure_stop") }]);
 
-UI.renders.push(renderMeasure);

@@ -80,9 +80,10 @@ function openWin(node, cls) {
   const w = $("#win");
   w.className = "win " + (cls || "");
   w.replaceChildren(node);
+  $("#tip").classList.add("hidden");                                      // 창이 열리면 설명 풍선은 사라진다
   $("#dimmer").classList.remove("hidden"); w.classList.remove("hidden"); $("#estopDock").classList.remove("hidden");
 }
-function closeWin() { $("#win").classList.add("hidden"); $("#dimmer").classList.add("hidden"); $("#estopDock").classList.add("hidden"); $("#win").replaceChildren(); }
+function closeWin() { $("#tip").classList.add("hidden"); $("#win").classList.add("hidden"); $("#dimmer").classList.add("hidden"); $("#estopDock").classList.add("hidden"); $("#win").replaceChildren(); }
 /* 대화상자: 제목은 질문, 버튼은 동작 이름. buttons = [{label, cls, fn}] */
 function dialog(title, body, buttons) {
   const bs = (buttons || [{ label: "닫기" }]).map((b) => h("button", { class: "btn " + (b.cls || ""), text: b.label, onclick: () => { closeWin(); if (b.fn) b.fn(); } }));
@@ -103,17 +104,7 @@ function closePop() { const p = $("#pop"); if (p) p.remove(); }
 function moreBtn(items) { const b = h("button", { class: "btn sm", text: "⋯", "data-tip": "더 보기" }); b.addEventListener("click", (e) => { e.stopPropagation(); popMenu(b, items); }); return b; }
 
 /* ---- 스케일 ---- */
-function fit() {
-  const sc = Math.min(window.innerWidth / 1920, window.innerHeight / 1040);
-  UI.scale = sc;
-  const c = $("#canvas");
-  c.style.transform = "scale(" + sc + ")";
-  const dk = $("#estopDock");
-  dk.style.right = 16 * sc + "px"; dk.style.top = 9 * sc + "px"; dk.style.width = 200 * sc + "px"; dk.style.height = 54 * sc + "px"; dk.style.fontSize = 20 * sc + "px";
-  $("#win").style.setProperty("--sc", sc);
-  const st = $("#stage");
-  st.style.width = 1920 * sc + "px"; st.style.height = 1040 * sc + "px";
-}
+function fit() { UI.scale = 1; }                  /* 창 크기에 맞춰 배치가 늘고 줄며 글자는 줄이지 않는다(좌표 변환용 UI.scale 은 항상 1) */
 window.addEventListener("resize", fit);
 
 /* ---- 클릭 위임 ---- */
@@ -126,7 +117,7 @@ document.addEventListener("click", (e) => {
   if (fn) fn(args, el, e);
 });
 UI.acts.estop = () => estop();
-UI.acts.tab = (a) => { UI.tab = a.tab; render(); };
+UI.acts.tab = (a) => { UI.tab = a.tab; $("#tip").classList.add("hidden"); render(); };
 
 /* ---- 렌더 ---- */
 function render() {
@@ -141,7 +132,7 @@ function render() {
 /* 실시간 화면이 필요할 때만 서버가 미리보기를 만든다(측정 탭 실시간 · 장비 설정의 실시간 단계) */
 function syncPreview(s) {
   let want = false;
-  try { want = (UI.tab === "measure" && typeof M !== "undefined" && M.sub !== "here" && M.mode === "live" && !isRunning(s)) || (UI.tab === "setup" && typeof viewFor === "function" && viewFor(s) === "live"); } catch (e) { want = false; }
+  try { want = (UI.tab === "measure" && typeof M !== "undefined" && M.mode === "live" && !isRunning(s)) || (UI.tab === "setup" && typeof viewFor === "function" && viewFor(s) === "live"); } catch (e) { want = false; }
   if (want !== UI.previewOn && UI.ws && UI.ws.readyState === 1) { UI.previewOn = want; UI.ws.send(JSON.stringify({ cmd: "preview", on: want })); }
 }
 function renderLog() { for (const fn of UI.logRenders || []) fn(); }

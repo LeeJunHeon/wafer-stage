@@ -487,6 +487,11 @@ class App:
             self.hub.configure()
         return {"warnings": warns}
 
+    def c_settings_check(self, a, gen):
+        """설정 창의 칸 옆 오류 표시용: 저장하지 않고 검증만."""
+        errs, warns = self.cfg.check(a.get("patch") or {})
+        return {"errs": errs, "warns": warns}
+
     def c_settings_import_old(self, a, gen):
         self._no_run()
         path = a.get("path") or os.path.join(paths.OLD_DATA_DIR, "..", "wafer_stage", "settings.json")

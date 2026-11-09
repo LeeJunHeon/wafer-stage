@@ -57,7 +57,6 @@ function buildSetup() {
   S.panel = h("div", { class: "col panel" });
   pane.replaceChildren(S.list, S.center, S.panel);
   setInterval(() => { const s = UI.state; if (s && UI.tab === "setup" && viewFor(s) === "live" && S.viewer && s.camera.open) { const sz = s.camera.size || [1280, 960]; S.viewer.set("/preview.jpg", sz[0], sz[1], Date.now()); } }, 250);
-  document.addEventListener("keydown", onJogKey);
   S.built = true;
 }
 
@@ -77,7 +76,7 @@ function renderSetup(s) {
         btn("이전 설정 가져오기", "su-import", null, "sm", "이전 프로그램의 포트 · 카메라 · 가동범위 · 속도 · 위치 · 릴레이 · 쿨러 설정을 읽어 옵니다. 가져온 뒤 스테이지를 다시 연결합니다. 보정 파일은 가져오지 않습니다.", lockedBy(s))));
   }
   renderSetupView(s);
-  const sig = JSON.stringify([S.step, s.dev, s.camera.state, s.cam_scan, lockedBy(s), s.calib, s.ref, s.stage && [s.stage.locked, s.stage.z_ok, s.stage.xy_ok, s.stage.moving, s.stage.done, s.stage.fw_homed, s.stage.z > 0.05], s.camera.busy, s.settings.photohome, s.tool, s.verify, S.jogStep, S.freeze, S.showPts, S.showHead, S.showRef,
+  const sig = JSON.stringify([S.step, s.dev, s.camera.state, s.cam_scan, lockedBy(s), s.calib, s.ref, s.stage && [s.stage.locked, s.stage.z_ok, s.stage.xy_ok, s.stage.moving, s.stage.done, s.stage.fw_homed, s.stage.z > 0.05], s.camera.busy, s.settings.photohome, s.tool, s.verify, JOG.step, S.freeze, S.showPts, S.showHead, S.showRef,
     s.eeprom, s.port, s.fw, s.contact, s.samples.length, s.sel, S.ctNo, s.settings.relay.items, s.settings.cooler, s.settings.heater, s.settings.width, s.settings.exposure, s.settings.wb_temperature,
     s.rt && s.rt.inst, s.settings.rt && [s.settings.rt.k2110_addr, s.settings.rt.k2450_addr], S.instItems, S.instMsg, s.camera.busy]);
   if (sig !== S.rightSig) { S.rightSig = sig; renderPanel(s); }
@@ -158,21 +157,6 @@ async function onSetupClick(u, v) {
   }
 }
 
-/* ---- 조그 ---- */
-function onJogKey(e) {
-  if (UI.tab !== "setup" || ![1, 5, 7].includes(S.step)) return;
-  const t = e.target;
-  if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
-  const map = { ArrowLeft: ["y", 1], ArrowRight: ["y", -1], ArrowUp: ["x", 1], ArrowDown: ["x", -1], PageUp: ["z", -1], PageDown: ["z", 1] };
-  const m = map[e.key];
-  if (!m) return;
-  e.preventDefault();                                   // 화살표 키가 스텝 선택이나 숫자 칸을 바꾸지 않는다
-  jog(m[0], m[1]);
-}
-function jog(axis, sign) { const s = UI.state; if (!s.stage || s.stage.moving) return; send("jog", { axis, mm: sign * S.jogStep }); }
-UI.acts["su-jog"] = (a) => jog(a.axis, a.sign);
-UI.acts["su-jstep"] = (a) => { S.jogStep = a.v; S.rightSig = ""; render(); };
-
 /* ---- 오른쪽 패널 ---- */
 function field(label, input) { return [h("label", { text: label }), input]; }
 function numInput(id, val, step) { return h("input", { type: "number", id, value: val, step: step || "any" }); }
@@ -195,15 +179,10 @@ function renderPanel(s) {
   const card = (title, ...x) => h("div", { class: "card" }, h("h3", { text: title }), ...x.filter(Boolean));
   const jogCard = () => {
     const sg = s.stage;
-    const dis = nostage ? "스테이지 연결 안 됨" : sg.moving ? "이동 중" : "";
-    const b = (l, axis, sign) => btn(l, "su-jog", { axis, sign }, "", "", dis);
-    const steps = [0.1, 1, 10];
+    const dis = nostage ? "스테이지 연결 안 됨" : sg.moving ? "이동 중" : lock ? lock : "";
     return card("조그", h("div", { class: "mono", id: "su-pos", text: sg ? xy(sg.x, sg.y) + " · Z " + f1(sg.z, 2) : "—" }),
-      h("div", { class: "row" }, ...steps.map((v) => btn(String(v), "su-jstep", { v }, "sm " + (S.jogStep === v ? "on" : ""))), S.jogStep > 10 ? btn(String(S.jogStep), "su-jstep", { v: S.jogStep }, "sm on") : null,
-        moreBtn([{ label: "50 mm", fn: () => { S.jogStep = 50; S.rightSig = ""; render(); } }]), h("span", { class: "sub3", text: "mm" })),
-      h("div", { class: "row", "data-tip": "화살표 키 = X · Y, PageUp / PageDown = Z 로도 움직입니다." }, h("div", { class: "pad" }, h("span"), b("X+", "x", 1), h("span"), b("Y+", "y", 1), h("span"), b("Y−", "y", -1), h("span"), b("X−", "x", -1), h("span")),
-        h("div", { class: "col" }, b("Z↑", "z", -1), b("Z↓", "z", 1))),
-      sg && sg.z > 0.5 ? h("div", { class: "why", text: "Z 가 내려가 있음 · 다른 점으로 가기 전 Z↑" }) : null);
+      jogStepRow(s), jogPad(s, { why: dis }),
+      sg && sg.z > 0.5 ? h("div", { class: "sub3", text: "Z 가 내려가 있음 · 다른 점으로 가기 전 Z↑" }) : null);
   };
   let footNode = null;                                   // [다음 단계] 는 패널 맨 아래 오른쪽(카드 밖에 떠 있지 않게)
   const foot = (extra) => { footNode = S.step < 8 ? h("div", { class: "foot" }, extra, btn("다음 단계", "su-next", null, stepDone(s, S.step) ? "primary" : "")) : null; return null; };
@@ -373,41 +352,4 @@ UI.acts["su-save-dev"] = async () => {
 UI.acts["su-import"] = () => dialog("이전 프로그램 설정을 가져올까요?", "포트 · 카메라 · 가동범위 · 속도 · 위치 · 릴레이 · 쿨러 설정을 읽어 오고 스테이지를 다시 연결합니다. 보정 파일은 가져오지 않으니 다시 보정하십시오.", [{ label: "취소" }, { label: "가져오기", cls: "primary", fn: async () => { const r = await send("settings_import_old"); if (r.ok) toast("가져옴 · " + r.res.imported.length + "개 항목"); } }]);
 
 /* ---- 고급 설정: 스키마로 자동 생성 ---- */
-UI.acts["su-adv"] = async () => {
-  const j = await (await fetch("/schema")).json();
-  const sch = j.schema, vals = j.values, locked = lockedBy(UI.state);
-  const tabs = sch.tabs;
-  let cur = tabs[0].id;
-  const body = h("div", { class: "scroll" });
-  body.style.height = "620px";
-  const edits = {};
-  const get = (o, k) => k.split(".").reduce((a, p) => (a == null ? a : a[p]), o);
-  const draw = () => {
-    body.replaceChildren();
-    const g = h("div", { class: "setgrid" });
-    let grp = null;
-    sch.items.filter((it) => it.tab === cur && it.type !== "object" && it.editor == null).forEach((it) => {
-      if (it.group !== grp) { grp = it.group; g.append(h("div", { class: "g", text: grp })); }
-      const v0 = edits[it.key] !== undefined ? edits[it.key] : get(vals, it.key);
-      let el;
-      if (it.type === "bool") el = h("input", { type: "checkbox", checked: !!v0, onchange: (e) => { edits[it.key] = e.target.checked; } });
-      else if (it.type === "enum") el = h("select", { onchange: (e) => { edits[it.key] = e.target.value; } }, (it.options || []).map((o) => h("option", { value: o.value, text: o.label, selected: o.value === v0 })));
-      else if (it.type === "int" || it.type === "float") el = h("input", { type: "number", value: v0, step: it.step || "any", onchange: (e) => { edits[it.key] = Number(e.target.value); } });
-      else if (it.type === "xy" || it.type === "list") el = h("input", { type: "text", value: JSON.stringify(v0), onchange: (e) => { try { edits[it.key] = JSON.parse(e.target.value); } catch (x) { toast("형식 오류", true); } } });
-      else el = h("input", { type: "text", value: v0 == null ? "" : v0, onchange: (e) => { edits[it.key] = e.target.value; } });
-      if (locked) el.disabled = true;
-      g.append(h("div", { text: it.label + (it.unit ? " (" + it.unit + ")" : ""), "data-tip": it.tip }), el);
-    });
-    body.append(g);
-  };
-  const tabbar = h("div", { class: "row wrap" }, ...tabs.map((t) => h("button", { class: "btn sm", text: t.label, onclick: () => { cur = t.id; draw(); } })));
-  draw();
-  openWin(h("div", {}, h("h2", { text: "고급 설정" }), locked ? h("div", { class: "why", text: locked }) : null, tabbar, body,
-    h("div", { class: "btns" }, h("button", { class: "btn", text: "닫기", onclick: closeWin }),
-      h("button", { class: "btn primary" + (locked ? " dis" : ""), text: "저장", onclick: async () => {
-        if (locked) return;
-        const r = await send("settings_save", { patch: edits });
-        if (r.ok) { closeWin(); toast("저장"); }
-      } }))), "big");
-};
 UI.renders.push(renderSetup);

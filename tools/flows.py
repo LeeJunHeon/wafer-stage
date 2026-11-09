@@ -112,7 +112,6 @@ def flow_a(p):
         pg.pg.reload()
         pg.pg.wait_for_timeout(1500)
         pg.pg.click('#tabs .tab[data-tab="measure"]')
-        pg.pg.click('[data-act="m-sub"][data-args*="tour"]')          # 샘플 순회 화면
         pg.pg.click('[data-act="capture"]')
         pg.clicks += 1
         pg.pg.wait_for_function("document.querySelectorAll('.sgrid .sc').length >= 9", timeout=90000)
@@ -124,8 +123,8 @@ def flow_a(p):
         pg.pg.click('[data-act="su-ct-goto"]')
         pg.pg.wait_for_timeout(1500)
         for _ in range(3):
-            pg.pg.click('[data-act="su-jstep"][data-args*="10"]')
-            pg.pg.click("[data-act='su-jog'][data-args*='\"axis\":\"z\"'][data-args*='\"sign\":1}']")      # Z↓ (sign 1 · Z↑ 는 -1)
+            pg.pg.click('#tab-setup .jstep[data-v="10"]')
+            pg.pg.click('#tab-setup .jogpad .btn:has-text("Z ↓")')      # Z↓
             pg.pg.wait_for_timeout(400)
         try:
             pg.pg.wait_for_selector('[data-act="su-ct-save"]', timeout=6000)
@@ -151,7 +150,7 @@ def flow_a(p):
         check("r 1 1" in "|".join(ec.serial_cmds(c)) and "r 1 0" in "|".join(ec.serial_cmds(c)), "릴레이 1 을 켰다 끔")
         # 측정
         pg.pg.click('#tabs .tab[data-tab="measure"]')
-        pg.pg.click('[data-act="m-sub"][data-args*="tour"]')          # 샘플 순회 화면
+        pg.pg.click('[data-act="m-target"][data-args*="samples"]')     # 측정할 곳 = 샘플
         pg.pg.wait_for_timeout(800)
         pg.pg.click('[data-act="mstart"]')
         pg.clicks += 1
@@ -260,7 +259,7 @@ def flow_dblclick(p):
         c.send("capture")
         pg = Page(c, p)
         pg.pg.click('#tabs .tab[data-tab="measure"]')
-        pg.pg.click('[data-act="m-sub"][data-args*="tour"]')          # 샘플 순회 화면
+        pg.pg.click('[data-act="m-mode"][data-args*="shot"]')          # 촬영 사진에서 더블클릭으로 추가
         pg.pg.wait_for_function("document.querySelectorAll('.sgrid .sc').length >= 9", timeout=30000)
         pg.pg.wait_for_timeout(1200)
         n0 = len(c.pump(0.3)["samples"])

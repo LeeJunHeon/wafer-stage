@@ -80,6 +80,18 @@ class Settings:
             self.values = vals
             return True, {}, warns
 
+    def check(self, patch):
+        """저장하지 않고 검증만. (errors{key: 문구}, warnings)."""
+        with self.lock:
+            new = copy.deepcopy(self.values)
+            for k, v in patch.items():
+                if "." in k:
+                    sch.set_path(new, k, v)
+                else:
+                    new[k] = v
+            _vals, errs, warns = sch.validate(new)
+            return errs, warns
+
     def _backup(self):
         if not os.path.exists(self.path):
             return
