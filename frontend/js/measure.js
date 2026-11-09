@@ -280,7 +280,7 @@ function drawMinimap(s) {
   m.append(sv("polygon", { points: am.map((p) => P(p[0], p[1]).join(",")).join(" "), fill: "#fff", stroke: "#8fb4f2", "stroke-dasharray": "4 3" }));
   s.samples.forEach((p) => { if (p.X == null) return; const q = P(p.X, p.Y), rs = sampleState(s, p); m.append(sv("circle", { cx: q[0], cy: q[1], r: p.no === s.sel || rs === "cur" ? 5 : 3, fill: rs ? SCOL[rs] : p.no === s.sel ? "#2f6fdb" : p.weak ? "#e08a1e" : "#5a626b" })); });
   if (s.stage.x != null) { const q = P(s.stage.x, s.stage.y); m.append(sv("path", { d: "M" + (q[0] - 6) + " " + q[1] + "H" + (q[0] + 6) + "M" + q[0] + " " + (q[1] - 6) + "V" + (q[1] + 6), stroke: "#d03a3a", "stroke-width": 2 })); }
-  m.append(sv("text", { x: 176, y: 14, "text-anchor": "end", "font-size": 11, fill: "#5a626b" }, "가로 Y → · 세로 X ↓"));
+  m.append(sv("text", { x: 176, y: 14, "text-anchor": "end", "font-size": 11, fill: "#5a626b" }, "스테이지 방향 · 가로 Y · 세로 X"));
 }
 
 /* ---- 준비: 오른쪽 ---- */
@@ -297,7 +297,7 @@ function renderPrepRight(s) {
   const capWhy = captureWhy(s);
   const card1 = h("div", { class: "card" }, h("h3", {}, h("span", { class: "n", text: "1" }), "촬영"),
     h("div", { class: "row" }, btn("촬영", "capture", null, "primary lg", "촬영 위치로 가서 한 장 찍고 칩을 찾습니다.", capWhy),
-      sh ? h("span", { class: "grow num", text: "인식 " + s.samples.length + " · 확인 필요 " + s.n_weak }) : h("span", { class: "grow hint0", text: "아직 촬영 안 함" }),
+      sh ? h("span", { class: "grow", text: "샘플 " + s.samples.length + "개 인식 · " + (s.n_weak ? "확인 필요 " + s.n_weak + "개" : "확인 필요 없음") }) : h("span", { class: "grow hint0", text: "아직 촬영 안 함" }),
       shift > warnMm ? h("span", { class: "chip warn", text: "카메라 이동 " + f1(shift, 1) + " mm" }) : null));
   /* 2 샘플 */
   const nTarget = s.samples.filter((p) => !p.excluded).length;
@@ -307,7 +307,7 @@ function renderPrepRight(s) {
     btn("이동", "goto", { no: sel.no }, "sm", "이 샘플 위로 공구를 옮깁니다.", sel.X == null ? "좌표 없음 · 좌표 보정 필요" : noStage ? "스테이지 연결 안 됨" : ""),
     btn(sel.excluded ? "측정 포함" : "측정 제외", "exclude", { no: sel.no, on: !sel.excluded }, "sm"), btn("삭제", "delete", { no: sel.no }, "sm"),
     sel.weak ? btn("확인 완료", "confirm_s", { no: sel.no }, "sm") : null)
-    : h("div", { class: "sub3", text: sh ? "샘플을 누르면 고릅니다 · 끌면 위치 수정 · 빈 곳을 더블클릭하면 추가" : "촬영하면 샘플이 보입니다" });
+    : h("div", { class: "sub3", text: sh ? "선택 = 누르기 · 위치 수정 = 끌기 · 추가 = 빈 곳 더블클릭" : "촬영하면 샘플이 보입니다" });
   const more = moreBtn([
     { label: "현재 위치를 샘플로", fn: () => send("sample_here"), why: sh ? (s.calib.status === "done" ? "" : "좌표 보정 필요") : "촬영 필요" },
     { label: "되돌리기 (Ctrl+Z)", fn: () => send("undo_edit"), why: s.can_undo ? "" : "되돌릴 편집 없음" },

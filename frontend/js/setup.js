@@ -9,7 +9,7 @@ const rate = (r) => (r == null ? "" : r < 0.3 ? "좋음" : r < 0.8 ? "주의" : 
 
 /* 단계 상태 셋: 완료(설정됨 + 장치 정상) · 연결 안 됨(설정은 있으나 장치 없음, 빨강) · 필요(설정 없음). 장치 상태는 서버가 실제 장치에서 만든 s.dev 만 본다. */
 const dvOk = (s, k) => !!(s.dev && s.dev[k] && s.dev[k].state === "ok");
-const dvWhy = (s, k, name) => (s.dev && s.dev[k] && s.dev[k].state === "retry" ? "다시 연결 중" : k === "stage" ? "USB · 포트 번호 확인" : k === "camera" ? "USB · 카메라 번호 확인" : "연결 필요");
+const dvWhy = (s, k, name) => (s.dev && s.dev[k] && s.dev[k].state === "retry" ? "다시 연결 중" : k === "stage" ? "포트 번호 확인" : k === "camera" ? "카메라 번호 확인" : "연결 필요");
 function stepInfo(s, i) {
   const c = s.calib, st = s.settings, sg = s.stage, stOk = dvOk(s, "stage") && !!sg, camOk = dvOk(s, "camera");
   const down = (why) => ["down", "연결 안 됨", why];
@@ -19,10 +19,10 @@ function stepInfo(s, i) {
   switch (i) {
     case 1: { if (!stOk) return down(dvWhy(s, "stage", "스테이지")); const ok = sg.z_ok && sg.xy_ok && !sg.locked; return ok ? done((s.port || "") + " · " + (s.fw || "") + " · 원점 정상") : need((s.port || "") + " · 원점 없음"); }
     case 2: return camOk ? done((s.camera.size ? s.camera.size.join("×") : "—") + " · 노출 " + st.exposure) : down(dvWhy(s, "camera", "카메라"));
-    case 3: { if (!c.area) return need("사진에서 네 꼭짓점"); const g = devGap(false, true); return g ? down(g) : done(c.size_mm ? c.size_mm[0] + " × " + c.size_mm[1] + " mm" : "지정함"); }
-    case 4: { if (!s.ref) return need("판을 비우고 촬영"); const g = devGap(false, true); return g ? down(g) : done(s.ref.time); }
-    case 5: { if (c.status === "invalid") return ["invalid", "무효", c.text]; if (c.status !== "done") return need(c.text); const g = devGap(true, true); return g ? down(g) : done(c.text); }
-    case 6: { if (c.head.status === "invalid") return ["invalid", "무효", c.head.text]; if (c.head.status !== "done") return need(c.head.text); const g = devGap(true, true); return g ? down(g) : done(c.head.text); }
+    case 3: { if (!c.area) return need(camOk ? "사진에서 네 꼭짓점" : "카메라 연결 필요"); const g = devGap(false, true); return g ? down(g) : done(c.size_mm ? c.size_mm[0] + " × " + c.size_mm[1] + " mm" : "지정함"); }
+    case 4: { if (!s.ref) return need(camOk ? "판을 비우고 촬영" : "카메라 연결 필요"); const g = devGap(false, true); return g ? down(g) : done(s.ref.time); }
+    case 5: { if (c.status === "invalid") return ["invalid", "무효", c.text]; if (c.status !== "done") return need(!camOk ? "카메라 연결 필요" : !stOk ? "스테이지 연결 필요" : c.text); const g = devGap(true, true); return g ? down(g) : done(c.text); }
+    case 6: { if (c.head.status === "invalid") return ["invalid", "무효", c.head.text]; if (c.head.status !== "done") return need(!camOk ? "카메라 연결 필요" : !stOk ? "스테이지 연결 필요" : c.head.text); const g = devGap(true, true); return g ? down(g) : done(c.head.text); }
     case 7: { const z = s.contact.z; if (z == null) return need("샘플에서 핀이 닿는 높이"); const g = devGap(true, false); return g ? down(g) : done("Z " + f1(z, 2) + " mm"); }
     case 8: {
       const used = st.relay.items.map((r, n) => (r.enabled && n + 1 !== st.heater.relay ? n + 1 : null)).filter(Boolean);
@@ -218,7 +218,7 @@ function renderPanel(s) {
   };
   if (S.step === 1) {
     const sg = s.stage, miss = sg ? (!sg.z_ok ? "z" : !(sg.xy_ok || sg.done.x) ? "x" : !(sg.xy_ok || sg.done.y) ? "y" : null) : null;
-    const hint = miss ? (sg.fw_homed[miss] ? miss.toUpperCase() + " · 펌웨어 위치가 남아 있어 끝단 3 mm 앞까지 자동으로 다가간 뒤 잡습니다." : miss.toUpperCase() + " · 조그로 끝단 10 mm 안까지 옮긴 뒤 누르세요.") : "원점이 모두 있습니다.";
+    const hint = !sg ? "스테이지 연결 뒤 원점 잡기" : miss ? (sg.fw_homed[miss] ? miss.toUpperCase() + " · 펌웨어 위치가 남아 있어 끝단 3 mm 앞까지 자동으로 다가간 뒤 잡습니다." : miss.toUpperCase() + " · 조그로 끝단 10 mm 안까지 옮긴 뒤 누르세요.") : "원점이 모두 있습니다.";
     kids.push(card("스테이지", h("div", { class: "kv" }, h("span", { text: "포트" }), h("b", { text: s.port || "—" }), h("span", { text: "펌웨어" }), h("b", { text: s.fw || "—" }),
       h("span", { text: "저장 기록" }), h("b", { text: EEPROM_TEXT[s.eeprom] || "—" })),
       h("div", { class: "axes" }, axisBtn("z"), axisBtn("x"), axisBtn("y")),
@@ -277,7 +277,7 @@ function renderPanel(s) {
     const base = lock || (nostage ? "스테이지 연결 안 됨" : sg && !(sg.z_ok && sg.xy_ok && !sg.locked) ? "원점 필요 · 단계 1" : "");
     const noS = withX.length ? "" : "샘플 필요 · 측정 탭에서 촬영";
     const sel = h("select", { id: "ct-no", onchange: (e) => { S.ctNo = Number(e.target.value); S.rightSig = ""; } }, withX.map((p) => h("option", { value: p.no, text: p.no + "번 · " + xy(p.X, p.Y), selected: p.no === S.ctNo })));
-    kids.push(card("접촉 높이", h("div", { class: "sub", text: "샘플 하나를 고르고 [샘플 위로] → Z 조그(0.1 mm)로 핀이 닿을 때까지 내립니다 → [지금 높이를 접촉 높이로]." }),
+    kids.push(card("접촉 높이", h("div", { class: "sub", text: "1 샘플 선택 · [샘플 위로] / 2 Z 조그(0.1 mm)로 핀이 닿을 때까지 / 3 [지금 높이를 접촉 높이로]" }),
       h("div", { class: "row" }, sel, btn("샘플 위로", "su-ct-goto", null, "", "고른 샘플 위로 공구를 옮깁니다(Z 를 먼저 올립니다).", base || noS)),
       h("div", { class: "row" }, btn("지금 높이를 접촉 높이로", "su-ct-save", null, "primary", "지금 Z 높이(절대값)를 접촉 높이로 저장합니다. 고른 샘플 위일 때만 저장됩니다.", base || noS || (sg && sg.z < 0.1 ? "Z 를 먼저 내리기" : ""))),
       h("div", { class: "kv" }, h("span", { text: "현재 값" }), h("b", { text: ctr.z == null ? "비어 있음 · 측정 시작 불가" : "Z " + f1(ctr.z, 2) + " mm" })),

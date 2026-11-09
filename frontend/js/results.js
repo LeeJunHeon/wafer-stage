@@ -32,7 +32,7 @@ UI.acts["r-graph"] = async (a) => {
   const svg = svgEl("svg", { class: "gsvg", id: "g-view" });
   const W = 1140, H = 620, pts = j.cycles.flatMap((c) => c.pts);
   const rg = UI.rtRange(pts.map((p) => p[0]), pts.map((p) => p[1]));
-  const f = frame(svg, W, H, { l: 78, r: 190, t: 36, b: 52 }, rg.x, rg.y, { ylog: true, xlabel: "Temp [°C]", ylabel: "Resistance [Ohm]", xticks: 13 });
+  const f = frame(svg, W, H, { l: 78, r: 190, t: 36, b: 52 }, rg.x, rg.y, { ylog: true, xlabel: "온도 [°C]", ylabel: "저항 [Ω]", xticks: 13 });
   const n = j.cycles.length;
   j.cycles.forEach((c, i) => {
     const hi = c.pts.reduce((m, p, k) => (p[0] > c.pts[m][0] ? k : m), 0);

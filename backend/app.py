@@ -1153,7 +1153,9 @@ class App:
         out = {"stage": st, "camera": cam}
         for nm in ("k2110", "k2450"):
             d, info = getattr(self, nm), self.inst_info.get(nm)
-            if d is not None and d.is_open:
+            if info and info.get("ok") is False:
+                out[nm] = {"state": "down", "text": "연결 안 됨", "why": info.get("err", "")}
+            elif d is not None and d.is_open:
                 out[nm] = {"state": "ok", "text": "연결"}
             elif info and not info.get("ok"):
                 out[nm] = {"state": "down", "text": "연결 안 됨", "why": info.get("err", "")}
@@ -1170,23 +1172,23 @@ class App:
         dev = dev or self.devices()
 
         def go(step):
-            return {"act": "ui_setup", "args": {"step": step}, "label": "장비 설정 %d" % step, "tip": "장비 설정의 해당 단계를 엽니다."}
+            return {"act": "ui_setup", "args": {"step": step}, "label": {1: "스테이지 설정", 2: "카메라 설정", 8: "측정 장비 설정"}.get(step, "장비 설정 %d" % step), "tip": "장비 설정의 해당 단계를 엽니다."}
         s = dev["stage"]
         if s["state"] in ("down", "retry") and s["text"] != "통신 끊김":
             out.append({"id": "stage", "text": "스테이지 " + ("다시 연결 중" if s["state"] == "retry" else "연결 안 됨"),
-                        "next": "USB · 포트 번호 확인" if s["state"] == "down" else "", "err": s["state"] == "down",
+                        "next": "포트 번호 확인" if s["state"] == "down" else "", "err": s["state"] == "down",
                         "actions": [{"act": "reconnect", "args": {}, "label": "다시 연결", "tip": "스테이지 포트를 다시 열어 봅니다."}, go(1)]})
         c = dev["camera"]
         if c["state"] in ("down", "retry"):
             out.append({"id": "camera", "text": "카메라 " + ("다시 연결 중" if c["state"] == "retry" else "연결 안 됨"),
-                        "next": "USB · 카메라 번호 확인" if c["state"] == "down" else "", "err": c["state"] == "down",
+                        "next": "카메라 번호 확인" if c["state"] == "down" else "", "err": c["state"] == "down",
                         "actions": [{"act": "cam_reconnect", "args": {}, "label": "다시 연결", "tip": "카메라를 다시 열어 봅니다."}, go(2)]})
         for nm, label in (("k2110", "K2110"), ("k2450", "K2450")):
             d = dev[nm]
             if d["state"] == "down":
                 drv = "드라이버" in (d.get("why") or "")
                 out.append({"id": nm, "text": label + " 연결 안 됨", "next": "NI-VISA 설치 확인" if drv else "주소 · 케이블 확인", "err": True,
-                            "actions": [{"act": "inst_connect", "args": {}, "label": "장비 연결", "tip": "두 장비에 다시 연결합니다. 출력은 켜지 않습니다."}, go(8)]})
+                            "actions": [{"act": "inst_connect", "args": {}, "label": "측정 장비 연결", "tip": "두 장비에 다시 연결합니다. 출력은 켜지 않습니다."}, go(8)]})
         return out
 
     # ------------------------------------------------------------------
@@ -2054,8 +2056,7 @@ class App:
             self._end()
         if rr.status == "오류":
             if "장비 통신" in rr.message:                       # 측정 장비가 끊겼다 - 장치 상태 "연결 안 됨" + 띠
-                self._inst_close(off=False)
-                for nm in ("k2110", "k2450"):
+                for nm in ("k2110", "k2450"):                    # 핸들은 그대로 둔다(출력 끄기 재시도가 통신이 돌아오면 쓴다)
                     self.inst_info[nm] = {"ok": False, "err": "통신 끊김"}
             self.set_alarm("R–T 측정 오류 · " + rr.message[:50], "결과 탭에서 확인")
         if rr.mode == "rt" and rr.status != "중지됨":

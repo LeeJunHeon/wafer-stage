@@ -15,6 +15,7 @@ python run.py --fake-serial # 펌웨어 흉내(tools/fake_v11.py) + 합성 카�
 python run.py --image P    # 촬영 대신 그 사진
 python run.py --cleanup    # 창 없이 남은 이전 실행 정리
 ```
+장치를 뺀 채 시작해 보려면(시험): `WAFER2_MISSING=stage,camera,visa python run.py --dry --no-window`.
 의존성은 `requirements.txt`. 이전 프로그램이 실행 중이면 "이전 프로그램 실행 중 · 종료 후 실행" 으로 거절한다(COM 포트 · 카메라 공유 불가).
 
 ## 화면 (1920×1040 고정 캔버스)
@@ -27,7 +28,22 @@ python run.py --cleanup    # 창 없이 남은 이전 실행 정리
 - 장비 설정 8단계: 1 스테이지(포트 · 펌웨어 · 연결 시 저장 기록 · 축별 원점 · [Z/X/Y 원점 잡기] · [대기 위치로] · 조그) · 2 카메라 · 3 판 영역 · 4 빈 판 사진 · 5 좌표 보정 · 6 헤드 위치 보정(헤드 마커 상자 표시) · 7 접촉 높이 · 8 측정 장비 · 릴레이(VISA 주소 목록에서 K2110 · K2450 고르기 · [연결 시험](장비 이름 · 온도 1회 · 저항 1회, 저항 1회를 잴 때만 출력을 짧게 켜고 바로 끔) · 히트건 R10 · 쿨러 R1–R9 · 쿨러 구역 3×3 · [2 s 켜 보기]) + [고급 설정] + [이전 프로그램 설정 가져오기]. 카메라를 옮기면 3–6 다시 설정.
 - 기록 보기: [기록] [시리얼] 탭(보낸 줄 · 받은 줄 원문 - 실장비 첫 시험 확인용)
 
-## 측정 조건 (단계 일곱 가지 + R–T 측정)
+## 장치 상태 · 자동 다시 연결 · 빈 상태
+- **상태는 실제 장치에서만 만든다**(설정값이 있다고 연결 · 완료로 보이지 않는다). 장치 넷 - 스테이지 · 카메라 · K2110 · K2450 - 마다 `state.dev.<장치>.state` = `ok`(연결됨) · `down`(연결 안 됨) · `retry`(다시 연결 중) · `unknown`(확인 안 됨).
+  카메라는 **실제 프레임이 들어올 때만** 연결이다(열기 성공 + 첫 프레임, 미리보기 프레임이 연속 8번 실패하면 끊김). 측정 장비는 [장비 연결]을 누르기 전에는 확인 안 됨, 실패 · 끊김은 연결 안 됨.
+- 연결 안 된 장치에 딸린 값은 숨긴다: 스테이지 없음 → 위치 · 릴레이 켜짐/꺼짐 · 펌웨어 · 포트 없음(머리줄 릴레이 칸 "알 수 없음", 측정 화면 히트건 · 쿨러 "—"), 카메라 없음 → 해상도 · 노출 "—".
+- 머리줄 상태 필은 **동작 상태만**(대기 · 촬영 중 · 이동 중 · 측정 중 · 일시정지 · 비상정지 · 오류). 연결 문제는 상태 칸과 띠가 맡는다.
+- **띠는 목록**(`state.bands[]`): 맨 위 경보 · 원점 회복(비상정지 · 통신 끊김 · 재부팅 · 원점 없음), 그 아래 장치마다 한 줄 - "스테이지 연결 안 됨 · USB · 포트 번호 확인 [다시 연결] [장비 설정 1]" · "카메라 연결 안 됨 · USB · 카메라 번호 확인 [다시 연결] [장비 설정 2]" · "K2110 연결 안 됨 · 주소 · 케이블 확인 [장비 연결] [장비 설정 8]"(K2450 도 같은 줄).
+- **장비 설정 단계 상태 셋**: 완료(설정됨 + 장치 정상) · 연결 안 됨(설정은 있으나 장치 없음 · 빨강) · 필요(설정 없음). 카메라 단계는 프레임이 들어올 때만 완료, 단계 3–7 은 필요한 장치(카메라 · 스테이지)가 없으면 연결 안 됨, 8단계는 "릴레이"(스테이지 필요)와 "측정 장비"(K2110 · K2450)를 두 줄로 따로 표시한다.
+- **자동 다시 연결**(`App._auto_link`, 5 s 간격 백그라운드 스레드): 스테이지가 없으면 포트를 다시 열어 보고(연결되면 지금의 EEPROM · 재부팅 · 원점 확인 규칙을 그대로 탄다), 카메라가 없으면 다시 연다, 통신 끊김 경보 중 응답이 돌아오면 [연결 확인]처럼 경보를 닫는다. **측정 · 이동 · 촬영 중에는 하지 않는다.** 카메라 열기 실패가 오래 걸려도 이 스레드만 기다린다(화면 · 비상정지는 붙잡히지 않는다 - e2e 49 가 자동 확인 중 비상정지 요청 지연 100 ms 이하를 잰다). 연결되면 띠가 사라지고 소식 한 줄("스테이지 다시 연결됨" · "카메라 다시 연결됨"). 측정 장비는 [장비 연결]을 누를 때만 연결한다.
+  시작 연결: 스테이지는 서버가 뜨기 전에 한 번, 카메라는 서버가 뜬 뒤 백그라운드로(`server._startup_link`). 실패해도 경보를 만들지 않고 장치 띠로 보인다.
+- **사진 빈 상태**: 프레임이 없으면 깨진 이미지 대신 회색 판에 안내 - 카메라 없음 "카메라 연결 안 됨 · [다시 연결]", 촬영 사진 없음 "촬영 사진 없음 · [촬영]". `<img>` 로드 실패(`onerror`)도 같은 빈 상태로 바뀐다(`Viewer.setEmpty`). 사진이 필요한 작업(촬영 · 빈 판 사진 · 판 영역 적용 · 위치 기록 · 헤드 위치 보정 · 위치 확인)은 카메라가 없으면 비활성 + 사유, 서버도 이동하기 전에 거절한다(`App._need_camera`). 판 영역 꼭짓점 편집기는 사진이 있을 때만 보인다.
+- 장비 설정 2 **[카메라 찾기]**: 번호 0–5 를 백그라운드로 열어 보고(열림 · 해상도) 목록에서 [이 번호로] 로 저장한다(`cam_scan`, 시뮬레이션은 가짜 목록).
+- **시작을 막는 사유는 한 곳에 한 줄**(`gateOf`): 가장 먼저 해결할 것 + 바로 가기 버튼(예 "스테이지 연결 안 됨 [다시 연결]" · "접촉 높이 필요 [장비 설정 7]" · "측정 장비 연결 안 됨 [장비 연결]"). 카드마다 흩어진 빨간 문구 · 칩은 없다.
+- 순회 쪽 단계 목록(접촉 시험 · 수동 측정 · 가열)의 화면 이름은 **순회 단계**(R–T 측정 조건과 구별), 카드 "3 순회".
+- 시험용 환경변수: `WAFER2_MISSING=stage,camera,visa`(장치를 뺀 채 시작, dry · fake 에서만 - 실제 포트 · 카메라 · VISA 를 열지 않는다 · `dry` 명령 `missing` 으로 켜고 끈다), `WAFER2_AUTO_LINK_S`(자동 확인 간격, 기본 5).
+
+## 순회 단계 (단계 일곱 가지 + R–T 측정)
 샘플 위로 이동(Z 맨 위 확인 뒤 X · Y, 첫 단계 고정) · 접촉 높이로 내리기 · 쿨러 켜기/끄기(샘플 구역 / 전부) · 히트건 n s(시간이 되면 자동으로 끔, `heater.max_on_s` 상한 120 s) · 대기 n s · 확인 대기(사람이 [다음]) · Z 맨 위.
 기본 측정 조건(값은 예시, [편집] 에서 바꾼다): **접촉 시험** 이동 → 접촉 높이 → 대기 2 s → Z 맨 위 / **수동 측정** 이동 → 쿨러 켜기(구역) → 접촉 높이 → 확인 대기 → 쿨러 끄기 → Z 맨 위 / **가열** 이동 → 쿨러 켜기(구역) → 접촉 높이 → 대기 30 s → 히트건 20 s → 대기 60 s → 쿨러 끄기 → Z 맨 위.
 
@@ -202,8 +218,8 @@ Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_
 - 화면 → 서버 `{"id":n,"cmd":"이름","args":{...}}`. **비상정지는 줄 세우지 않고** `{"cmd":"estop"}`(WS) 와 `POST /estop`(HTTP) 둘 다. 명령은 수신 순간의 비상정지 세대(gen)를 잡아 잠금 뒤 비교한다.
 - HTTP: `/preview.jpg` `/shot.jpg` `/ref.jpg` `/snap.jpg` `/refhist/<id>.jpg` `/run/<측정>/<파일>` `/serial.json`(시리얼 탭) `/rt.json?since=n&id=`(R–T 그래프 점) `/rt_data/<측정 폴더>`(결과 탭 그래프 보기) `/schema` `/health`
 - R–T 명령: `inst_list` · `inst_connect` · `inst_disconnect` · `inst_test` · `rt_start` · `rt_stop` · `rt_speed` · `rt_defaults` · `rt_nas_retry`(+ `contact_try {free:true}` = 이 위치에서 접촉 높이로 내리기). `state.rt{inst{k2110,k2450,msg,test}, run{state,status,phase,cycle,repeat,T,R,I,target,heater,cooler,warns,nas,speed}, block, block_speed, results[]}`
-- 명령: `alarm_clear` · `apply_position` · `area_set` · `calib_apply` · `calib_click` · `calib_delete` · `calib_record` · `capture` · `contact_clear` · `contact_save` · `contact_try` · `dry` · `exclude_set` · `focus_refind` · `goto_named` · `goto_sample` · `head_apply` · `head_calib` · `heater_off_retry` · `jog` · `link_check` · `measure_answer` · `measure_pause` · `measure_redo_sample` · `measure_resume` · `measure_start` · `measure_stop` · `move_xy` · `open_folder` · `origin`(축 x|y|z) · `reconnect` · `ref_capture` · `ref_restore` · `relay` · `relay_test` · `results_open` · `sample_add` · `sample_confirm` · `sample_delete` · `sample_exclude` · `sample_here` · `sample_move` · `sample_select` · `settings_import_old` · `settings_save` · `shutdown_check` · `snap` · `undo_edit` · `verify_position` · `z_top`
-- `state` 주요 키: `phase` · `alarm` · `band{text,next,err,actions[]}` · `stage{x,y,z,locked,z_ok,xy_ok,done,fw_homed,recovery[]}` · `eeprom` · `port` · `fw` · `contact{z,approach}` · `camera` · `calib{status,text,points,area,head}` · `ref` · `shot` · `samples[]` · `sel` · `run{state,steps,results,cur_sample,waiting}` · `relays` · `settings` · `conditions` · `start_block`
+- 명령: `alarm_clear` · `apply_position` · `area_set` · `calib_apply` · `calib_click` · `calib_delete` · `calib_record` · `cam_reconnect` · `cam_scan` · `capture` · `contact_clear` · `contact_save` · `contact_try` · `dry` · `exclude_set` · `focus_refind` · `goto_named` · `goto_sample` · `head_apply` · `head_calib` · `heater_off_retry` · `jog` · `link_check` · `measure_answer` · `measure_pause` · `measure_redo_sample` · `measure_resume` · `measure_start` · `measure_stop` · `move_xy` · `open_folder` · `origin`(축 x|y|z) · `reconnect` · `ref_capture` · `ref_restore` · `relay` · `relay_test` · `results_open` · `sample_add` · `sample_confirm` · `sample_delete` · `sample_exclude` · `sample_here` · `sample_move` · `sample_select` · `settings_import_old` · `settings_save` · `shutdown_check` · `snap` · `undo_edit` · `verify_position` · `z_top`
+- `state` 주요 키: `phase` · `alarm` · `band{text,next,err,actions[]}` · `dev{stage,camera,k2110,k2450}{state,text,why}` · `bands[]{id,text,next,err,actions[]}` · `cam_scan{running,items[]}` · `stage{x,y,z,locked,z_ok,xy_ok,done,fw_homed,recovery[]}`(스테이지 없으면 null) · `eeprom` · `port` · `fw` · `contact{z,approach}` · `camera` · `calib{status,text,points,area,head}` · `ref` · `shot` · `samples[]` · `sel` · `run{state,steps,results,cur_sample,waiting}` · `relays` · `settings` · `conditions` · `start_block`
 
 ## R–T 측정 결과 폴더
 `..\data_v2\measure\<YYYYMMDD_HHMMSS>_<File name>\` — 회차 `.dat` · `_merged.dat` · `control.csv` · `rt.json`(조건 · 단계 · 경고 · 파일 · NAS 상태). 샘플 순회 중의 R–T 는 `runs\<측정>\rt_<샘플 번호>\` 에 같은 형식으로.
@@ -212,4 +228,4 @@ Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_
 `..\data_v2\runs\<YYYYMMDD_HHMMSS>_<측정 조건>\` — `run.json`(측정 조건 · 설정 사본 · 보정 식별자 · 촬영 폴더 · 시작/끝 · 결과) · `samples.csv`(번호 · X · Y · 쿨러 · 접촉 Z · 시작 · 끝 · 결과 · 사유) · `plate_fit.jpg`. CSV 는 UTF-8 BOM.
 
 ## 검증
-`python tools/unit_tests.py` · `python tools/unit_rt.py`(R–T 단위 시험, 목표 온도선 추종 오차 보고) · `python tools/e2e.py 31 …`(R–T e2e 31~45) · `python tools/shots_rt.py`(R–T 화면 흐름 · 스크린샷) · `E2E_MODE=fake python tools/e2e.py`(fake-serial) · `python tools/stress_fake.py 300`(동시성 부하) · `python tools/clicks.py`(클릭 수) · `python tools/fixed_regress.py [--loo]` · `python tools/align_measure.py` · `python tools/e2e.py [이름일부]` · `python tools/shots.py OUT` · `python tools/exit_test.py` · `python tools/flows.py`(화면 흐름: 첫 실행 · 비상정지 회복 · 막다른 상태 점검, playwright) · `python tools/perf4080.py`(4080×3060 성능).
+`python tools/unit_tests.py` · `python tools/unit_rt.py`(R–T 단위 시험, 목표 온도선 추종 오차 보고) · `python tools/e2e.py 31 …`(R–T e2e 31~47) · `python tools/e2e.py 48 49 50 51`(장치 연결 상태 · 자동 다시 연결) · `python tools/shots_conn.py`(연결 상태별 화면 점검 + 스크린샷 → `..\shots_v2\conn\`) · `python tools/shots_rt.py`(R–T 화면 흐름 · 스크린샷) · `E2E_MODE=fake python tools/e2e.py`(fake-serial) · `python tools/stress_fake.py 300`(동시성 부하) · `python tools/clicks.py`(클릭 수) · `python tools/fixed_regress.py [--loo]` · `python tools/align_measure.py` · `python tools/e2e.py [이름일부]` · `python tools/shots.py OUT` · `python tools/exit_test.py` · `python tools/flows.py`(화면 흐름: 첫 실행 · 비상정지 회복 · 막다른 상태 점검, playwright) · `python tools/perf4080.py`(4080×3060 성능).

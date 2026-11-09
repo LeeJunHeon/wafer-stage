@@ -47,6 +47,15 @@ JS_BROKEN_IMGS = """
 """
 
 
+def no_broken(pg):
+    """깨진 이미지가 없는가. 실시간 사진은 250 ms 마다 새로 받아 오므로 순간적으로 못 읽은 것은 몇 번 다시 본다."""
+    for _ in range(4):
+        if not pg.evaluate(JS_BROKEN_IMGS):
+            return True
+        pg.wait_for_timeout(300)
+    return False
+
+
 def run_scenario(name, cfg, out, pw):
     out_dir = out
     os.makedirs(out_dir, exist_ok=True)
@@ -109,7 +118,7 @@ def run_scenario(name, cfg, out, pw):
             check(not bands.strip(), "[%s] 연결 문제 띠 없음 (%s)" % (title, bands))
         if name == "e_inst_fail":
             check("K2110 연결 안 됨" in bands and "K2450 연결 안 됨" in bands, "[%s] 측정 장비 띠 (%s)" % (title, bands.replace("\n", " ")))
-            check(pg.locator('#band .band:has-text("K2110") button:has-text("장비 연결")').count() == 1, "[%s] 측정 장비 띠 + [장비 연결]" % title)
+            check(pg.locator('#band .band:has-text("K2110") button:has-text("측정 장비 연결")').count() == 1, "[%s] 측정 장비 띠 + [장비 연결]" % title)
         n_rows = pg.locator("#band .band").count()
         want_rows = (0 if stg else 1) + (0 if cam else 1) + (2 if name == "e_inst_fail" else 0)
         check(n_rows == want_rows, "[%s] 장치마다 띠 한 줄 (%d / %d)" % (title, n_rows, want_rows))
@@ -117,7 +126,7 @@ def run_scenario(name, cfg, out, pw):
         txt = pg.inner_text("#tab-measure")
         check(pg.locator("#tab-measure #gate").count() <= 1, "[%s] 시작 막는 사유 한 곳 (%d)" % (title, pg.locator("#tab-measure #gate").count()))
         check(pg.locator("#tab-measure .why").count() == 0, "[%s] 흩어진 빨간 문구 없음" % title)
-        check(not pg.evaluate(JS_BROKEN_IMGS), "[%s] 깨진 이미지 없음 (here)" % title)
+        check(no_broken(pg), "[%s] 깨진 이미지 없음 (here)" % title)
         if not stg:
             check("스테이지 연결 안 됨" in pg.inner_text("#gate") and pg.locator('#gate button:has-text("다시 연결")').count() == 1, "[%s] 시작 사유 = 스테이지 연결 안 됨 · [다시 연결]" % title)
             check("히트건 —" in txt and "쿨러 —" in txt, "[%s] 히트건 · 쿨러 상태 — (%s)" % (title, [l for l in txt.splitlines() if "히트건" in l][:1]))
@@ -130,7 +139,7 @@ def run_scenario(name, cfg, out, pw):
         check(pg.locator("#tab-measure .why").count() == 0, "[%s] 순회 · 흩어진 빨간 문구 없음" % title)
         check("아직 촬영 안 함" in txt or name == "d_all", "[%s] 촬영 전 문구 = 작은 회색 안내" % title)
         check(pg.locator("#tab-measure #gate").count() <= 1, "[%s] 순회 · 시작 사유 한 곳" % title)
-        check(not pg.evaluate(JS_BROKEN_IMGS), "[%s] 깨진 이미지 없음 (tour)" % title)
+        check(no_broken(pg), "[%s] 깨진 이미지 없음 (tour)" % title)
         if not cam or name != "d_all":
             cap_dis = pg.evaluate("(() => { const b = [...document.querySelectorAll('#tab-measure .btn')].find((x) => x.textContent.trim() === '촬영'); return b ? b.classList.contains('dis') : null; })()")
             if name != "d_all":
@@ -142,7 +151,7 @@ def run_scenario(name, cfg, out, pw):
         ve = pg.inner_text("#m-view .empty") if pg.locator("#m-view .empty:not(.hidden)").count() else ""
         if not cam:
             check("카메라 연결 안 됨" in ve and "다시 연결" in ve, "[%s] 실시간 자리 = 카메라 연결 안 됨 · [다시 연결] (%s)" % (title, ve))
-        check(not pg.evaluate(JS_BROKEN_IMGS), "[%s] 깨진 이미지 없음 (live)" % title)
+        check(no_broken(pg), "[%s] 깨진 이미지 없음 (live)" % title)
         pg.click('[data-act="m-mode"][data-args*="shot"]')
         pg.wait_for_timeout(500)
         if name != "d_all":
@@ -153,7 +162,7 @@ def run_scenario(name, cfg, out, pw):
         # ---- 결과 ----
         goto_tab("results")
         shot("res")
-        check(not pg.evaluate(JS_BROKEN_IMGS), "[%s] 깨진 이미지 없음 (results)" % title)
+        check(no_broken(pg), "[%s] 깨진 이미지 없음 (results)" % title)
 
         # ---- 장비 설정 1–8 ----
         goto_tab("setup")
@@ -164,7 +173,7 @@ def run_scenario(name, cfg, out, pw):
         for i in range(1, 9):
             goto_step(i)
             shot("s%d" % i, 600)
-            check(not pg.evaluate(JS_BROKEN_IMGS), "[%s] 깨진 이미지 없음 (설정 %d)" % (title, i))
+            check(no_broken(pg), "[%s] 깨진 이미지 없음 (설정 %d)" % (title, i))
             foot = pg.locator(".panel .foot")
             if i < 8:
                 check(foot.count() == 1, "[%s] 설정 %d · [다음 단계] 패널 안" % (title, i))

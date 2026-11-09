@@ -81,7 +81,7 @@ function drawRT(svg, s) {
   const W = 1200, H = 470, m = { l: 78, r: 190, t: 36, b: 52 };
   const pts = T.pts.filter((p) => p.T != null && p.R != null && (p.ph === "가열" || p.ph === "냉각"));
   const rg = UI.rtRange(pts.map((p) => p.T), pts.map((p) => p.R));
-  const f = frame(svg, W, H, m, rg.x, rg.y, { ylog: true, xlabel: "Temp [°C]", ylabel: "Resistance [Ohm]", xticks: 13 });
+  const f = frame(svg, W, H, m, rg.x, rg.y, { ylog: true, xlabel: "온도 [°C]", ylabel: "저항 [Ω]", xticks: 13 });
   const cyc = Math.max(1, ...pts.map((p) => p.cy));
   const groups = {};
   pts.forEach((p) => { const k = p.ph + p.cy; (groups[k] = groups[k] || { ph: p.ph, cy: p.cy, a: [] }).a.push([f.px(p.T), f.py(p.R)]); });

@@ -168,7 +168,7 @@ function renderHead(s) {
   if (!running) {
     const dv = s.dev || {};
     const stOk = dv.stage && dv.stage.state === "ok" && st;
-    cells.push(mk("스테이지", stOk ? "연결 · " + st.origin_text : devText(dv.stage), stOk ? (st.z_ok && st.xy_ok && !st.locked ? "ok" : "warn") : DEV_CLS[(dv.stage || {}).state] || ""));
+    cells.push(mk("스테이지", stOk ? (s.dry ? "가상 · " : "연결 · ") + st.origin_text : devText(dv.stage), stOk ? (st.z_ok && st.xy_ok && !st.locked ? "ok" : "warn") : DEV_CLS[(dv.stage || {}).state] || ""));
     cells.push(mk("카메라", s.camera.open ? "연결 · " + (s.camera.size ? s.camera.size.join("×") : "") : devText(dv.camera), DEV_CLS[(dv.camera || {}).state] || ""));
     cells.push(mk("좌표 보정", c.status === "done" ? "완료" : c.status === "invalid" ? c.text : "필요", c.status === "done" ? "ok" : c.status === "invalid" ? "err" : "warn"));
     cells.push(mk("릴레이", stOk ? "쿨러 " + (rt.co ? rt.co + "개 켜짐" : "꺼짐") + " · 히트건 " + (rt.heat ? "켜짐" : "꺼짐") : "알 수 없음", stOk ? (rt.heat ? "heat" : rt.co ? "ok" : "") : ""));
