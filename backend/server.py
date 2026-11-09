@@ -56,22 +56,21 @@ def _asset_v():
     return str(int(max(ts))) if ts else "0"
 
 
+def _startup_link():
+    APP.try_open_camera()
+    APP.start_auto_link()
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_app):
     global APP, _LOOP
     _LOOP = asyncio.get_running_loop()
     APP = App(dry=_ARGS.dry, image=_ARGS.image, fake=_ARGS.fake_serial)
     logger.subscribe(lambda e: _LOOP.call_soon_threadsafe(lambda: asyncio.ensure_future(_bcast({"type": "log", "e": e}))))
-    try:
-        await asyncio.to_thread(APP.connect)                 # dry 는 가상 스테이지, 실제 모드는 설정의 포트(없으면 자동 탐색)
-    except Exception as e:                                   # noqa: BLE001
-        logger.log("스테이지 연결 실패 · " + logger.short(e), "err", raw=repr(e))
-        APP.set_alarm("스테이지 연결 안 됨 · " + logger.short(e, 30), "장비 설정에서 포트 확인")
-    try:
-        APP.vision.open()
-        APP.vision.start_preview()
-    except Exception as e:                                           # noqa: BLE001
-        logger.log("카메라 열기 실패 · " + logger.short(e), "warn", raw=repr(e))
+    # 스테이지는 서버가 뜨기 전에 한 번 연결해 본다(빠르다). 카메라 열기는 백그라운드(열기 실패가 화면 · 비상정지를 붙잡지 않게).
+    # 실패는 장치 상태 · 띠로 보이고, 이후는 자동 다시 연결이 맡는다.
+    await asyncio.to_thread(APP.try_connect_stage)
+    threading.Thread(target=_startup_link, name="startup-link", daemon=True).start()
     task = asyncio.create_task(_broadcaster())
     try:
         yield

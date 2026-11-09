@@ -58,6 +58,9 @@ def sharpness(bgr, poly=None):
     return float(lap.var())
 
 
+FAIL_LIMIT = 8                                                   # 실시간 프레임이 연속으로 이만큼 실패하면 카메라 끊김
+
+
 class Vision:
     def __init__(self, cfg, true_xy_fn=None, dry=False, image=None, log=None):
         self.cfg = cfg
@@ -76,12 +79,21 @@ class Vision:
         self.last_error = ""
         self.synth = None
         self.size = None
+        self.missing = False                                     # 시험: 카메라가 없는 상태를 흉내 낸다(열기 실패)
+        self.attempted = False                                   # 열기를 한 번이라도 해 보았는가(아니면 "확인 안 됨")
+        self.frame_ok = False                                    # 실제 프레임을 받았는가(그때만 "연결됨")
+        self.frame_t = 0.0
+        self.fail_n = 0
 
     # ---- 열기 ---------------------------------------------------------
     def open(self):
         with self.lock:
             if self.cam is not None:
                 return
+            self.attempted = True
+            if self.missing:
+                self.last_error = "카메라 없음"
+                raise RuntimeError("카메라 없음")
             w, h = int(self.cfg.get("width")), int(self.cfg.get("height"))
             if self.image:
                 self.cam = ImageCam(self.image)
@@ -107,14 +119,18 @@ class Vision:
                 self.cam = c
             self.fs = framesrc.FrameSource(self.cam, min_fresh=int(self.cfg.get("capture.fresh_frames")))
             f = self._first()
-            self.size = (f.shape[1], f.shape[0]) if f is not None else (w, h)
+            if f is None:                                        # 열렸어도 프레임이 안 들어오면 연결이 아니다
+                self._release()
+                self.last_error = "프레임 없음"
+                raise RuntimeError("카메라 프레임 없음")
+            self.size = (f.shape[1], f.shape[0])
+            self.frame_ok, self.frame_t, self.fail_n, self.last_error = True, time.monotonic(), 0, ""
 
     def _first(self):
         self.cam.grab()
         return self.cam.retrieve()
 
-    def close(self):
-        self.stop_preview()
+    def _release(self):
         with self.lock:
             if self.cam is not None:
                 try:
@@ -122,6 +138,16 @@ class Vision:
                 except Exception:                                # noqa: BLE001
                     pass
             self.cam = self.fs = self.synth = None
+            self.frame_ok = False
+            self.preview_jpg = None                              # 옛 프레임을 계속 보이지 않는다
+
+    def close(self):
+        self.stop_preview()
+        self._release()
+
+    def unplug(self):
+        """카메라가 사라졌다(USB 빠짐 · 프레임 끊김): 열린 것을 놓고 "연결 안 됨" 으로. 미리보기 스레드는 그대로 둔다(자동 다시 연결이 다시 연다)."""
+        self._release()
 
     # ---- 미리보기 -----------------------------------------------------
     def start_preview(self):
@@ -142,6 +168,7 @@ class Vision:
             period = 1.0 / max(0.5, float(self.cfg.get("preview_fps")))
             t0 = time.monotonic()
             if self.preview_on and self.lock.acquire(timeout=0.2):
+                lost = False
                 try:
                     if self.cam is not None:
                         st = self.fs.latest()
@@ -149,10 +176,18 @@ class Vision:
                             self.preview_jpg = jpeg(st.frame, int(self.cfg.get("preview_max_w")), 70)
                             self.preview_n += 1
                             self.size = (st.frame.shape[1], st.frame.shape[0])
+                            self.frame_t, self.fail_n = time.monotonic(), 0
+                        else:
+                            self.fail_n += 1
                 except Exception as e:                           # noqa: BLE001
                     self.last_error = str(e)
+                    self.fail_n += 1
                 finally:
+                    lost = self.cam is not None and self.fail_n >= FAIL_LIMIT
                     self.lock.release()
+                if lost:                                         # 프레임이 계속 안 오면 카메라가 빠진 것으로 본다
+                    self.last_error = self.last_error or "프레임 끊김"
+                    self.unplug()
             time.sleep(max(0.02, period - (time.monotonic() - t0)))
 
     # ---- 촬영 ---------------------------------------------------------

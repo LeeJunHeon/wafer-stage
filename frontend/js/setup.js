@@ -7,17 +7,31 @@ S.instItems = null; S.instMsg = "";
 const EEPROM_TEXT = { restored: "원점 복원됨", unsaved: "저장 안 하고 꺼짐 · 원점 없음", none: "기록 없음" };
 const rate = (r) => (r == null ? "" : r < 0.3 ? "좋음" : r < 0.8 ? "주의" : "나쁨");
 
+/* 단계 상태 셋: 완료(설정됨 + 장치 정상) · 연결 안 됨(설정은 있으나 장치 없음, 빨강) · 필요(설정 없음). 장치 상태는 서버가 실제 장치에서 만든 s.dev 만 본다. */
+const dvOk = (s, k) => !!(s.dev && s.dev[k] && s.dev[k].state === "ok");
+const dvWhy = (s, k, name) => (s.dev && s.dev[k] && s.dev[k].state === "retry" ? "다시 연결 중" : k === "stage" ? "USB · 포트 번호 확인" : k === "camera" ? "USB · 카메라 번호 확인" : "연결 필요");
 function stepInfo(s, i) {
-  const c = s.calib, st = s.settings, sg = s.stage;
+  const c = s.calib, st = s.settings, sg = s.stage, stOk = dvOk(s, "stage") && !!sg, camOk = dvOk(s, "camera");
+  const down = (why) => ["down", "연결 안 됨", why];
+  const need = (why) => ["need", "필요", why];
+  const done = (sum) => ["done", "완료", sum];
+  const devGap = (needStage, needCam) => (needStage && !stOk ? "스테이지 연결 필요" : needCam && !camOk ? "카메라 연결 필요" : "");
   switch (i) {
-    case 1: { if (!sg) return ["need", "필요", "스테이지 연결 안 됨"]; const ok = sg.z_ok && sg.xy_ok && !sg.locked; return [ok ? "done" : "need", ok ? "완료" : "필요", (s.port || "") + " · " + (s.fw || "") + " · " + (ok ? "원점 정상" : "원점 없음")]; }
-    case 2: return ["done", "완료", (s.camera.size ? s.camera.size.join("×") : st.width + "×" + st.height) + " · 노출 " + st.exposure];
-    case 3: return c.area ? ["done", "완료", c.size_mm ? c.size_mm[0] + " × " + c.size_mm[1] + " mm" : "지정함"] : ["need", "필요", "사진에서 네 꼭짓점"];
-    case 4: return s.ref ? ["done", "완료", s.ref.time] : ["need", "필요", "판을 비우고 촬영"];
-    case 5: return [c.status, c.status === "done" ? "완료" : c.status === "invalid" ? "무효" : "필요", c.text];
-    case 6: return [c.head.status, c.head.status === "done" ? "완료" : c.head.status === "invalid" ? "무효" : "필요", c.head.text];
-    case 7: { const z = s.contact.z; return z == null ? ["need", "필요", "샘플에서 핀이 닿는 높이"] : ["done", "완료", "Z " + f1(z, 2) + " mm"]; }
-    case 8: { const used = st.relay.items.map((r, n) => (r.enabled && n + 1 !== st.heater.relay ? n + 1 : null)).filter(Boolean); const ik = s.rt && s.rt.inst, both = ik && ik.k2110 && ik.k2110.ok && ik.k2450 && ik.k2450.ok; return ["done", "완료", "쿨러 " + (used.length ? "R" + Math.min(...used) + "–R" + Math.max(...used) : "없음") + " · 히트건 R" + st.heater.relay + " · 장비 " + (both ? "연결" : "미연결")]; }
+    case 1: { if (!stOk) return down(dvWhy(s, "stage", "스테이지")); const ok = sg.z_ok && sg.xy_ok && !sg.locked; return ok ? done((s.port || "") + " · " + (s.fw || "") + " · 원점 정상") : need((s.port || "") + " · 원점 없음"); }
+    case 2: return camOk ? done((s.camera.size ? s.camera.size.join("×") : "—") + " · 노출 " + st.exposure) : down(dvWhy(s, "camera", "카메라"));
+    case 3: { if (!c.area) return need("사진에서 네 꼭짓점"); const g = devGap(false, true); return g ? down(g) : done(c.size_mm ? c.size_mm[0] + " × " + c.size_mm[1] + " mm" : "지정함"); }
+    case 4: { if (!s.ref) return need("판을 비우고 촬영"); const g = devGap(false, true); return g ? down(g) : done(s.ref.time); }
+    case 5: { if (c.status === "invalid") return ["invalid", "무효", c.text]; if (c.status !== "done") return need(c.text); const g = devGap(true, true); return g ? down(g) : done(c.text); }
+    case 6: { if (c.head.status === "invalid") return ["invalid", "무효", c.head.text]; if (c.head.status !== "done") return need(c.head.text); const g = devGap(true, true); return g ? down(g) : done(c.head.text); }
+    case 7: { const z = s.contact.z; if (z == null) return need("샘플에서 핀이 닿는 높이"); const g = devGap(true, false); return g ? down(g) : done("Z " + f1(z, 2) + " mm"); }
+    case 8: {
+      const used = st.relay.items.map((r, n) => (r.enabled && n + 1 !== st.heater.relay ? n + 1 : null)).filter(Boolean);
+      const rel = "릴레이 · " + (stOk ? "쿨러 " + (used.length ? "R" + Math.min(...used) + "–R" + Math.max(...used) : "없음") + " · 히트건 R" + st.heater.relay : "스테이지 연결 필요");
+      const instOk = dvOk(s, "k2110") && dvOk(s, "k2450");
+      const inst = "측정 장비 · " + (instOk ? "연결" : "연결 안 됨");
+      const bad = !stOk || !instOk;
+      return [bad ? "down" : "done", bad ? "연결 안 됨" : "완료", rel, inst, [!stOk, !instOk]];
+    }
   }
 }
 function lockedBy(s) { return s.run && ["running", "paused", "stopping"].includes(s.run.state) ? "측정 중 · 변경 잠김" : ""; }
@@ -42,7 +56,7 @@ function buildSetup() {
   S.center = h("div", { class: "viewbox grow" }, S.vhead, S.viewer.el, S.vfoot);
   S.panel = h("div", { class: "col panel" });
   pane.replaceChildren(S.list, S.center, S.panel);
-  setInterval(() => { const s = UI.state; if (s && UI.tab === "setup" && viewFor(s) === "live" && S.viewer) { const sz = s.camera.size || [1280, 960]; S.viewer.set("/preview.jpg", sz[0], sz[1], Date.now()); } }, 250);
+  setInterval(() => { const s = UI.state; if (s && UI.tab === "setup" && viewFor(s) === "live" && S.viewer && s.camera.open) { const sz = s.camera.size || [1280, 960]; S.viewer.set("/preview.jpg", sz[0], sz[1], Date.now()); } }, 250);
   document.addEventListener("keydown", onJogKey);
   S.built = true;
 }
@@ -51,9 +65,9 @@ function renderSetup(s) {
   if (!S.built) buildSetup();
   if (UI.tab !== "setup") return;
   const items = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => {
-    const [cls, st, sum] = stepInfo(s, i);
+    const [cls, st, sum, sum2, bads] = stepInfo(s, i);
     return h("div", { class: "sitem " + cls + (S.step === i ? " sel" : ""), "data-act": "su-step", "data-args": JSON.stringify({ i }) }, h("div", { class: "no", text: i }),
-      h("div", { class: "grow" }, h("div", { class: "t", text: STEPS[i - 1] }), h("div", { class: "s", text: sum })), h("div", { class: "st", text: st }));
+      h("div", { class: "grow" }, h("div", { class: "t", text: STEPS[i - 1] }), h("div", { class: "s" + (bads && bads[0] ? " bad" : ""), text: sum }), sum2 ? h("div", { class: "s2" + (bads && bads[1] ? " bad" : ""), text: sum2 }) : null), h("div", { class: "st", text: st }));
   });
   const lsig = JSON.stringify(items.map((e) => e.outerHTML)) + S.step;
   if (lsig !== S.leftSig) {
@@ -63,7 +77,7 @@ function renderSetup(s) {
         btn("이전 설정 가져오기", "su-import", null, "sm", "이전 프로그램의 포트 · 카메라 · 가동범위 · 속도 · 위치 · 릴레이 · 쿨러 설정을 읽어 옵니다. 가져온 뒤 스테이지를 다시 연결합니다. 보정 파일은 가져오지 않습니다.", lockedBy(s))));
   }
   renderSetupView(s);
-  const sig = JSON.stringify([S.step, lockedBy(s), s.calib, s.ref, s.stage && [s.stage.locked, s.stage.z_ok, s.stage.xy_ok, s.stage.moving, s.stage.done, s.stage.fw_homed, s.stage.z > 0.05], s.camera.busy, s.settings.photohome, s.tool, s.verify, S.jogStep, S.freeze, S.showPts, S.showHead, S.showRef,
+  const sig = JSON.stringify([S.step, s.dev, s.camera.state, s.cam_scan, lockedBy(s), s.calib, s.ref, s.stage && [s.stage.locked, s.stage.z_ok, s.stage.xy_ok, s.stage.moving, s.stage.done, s.stage.fw_homed, s.stage.z > 0.05], s.camera.busy, s.settings.photohome, s.tool, s.verify, S.jogStep, S.freeze, S.showPts, S.showHead, S.showRef,
     s.eeprom, s.port, s.fw, s.contact, s.samples.length, s.sel, S.ctNo, s.settings.relay.items, s.settings.cooler, s.settings.heater, s.settings.width, s.settings.exposure, s.settings.wb_temperature,
     s.rt && s.rt.inst, s.settings.rt && [s.settings.rt.k2110_addr, s.settings.rt.k2450_addr], S.instItems, S.instMsg, s.camera.busy]);
   if (sig !== S.rightSig) { S.rightSig = sig; renderPanel(s); }
@@ -83,10 +97,12 @@ function renderSetupView(s) {
   S.vfoot.replaceChildren(h("span", { text: S.step === 5 ? "점선 = 판 영역 · 번호 = 기준점" : S.step === 8 ? "점선 격자 = 쿨러 구역" : S.step === 6 && kind === "snap" ? "주황 상자 = 헤드 마커(정렬에서 뺀 영역)" : "점선 = 판 영역" }), h("span", { class: "grow" }), h("span", { class: "mono", text: s.camera.text }));
   v.mode = S.zoom;
   v.area = s.calib.area;
-  if (kind === "snap") v.set("/snap.jpg", sz[0], sz[1], S.snapV);
+  const noPhoto = kind === "live" && !s.camera.open;               // 사진이 없으면 사진 자리에 안내 · 꼭짓점 편집기는 사진이 있을 때만
+  if (noPhoto) { v.setEmpty(camEmpty(s)); v.set(null); }
+  else if (kind === "snap") v.set("/snap.jpg", sz[0], sz[1], S.snapV);
   else if (kind === "ref") v.set("/ref.jpg", sz[0], sz[1], s.ref.id);
-  else if (!v.W) v.set("/preview.jpg", sz[0], sz[1], Date.now());
-  if (S.step === 3) { if (!S.area) S.area = (s.calib.area || defaultArea(sz)).map((p) => p.slice()); v.handles = S.area; } else v.handles = null;
+  else { v.setEmpty({ text: "실시간 화면 준비 중" }); if (!v.W) v.set("/preview.jpg", sz[0], sz[1], Date.now()); }
+  if (S.step === 3 && !noPhoto) { if (!S.area) S.area = (s.calib.area || defaultArea(sz)).map((p) => p.slice()); v.handles = S.area; } else v.handles = null;
   v.message(s.camera.cap_text && s.camera.busy ? s.camera.busy + " · " + s.camera.cap_text : "");
   $$(".hint", v.el).forEach((e) => e.remove());
   if (S.freeze && S.step === 5) v.el.append(h("div", { class: "hint", text: "핀 가운데와 같은 점을 클릭" }));
@@ -173,6 +189,8 @@ function stepDone(s, i) { return stepInfo(s, i)[0] === "done"; }
 
 function renderPanel(s) {
   const P = S.panel, lock = lockedBy(s), st = s.settings, c = s.calib, nostage = !s.stage;
+  const camWhy = s.camera.open ? "" : "카메라 연결 안 됨";                 // 사진이 필요한 작업은 카메라가 없으면 비활성 + 사유
+  const noPhoto = viewFor(s) === "live" && !s.camera.open;
   const kids = [];
   const card = (title, ...x) => h("div", { class: "card" }, h("h3", { text: title }), ...x.filter(Boolean));
   const jogCard = () => {
@@ -181,12 +199,14 @@ function renderPanel(s) {
     const b = (l, axis, sign) => btn(l, "su-jog", { axis, sign }, "", "", dis);
     const steps = [0.1, 1, 10];
     return card("조그", h("div", { class: "mono", id: "su-pos", text: sg ? xy(sg.x, sg.y) + " · Z " + f1(sg.z, 2) : "—" }),
-      h("div", { class: "row" }, ...steps.map((v) => btn(String(v), "su-jstep", { v }, "sm " + (S.jogStep === v ? "on" : ""))), moreBtn([{ label: "50 mm", fn: () => { S.jogStep = 50; S.rightSig = ""; render(); } }]), h("span", { class: "sub3", text: "mm" })),
+      h("div", { class: "row" }, ...steps.map((v) => btn(String(v), "su-jstep", { v }, "sm " + (S.jogStep === v ? "on" : ""))), S.jogStep > 10 ? btn(String(S.jogStep), "su-jstep", { v: S.jogStep }, "sm on") : null,
+        moreBtn([{ label: "50 mm", fn: () => { S.jogStep = 50; S.rightSig = ""; render(); } }]), h("span", { class: "sub3", text: "mm" })),
       h("div", { class: "row", "data-tip": "화살표 키 = X · Y, PageUp / PageDown = Z 로도 움직입니다." }, h("div", { class: "pad" }, h("span"), b("X+", "x", 1), h("span"), b("Y+", "y", 1), h("span"), b("Y−", "y", -1), h("span"), b("X−", "x", -1), h("span")),
         h("div", { class: "col" }, b("Z↑", "z", -1), b("Z↓", "z", 1))),
       sg && sg.z > 0.5 ? h("div", { class: "why", text: "Z 가 내려가 있음 · 다른 점으로 가기 전 Z↑" }) : null);
   };
-  const foot = (extra) => h("div", { class: "foot" }, extra, S.step < 8 ? btn("다음 단계", "su-next", null, stepDone(s, S.step) ? "primary" : "") : null);
+  let footNode = null;                                   // [다음 단계] 는 패널 맨 아래 오른쪽(카드 밖에 떠 있지 않게)
+  const foot = (extra) => { footNode = S.step < 8 ? h("div", { class: "foot" }, extra, btn("다음 단계", "su-next", null, stepDone(s, S.step) ? "primary" : "")) : null; return null; };
   const axisBtn = (ax) => {
     const sg = s.stage;
     let why = lock || (nostage ? "스테이지 연결 안 됨" : "");
@@ -210,23 +230,28 @@ function renderPanel(s) {
     kids.push(card("카메라", h("div", { class: "kv" }, ...field("카메라 번호", numInput("f-ci", st.camera_index, 1)), ...field("가로", numInput("f-w", st.width, 1)), ...field("세로", numInput("f-h", st.height, 1)),
       ...field("노출", numInput("f-ex", st.exposure)), ...field("화이트밸런스 K", numInput("f-wb", st.wb_temperature, 100)),
       ...field("초점", selInput("f-fm", st.focus_mode, [["fixed", "고정"], ["auto", "자동"]]))),
-      h("div", { class: "row" }, btn("저장", "su-save-cam", null, "primary", "", lock), moreBtn([{ label: "초점 다시 맞추기", fn: () => UI.acts["su-focus"](), why: lock }])),
+      h("div", { class: "row" }, btn("저장", "su-save-cam", null, "primary", "", lock), btn("카메라 찾기", "su-cam-scan", null, "", "번호 0–5 를 차례로 열어 보고 열리는 카메라를 목록으로 보입니다. 백그라운드로 돌립니다.", lock || (s.cam_scan && s.cam_scan.running ? "찾는 중" : "")),
+        moreBtn([{ label: "초점 다시 맞추기", fn: () => UI.acts["su-focus"](), why: lock || camWhy }])),
+      s.cam_scan ? h("div", { class: "cands" }, s.cam_scan.running ? h("div", { class: "sub", text: "찾는 중 …" }) : null,
+        ...s.cam_scan.items.filter((x) => x.ok).map((x) => h("div", { class: "cand" }, h("b", { text: "번호 " + x.index }), h("span", { class: "grow", text: (x.busy ? "사용 중 · " : "열림 · ") + (x.size ? x.size.join("×") : "") }),
+          btn(st.camera_index === x.index ? "선택됨" : "이 번호로", "su-cam-pick", { index: x.index }, "sm", "카메라 번호로 저장합니다.", lock || (st.camera_index === x.index ? "이미 선택됨" : "")))),
+        !s.cam_scan.running && !s.cam_scan.items.some((x) => x.ok) ? h("div", { class: "sub", text: "열리는 카메라 없음 · USB 확인" }) : null) : null,
       h("div", { class: "sub3", text: "카메라 설정을 바꾸면 3–6 을 다시 확인" })), foot());
   } else if (S.step === 3) {
     const sz = c.size_mm;
     kids.push(card("판 영역", h("div", { class: "sub", text: "사진에서 네 꼭짓점을 끌어 판 사각형에 맞춥니다." }),
       h("div", { class: "kv" }, h("span", { text: "실측 크기" }), h("b", { text: sz ? sz[0] + " × " + sz[1] + " mm" : "좌표 보정 뒤 표시" })),
-      h("div", { class: "row" }, btn("적용", "su-area", null, "primary", "", lock), moreBtn([{ label: "초기화", fn: () => UI.acts["su-area-reset"]() }]))), foot());
+      h("div", { class: "row" }, btn("적용", "su-area", null, "primary", "", lock || (noPhoto ? "사진 없음 · 카메라 연결 안 됨" : "")), moreBtn([{ label: "초기화", fn: () => UI.acts["su-area-reset"]() }]))), foot());
   } else if (S.step === 4) {
     const hist = (s.ref && s.ref.history) || [];
     kids.push(card("빈 판 사진", h("div", { class: "sub", text: "판 위의 샘플을 모두 치웁니다. 촬영 위치로 자동 이동한 뒤 찍습니다." }),
-      h("div", { class: "row" }, btn("촬영 위치로 이동 · 촬영", "su-ref", null, "primary", "", lock || (c.area ? "" : "판 영역 필요") || (s.camera.busy ? s.camera.busy + " 중" : ""))),
+      h("div", { class: "row" }, btn("촬영 위치로 이동 · 촬영", "su-ref", null, "primary", "", lock || (c.area ? "" : "판 영역 필요") || (s.camera.busy ? s.camera.busy + " 중" : "") || camWhy)),
       S.refRes ? h("div", { class: "sub", text: "교체 결과 · " + (S.refRes.moved ? "이동 " + S.refRes.moved.shift_px + " px · 잔차 " + S.refRes.moved.resid + " · 성공" : "기하 이동 없음") }) : null,
       hist.length ? h("div", { class: "row" }, h("span", { class: "sub grow", text: "이력 " + hist.length + "개" }), moreBtn(hist.slice(0, 8).map((x) => ({ label: x.time + " 로 되돌리기", fn: () => UI.acts["su-ref-restore"]({ id: x.id }), why: lock })))) : null), foot());
   } else if (S.step === 5) {
     const n = c.points.length;
     kids.push(card("좌표 보정", h("ol", { class: "sub" }, h("li", { text: "핀 가운데를 기준점에 맞추기 · Z 는 판 위 1–2 mm" }), h("li", { text: "위치 기록 → 자동으로 한 장 찍힘" }), h("li", { text: "사진에서 같은 점 클릭 (꼭짓점 · 칩 가운데는 자동으로 붙음)" })),
-      h("div", { class: "row" }, btn("위치 기록 · " + (n + 1) + "번 점", "su-record", null, "primary", "", lock || (nostage ? "스테이지 연결 안 됨" : "")),
+      h("div", { class: "row" }, btn("위치 기록 · " + (n + 1) + "번 점", "su-record", null, "primary", "", lock || (nostage ? "스테이지 연결 안 됨" : "") || camWhy),
         c.pending || S.freeze ? btn("취소", "su-rec-cancel", null, "sm") : null)));
     kids.push(jogCard());
     const rowsT = c.points.map((p) => h("tr", {}, h("td", { text: p.no }), h("td", { text: f1(p.x) }), h("td", { text: f1(p.y) }), h("td", { text: p.res_mm != null ? f1(p.res_mm, 2) : "—" }), h("td", {}, btn("삭제", "su-pdel", { no: p.no }, "sm", "", lock))));
@@ -238,8 +263,8 @@ function renderPanel(s) {
   } else if (S.step === 6) {
     const hc = c.head, v = s.verify;
     kids.push(card("헤드 위치 보정", h("div", { class: "sub", text: "격자 n×n 으로 자동 이동 · 촬영해 헤드 마커 위치를 잽니다." }),
-      h("div", { class: "row" }, btn("자동 보정", "su-head", null, "primary", "", lock || (c.status === "done" ? "" : "좌표 보정 필요") || (nostage ? "스테이지 연결 안 됨" : "")),
-        moreBtn([{ label: "지금 위치 확인", fn: () => UI.acts["su-verify"](), why: lock || (hc.status === "done" ? "" : "헤드 위치 보정 필요") }])),
+      h("div", { class: "row" }, btn("자동 보정", "su-head", null, "primary", "", lock || (c.status === "done" ? "" : "좌표 보정 필요") || (nostage ? "스테이지 연결 안 됨" : "") || camWhy),
+        moreBtn([{ label: "지금 위치 확인", fn: () => UI.acts["su-verify"](), why: lock || (hc.status === "done" ? "" : "헤드 위치 보정 필요") || camWhy || (nostage ? "스테이지 연결 안 됨" : "") }])),
       h("div", { class: "row" }, h("span", { class: "grow", text: hc.pairs.length ? "점 " + hc.pairs.length + (hc.rms != null ? " · 잔차 " + f1(hc.rms, 2) + " mm · " + rate(hc.rms) : "") : "아직 안 함" }), btn(S.showHead ? "점 접기 ▴" : "점 보기 ▾", "su-hpts", null, "sm")),
       S.showHead ? h("div", { class: "scroll" }, h("table", { class: "tb" }, h("tr", {}, ["X", "Y", "잔차"].map((t) => h("th", { text: t }))), ...hc.pairs.map((p) => h("tr", {}, h("td", { text: f1(p.x) }), h("td", { text: f1(p.y) }), h("td", { text: p.res_mm != null ? f1(p.res_mm, 2) : "—" }))))) : null,
       v ? h("div", { class: "row wrap" }, v.d != null ? h("span", { class: "chip " + (v.verdict === "정상" ? "ok" : "warn"), text: "위치 확인 " + v.verdict + " · 차이 " + f1(v.d, 2) + " mm" }) : h("span", { class: "chip warn", text: v.why || "위치 확인 못 함" }),
@@ -287,9 +312,11 @@ function renderPanel(s) {
       h("h3", { text: "쿨러 구역 " + zr.rows + "×" + zr.cols }), h("div", { class: "zgrid" }, ...zcells),
       h("div", { class: "row" }, btn("저장", "su-save-dev", null, "primary", "", lock))));
   }
-  P.replaceChildren(...kids);
+  P.replaceChildren(...kids.filter(Boolean), ...(footNode ? [footNode] : []));
 }
 /* ---- 동작 ---- */
+UI.acts["su-cam-scan"] = async () => { const r = await send("cam_scan"); if (r.ok) toast("카메라를 찾는 중"); };
+UI.acts["su-cam-pick"] = async (a) => { const r = await send("settings_save", { patch: { camera_index: a.index } }); if (r.ok) toast("카메라 번호 " + a.index + " 저장"); };
 UI.acts["su-save-cam"] = saveFields({ camera_index: "f-ci", width: "f-w", height: "f-h", exposure: "f-ex", wb_temperature: "f-wb", focus_mode: "f-fm" });
 UI.acts["su-focus"] = async () => { const r = await send("focus_refind"); if (r.ok) toast(r.res && r.res.msg ? r.res.msg : "초점 완료"); };
 UI.acts["su-area"] = async () => {

@@ -16,7 +16,10 @@ class Viewer {
     this.img = h("img", { alt: "" });
     this.svg = sv("svg", {});
     this.world.append(this.img, this.svg);
-    this.empty = h("div", { class: "empty", text: "사진 없음" });
+    this.empty = h("div", { class: "empty" }, h("div", { class: "et", text: "사진 없음" }));
+    this.emptyCfg = null;
+    this.img.addEventListener("error", () => { if (this.url) { this.broken = true; this.showEmpty(); } });
+    this.img.addEventListener("load", () => { this.broken = false; if (this.url) { this.empty.classList.add("hidden"); this.world.classList.remove("hidden"); } });
     this.msg = h("div", { class: "cap-msg hidden" });
     this.el.append(this.world, this.empty, this.msg);
     this.W = 0; this.H = 0; this.k = 1; this.tx = 0; this.ty = 0; this.mode = "plate"; this.area = null; this.url = null; this.userMoved = false;
@@ -56,16 +59,27 @@ class Viewer {
     if (!this.W) return null;
     return [((cx - r.left) / sc - this.tx) / this.k, ((cy - r.top) / sc - this.ty) / this.k];
   }
+  /* 빈 상태: 사진이 없거나 못 읽을 때 깨진 이미지 대신 안내 + 버튼(cfg = {text, btns: [{label, act, args}]}) */
+  setEmpty(cfg) {
+    const sig = JSON.stringify(cfg || null);
+    if (sig === this.emptySig) return;
+    this.emptySig = sig;
+    this.emptyCfg = cfg;
+    this.empty.replaceChildren(h("div", { class: "et", text: (cfg && cfg.text) || "사진 없음" }),
+      cfg && cfg.btns && cfg.btns.length ? h("div", { class: "row" }, ...cfg.btns.map((b) => btn(b.label, b.act, b.args, "", b.tip, b.why))) : null);
+  }
+  showEmpty() { this.empty.classList.remove("hidden"); this.world.classList.add("hidden"); }
   set(url, w, h_, version) {
-    this.empty.classList.toggle("hidden", !!url);
-    this.world.classList.toggle("hidden", !url);
-    if (!url) { this.W = 0; this.url = null; return; }
+    this.empty.classList.toggle("hidden", !!url && !this.broken);
+    this.world.classList.toggle("hidden", !url || this.broken);
+    if (!url) { this.W = 0; this.url = null; this.key = null; this.img.removeAttribute("src"); return; }
+    this.url = url;
     const key = url + "|" + version;
     const first = !this.W || w !== this.W || h_ !== this.H;
     this.W = w; this.H = h_;
     this.world.style.width = w + "px"; this.world.style.height = h_ + "px";
     this.svg.setAttribute("viewBox", "0 0 " + w + " " + h_);
-    if (this.key !== key) { this.img.src = url + (url.includes("?") ? "&" : "?") + "v=" + encodeURIComponent(version); this.key = key; }
+    if (this.key !== key) { this.broken = false; this.img.src = url + (url.includes("?") ? "&" : "?") + "v=" + encodeURIComponent(version); this.key = key; }
     if (first || !this.userMoved) this.fit(this.mode, this.area);
   }
   fit(mode, area) {

@@ -146,7 +146,11 @@ function syncPreview(s) {
 }
 function renderLog() { for (const fn of UI.logRenders || []) fn(); }
 
-const PILL = { "원점 필요": "warn", "대기": "ok", "촬영 중": "busy", "이동 중": "busy", "연결 중": "busy", "일시정지": "warn", "확인 대기": "warn", "중지 중": "warn", "비상정지": "err", "오류": "err", "연결 안 됨": "idle", "R–T 측정 중": "busy", "속도 측정 중": "busy" };
+/* 상태 필은 동작 상태만 보인다(연결 문제는 상태 칸과 띠가 맡는다) */
+const PILL = { "대기": "ok", "촬영 중": "busy", "이동 중": "busy", "일시정지": "warn", "확인 대기": "warn", "중지 중": "warn", "비상정지": "err", "오류": "err", "R–T 측정 중": "busy", "속도 측정 중": "busy", "서버 끊김": "err" };
+/* 장치 상태 → 상태 칸 문구 · 색 */
+const DEV_CLS = { ok: "ok", down: "err", retry: "warn", unknown: "" };
+function devText(d, okText) { return !d ? "확인 안 됨" : d.state === "ok" ? okText : d.state === "down" ? "연결 안 됨" : d.state === "retry" ? "다시 연결 중" : "확인 안 됨"; }
 function relayText(s) {
   const rl = s.relays || { owners: {}, heater_on: false };
   const co = Object.keys(rl.owners).filter((n) => Number(n) !== Number(rl.heater) && rl.owners[n]).length;
@@ -154,7 +158,7 @@ function relayText(s) {
 }
 function renderHead(s) {
   const p = $("#pill");
-  const ph = UI.connected ? s.phase : "연결 안 됨";
+  const ph = UI.connected ? s.phase : "서버 끊김";
   p.textContent = ph;
   p.className = "pill " + (ph.startsWith("측정 중") ? "busy" : (PILL[ph] || "idle"));
   const st = s.stage, c = s.calib, running = s.run && ["running", "paused", "stopping"].includes(s.run.state);
@@ -162,10 +166,12 @@ function renderHead(s) {
   const mk = (k, v, cls) => h("div", { class: "cell " + (cls || "") }, h("div", { class: "k", text: k }), h("div", { class: "v", text: v }));
   const rt = relayText(s);
   if (!running) {
-    cells.push(mk("스테이지", !st ? "연결 안 됨" : "연결 · " + st.origin_text, !st ? "err" : (st.z_ok && st.xy_ok && !st.locked ? "ok" : "warn")));
-    cells.push(mk("카메라", s.camera.open ? "연결 · " + (s.camera.size ? s.camera.size.join("×") : "") : "연결 안 됨", s.camera.open ? "ok" : "err"));
+    const dv = s.dev || {};
+    const stOk = dv.stage && dv.stage.state === "ok" && st;
+    cells.push(mk("스테이지", stOk ? "연결 · " + st.origin_text : devText(dv.stage), stOk ? (st.z_ok && st.xy_ok && !st.locked ? "ok" : "warn") : DEV_CLS[(dv.stage || {}).state] || ""));
+    cells.push(mk("카메라", s.camera.open ? "연결 · " + (s.camera.size ? s.camera.size.join("×") : "") : devText(dv.camera), DEV_CLS[(dv.camera || {}).state] || ""));
     cells.push(mk("좌표 보정", c.status === "done" ? "완료" : c.status === "invalid" ? c.text : "필요", c.status === "done" ? "ok" : c.status === "invalid" ? "err" : "warn"));
-    cells.push(mk("릴레이", "쿨러 " + (rt.co ? rt.co + "개 켜짐" : "꺼짐") + " · 히트건 " + (rt.heat ? "켜짐" : "꺼짐"), rt.heat ? "heat" : rt.co ? "ok" : ""));
+    cells.push(mk("릴레이", stOk ? "쿨러 " + (rt.co ? rt.co + "개 켜짐" : "꺼짐") + " · 히트건 " + (rt.heat ? "켜짐" : "꺼짐") : "알 수 없음", stOk ? (rt.heat ? "heat" : rt.co ? "ok" : "") : ""));
   } else {
     cells.push(mk("위치", st ? xy(st.x, st.y) + " · Z " + f1(st.z) : "—", "ok"));
     cells.push(mk("쿨러", rt.co ? "켜짐 " + rt.co + "개" : "꺼짐", rt.co ? "ok" : ""));
@@ -173,19 +179,43 @@ function renderHead(s) {
   }
   const box = $("#cells");
   box.replaceChildren(...cells);
-  /* 띠: 경보 또는 원점 회복. 띠의 모든 안내는 누를 수 있는 버튼이다(막다른 상태 없음) */
-  const band = $("#band"), bd = s.band;
-  const sig = JSON.stringify(bd);
-  if (bd) {
+  /* 띠: 경보 · 원점 회복(맨 위)과 장치마다 한 줄. 띠의 모든 안내는 누를 수 있는 버튼이다(막다른 상태 없음) */
+  const band = $("#band"), bds = s.bands || [];
+  const sig = JSON.stringify(bds);
+  if (bds.length) {
     if (band.dataset.sig !== sig) {
       band.dataset.sig = sig;
-      band.className = "band " + (bd.err ? "err" : "");
-      band.replaceChildren(h("span", { text: bd.text }), h("span", { class: "next", text: bd.next ? "· " + bd.next : "" }), h("span", { class: "grow" }),
-        ...(bd.actions || []).map((a) => h("button", { class: "btn sm", text: a.label, "data-tip": a.tip || null, onclick: () => bandAct(a) })));
+      band.className = "bandbox";
+      band.replaceChildren(...bds.map((bd) => h("div", { class: "band " + (bd.err ? "err" : ""), "data-id": bd.id }, h("span", { text: bd.text }), h("span", { class: "next", text: bd.next ? "· " + bd.next : "" }), h("span", { class: "grow" }),
+        ...(bd.actions || []).map((a) => h("button", { class: "btn sm", text: a.label, "data-tip": a.tip || null, onclick: () => bandAct(a) })))));
     }
-  } else { band.dataset.sig = ""; band.className = "band hidden"; }
+  } else { band.dataset.sig = ""; band.className = "bandbox hidden"; band.replaceChildren(); }
 }
+/* 측정 시작을 막는 사유는 한 곳에 하나만: 가장 먼저 해결할 것 한 줄 + 바로 가기 버튼. opt = {camera, inst} 이 필요한지. 없으면 null. */
+function gateOf(why, s, opt) {
+  opt = opt || {};
+  const dv = s.dev || {}, st = dv.stage || {};
+  if (st.state && st.state !== "ok") return { text: st.state === "retry" ? "스테이지 다시 연결 중" : "스테이지 연결 안 됨", act: "reconnect", label: "다시 연결" };
+  if (opt.camera && dv.camera && dv.camera.state !== "ok") return { text: dv.camera.state === "retry" ? "카메라 다시 연결 중" : "카메라 연결 안 됨", act: "cam_reconnect", label: "다시 연결" };
+  if (opt.inst && ["k2110", "k2450"].some((k) => !dv[k] || dv[k].state !== "ok")) return { text: "측정 장비 연결 안 됨", act: "inst_connect", label: "장비 연결" };
+  if (!why) return null;
+  const m = /\s*·\s*장비 설정 (\d)\s*$/.exec(why);
+  if (m) return { text: why.slice(0, m.index), act: "ui_setup", args: { step: Number(m[1]) }, label: "장비 설정 " + m[1] };
+  const m2 = /^(.*?)\s*·\s*(접촉 높이로 내리기)\s*$/.exec(why);
+  if (m2 && opt.down) return { text: m2[1], act: "rt-down", label: m2[2] };
+  if (/^촬영 필요/.test(why)) return { text: "촬영 사진 없음", act: "capture", label: "촬영" };
+  return { text: why };
+}
+function gateRow(g) {
+  return g ? h("div", { class: "gate", id: "gate" }, h("span", { class: "grow", text: g.text }), g.act ? btn(g.label, g.act, g.args || null, "sm primary") : null) : null;
+}
+UI.acts.reconnect = async () => { const r = await send("reconnect"); if (r.ok) toast("스테이지 연결"); };
+UI.acts.cam_reconnect = async () => { const r = await send("cam_reconnect"); if (r.ok) toast("카메라 연결"); };
+UI.acts.inst_connect = async () => { const r = await send("inst_connect"); if (r.ok) toast("장비 연결"); };
+UI.acts.ui_setup = (a) => gotoSetup(a.step || 1);
+function gotoSetup(step) { UI.tab = "setup"; if (typeof S !== "undefined") { S.step = step; S.leftSig = ""; S.rightSig = ""; S.area = null; S.freeze = false; S.showRef = false; } render(); }
 function bandAct(a) {
+  if (a.act === "ui_setup") { gotoSetup((a.args || {}).step || 1); return; }
   const go = async () => { const r = await send(a.act, a.args || {}); if (r.ok && a.act === "origin") toast((a.args.axis || "").toUpperCase() + " 원점 잡기 완료"); };
   if (a.act === "capture" && UI.acts.capture) { UI.acts.capture(); return; }
   if (a.confirm) dialog(a.label + " 할까요?", (a.tip || "") + " 끝단에 닿는 드르륵 소리는 정상입니다.", [{ label: "취소" }, { label: a.label, cls: "primary", fn: go }]);

@@ -184,7 +184,7 @@ function renderHere(s) {
   const rt = s.rt, run = rt.run, active = run && (run.state === "running" || run.state === "stopping");
   const lock = rtLock(s), st = s.stage;
   if (M.body.firstChild !== T.left) M.body.replaceChildren(T.left, T.right);
-  const sig = JSON.stringify([s.settings.rt, rt.inst, rt.block, rt.block_speed, T.open, T.jog, T.sampleNo, s.samples.map((p) => p.no + ":" + p.X), st && [st.locked, st.z_ok, st.moving, st.z > 0.05], s.contact, active, run && [run.state, run.status, run.message, run.warns, run.nas, run.speed], s.camera.busy, s.phase === "이동 중", s.run && s.run.state]);
+  const sig = JSON.stringify([s.dev, s.settings.rt, rt.inst, rt.block, rt.block_speed, T.open, T.jog, T.sampleNo, s.samples.map((p) => p.no + ":" + p.X), st && [st.locked, st.z_ok, st.moving, st.z > 0.05], s.contact, active, run && [run.state, run.status, run.message, run.warns, run.nas, run.speed], s.camera.busy, s.phase === "이동 중", s.run && s.run.state]);
   if (sig !== T.sig) { T.sig = sig; renderHereRight(s); }
   updateHereDynamic(s);
   if (T.pts.length && !T.drawn) { T.drawn = true; redrawGraphs(); }
@@ -199,7 +199,10 @@ function renderHereRight(s) {
   const moveWhy = busyWhy || (st && st.moving ? "이동 중" : "");
   /* 위치 카드 */
   const jb = (l, axis, mm, why) => btn(l, "rt-jog", { axis, mm }, "", "", why);
-  const stepSel = h("div", { class: "row" }, ...(s.settings.jog.steps || [0.1, 1, 5, 10]).map((v) => btn(String(v), "rt-jstep", { v }, "sm " + (T.jog === v ? "on" : ""))), h("span", { class: "sub3", text: "mm" }));
+  /* 조그 스텝: 기본 1 mm. 10 mm 이하만 보이고 큰 값(50 mm 등)은 "⋯" 안에 둔다(고르면 그 값이 보임) */
+  const allSteps = s.settings.jog.steps || [0.1, 1, 10, 50], small = allSteps.filter((v) => v <= 10), big = allSteps.filter((v) => v > 10);
+  const stepSel = h("div", { class: "row" }, ...small.map((v) => btn(String(v), "rt-jstep", { v }, "sm " + (T.jog === v ? "on" : ""))), big.includes(T.jog) ? btn(String(T.jog), "rt-jstep", { v: T.jog }, "sm on") : null,
+    big.length ? moreBtn(big.map((v) => ({ label: v + " mm", fn: () => { T.jog = v; T.sig = ""; render(); } }))) : null, h("span", { class: "sub3", text: "mm" }));
   const pad = h("div", { class: "pad" }, h("span"), jb("Y−", "y", -T.jog, moveWhy), h("span"), jb("X−", "x", -T.jog, moveWhy), h("span", { class: "padc", text: "XY" }), jb("X+", "x", T.jog, moveWhy), h("span"), jb("Y+", "y", T.jog, moveWhy), h("span"));
   const zpad = h("div", { class: "col zpad" }, jb("Z ↑", "z", -T.jog, moveWhy), jb("Z ↓", "z", T.jog, moveWhy));
   const sampleSel = h("select", { onchange: (e) => { T.sampleNo = e.target.value ? Number(e.target.value) : null; T.sig = ""; } }, h("option", { value: "", text: "샘플 선택" }),
@@ -215,9 +218,9 @@ function renderHereRight(s) {
   const rows = [
     group("temp", "온도", ...kvRow("예비 냉각 목표", numField(s, "precool_c", "°C", 0.5, L)), ...kvRow("도달 뒤 유지", numField(s, "hold_s", "s", 1, L)),
       ...kvRow("최고 온도 (max temp)", numField(s, "max_temp", "°C", 1, L)), ...kvRow("냉각 끝 온도 (temp to break)", numField(s, "break_temp", "°C", 0.5, L)), ...kvRow("반복 횟수 (#repeat)", numField(s, "repeat", "회", 1, L)),
-      ...kvRow("가열 속도", numField(s, "heat_rate", "°C/분 · 0 최대", 0.5, L)), ...kvRow("냉각 속도", numField(s, "cool_rate", "°C/분 · 0 최대", 0.5, L))),
+      ...kvRow("가열 속도", numField(s, "heat_rate", "°C/분 (0 = 최대)", 0.5, L)), ...kvRow("냉각 속도", numField(s, "cool_rate", "°C/분 (0 = 최대)", 0.5, L))),
     group("ctl", "온도 제어 · 안전", ...kvRow("띠", numField(s, "band_c", "°C", 0.05, L)), ...kvRow("최소 켜짐", numField(s, "min_on_s", "s", 0.5, L)), ...kvRow("최소 꺼짐", numField(s, "min_off_s", "s", 0.5, L)),
-      ...kvRow("비상 차단", numField(s, "emergency_c", "°C · 비움 = max+10", 1, L, true)), ...kvRow("단계 시간 한도", numField(s, "phase_limit_s", "s", 60, L)),
+      ...kvRow("비상 차단", numField(s, "emergency_c", "°C (비우면 최고 온도 + 10)", 1, L, true)), ...kvRow("단계 시간 한도", numField(s, "phase_limit_s", "s", 60, L)),
       ...kvRow("온도 갱신 한도", numField(s, "stale_s", "s", 0.5, L)), ...kvRow("최소 기록 간격", numField(s, "min_interval_s", "s", 0.1, L))),
     group("k", "K2450 · 열전대", ...kvRow("전압 (Set voltage)", numField(s, "volt", "V", 0.1, L)), ...kvRow("전류 한도", numField(s, "ilim_a", "A", 0.001, L)),
       ...kvRow("평균 횟수 (Number of Filter Readings)", numField(s, "filter_n", "", 1, L)), ...kvRow("NPLC", numField(s, "nplc", "", 0.01, L)),
@@ -233,14 +236,15 @@ function renderHereRight(s) {
   const cond = h("div", { class: "card grow scroll", id: "rt-cond" }, h("div", { class: "row" }, h("h3", { class: "grow", text: "측정 조건" }), btn("기본값으로", "rt-defaults", null, "sm", "측정 조건을 기본값(기존 프로그램 값)으로 되돌립니다. 장비 주소는 그대로입니다.", lock)), ...rows);
   /* 상태 카드 */
   const ik = rt.inst, ok1 = ik.k2110 && ik.k2110.ok, ok2 = ik.k2450 && ik.k2450.ok;
-  const instRow = h("div", { class: "row wrap" }, h("span", { class: "chip " + (ok1 ? "ok" : "no"), text: "K2110 " + (ok1 ? "연결" : "연결 안 됨") }), h("span", { class: "chip " + (ok2 ? "ok" : "no"), text: "K2450 " + (ok2 ? "연결" : "연결 안 됨") }),
-    ok1 && ok2 ? null : btn("장비 연결", "rt-connect", null, "sm primary", "두 장비에 연결합니다(읽기만 - 출력은 켜지 않습니다). 주소는 장비 설정 8 에서 고릅니다.", lock),
+  const instRow = h("div", { class: "row wrap" },
     h("span", { class: "grow" }), moreBtn([
+      { label: "장비 연결", fn: () => UI.acts["rt-connect"](), why: lock || (ok1 && ok2 ? "이미 연결됨" : "") },
       { label: "최대 속도 재기 (히트건 20 s · 쿨러 20 s)", fn: () => send("rt_speed", { s: 20 }), why: active ? "측정 중" : rt.block_speed },
       { label: "NAS 로 다시 복사", fn: async () => { const r = await send("rt_nas_retry"); if (r.ok) toast("NAS 로 복사함"); }, why: active ? "측정 중" : !run || run.mode !== "rt" ? "끝난 측정 없음" : "" },
       { label: "결과 폴더 열기", fn: () => send("open_folder", { path: run && run.dir }), why: run ? "" : "측정 없음" }]));
   const phaseText = !run ? "대기" : run.state === "running" || run.state === "stopping" ? phaseLabel(run) : run.status ? run.status + (run.message && run.status !== "완료" ? " · " + run.message : "") : "대기";
-  const startWhy = active ? "측정 중" : rt.block;
+  const gate = active ? null : gateOf(rt.block, s, { inst: true, down: true });
+  const startWhy = active ? "측정 중" : gate ? "시작할 수 없음 · 위 안내 먼저" : rt.block;
   const spd = run && run.speed ? h("div", { class: "sub", text: "최대 속도 · 가열 " + run.speed.heat + " °C/분 · 냉각 " + run.speed.cool + " °C/분 (" + run.speed.s + " s 기준)" }) : null;
   const stat = h("div", { class: "card", id: "rt-stat" }, h("h3", { text: "상태" }), instRow,
     h("div", { class: "rtbig" }, h("div", {}, h("div", { class: "k", text: "온도" }), h("div", { class: "v", id: "rt-T", text: "—" })), h("div", {}, h("div", { class: "k", text: "저항" }), h("div", { class: "v", id: "rt-R", text: "—" })),
@@ -248,7 +252,8 @@ function renderHereRight(s) {
     h("div", { class: "row" }, h("b", { id: "rt-phase", text: phaseText }), h("span", { class: "grow" }), h("span", { class: "sub", id: "rt-el", text: "" }), h("span", { class: "chip", id: "rt-heat", text: "히트건 꺼짐" }), h("span", { class: "chip", id: "rt-cool", text: "쿨러 꺼짐" })),
     spd, run && run.warns && run.warns.length ? h("div", { class: "why one", "data-tip": run.warns.join(" / "), text: run.warns[run.warns.length - 1] + (run.warns.length > 1 ? "  (+" + (run.warns.length - 1) + ")" : "") }) : null,
     h("div", { class: "row" }, btn("측정 시작", "rt-start", null, "primary lg grow", "예비 냉각 → 출력 켬 → 가열 · 냉각 반복을 시작합니다. 핀이 접촉 높이에 있어야 합니다.", startWhy), btn("중지", "rt-stop", null, "danger lg", "측정을 멈추고 히트건 · 출력을 끕니다.", active ? "" : "측정 중 아님")),
-    h("div", { class: "why", text: startWhy && !active ? startWhy : "" }));
+    );
+  if (gate) stat.insertBefore(gateRow(gate), stat.lastChild);
   T.right.replaceChildren(pos, cond, stat);
 }
 function phaseLabel(run) {
@@ -267,6 +272,17 @@ function updateHereDynamic(s) {
     const h_ = $("#rt-heat"), c_ = $("#rt-cool");
     if (h_) { h_.textContent = "히트건 " + (run.heater ? "켜짐" : "꺼짐"); h_.className = "chip" + (run.heater ? " warn" : ""); }
     if (c_) { c_.textContent = "쿨러 " + (run.cooler && run.cooler.length ? "켜짐 R" + run.cooler.join(",R") : "꺼짐"); c_.className = "chip" + (run.cooler && run.cooler.length ? " ok" : ""); }
+  }
+  /* 스테이지가 없으면 릴레이 상태는 알 수 없다 */
+  if (!(s.dev && s.dev.stage && s.dev.stage.state === "ok")) {
+    const h2 = $("#rt-heat"), c2 = $("#rt-cool");
+    if (h2) { h2.textContent = "히트건 —"; h2.className = "chip"; }
+    if (c2) { c2.textContent = "쿨러 —"; c2.className = "chip"; }
+  } else if (!run) {
+    const rl = s.relays || { owners: {}, heater_on: false }, h3 = $("#rt-heat"), c3 = $("#rt-cool");
+    const co = Object.keys(rl.owners).filter((n) => Number(n) !== Number(rl.heater) && rl.owners[n]);
+    if (h3) { h3.textContent = "히트건 " + (rl.heater_on ? "켜짐" : "꺼짐"); h3.className = "chip" + (rl.heater_on ? " warn" : ""); }
+    if (c3) { c3.textContent = "쿨러 " + (co.length ? "켜짐 R" + co.join(",R") : "꺼짐"); c3.className = "chip" + (co.length ? " ok" : ""); }
   }
   if (T.dirty) { T.dirty = false; redrawGraphs(); }
 }

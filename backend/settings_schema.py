@@ -35,7 +35,7 @@ TABS = [
     ("relay", "릴레이"),
     ("measure", "릴레이 · 접촉 높이"),
     ("rt", "R–T 측정"),
-    ("condition", "측정 순서"),
+    ("condition", "순회 단계"),
     ("detect", "검출"),
     ("advanced", "고급"),
 ]
@@ -302,10 +302,10 @@ ITEMS = [
       "쿨러 구역", "판 사각형 좌표(mm, 0~판 영역 실제 크기)를 행 × 열로 나눈 칸마다 쿨러 번호(표시용) · 릴레이 번호 · 이름입니다(행 우선, 사진 기준 위에서 아래 · 왼쪽에서 오른쪽). 샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러입니다. 칸을 눌러 지정하고 경계는 mm 로 입력하거나 실시간에서 끕니다.",
       editor="zones", validate="zones", apply="즉시"),
     I("heater.relay", 10, "int", "measure", "히트건", "히트건 릴레이",
-      "히트건 전원 릴레이 번호입니다. 이 릴레이는 측정 조건의 히트건 단계만 켭니다.", min=1, max=10, step=1,
+      "히트건 전원 릴레이 번호입니다. 이 릴레이는 순회 단계의 히트건 단계와 R–T 측정만 켭니다.", min=1, max=10, step=1,
       apply="다음 측정"),
     I("heater.max_on_s", 120.0, "float", "measure", "히트건", "히트건 최대 시간",
-      "히트건 단계 한 번의 시간 상한입니다. 측정 조건의 시간은 이 값을 넘을 수 없고, 넘기면 시간이 되기 전에 끕니다.",
+      "히트건을 연속으로 켜 둘 수 있는 시간의 상한이며 넘기면 시간이 되기 전에 끕니다.",
       min=1, max=3600, step=5, unit="s", apply="다음 측정"),
     I("contact_z_mm", None, "float", "measure", "접촉 높이", "접촉 높이",
       "Z 원점에서 핀이 샘플에 닿는 높이(절대 Z, mm)입니다. 장비 설정 7 에서 샘플 위에서 내려 정합니다. 비어 있으면 접촉 높이 단계가 있는 측정 조건은 시작하지 않습니다.",
@@ -378,11 +378,11 @@ ITEMS = [
     I("rt.cooler_off_end", True, "bool", "rt", "끝", "끝나면 쿨러 끔", "측정이 끝나면 쿨러를 끕니다.", apply="다음 측정"),
     I("rt.z_top_end", True, "bool", "rt", "끝", "끝나면 Z 맨 위", "측정이 끝나면 Z 를 맨 위로 올립니다.", apply="다음 측정"),
     # ---------------- 측정 순서 ----------------
-    I("condition.items", conditions.default_conditions(), "list", "condition", "측정 조건", "측정 조건",
-      "샘플마다 실행할 단계 순서입니다. 첫 단계는 샘플 위로 이동입니다.",
+    I("condition.items", conditions.default_conditions(), "list", "condition", "순회 단계", "순회 단계",
+      "샘플 순회에서 샘플마다 실행할 단계 순서이며 첫 단계는 샘플 위로 이동입니다.",
       editor="conditions", validate="conditions", apply="다음 측정"),
-    I("condition.active", conditions.DEFAULT_NAME, "str", "condition", "측정 조건", "활성 측정 조건",
-      "측정가 쓸 측정 조건입니다.", editor="condition_active", validate="condition_active",
+    I("condition.active", conditions.DEFAULT_NAME, "str", "condition", "순회 단계", "활성 순회 단계",
+      "샘플 순회가 쓸 순회 단계입니다.", editor="condition_active", validate="condition_active",
       apply="다음 측정"),
     I("data_dir", "../data_v2", "str", "advanced", "기록", "데이터 폴더",
       "촬영 · 측정 결과 · 보정 파일을 두는 폴더입니다. 바꾸면 다시 시작해야 합니다.", apply="재연결", advanced=True),
@@ -875,7 +875,7 @@ def _v_conditions(key, v, values, errs, warns):
     zmax = _num(get_path(values, "limits.z_max_mm")) or 0.0
     names = []
     if not v:
-        errs[key] = "측정 조건 1개 이상"
+        errs[key] = "순회 단계 1개 이상"
         return
     for i, r in enumerate(v):
         p = "%s[%d]" % (key, i)
@@ -887,14 +887,14 @@ def _v_conditions(key, v, values, errs, warns):
             errs[p + ".name"] = "이름 중복"
         names.append(nm)
     if len(v) > 30:
-        errs[key] = "측정 조건 30개 이내"
+        errs[key] = "순회 단계 30개 이내"
 
 
 def _v_condition_active(key, v, values, errs, warns):
     names = [str((r or {}).get("name") or "").strip()
              for r in get_path(values, "condition.items") or [] if isinstance(r, dict)]
     if v not in names:
-        errs[key] = "목록에 없는 측정 조건"
+        errs[key] = "목록에 없는 순회 단계"
 
 
 def _v_rt(key, v, values, errs, warns):

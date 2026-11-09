@@ -5,6 +5,18 @@
 const M = { viewer: null, mode: "shot", zoom: "plate", rightSig: "", prepBuilt: false, cond: null, showSteps: false, dragNo: null, sub: "here", subSig: "" };
 const SCOL = { done: "#2b9a58", cur: "#2f6fdb", wait: "#8a929b", err: "#d03a3a", stop: "#e08a1e", skip: "#b9bdc2" };
 
+/* 카메라가 없을 때 사진 자리 안내 */
+function camEmpty(s) {
+  const retry = s.camera && s.camera.state === "retry";
+  return { text: retry ? "카메라 다시 연결 중" : "카메라 연결 안 됨", btns: [{ label: "다시 연결", act: "cam_reconnect" }] };
+}
+function captureWhy(s) {
+  const dv = s.dev || {};
+  if (s.camera.busy) return s.camera.busy + " 중";
+  if (!s.camera.open) return "카메라 연결 안 됨";
+  if (!s.calib.area) return "판 영역 필요 · 장비 설정 3";
+  return s.ref ? "" : "빈 판 사진 필요 · 장비 설정 4";
+}
 function isRunning(s) { return !!(s.run && ["running", "paused", "stopping"].includes(s.run.state)); }
 function sampleState(s, p) {
   const run = s.run;
@@ -71,7 +83,7 @@ UI.acts["log-all"] = () => {
 
 function refreshLive() {
   const s = UI.state;
-  if (!s || UI.tab !== "measure" || M.sub === "here" || M.mode !== "live" || !M.viewer || isRunning(s)) return;
+  if (!s || UI.tab !== "measure" || M.sub === "here" || M.mode !== "live" || !M.viewer || isRunning(s) || !s.camera.open) return;
   const sz = s.camera.size || [1280, 960];
   M.viewer.set("/preview.jpg", sz[0], sz[1], Date.now());
 }
@@ -87,7 +99,7 @@ function renderMeasure(s) {
   if (subSig !== M.subSig) {
     M.subSig = subSig;
     M.bar.replaceChildren(h("div", { class: "seg" }, btn("이 위치 측정", "m-sub", { m: "here" }, M.sub === "here" ? "on" : "", "핀을 조그로 샘플에 대고 저항–온도(R–T)를 잽니다.", running ? "샘플 순회 중" : ""),
-      btn("샘플 순회", "m-sub", { m: "tour" }, M.sub === "tour" ? "on" : "", "촬영한 샘플을 차례로 돌며 측정 조건대로 측정합니다.", rtRun ? "R–T 측정 중" : "")));
+      btn("샘플 순회", "m-sub", { m: "tour" }, M.sub === "tour" ? "on" : "", "촬영한 샘플을 차례로 돌며 순회 단계대로 측정합니다.", rtRun ? "R–T 측정 중" : "")));
     if (M.sub === "tour") { M.body.replaceChildren(M.leftWrap, M.right); M.rightSig = ""; }
   }
   if (M.sub === "here") { renderHere(s); return; }
@@ -95,7 +107,7 @@ function renderMeasure(s) {
   const run = s.run;
   const sig = JSON.stringify([running, s.samples, s.sel, s.calib.status, s.shot && [s.shot.id, s.shot.cam && s.shot.cam.shift_mm], s.camera.cap_text, s.camera.busy, s.phase, s.start_block, s.active_condition,
     s.conditions, s.can_undo, M.showSteps, M.cond, run && [run.state, run.cur, run.waiting, run.done, run.paused, Object.keys(run.results).length, run.steps.map((x) => x.state), run.warns.length],
-    s.stage && [s.stage.locked, s.stage.z_ok], s.ref && s.ref.time, s.settings.relay.items, s.contact.z, s.relays && s.relays.owners]);
+    s.stage && [s.stage.locked, s.stage.z_ok], s.ref && s.ref.time, s.settings.relay.items, s.contact.z, s.relays && s.relays.owners, s.dev, s.camera.state, s.camera.open]);
   if (sig !== M.rightSig) { M.rightSig = sig; if (running) renderRunRight(s); else renderPrepRight(s); }
   if (running) updateRunDynamic(s);
 }
@@ -125,10 +137,13 @@ function renderLeft(s, running) {
   M.viewer.mode = M.zoom;
   if (M.mode === "shot") {
     if (sh) { M.viewer.area = sh.area || s.calib.area; M.viewer.set("/shot.jpg", sh.size[0], sh.size[1], sh.id); }
-    else M.viewer.set(null);
+    else { M.viewer.setEmpty({ text: "촬영 사진 없음", btns: [{ label: "촬영", act: "capture", why: captureWhy(s) }] }); M.viewer.set(null); }
+  } else if (!s.camera.open) {
+    M.viewer.setEmpty(camEmpty(s)); M.viewer.set(null);
   } else {
     const sz = s.camera.size || [1280, 960];
     M.viewer.area = s.calib.area;
+    M.viewer.setEmpty({ text: "실시간 화면 준비 중" });
     if (!M.viewer.W) M.viewer.set("/preview.jpg", sz[0], sz[1], Date.now());
   }
   /* 선택한 샘플은 끌어서 위치 수정(측정 중에는 못 끈다) */
@@ -279,12 +294,11 @@ function renderPrepRight(s) {
   const noStage = !s.stage;
   /* 1 촬영 */
   const shift = sh && sh.cam ? sh.cam.shift_mm : 0, warnMm = s.settings.fixed.cam_shift_warn_mm;
-  const capWhy = busy ? s.camera.busy + " 중" : s.calib.area ? (s.ref ? "" : "빈 판 사진 필요 · 장비 설정 4") : "판 영역 필요 · 장비 설정 3";
+  const capWhy = captureWhy(s);
   const card1 = h("div", { class: "card" }, h("h3", {}, h("span", { class: "n", text: "1" }), "촬영"),
     h("div", { class: "row" }, btn("촬영", "capture", null, "primary lg", "촬영 위치로 가서 한 장 찍고 칩을 찾습니다.", capWhy),
-      h("span", { class: "grow num", text: sh ? "인식 " + s.samples.length + " · 확인 필요 " + s.n_weak : "촬영 전" }),
-      shift > warnMm ? h("span", { class: "chip warn", text: "카메라 이동 " + f1(shift, 1) + " mm" }) : null),
-    capWhy && !busy ? h("div", { class: "why", text: capWhy }) : null);
+      sh ? h("span", { class: "grow num", text: "인식 " + s.samples.length + " · 확인 필요 " + s.n_weak }) : h("span", { class: "grow hint0", text: "아직 촬영 안 함" }),
+      shift > warnMm ? h("span", { class: "chip warn", text: "카메라 이동 " + f1(shift, 1) + " mm" }) : null));
   /* 2 샘플 */
   const nTarget = s.samples.filter((p) => !p.excluded).length;
   const grid = h("div", { class: "sgrid" }, s.samples.map((p) => h("div", { class: "sc" + (p.no === s.sel ? " sel" : "") + (p.weak ? " weak" : "") + (p.excluded ? " exc" : ""), "data-act": "sel", "data-args": JSON.stringify({ no: p.no }) },
@@ -304,25 +318,15 @@ function renderPrepRight(s) {
   const conds = s.conditions, act = M.cond && conds.find((c) => c.name === M.cond) ? M.cond : s.active_condition;
   const cv = conds.find((c) => c.name === act) || conds[0];
   const sel_ = h("select", { onchange: (e) => { M.cond = e.target.value; send("settings_save", { patch: { "condition.active": M.cond } }); } }, conds.map((c) => h("option", { value: c.name, text: c.name, selected: c.name === act })));
-  const issues = readyIssues(s, cv);
   const block = s.start_block.why;
-  const startBtn = btn("측정 시작 · " + nTarget + "개", "mstart", null, "primary lg block", "선택한 측정 조건으로 측정을 시작합니다.", block || (nTarget ? "" : "측정 대상 없음"));
-  const card3 = h("div", { class: "card" }, h("h3", {}, h("span", { class: "n", text: "3" }), "측정"),
-    h("div", { class: "row" }, sel_, h("span", { class: "grow sub", text: cv ? estText(cv) : "" }), btn(M.showSteps ? "단계 접기 ▴" : "단계 보기 ▾", "steps-toggle", null, "sm"), btn("편집", "cond-edit", null, "sm", "측정 조건의 단계를 고칩니다.")),
+  const startBtn = btn("측정 시작 · " + nTarget + "개", "mstart", null, "primary lg block", "선택한 순회 단계로 측정을 시작합니다.", gateOf(block, s, { camera: !s.samples.length, inst: ((cv ? cv.steps : []).some((x) => x.type === "rt")) }) ? "시작할 수 없음 · 위 안내 먼저" : (nTarget ? "" : "측정 대상 없음"));
+  const usesRt = (cv ? cv.steps : []).some((x) => x.type === "rt");
+  const gate = gateOf(block, s, { camera: !s.samples.length, inst: usesRt });
+  const card3 = h("div", { class: "card" }, h("h3", {}, h("span", { class: "n", text: "3" }), "순회"),
+    h("div", { class: "row" }, sel_, h("span", { class: "grow sub", text: cv ? estText(cv) : "" }), btn(M.showSteps ? "단계 접기 ▴" : "단계 보기 ▾", "steps-toggle", null, "sm"), btn("편집", "cond-edit", null, "sm", "순회 단계를 고칩니다.")),
     M.showSteps ? h("ol", { class: "steps" }, (cv ? cv.steps : []).map((st) => h("li", {}, h("span", { text: (st.i + 1) + ". " + st.text })))) : null,
-    issues.length ? h("div", { class: "row wrap" }, issues) : null,
-    startBtn, h("div", { class: "why", text: block || "" }), !block && (s.start_block.notes || []).length ? h("div", { class: "sub3", text: s.start_block.notes.join(" · ") }) : null);
+    gateRow(gate), startBtn, !gate && (s.start_block.notes || []).length ? h("div", { class: "sub3", text: s.start_block.notes.join(" · ") }) : null);
   r.replaceChildren(card1, card2, card3);
-}
-/* 준비 상태는 문제가 있을 때만 그 하나를 보인다 */
-function readyIssues(s, cv) {
-  const st = s.settings, relays = st.relay.items, hn = st.heater.relay, out = [];
-  const types = (cv ? cv.steps : []).map((x) => x.type);
-  const chip = (t) => h("span", { class: "chip warn", text: t });
-  if (types.includes("contact") && s.contact.z == null) out.push(chip("접촉 높이 필요 · 장비 설정 7"));
-  if (types.includes("heat") && !(relays[hn - 1] && relays[hn - 1].enabled)) out.push(chip("히트건 릴레이 사용 안 함"));
-  if (types.includes("cooler") && !(st.cooler.zones.cells || []).some((c) => relays[c.relay - 1] && relays[c.relay - 1].enabled)) out.push(chip("쿨러 릴레이 사용 안 함"));
-  return out.slice(0, 1);
 }
 UI.acts.sel = (a) => send("sample_select", a);
 UI.acts.capture = () => send("capture");
@@ -360,7 +364,7 @@ UI.acts["cond-edit"] = () => {
   const add = h("button", { class: "btn sm", text: "단계 추가 ▾" });
   const defs = { contact: { type: "contact" }, cooler: { type: "cooler", action: "on", target: "sample" }, heat: { type: "heat", s: 20 }, wait: { type: "wait", s: 5 }, confirm: { type: "confirm" }, z_top: { type: "z_top" } };
   add.addEventListener("click", (e) => { e.stopPropagation(); popMenu(add, Object.keys(defs).map((k) => ({ label: STEP_NAMES[k], fn: () => { work.steps.push(JSON.parse(JSON.stringify(defs[k]))); draw(); } }))); });
-  openWin(h("div", {}, h("h2", { text: "'" + cur.name + "' 측정 조건을 고칠까요?" }), h("div", { class: "sub", text: "첫 단계(샘플 위로 이동)는 고정입니다. 저장하면 서버가 검증합니다." }), box, h("div", { class: "row" }, add),
+  openWin(h("div", {}, h("h2", { text: "'" + cur.name + "' 순회 단계를 고칠까요?" }), h("div", { class: "sub", text: "첫 단계(샘플 위로 이동)는 고정입니다. 저장하면 서버가 검증합니다." }), box, h("div", { class: "row" }, add),
     h("div", { class: "btns" }, h("button", { class: "btn", text: "닫기", onclick: closeWin }),
       h("button", { class: "btn primary", text: "저장", onclick: async () => {
         const items = s.settings.condition.items.map((c) => (c.name === cur.name ? work : c));

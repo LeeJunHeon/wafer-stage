@@ -20,6 +20,7 @@ OVERFLOW = 9.0e37                      # SCPI 범위 넘음 · 열전대 끊김 
 RANGES = [1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0]          # 2450 전류 측정 범위(10 nA ~ 1 A)
 VISA_TIMEOUT_MS = 5000
 
+DISABLED = False                       # 시험: VISA 가 없는 상태를 흉내 낸다(실제 VISA 를 열지 않는다)
 RM_FACTORY = None                      # 시험 · 시뮬레이션이 가짜 장비 관리자를 꽂는다: callable() -> rm
 
 
@@ -33,6 +34,8 @@ class VisaUnavailable(VisaError):
 
 
 def _rm():
+    if DISABLED:
+        raise VisaUnavailable()
     if RM_FACTORY is not None:
         return RM_FACTORY()
     try:

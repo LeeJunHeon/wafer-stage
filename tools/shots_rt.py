@@ -52,11 +52,11 @@ def main(out=None):
 
             check(pg.inner_text("#tab-measure").find("이 위치 측정") >= 0, "측정 탭 머리에 [이 위치 측정 | 샘플 순회]")
             shot("r1_here_empty", 800)
-            check("K2110 연결 필요" in pg.inner_text("#rt-stat"), "시작 못 하는 사유가 한 줄로 보임 (%s)" % pg.inner_text("#rt-stat").splitlines()[-1])
-            click('[data-act="rt-connect"]')
+            check("측정 장비 연결 안 됨" in pg.inner_text("#gate") and pg.locator("#gate").count() == 1, "시작 못 하는 사유가 한 곳에 한 줄로 보임 (%s)" % pg.inner_text("#gate"))
+            click('#gate [data-act="inst_connect"]')
             pg.wait_for_function("UI.state.rt.inst.k2110 && UI.state.rt.inst.k2110.ok", timeout=8000)
             pg.wait_for_timeout(700)
-            check("접촉 높이" in pg.inner_text("#rt-stat"), "연결 뒤 다음 사유 = 접촉 높이 (%s)" % pg.inner_text("#rt-stat").splitlines()[-1])
+            check("접촉 높이" in pg.inner_text("#gate"), "연결 뒤 다음 사유 = 접촉 높이 (%s)" % pg.inner_text("#gate"))
             # 샘플 고르기 → 샘플 위로 → 접촉 높이로 내리기
             pg.select_option("#rt-right select >> nth=0", index=4)
             pg.wait_for_timeout(600)

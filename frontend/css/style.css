@@ -39,6 +39,21 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #b9bdc2; fon
 .band { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 16px; font-size: 15px; font-weight: 700; color: #fff; background: var(--warn); }
 .band.err { background: var(--err); }
 .band .next { font-weight: 400; opacity: .95; }
+.bandbox { flex: none; display: flex; flex-direction: column; }
+.bandbox .band { height: 34px; border-bottom: 1px solid rgba(255,255,255,.35); }
+.vp .empty { flex-direction: column; gap: 12px; text-align: center; }
+.vp .empty .et { font-size: 18px; color: #d8dde2; }
+.vp .empty .row { justify-content: center; }
+.vp .empty .btn { background: #fff; color: var(--ink); }
+.sitem.down { border-left-color: var(--err); } .sitem.down .st { color: var(--err); }
+.sitem .s2 { font-size: 12px; color: var(--ink2); }
+.sitem .s2.bad { color: var(--err); }
+.gate { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: var(--warn-bg); border: 1px solid var(--warn); border-radius: 4px; font-size: 14px; }
+.gate .grow { min-width: 0; }
+.hint0 { color: var(--ink2); font-size: 13px; }
+.panel .foot { margin-top: auto; padding-top: 8px; }
+.cands { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.cands .cand { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 
 /* ---- 본문 ---- */
 #body { flex: 1; min-height: 0; position: relative; }
