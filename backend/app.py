@@ -34,7 +34,9 @@ from core.stage import StageError
 STATUS_TAGS = ("done", "need", "invalid")
 
 
-AUTO_LINK_S = float(os.environ.get("WAFER2_AUTO_LINK_S", "5"))    # 자동 다시 연결 확인 간격(s)
+AUTO_LINK_S = float(os.environ.get("WAFER2_AUTO_LINK_S", "3"))    # 자동 확인 간격(s): 스테이지는 포트 목록만 본다
+STAGE_RETRY_S = float(os.environ.get("WAFER2_STAGE_RETRY_S", "30"))   # 포트가 있는데 열기가 실패하면 이만큼에 한 번만 다시
+CAM_BASE_S = float(os.environ.get("WAFER2_AUTO_CAM_S", "10"))     # 카메라 자동 시도 간격: 10 s → 20 s → 30 s
 
 
 class AppError(Exception):
@@ -76,7 +78,19 @@ class App:
         self.sim_missing = set(x for x in os.environ.get("WAFER2_MISSING", "").split(",") if x)     # 시험: 장치를 뺀 상태(stage · camera · visa)
         self.dev_err = {}                            # 장치별 마지막 연결 실패 사유(화면 띠에 간다)
         self.attempted = {"stage": False}            # 연결을 한 번이라도 해 보았는가(아니면 "확인 안 됨")
-        self.auto = {"stage": False, "camera": False}  # 자동 다시 연결이 지금 시도 중인가
+        self.connecting = {"stage": False, "camera": False}   # 연결 시도가 지금 진행 중인가(자동 · 수동 모두)
+        self.manual = {"stage": False, "camera": False}       # 사용자가 [다시 연결]을 눌러 진행 중인가 - 화면에 "연결 중" 이 보이는 것은 이때만
+        self.link_lock = threading.RLock()                    # 스테이지 연결 · 다시 연결 · 자동 시도를 하나로 묶는다
+        self.cam_lock = threading.Lock()
+        self._link_log = {}
+        self._stage_try_t = 0.0
+        self._port_prev = False
+        self._port_gone = False
+        self._cam_next = 0.0
+        self._cam_step = 0
+        self._fake_next_eeprom = None
+        self.opens = {"stage": 0, "camera": 0}                # 시험: 실제로 연 횟수
+        self.open_delay = {"stage": 0.0}                      # 시험: 열기를 느리게
         self._auto_th = None
         self.cam_scan = None                         # [카메라 찾기] 결과: {running, items: [{index, ok, size, busy}]}
         self._apply_missing()
@@ -161,9 +175,16 @@ class App:
             import sys as _sys
             _sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
             import fake_v11
-            stage_mod.SERIAL_FACTORY = lambda *_a: fake_v11.FakeV11(time_scale=float(os.environ.get("WAFER2_FAKE_SCALE", "0.05")), eeprom=os.environ.get("WAFER2_FAKE_EEPROM") or None)
+            def _mk(*_a):
+                ee = self._fake_next_eeprom or os.environ.get("WAFER2_FAKE_EEPROM") or None
+                self._fake_next_eeprom = None
+                return fake_v11.FakeV11(time_scale=float(os.environ.get("WAFER2_FAKE_SCALE", "0.05")), eeprom=ee)
+            stage_mod.SERIAL_FACTORY = _mk
         st = stage_mod.Stage(port=port, dry=self.dry)
         st.on_line = lambda arrow, text: self.serial_log.append((time.strftime("%H:%M:%S"), arrow, text))
+        self.opens["stage"] += 1
+        if self.sim and self.open_delay["stage"] > 0:
+            time.sleep(self.open_delay["stage"])
         st.open()
         self.stage = st
         stage_mod.set_limits(self.cfg.get("limits.x_max_mm"), self.cfg.get("limits.y_max_mm"), self.cfg.get("limits.z_max_mm"))
@@ -377,7 +398,7 @@ class App:
         policy_off = self.cfg.get("relay.on_estop") == "off"
         try:
             self.motion.estop(relays_off=policy_off, off_relays=(heater,))
-        except StageError as e:
+        except Exception as e:                              # noqa: BLE001 - 포트가 뽑힌 상태(SerialException 등)여도 잠금 · 경보는 반드시 건다
             logger.log("비상정지 전송 실패 · " + logger.short(e), "err")
         if self.power:
             self.power.owners.clear() if policy_off else self.power.owners.pop(heater, None)
@@ -419,7 +440,7 @@ class App:
     def _need_camera(self):
         """사진이 필요한 명령은 카메라가 실제로 프레임을 줄 때만(열기가 진행 중이면 잠깐 기다린다). 이동하기 전에 먼저 거절한다."""
         t0 = time.time()
-        while self.auto["camera"] and time.time() - t0 < 8.0:
+        while self.connecting["camera"] and time.time() - t0 < 8.0:
             time.sleep(0.05)
         if not (self.vision.cam is not None and self.vision.frame_ok):
             raise AppError("카메라 연결 안 됨 · USB 확인")
@@ -477,7 +498,8 @@ class App:
             k = next(iter(errs))
             raise AppError("가져오기 실패 · %s %s" % (k, errs[k]))
         if self.stage is not None:
-            self._reconnect()                                # 가져온 포트 · 가동범위 · 속도로 스테이지를 다시 연결
+            with self.link_lock:
+                self._reconnect()                            # 가져온 포트 · 가동범위 · 속도로 스테이지를 다시 연결
         return {"imported": sorted(patch)}
 
     # ------------------------------------------------------------------
@@ -919,7 +941,7 @@ class App:
         m = self.motion
         al = self.alarm
         if al:
-            return {"text": al["text"], "next": al.get("next", ""), "err": bool(__import__("re").search("비상정지|오류|재부팅", al["text"])),
+            return {"text": al["text"], "next": al.get("next", ""), "err": bool(__import__("re").search("비상정지|오류|재부팅|통신 끊김", al["text"])),
                     "actions": self.alarm_actions()}
         if m is not None and (m.estop_locked or not m.z_ok or not m.xy_ok):
             first = self.eeprom != "restored" and not m.estop_locked
@@ -973,14 +995,9 @@ class App:
 
     def c_reconnect(self, a, gen):
         self._no_run("다시 연결")
-        try:
-            if self.stage is not None:
-                self._reconnect()
-            else:
-                self.try_connect_stage(raise_err=True)
-        except Exception as e:                              # noqa: BLE001
-            self.dev_err["stage"] = logger.short(e, 30)
-            raise
+        r = self.link_stage("manual")                       # 진행 중이면 두 번 열지 않고 "연결 중" 으로 답한다
+        if r is None:
+            return {"connecting": True}
         self.set_alarm(None)
 
     def c_cam_scan(self, a, gen):
@@ -989,6 +1006,7 @@ class App:
             raise AppError("%s 중 · 끝난 뒤" % self.busy)
         if self.cam_scan and self.cam_scan.get("running"):
             return {}
+        self._cam_step, self._cam_next = 0, 0.0
         self.cam_scan = {"running": True, "items": []}
         threading.Thread(target=self._cam_scan, name="cam-scan", daemon=True).start()
         self.touch()
@@ -1042,49 +1060,99 @@ class App:
         """[다시 연결](카메라): 지금 열어 본다. 실패하면 사유를 한 줄로."""
         if self.busy in ("촬영", "빈 판 사진", "위치 확인"):
             raise AppError("%s 중 · 끝난 뒤" % self.busy)
-        if not self.try_open_camera():
+        self._cam_step, self._cam_next = 0, 0.0              # 사용자가 눌렀으니 자동 간격은 다시 10 s 부터
+        try:
+            r = self.link_camera("manual")
+        except Exception:                                   # noqa: BLE001
             raise AppError("카메라 연결 안 됨 · " + self.dev_err.get("camera", "USB 확인"))
+        if r is None:
+            return {"connecting": True}
 
     # ------------------------------------------------------------------
     # 장치 상태 · 자동 다시 연결
     # ------------------------------------------------------------------
-    def try_connect_stage(self, raise_err=False):
-        """스테이지 연결 시도(시작 · 자동 다시 연결 · [다시 연결]). 결과를 dev_err 에 남긴다."""
-        self.auto["stage"] = True
+    def _log_link(self, key, msg, lv="info"):
+        """연결 로그는 자동 시도마다 쓰지 않고 내용이 바뀔 때만 한 줄."""
+        if self._link_log.get(key) != msg:
+            self._link_log[key] = msg
+            logger.log(msg, lv)
+
+    def link_stage(self, mode="auto"):
+        """스테이지 연결 · 다시 연결의 유일한 입구(잠금 하나). mode = start | auto | manual.
+        반환: True 연결 / False 실패(auto) / None 다른 연결이 진행 중이라 건너뜀. 수동 실패는 예외. 포트를 두 번 열지 않는다."""
+        if not self.link_lock.acquire(blocking=False):
+            if mode == "manual":
+                self.manual["stage"] = True
+                self.touch()
+            return None
+        manual = mode == "manual"
+        self.connecting["stage"] = True
+        self.manual["stage"] = manual
+        self._stage_try_t = time.monotonic()
         self.touch()
         try:
-            self.connect()
+            if self.stage is None:
+                self.connect()
+            else:
+                self._reconnect()
             self.dev_err.pop("stage", None)
+            self._link_log.pop("stage_err", None)
+            self._log_link("stage", "스테이지 연결됨" if mode == "start" else "스테이지 다시 연결됨")
+            self._link_log.pop("stage", None) if mode != "start" else None            # 다음에 또 끊겼다 붙으면 다시 소식
             return True
         except Exception as e:                              # noqa: BLE001
             self.dev_err["stage"] = logger.short(e, 30)
-            logger.log("스테이지 연결 못 함 · " + logger.short(e), "warn", raw=repr(e))
-            if raise_err:
+            self._log_link("stage_err", "스테이지 연결 못 함 · " + logger.short(e), "warn")
+            if manual:
                 raise
             return False
         finally:
             self.attempted["stage"] = True
-            self.auto["stage"] = False
+            self.connecting["stage"] = False
+            self.manual["stage"] = False
+            self.link_lock.release()
             self.touch()
 
-    def try_open_camera(self):
+    def try_connect_stage(self, raise_err=False):
+        return self.link_stage("start" if not raise_err else "manual")
+
+    def link_camera(self, mode="auto"):
+        """카메라 열기(자동 시도와 사용자 동작이 겹치지 않게 잠금 하나). 반환 True / False / None(진행 중)."""
         v = self.vision
-        self.auto["camera"] = True
+        if not self.cam_lock.acquire(blocking=False):
+            if mode == "manual":
+                self.manual["camera"] = True
+                self.touch()
+            return None
+        manual = mode == "manual"
+        self.connecting["camera"] = True
+        self.manual["camera"] = manual
         self.touch()
         try:
             v.open()
             v.start_preview()
             self.dev_err.pop("camera", None)
+            self._link_log.pop("camera_err", None)
+            self._cam_step = 0
+            self._log_link("camera", "카메라 연결됨" if mode == "start" else "카메라 다시 연결됨")
+            self._link_log.pop("camera", None) if mode != "start" else None
             return True
         except Exception as e:                              # noqa: BLE001
             self.dev_err["camera"] = logger.short(e, 30)
-            logger.log("카메라 열기 못 함 · " + logger.short(e), "warn", raw=repr(e))
+            self._log_link("camera_err", "카메라 열기 못 함 · " + logger.short(e), "warn")
             v._release()
+            if manual:
+                raise
             return False
         finally:
             v.attempted = True
-            self.auto["camera"] = False
+            self.connecting["camera"] = False
+            self.manual["camera"] = False
+            self.cam_lock.release()
             self.touch()
+
+    def try_open_camera(self):
+        return bool(self.link_camera("start"))
 
     def start_auto_link(self):
         if self._auto_th is None or not self._auto_th.is_alive():
@@ -1099,9 +1167,25 @@ class App:
             return False
         return not (self.motion is not None and self.motion.moving)
 
+    def _port_present(self):
+        """설정 포트가 지금 포트 목록에 있는가(목록만 본다 - 열지 않는다). 시뮬레이션은 장치 없음 스위치."""
+        if self.sim:
+            return "stage" not in self.sim_missing
+        try:
+            devs = {str(p.device).upper() for p in stage_mod.list_ports()}
+        except Exception:                                   # noqa: BLE001
+            return True                                     # 목록을 못 읽으면 "있다" 로 본다(거짓 뽑힘 경보를 만들지 않는다)
+        want = str(self.cfg.get("serial_port") or "").upper()
+        return (want in devs) if want else bool(devs)
+
+    @staticmethod
+    def _is_io_error(e):
+        n = " ".join(c.__name__ for c in type(e).__mro__) + " " + str(e)
+        return isinstance(e, OSError) or "SerialException" in n or "쓰기 실패" in n or "ClearCommError" in n
+
     def _auto_link(self):
-        """5 s 간격 백그라운드: 스테이지 포트가 다시 생기거나 카메라가 다시 열리면 자동으로 연결한다. 측정 · 이동 중에는 하지 않는다.
-        열기가 오래 걸려도(카메라 열기 실패 등) 이 스레드만 기다린다 - 화면 · 비상정지는 붙잡히지 않는다."""
+        """백그라운드: 스테이지 포트가 다시 생기거나 카메라가 다시 열리면 자동으로 연결한다. 측정 · 이동 중에는 하지 않는다.
+        화면 상태는 바꾸지 않는다(연결 안 됨 그대로) - 깜빡임 없음. 열기가 오래 걸려도 이 스레드만 기다린다."""
         while not self.shutting:
             time.sleep(AUTO_LINK_S)
             try:
@@ -1110,30 +1194,58 @@ class App:
                 logger.log("자동 다시 연결 오류 · " + logger.short(e), "detail", raw=repr(e))
 
     def _auto_once(self):
-        if not self._idle_for_link():
-            return
+        now = time.monotonic()
+        # ---- 스테이지
         if self.stage is None:
-            if self.try_connect_stage():
-                logger.log("스테이지 다시 연결됨", "info")
-        elif self.alarm and self.alarm["text"].startswith("통신 끊김") and self.motion is not None and not self.motion.moving:
-            try:                                            # 응답이 돌아왔으면 [연결 확인] 과 같이 경보를 닫는다
-                d = self.stage.status(timeout=2.0)
-                self.pos.update(x=d["x_mm"], y=d["y_mm"], z=d.get("z_mm"))
-                self._comm_ok()
-                self.set_alarm(None)
-                logger.log("스테이지 통신 돌아옴", "info")
-            except Exception:                               # noqa: BLE001
-                pass
-        if self.vision.cam is None and self._idle_for_link():
-            if self.try_open_camera():
-                logger.log("카메라 다시 연결됨", "info")
+            present = self._port_present()
+            due = present and ((not self._port_prev) or now - self._stage_try_t >= STAGE_RETRY_S)
+            self._port_prev = present
+            if due and self._idle_for_link():
+                self.link_stage("auto")
+        elif self.motion is not None:
+            present = self._port_present()
+            lost = bool(self.alarm and self.alarm["text"].startswith("통신 끊김"))
+            if not present and not self._port_gone:                  # 쓰는 중 포트가 목록에서 사라짐 = 통신 끊김(빨강 경보)
+                self._port_gone = True
+                if not lost:
+                    self._link_alarmed = True
+                    self._on_link_lost("응답 없음 · 포트 사라짐")
+            elif present and self._port_gone and self._idle_for_link():       # 다시 꽂힘 → 새로 연다(옛 핸들은 죽었다 · 아두이노는 재부팅된 것으로 본다)
+                if self.link_stage("auto"):
+                    self._port_gone = False
+                    self._after_relink()
+            elif lost and present and self._idle_for_link() and not self.motion.moving:
+                try:                                        # 잠깐 멈춘 것: 응답이 돌아오면 경보만 닫는다
+                    d = self.stage.status(timeout=2.0)
+                    self.pos.update(x=d["x_mm"], y=d["y_mm"], z=d.get("z_mm"))
+                    self._comm_ok()
+                    self.set_alarm(None)
+                    self._log_link("stage_back", "스테이지 통신 돌아옴")
+                    self._link_log.pop("stage_back", None)
+                except Exception as e:                      # noqa: BLE001
+                    if self._is_io_error(e) and self.link_stage("auto"):          # 입출력 오류 = 핸들이 죽었다 → 새로 연다
+                        self._after_relink()
+        # ---- 카메라: 10 s → 20 s → 30 s 로 늘려 가며
+        if self.vision.cam is None and now >= self._cam_next and self._idle_for_link():
+            ok = self.link_camera("auto")
+            if ok is False:
+                self._cam_step = min(self._cam_step + 1, 2)
+                self._cam_next = time.monotonic() + CAM_BASE_S * (1 + self._cam_step)
+            elif ok:
+                self._cam_next = 0.0
+
+    def _after_relink(self):
+        """다시 연결한 뒤: 경보를 닫는다(재부팅 · 원점 규칙은 connect() 가 이미 적용). 움직이지 않는다."""
+        if self.alarm and self.alarm["text"].startswith("통신 끊김"):
+            self.set_alarm(None)
 
     def devices(self):
-        """장치 상태 넷: ok(연결됨) · down(연결 안 됨) · retry(다시 연결 중) · unknown(확인 안 됨). 실제 장치 상태에서만 만든다(설정값이 있다고 연결로 보지 않는다)."""
+        """장치 상태 넷: ok(연결됨) · down(연결 안 됨) · retry(연결 중 - 사용자가 [다시 연결]을 눌렀을 때만) · unknown(확인 안 됨).
+        실제 장치 상태에서만 만든다. 뒤에서 하는 자동 시도는 상태를 바꾸지 않는다(깜빡임 없음)."""
         m, v = self.motion, self.vision
         if m is None:
-            if self.reconnecting or self.auto["stage"]:
-                st = {"state": "retry", "text": "다시 연결 중"}
+            if self.reconnecting or self.manual["stage"]:
+                st = {"state": "retry", "text": "연결 중"}
             elif not self.attempted["stage"]:
                 st = {"state": "unknown", "text": "확인 안 됨"}
             else:
@@ -1144,8 +1256,8 @@ class App:
             st = {"state": "ok", "text": "연결"}
         if v.cam is not None and v.frame_ok:
             cam = {"state": "ok", "text": "연결"}
-        elif self.auto["camera"]:
-            cam = {"state": "retry", "text": "다시 연결 중"}
+        elif self.manual["camera"]:
+            cam = {"state": "retry", "text": "연결 중"}
         elif not v.attempted:
             cam = {"state": "unknown", "text": "확인 안 됨"}
         else:
@@ -1164,7 +1276,7 @@ class App:
         return out
 
     def bands(self, dev=None):
-        """머리줄 아래 띠 목록. 맨 위 = 비상정지 · 통신 끊김 · 원점 회복(경보), 그 아래 장치마다 한 줄(스테이지 · 카메라 · K2110 · K2450)."""
+        """머리줄 아래 띠 목록. 맨 위 = 비상정지 · 통신 끊김 · 원점 회복(경보, 빨강), 그 아래 장치마다 한 줄(스테이지 · 카메라 · K2110 · K2450, 주황)."""
         out = []
         b = self.band()
         if b:
@@ -1173,21 +1285,24 @@ class App:
 
         def go(step):
             return {"act": "ui_setup", "args": {"step": step}, "label": {1: "스테이지 설정", 2: "카메라 설정", 8: "측정 장비 설정"}.get(step, "장비 설정 %d" % step), "tip": "장비 설정의 해당 단계를 엽니다."}
+
+        def re_btn(act, busy, tip):
+            return {"act": act, "args": {}, "label": "연결 중…" if busy else "다시 연결", "busy": bool(busy), "tip": tip}
         s = dev["stage"]
         if s["state"] in ("down", "retry") and s["text"] != "통신 끊김":
-            out.append({"id": "stage", "text": "스테이지 " + ("다시 연결 중" if s["state"] == "retry" else "연결 안 됨"),
-                        "next": "포트 번호 확인" if s["state"] == "down" else "", "err": s["state"] == "down",
-                        "actions": [{"act": "reconnect", "args": {}, "label": "다시 연결", "tip": "스테이지 포트를 다시 열어 봅니다."}, go(1)]})
+            busy = s["state"] == "retry"
+            out.append({"id": "stage", "text": "스테이지 " + ("연결 중" if busy else "연결 안 됨"), "next": "" if busy else "포트 번호 확인", "err": False,
+                        "actions": [re_btn("reconnect", busy, "스테이지 포트를 다시 열어 봅니다."), go(1)]})
         c = dev["camera"]
         if c["state"] in ("down", "retry"):
-            out.append({"id": "camera", "text": "카메라 " + ("다시 연결 중" if c["state"] == "retry" else "연결 안 됨"),
-                        "next": "카메라 번호 확인" if c["state"] == "down" else "", "err": c["state"] == "down",
-                        "actions": [{"act": "cam_reconnect", "args": {}, "label": "다시 연결", "tip": "카메라를 다시 열어 봅니다."}, go(2)]})
+            busy = c["state"] == "retry"
+            out.append({"id": "camera", "text": "카메라 " + ("연결 중" if busy else "연결 안 됨"), "next": "" if busy else "카메라 번호 확인", "err": False,
+                        "actions": [re_btn("cam_reconnect", busy, "카메라를 다시 열어 봅니다."), go(2)]})
         for nm, label in (("k2110", "K2110"), ("k2450", "K2450")):
             d = dev[nm]
             if d["state"] == "down":
                 drv = "드라이버" in (d.get("why") or "")
-                out.append({"id": nm, "text": label + " 연결 안 됨", "next": "NI-VISA 설치 확인" if drv else "주소 · 케이블 확인", "err": True,
+                out.append({"id": nm, "text": label + " 연결 안 됨", "next": "NI-VISA 설치 확인" if drv else "주소 · 케이블 확인", "err": False,
                             "actions": [{"act": "inst_connect", "args": {}, "label": "측정 장비 연결", "tip": "두 장비에 다시 연결합니다. 출력은 켜지 않습니다."}, go(8)]})
         return out
 
@@ -2208,6 +2323,36 @@ class App:
             measure.FAULT[a["name"]] = a.get("on", True)
         elif op == "cam_delay":
             self.vision.synth.delay_s = float(a["s"])
+        elif op in ("unplug", "replug"):                   # 쓰는 중 USB 가 뽑힘 / 다시 꽂음(stage · camera)
+            dev = a.get("device", "stage")
+            if dev == "stage":
+                if op == "unplug":
+                    self.sim_missing.add("stage")
+                    if self.stage is not None:
+                        if fk is not None:
+                            self._fake_next_eeprom = "restored" if (fk.eeprom == "restored" and not getattr(fk, "dirty", False)) else "unsaved"
+                            fk.unplug()
+                        else:
+                            self.stage.dry_unplugged = True
+                else:
+                    self.sim_missing.discard("stage")      # 포트 목록에 다시 나타난다 - 옛 객체는 계속 오류
+            else:
+                if op == "unplug":
+                    self.sim_missing.add("camera")
+                    self._apply_missing()
+                    self.vision.unplug()
+                else:
+                    self.sim_missing.discard("camera")
+                    self._apply_missing()
+            return {"missing": sorted(self.sim_missing)}
+        elif op == "open_delay":                           # 열기를 느리게(초): stage= · camera=
+            if "stage" in a:
+                self.open_delay["stage"] = float(a["stage"])
+            if "camera" in a:
+                self.vision.open_delay = float(a["camera"])
+            return {}
+        elif op == "counts":
+            return {"stage_opens": self.opens["stage"], "camera_opens": self.vision.opens}
         elif op == "missing":                              # 장치를 빼거나 꽂는다(stage · camera · visa). 카메라를 빼면 열린 것도 놓는다.
             for k, v in a.items():
                 if k not in ("stage", "camera", "visa"):

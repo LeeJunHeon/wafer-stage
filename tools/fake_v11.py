@@ -38,6 +38,7 @@ class FakeV11:
         self.out = collections.deque()              # (나타날 시각, bytes)
         self.cv = threading.Condition()
         self.alive = True
+        self.unplugged = False                      # USB 가 뽑혔다: 읽기 · 쓰기가 serial.SerialException (다시 꽂아도 이 객체는 계속 오류 - 새로 열어야 새 보드)
         self.true_off = [0.0, 0.0]                  # 탈조 - 실제 위치 = 보고 + off (mm)
         self._init_state(bool(homed) and self.eeprom == "restored")
         self.wd_ms = 0
@@ -52,7 +53,19 @@ class FakeV11:
         self.th.start()
 
     # ---- pyserial 모양 ------------------------------------------------
+    def _chk(self):
+        if self.unplugged:
+            import serial
+            raise serial.SerialException("ClearCommError failed (PermissionError(13, '장치가 시스템에 부착되어 있지 않습니다.', None, 22))")
+
+    def unplug(self):
+        self.unplugged = True
+        self.abort_flag = True
+        with self.cv:
+            self.cv.notify_all()
+
     def write(self, data):
+        self._chk()
         if time.monotonic() < self.block_until:
             wt = self.write_timeout
             wait = self.block_until - time.monotonic()
@@ -77,6 +90,7 @@ class FakeV11:
 
     @property
     def in_waiting(self):
+        self._chk()
         now = time.monotonic()
         with self.cv:
             return sum(len(b) for t, b in self.out if t <= now)
@@ -88,6 +102,7 @@ class FakeV11:
                 self.out.popleft()
 
     def read(self, n=1):
+        self._chk()
         end = time.monotonic() + (self.timeout or 0)
         buf = bytearray()
         while len(buf) < n:
@@ -105,8 +120,10 @@ class FakeV11:
         return bytes(buf)
 
     def readline(self):
+        self._chk()
         end = time.monotonic() + (self.timeout or 0)
         while True:
+            self._chk()
             now = time.monotonic()
             with self.cv:
                 if self.out and self.out[0][0] <= now:

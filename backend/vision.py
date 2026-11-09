@@ -80,6 +80,8 @@ class Vision:
         self.synth = None
         self.size = None
         self.missing = False                                     # 시험: 카메라가 없는 상태를 흉내 낸다(열기 실패)
+        self.open_delay = 0.0                                    # 시험: 열기가 오래 걸리는 카메라(DSHOW 열기 시도 1~2 s)
+        self.opens = 0
         self.attempted = False                                   # 열기를 한 번이라도 해 보았는가(아니면 "확인 안 됨")
         self.frame_ok = False                                    # 실제 프레임을 받았는가(그때만 "연결됨")
         self.frame_t = 0.0
@@ -91,6 +93,9 @@ class Vision:
             if self.cam is not None:
                 return
             self.attempted = True
+            self.opens += 1
+            if self.open_delay > 0:
+                time.sleep(self.open_delay)
             if self.missing:
                 self.last_error = "카메라 없음"
                 raise RuntimeError("카메라 없음")

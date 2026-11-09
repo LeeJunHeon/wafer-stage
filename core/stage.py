@@ -251,6 +251,7 @@ class Stage:
     def __init__(self, port=None, dry=False, log_path=None):
         self.port_name = port
         self.dry = bool(dry)
+        self.dry_unplugged = False     # 시험: dry 에서 USB 가 뽑힌 척(읽기 · 쓰기 오류)
         self.ser = None
         self.banner = ""
         self.fw_version = ""           # 배너에서 읽은 "V8" … "V11"
@@ -396,6 +397,8 @@ class Stage:
             if not self.dry:
                 self._drain()
             if self.dry:
+                if self.dry_unplugged:
+                    raise StageError("쓰기 실패: 포트 없음 (dry 뽑힘)")
                 self._log("->", cmd)
                 print("  (dry) %s" % cmd)
                 self._dry_rx()
@@ -551,6 +554,8 @@ class Stage:
     def status(self, timeout=None):
         """'st' -> ST 줄을 dict 로. 펄스와 mm 를 함께 담는다."""
         if self.dry:
+            if self.dry_unplugged:
+                raise StageError("읽기 실패: 포트 없음 (dry 뽑힘)")
             self._dry_rx()                                  # 진짜는 st 를 쓰므로 펌웨어가 줄을 받는다(통신 감시 갱신)
             x, y, z = self._dry_xy["x"], self._dry_xy["y"], self._dry_xy["z"]
             return {"x_pulse": int(x * PPMM), "y_pulse": int(y * PPMM),

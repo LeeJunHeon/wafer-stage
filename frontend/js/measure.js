@@ -8,7 +8,7 @@ const SCOL = { done: "#2b9a58", cur: "#2f6fdb", wait: "#8a929b", err: "#d03a3a",
 /* 카메라가 없을 때 사진 자리 안내 */
 function camEmpty(s) {
   const retry = s.camera && s.camera.state === "retry";
-  return { text: retry ? "카메라 다시 연결 중" : "카메라 연결 안 됨", btns: [{ label: "다시 연결", act: "cam_reconnect" }] };
+  return { text: retry ? "카메라 연결 중" : "카메라 연결 안 됨", btns: [{ label: retry ? "연결 중…" : "다시 연결", act: "cam_reconnect", why: retry ? "연결 중 · 잠시만" : "" }] };
 }
 function captureWhy(s) {
   const dv = s.dev || {};

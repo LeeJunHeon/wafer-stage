@@ -147,9 +147,9 @@ function syncPreview(s) {
 function renderLog() { for (const fn of UI.logRenders || []) fn(); }
 
 /* 상태 필은 동작 상태만 보인다(연결 문제는 상태 칸과 띠가 맡는다) */
-const PILL = { "대기": "ok", "촬영 중": "busy", "이동 중": "busy", "일시정지": "warn", "확인 대기": "warn", "중지 중": "warn", "비상정지": "err", "오류": "err", "R–T 측정 중": "busy", "속도 측정 중": "busy", "서버 끊김": "err" };
+const PILL = { "대기": "idle", "촬영 중": "busy", "이동 중": "busy", "일시정지": "warn", "확인 대기": "warn", "중지 중": "warn", "비상정지": "err", "오류": "err", "R–T 측정 중": "busy", "속도 측정 중": "busy", "서버 끊김": "err" };
 /* 장치 상태 → 상태 칸 문구 · 색 */
-const DEV_CLS = { ok: "ok", down: "err", retry: "warn", unknown: "" };
+const DEV_CLS = { ok: "ok", down: "warn", retry: "warn", unknown: "" };
 function devText(d, okText) { return !d ? "확인 안 됨" : d.state === "ok" ? okText : d.state === "down" ? "연결 안 됨" : d.state === "retry" ? "다시 연결 중" : "확인 안 됨"; }
 function relayText(s) {
   const rl = s.relays || { owners: {}, heater_on: false };
@@ -168,7 +168,7 @@ function renderHead(s) {
   if (!running) {
     const dv = s.dev || {};
     const stOk = dv.stage && dv.stage.state === "ok" && st;
-    cells.push(mk("스테이지", stOk ? (s.dry ? "가상 · " : "연결 · ") + st.origin_text : devText(dv.stage), stOk ? (st.z_ok && st.xy_ok && !st.locked ? "ok" : "warn") : DEV_CLS[(dv.stage || {}).state] || ""));
+    cells.push(mk("스테이지", stOk ? (s.dry ? "가상 · " : "연결 · ") + st.origin_text : devText(dv.stage), stOk ? (st.z_ok && st.xy_ok && !st.locked ? "ok" : "warn") : (dv.stage && dv.stage.text === "통신 끊김") ? "err" : DEV_CLS[(dv.stage || {}).state] || ""));
     cells.push(mk("카메라", s.camera.open ? "연결 · " + (s.camera.size ? s.camera.size.join("×") : "") : devText(dv.camera), DEV_CLS[(dv.camera || {}).state] || ""));
     cells.push(mk("좌표 보정", c.status === "done" ? "완료" : c.status === "invalid" ? c.text : "필요", c.status === "done" ? "ok" : c.status === "invalid" ? "err" : "warn"));
     cells.push(mk("릴레이", stOk ? "쿨러 " + (rt.co ? rt.co + "개 켜짐" : "꺼짐") + " · 히트건 " + (rt.heat ? "켜짐" : "꺼짐") : "알 수 없음", stOk ? (rt.heat ? "heat" : rt.co ? "ok" : "") : ""));
@@ -187,7 +187,7 @@ function renderHead(s) {
       band.dataset.sig = sig;
       band.className = "bandbox";
       band.replaceChildren(...bds.map((bd) => h("div", { class: "band " + (bd.err ? "err" : ""), "data-id": bd.id }, h("span", { text: bd.text }), h("span", { class: "next", text: bd.next ? "· " + bd.next : "" }), h("span", { class: "grow" }),
-        ...(bd.actions || []).map((a) => h("button", { class: "btn sm", text: a.label, "data-tip": a.tip || null, onclick: () => bandAct(a) })))));
+        ...(bd.actions || []).map((a) => h("button", { class: "btn sm" + (a.busy ? " dis" : ""), text: a.label, "data-tip": a.busy ? "연결 중 · 잠시만" : (a.tip || null), onclick: () => { if (!a.busy) bandAct(a); } })))));
     }
   } else { band.dataset.sig = ""; band.className = "bandbox hidden"; band.replaceChildren(); }
 }

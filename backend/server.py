@@ -57,7 +57,7 @@ def _asset_v():
 
 
 def _startup_link():
-    APP.try_open_camera()
+    APP.link_camera("start")
     APP.start_auto_link()
 
 
@@ -69,7 +69,7 @@ async def lifespan(_app):
     logger.subscribe(lambda e: _LOOP.call_soon_threadsafe(lambda: asyncio.ensure_future(_bcast({"type": "log", "e": e}))))
     # 스테이지는 서버가 뜨기 전에 한 번 연결해 본다(빠르다). 카메라 열기는 백그라운드(열기 실패가 화면 · 비상정지를 붙잡지 않게).
     # 실패는 장치 상태 · 띠로 보이고, 이후는 자동 다시 연결이 맡는다.
-    await asyncio.to_thread(APP.try_connect_stage)
+    await asyncio.to_thread(APP.link_stage, "start")
     threading.Thread(target=_startup_link, name="startup-link", daemon=True).start()
     task = asyncio.create_task(_broadcaster())
     try:

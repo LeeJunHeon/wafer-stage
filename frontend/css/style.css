@@ -45,9 +45,9 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #b9bdc2; fon
 .vp .empty .et { font-size: 18px; color: #d8dde2; }
 .vp .empty .row { justify-content: center; }
 .vp .empty .btn { background: #fff; color: var(--ink); }
-.sitem.down { border-left-color: var(--err); } .sitem.down .st { color: var(--err); }
+.sitem.down { border-left-color: var(--warn); } .sitem.down .st { color: var(--warn); }
 .sitem .s2 { font-size: 12px; color: var(--ink2); }
-.sitem .s2.bad { color: var(--err); }
+.sitem .s2.bad { color: var(--warn); }
 .gate { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: var(--warn-bg); border: 1px solid var(--warn); border-radius: 4px; font-size: 14px; }
 .gate .grow { min-width: 0; }
 .hint0 { color: var(--ink2); font-size: 13px; }
@@ -136,11 +136,11 @@ table.tb tr { cursor: pointer; }
 .slist { width: 330px; flex: none; }
 .sitem { display: flex; gap: 8px; align-items: center; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--line); border-radius: 4px; margin-bottom: 5px; cursor: pointer; min-height: 56px; }
 .sitem.sel { background: var(--sel-bg); border-color: var(--sel); border-left-color: var(--sel); }
-.sitem.done { border-left-color: var(--ok); } .sitem.need { border-left-color: var(--warn); } .sitem.invalid { border-left-color: var(--err); }
+.sitem.done { border-left-color: var(--ok); } .sitem.need { border-left-color: var(--line); } .sitem.invalid { border-left-color: var(--err); }
 .sitem .no { width: 24px; height: 24px; border-radius: 12px; background: var(--ink2); color: #fff; text-align: center; line-height: 24px; font-weight: 700; flex: none; }
 .sitem .t { font-weight: 700; } .sitem .s { font-size: 12px; color: var(--ink2); }
 .sitem .st { margin-left: auto; font-size: 12px; font-weight: 700; flex: none; }
-.sitem.done .st { color: var(--ok); } .sitem.need .st { color: var(--warn); } .sitem.invalid .st { color: var(--err); }
+.sitem.done .st { color: var(--ok); } .sitem.need .st { color: var(--ink2); } .sitem.invalid .st { color: var(--err); }
 .panel { width: 464px; flex: none; overflow: auto; }
 .panel h3 { margin: 0 0 6px; }
 .panel .card { margin-bottom: 8px; }
