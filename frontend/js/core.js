@@ -141,7 +141,7 @@ function render() {
 /* 실시간 화면이 필요할 때만 서버가 미리보기를 만든다(측정 탭 실시간 · 장비 설정의 실시간 단계) */
 function syncPreview(s) {
   let want = false;
-  try { want = (UI.tab === "measure" && typeof M !== "undefined" && M.mode === "live" && !isRunning(s)) || (UI.tab === "setup" && typeof viewFor === "function" && viewFor(s) === "live"); } catch (e) { want = false; }
+  try { want = (UI.tab === "measure" && typeof M !== "undefined" && M.sub !== "here" && M.mode === "live" && !isRunning(s)) || (UI.tab === "setup" && typeof viewFor === "function" && viewFor(s) === "live"); } catch (e) { want = false; }
   if (want !== UI.previewOn && UI.ws && UI.ws.readyState === 1) { UI.previewOn = want; UI.ws.send(JSON.stringify({ cmd: "preview", on: want })); }
 }
 function renderLog() { for (const fn of UI.logRenders || []) fn(); }

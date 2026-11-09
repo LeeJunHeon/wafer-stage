@@ -2,7 +2,8 @@
    보기 탭은 없다: 단계에 맞는 화면을 자동으로 보인다(스테이지 · 카메라 · 헤드 · 접촉 높이: 실시간 / 판 영역 · 릴레이: 빈 판 사진 / 클릭이 필요할 때만 정지 화면). */
 "use strict";
 const S = { step: 1, zoom: "plate", viewer: null, built: false, jogStep: 1, area: null, leftSig: "", rightSig: "", freeze: false, showRef: false, showPts: false, showHead: false, viewKey: "", ctNo: null };
-const STEPS = ["스테이지", "카메라", "판 영역", "빈 판 사진", "좌표 보정", "헤드 위치 보정", "접촉 높이", "릴레이"];
+const STEPS = ["스테이지", "카메라", "판 영역", "빈 판 사진", "좌표 보정", "헤드 위치 보정", "접촉 높이", "측정 장비 · 릴레이"];
+S.instItems = null; S.instMsg = "";
 const EEPROM_TEXT = { restored: "원점 복원됨", unsaved: "저장 안 하고 꺼짐 · 원점 없음", none: "기록 없음" };
 const rate = (r) => (r == null ? "" : r < 0.3 ? "좋음" : r < 0.8 ? "주의" : "나쁨");
 
@@ -16,7 +17,7 @@ function stepInfo(s, i) {
     case 5: return [c.status, c.status === "done" ? "완료" : c.status === "invalid" ? "무효" : "필요", c.text];
     case 6: return [c.head.status, c.head.status === "done" ? "완료" : c.head.status === "invalid" ? "무효" : "필요", c.head.text];
     case 7: { const z = s.contact.z; return z == null ? ["need", "필요", "샘플에서 핀이 닿는 높이"] : ["done", "완료", "Z " + f1(z, 2) + " mm"]; }
-    case 8: { const used = st.relay.items.map((r, n) => (r.enabled && n + 1 !== st.heater.relay ? n + 1 : null)).filter(Boolean); return ["done", "완료", "쿨러 " + (used.length ? "R" + Math.min(...used) + "–R" + Math.max(...used) : "없음") + " · 히트건 R" + st.heater.relay]; }
+    case 8: { const used = st.relay.items.map((r, n) => (r.enabled && n + 1 !== st.heater.relay ? n + 1 : null)).filter(Boolean); const ik = s.rt && s.rt.inst, both = ik && ik.k2110 && ik.k2110.ok && ik.k2450 && ik.k2450.ok; return ["done", "완료", "쿨러 " + (used.length ? "R" + Math.min(...used) + "–R" + Math.max(...used) : "없음") + " · 히트건 R" + st.heater.relay + " · 장비 " + (both ? "연결" : "미연결")]; }
   }
 }
 function lockedBy(s) { return s.run && ["running", "paused", "stopping"].includes(s.run.state) ? "측정 중 · 변경 잠김" : ""; }
@@ -63,12 +64,13 @@ function renderSetup(s) {
   }
   renderSetupView(s);
   const sig = JSON.stringify([S.step, lockedBy(s), s.calib, s.ref, s.stage && [s.stage.locked, s.stage.z_ok, s.stage.xy_ok, s.stage.moving, s.stage.done, s.stage.fw_homed, s.stage.z > 0.05], s.camera.busy, s.settings.photohome, s.tool, s.verify, S.jogStep, S.freeze, S.showPts, S.showHead, S.showRef,
-    s.eeprom, s.port, s.fw, s.contact, s.samples.length, s.sel, S.ctNo, s.settings.relay.items, s.settings.cooler, s.settings.heater, s.settings.width, s.settings.exposure, s.settings.wb_temperature]);
+    s.eeprom, s.port, s.fw, s.contact, s.samples.length, s.sel, S.ctNo, s.settings.relay.items, s.settings.cooler, s.settings.heater, s.settings.width, s.settings.exposure, s.settings.wb_temperature,
+    s.rt && s.rt.inst, s.settings.rt && [s.settings.rt.k2110_addr, s.settings.rt.k2450_addr], S.instItems, S.instMsg, s.camera.busy]);
   if (sig !== S.rightSig) { S.rightSig = sig; renderPanel(s); }
   const pos = $("#su-pos");
   if (pos && s.stage) pos.textContent = xy(s.stage.x, s.stage.y) + " · Z " + f1(s.stage.z, 2);
 }
-UI.acts["su-step"] = (a) => { S.step = a.i; S.leftSig = ""; S.rightSig = ""; S.area = null; S.freeze = false; S.showRef = false; render(); };
+UI.acts["su-step"] = (a) => { S.step = a.i; S.leftSig = ""; S.rightSig = ""; S.area = null; S.freeze = false; S.showRef = false; render(); if (a.i === 8 && S.instItems == null) UI.acts["su-inst-list"](); };
 UI.acts["su-next"] = () => { if (S.step < 8) UI.acts["su-step"]({ i: S.step + 1 }); };
 
 function renderSetupView(s) {
@@ -266,6 +268,18 @@ function renderPanel(s) {
     const rows = st.relay.items.map((r, i) => h("div", { class: "rlrow" }, h("label", { class: "chk" }, h("input", { type: "checkbox", id: "rl-" + i, checked: r.enabled, disabled: !!lock }), "R" + (i + 1)),
       h("span", { class: "grow", text: i + 1 === hn ? "히트건" : "쿨러" }),
       btn("2 s 켜 보기", "su-rl-test", { n: i + 1 }, "sm", "이 릴레이를 2 초만 켰다 끕니다.", lock || (nostage ? "스테이지 연결 안 됨" : "") || (r.enabled ? "" : "사용 안 함") || (s.stage && s.stage.locked ? "비상정지 잠금" : ""))));
+    const ik = (s.rt && s.rt.inst) || {}, rts = st.rt;
+    const addrSel = (key, val) => { const opts = Array.from(new Set([val, ...(S.instItems || [])])); return h("select", { id: "ia-" + key, onchange: (e) => send("settings_save", { patch: { ["rt." + key]: e.target.value } }) }, opts.map((v) => h("option", { value: v, text: v, selected: v === val }))); };
+    const devLine = (k, d) => h("div", { class: "kv" }, h("span", { text: k }), h("span", { class: d && d.ok ? "chip ok" : "chip no", text: d ? (d.ok ? "연결 · " + (d.idn || "").split(",").slice(0, 2).join(" ") : d.err) : "연결 안 됨" }));
+    const tst = ik.test;
+    kids.push(card("측정 장비", h("div", { class: "sub", text: "K2110(열전대 온도) · K2450(전압 걸고 전류 측정). VISA 주소를 목록에서 고릅니다." }),
+      ik.msg ? h("div", { class: "why", text: ik.msg }) : null,
+      h("div", { class: "kv" }, h("span", { text: "K2110" }), addrSel("k2110_addr", rts.k2110_addr)),
+      h("div", { class: "kv" }, h("span", { text: "K2450" }), addrSel("k2450_addr", rts.k2450_addr)),
+      h("div", { class: "row" }, btn("목록 새로고침", "su-inst-list", null, "sm", "연결된 VISA 장비 주소를 다시 읽습니다."), btn("연결 시험", "su-inst-test", null, "primary", "두 장비에 연결해 장비 이름 · 온도 1회 · 저항 1회를 잽니다. 저항 1회를 잴 때만 출력을 짧게 켜고 바로 끕니다.", lock || (s.camera.busy ? s.camera.busy + " 중" : "")),
+        btn("연결 끊기", "su-inst-off", null, "sm", "두 장비 연결을 닫습니다.", lock || (ik.k2110 || ik.k2450 ? "" : "연결 안 됨"))),
+      devLine("K2110", ik.k2110), devLine("K2450", ik.k2450),
+      tst ? h("div", { class: "sub", text: "시험 " + tst.t + " · 온도 " + (tst.temp == null ? "값 없음" : f1(tst.temp, 1) + " °C") + " · 저항 " + (tst.R == null ? "—" : Number(tst.R).toExponential(3) + " Ω") + " · 전류 " + (tst.I == null ? "—" : Number(tst.I).toExponential(3) + " A") + (tst.err ? " · " + tst.err : "") }) : null));
     kids.push(card("릴레이", h("div", { class: "sub", text: "히트건 R" + hn + " · 쿨러 R1–R9. 쓰는 릴레이만 켜 둡니다." }), ...rows,
       h("h3", { text: "쿨러 구역 " + zr.rows + "×" + zr.cols }), h("div", { class: "zgrid" }, ...zcells),
       h("div", { class: "row" }, btn("저장", "su-save-dev", null, "primary", "", lock))));
@@ -313,6 +327,9 @@ UI.acts["su-ztop"] = () => send("z_top");
 UI.acts["su-ct-goto"] = () => send("goto_sample", { no: S.ctNo });
 UI.acts["su-ct-save"] = async () => { const r = await send("contact_save", { no: S.ctNo }); if (r.ok) toast("접촉 높이 저장 · Z " + r.res.z + " mm"); };
 UI.acts["su-ct-try"] = async () => { const r = await send("contact_try", { no: S.ctNo }); if (r.ok) toast("접촉 높이까지 내림"); };
+UI.acts["su-inst-list"] = async () => { const r = await send("inst_list"); if (r.ok) { S.instItems = r.res.items || []; S.instMsg = r.res.msg || ""; S.rightSig = ""; render(); } };
+UI.acts["su-inst-test"] = async () => { const r = await send("inst_test"); if (r.ok) toast("연결 시험 · " + (r.res.temp != null ? f1(r.res.temp, 1) + " °C" : "") + " · " + (r.res.R != null ? Number(r.res.R).toExponential(2) + " Ω" : "")); };
+UI.acts["su-inst-off"] = () => send("inst_disconnect");
 UI.acts["su-rl-test"] = async (a) => { const r = await send("relay_test", a); if (r.ok) toast("R" + a.n + " · 2 s 켰다 껐습니다"); };
 UI.acts["su-save-dev"] = async () => {
   const st = UI.state.settings;

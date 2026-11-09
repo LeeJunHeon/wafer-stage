@@ -2,7 +2,7 @@
    화면 원칙: 카드마다 주 동작 하나(보조는 ⋯) · 문제 있을 때만 상태 표시 · 모드 버튼 대신 사진을 직접 다룬다(끌어서 위치 수정 · 더블클릭으로 추가).
    온도 · 계측기는 이 프로그램에 없다(별도 프로그램). 남은 것은 이동 · 접촉 높이 · 쿨러 · 히트건 · 대기 · 확인 대기뿐. */
 "use strict";
-const M = { viewer: null, mode: "shot", zoom: "plate", rightSig: "", prepBuilt: false, cond: null, showSteps: false, dragNo: null };
+const M = { viewer: null, mode: "shot", zoom: "plate", rightSig: "", prepBuilt: false, cond: null, showSteps: false, dragNo: null, sub: "here", subSig: "" };
 const SCOL = { done: "#2b9a58", cur: "#2f6fdb", wait: "#8a929b", err: "#d03a3a", stop: "#e08a1e", skip: "#b9bdc2" };
 
 function isRunning(s) { return !!(s.run && ["running", "paused", "stopping"].includes(s.run.state)); }
@@ -32,7 +32,9 @@ function buildPrep() {
   M.leftPrep = h("div", { class: "viewbox", id: "m-view" }, M.head, M.viewer.el, M.news);
   M.right = h("div", { class: "col", id: "m-right" });
   M.leftWrap = h("div", { class: "col", id: "m-left" }, M.leftPrep);
-  pane.replaceChildren(M.leftWrap, M.right);
+  M.bar = h("div", { class: "msub" });
+  M.body = h("div", { class: "mrow" }, M.leftWrap, M.right);
+  pane.replaceChildren(h("div", { class: "col grow mwrap" }, M.bar, M.body));
   UI.logRenders = UI.logRenders || [];
   UI.logRenders.push(renderNews);
   setInterval(refreshLive, 250);
@@ -69,7 +71,7 @@ UI.acts["log-all"] = () => {
 
 function refreshLive() {
   const s = UI.state;
-  if (!s || UI.tab !== "measure" || M.mode !== "live" || !M.viewer || isRunning(s)) return;
+  if (!s || UI.tab !== "measure" || M.sub === "here" || M.mode !== "live" || !M.viewer || isRunning(s)) return;
   const sz = s.camera.size || [1280, 960];
   M.viewer.set("/preview.jpg", sz[0], sz[1], Date.now());
 }
@@ -78,6 +80,17 @@ function renderMeasure(s) {
   if (!M.prepBuilt) buildPrep();
   const running = isRunning(s);
   if (UI.tab !== "measure") return;
+  if (running) M.sub = "tour";                                           // 샘플 순회 중에는 순회 화면만
+  const rtRun = s.rt && s.rt.run && (s.rt.run.state === "running" || s.rt.run.state === "stopping");
+  if (rtRun && M.sub !== "here") M.sub = "here";
+  const subSig = JSON.stringify([M.sub, running, rtRun]);
+  if (subSig !== M.subSig) {
+    M.subSig = subSig;
+    M.bar.replaceChildren(h("div", { class: "seg" }, btn("이 위치 측정", "m-sub", { m: "here" }, M.sub === "here" ? "on" : "", "핀을 조그로 샘플에 대고 저항–온도(R–T)를 잽니다.", running ? "샘플 순회 중" : ""),
+      btn("샘플 순회", "m-sub", { m: "tour" }, M.sub === "tour" ? "on" : "", "촬영한 샘플을 차례로 돌며 측정 조건대로 측정합니다.", rtRun ? "R–T 측정 중" : "")));
+    if (M.sub === "tour") { M.body.replaceChildren(M.leftWrap, M.right); M.rightSig = ""; }
+  }
+  if (M.sub === "here") { renderHere(s); return; }
   renderLeft(s, running);
   const run = s.run;
   const sig = JSON.stringify([running, s.samples, s.sel, s.calib.status, s.shot && [s.shot.id, s.shot.cam && s.shot.cam.shift_mm], s.camera.cap_text, s.camera.busy, s.phase, s.start_block, s.active_condition,
@@ -128,6 +141,7 @@ function renderLeft(s, running) {
   const ce = s.camera.cap_error;
   if (ce && Date.now() / 1000 - ce.id < 8) M.viewer.el.append(h("div", { class: "cap-err", text: "촬영 실패 · " + ce.text }));
 }
+UI.acts["m-sub"] = (a) => { M.sub = a.m; M.subSig = ""; if (a.m === "here") T.sig = ""; render(); };
 UI.acts["m-mode"] = (a) => { M.mode = a.m; M.viewer.W = 0; M.viewer.key = null; if (UI.ws) UI.ws.send(JSON.stringify({ cmd: "preview", on: a.m === "live" })); render(); };
 UI.acts["m-fit"] = (a) => { M.zoom = a.m; M.viewer.fit(a.m, M.viewer.area); render(); };
 

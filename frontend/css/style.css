@@ -177,3 +177,20 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 .legend i.lg-done { border-color: var(--ok); background: var(--ok); } .legend i.lg-cur { border-color: var(--sel); background: var(--sel); } .legend i.lg-wait { border-color: #8a929b; background: #8a929b; } .legend i.lg-err { border-color: var(--err); background: var(--err); }
 .legend > span { display: inline-flex; align-items: center; margin-left: 8px; font-size: 13px; }
 .band .btn { height: 28px; background: #fff; color: var(--ink); }
+
+/* ---- R–T 측정 (이 위치 측정) ---- */
+.mwrap { flex: 1; min-width: 0; min-height: 0; gap: 8px; }
+.msub { height: 36px; flex: none; display: flex; align-items: center; gap: 10px; }
+.msub .seg { display: flex; } .msub .seg .btn { border-radius: 0; margin-left: -1px; height: 34px; font-weight: 700; } .msub .seg .btn:first-child { border-radius: 4px 0 0 4px; margin: 0; } .msub .seg .btn:last-child { border-radius: 0 4px 4px 0; }
+.mrow { display: flex; gap: 10px; flex: 1; min-height: 0; }
+#rt-left { width: 1216px; flex: none; min-height: 0; } #rt-right { width: 640px; flex: none; min-height: 0; }
+#rt-left .gbox { padding: 4px 6px; min-height: 0; display: flex; } #gb-rt { flex: 470 1 0; } #gb-tt { flex: 330 1 0; }
+.gsvg { width: 100%; height: 100%; display: block; font-family: "맑은 고딕", "Malgun Gothic", sans-serif; }
+#rt-cond { flex: 1; min-height: 0; overflow: auto; }
+.rtgrid { display: grid; grid-template-columns: 140px 1fr; gap: 5px 8px; align-items: center; margin: 4px 0 8px; }
+.rtgrid input[type=number] { width: 100px; } .rtgrid input[type=text] { width: 190px; } .rtgrid input.wide { width: 330px; }
+.fld { display: inline-flex; align-items: center; gap: 6px; } .fld .u { font-size: 12px; color: var(--ink2); white-space: nowrap; }
+.gtitle { font-weight: 700; cursor: pointer; padding: 4px 0; border-bottom: 1px solid var(--line); margin-top: 4px; }
+.rtbig { display: grid; grid-template-columns: 1fr 1.3fr 1.1fr; gap: 6px; margin: 6px 0; } .rtbig .k { font-size: 12px; color: var(--ink2); } .rtbig .v { font-size: 22px; font-weight: 700; white-space: nowrap; }
+.jrow { align-items: flex-start; } .zpad .btn { width: 56px; padding: 0; } .padc { display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--ink3); }
+#rt-stat .btn.grow { flex: 1; }

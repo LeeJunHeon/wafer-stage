@@ -74,7 +74,8 @@ class ConditionsTest(unittest.TestCase):
 
     def test_steps_are_the_seven_only(self):
         import conditions as c
-        self.assertEqual(set(c.STEP_TYPES), {"move_sample", "contact", "cooler", "heat", "wait", "confirm", "z_top"})
+        # 앞의 일곱 가지 + R–T 측정(rt). 온도 · 계측기 · 접촉 판정 단계는 없다(R–T 는 rt.py 가 한 덩어리로 한다)
+        self.assertEqual(set(c.STEP_TYPES), {"move_sample", "contact", "cooler", "heat", "wait", "confirm", "z_top", "rt"})
         for old in ("repeat", "measure", "wait_temp", "cool", "relay", "z", "log"):
             self.assertIsNotNone(c.validate_step({"type": old}, self.VALS, 45))
 

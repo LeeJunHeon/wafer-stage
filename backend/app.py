@@ -1338,8 +1338,8 @@ class App:
             raise AppError("접촉 높이 필요 · 먼저 저장")
         self._contact_tool_ok()
         chk = self._over_sample_check(a["no"]) if a.get("no") is not None else None
-        if chk is None:
-            raise AppError("샘플을 고른 뒤")
+        if chk is None and not a.get("free"):
+            raise AppError("샘플을 고른 뒤")                  # free: 측정 탭 '이 위치 측정' - 사람이 조그로 핀을 맞춘 자리에서 내림
         self._begin("접촉 높이로 내리기")
         try:
             st = self.motion.descend_contact(float(z), float(self.cfg.get("approach_mm")), gen=gen, check_xy=chk)
@@ -1837,6 +1837,8 @@ class App:
         return {}
 
     def c_open_folder(self, a, gen):
+        if a.get("measure"):
+            a = {"path": os.path.join(paths.DATA_DIR, "measure", os.path.basename(a["measure"]))}
         d = a.get("path") or (os.path.join(paths.RUNS_DIR, os.path.basename(a["name"])) if a.get("name") else (self.run.run_dir if self.run else paths.RUNS_DIR))
         if os.name == "nt" and not os.environ.get("WAFER2_NO_SHELL"):
             os.startfile(d)                               # noqa: S606
