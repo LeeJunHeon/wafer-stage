@@ -85,6 +85,23 @@ def resistance(volt, current):
     return abs(float(volt)) / abs(i)
 
 
+LIMIT_FRAC = 0.106                     # 매뉴얼: 고정 범위에서 전압 소스의 전류 한도는 측정 범위의 10.6 % 이상이어야 한다
+
+
+def limit_ok(rng, ilim):
+    return float(ilim) >= LIMIT_FRAC * float(rng) * (1 - 1e-9)
+
+
+def clamp_range(rng, ilim):
+    """한도 규칙을 어기는 큰 범위는 규칙을 지키는 가장 큰 범위로 낮춘다. 그러면 한도 전류를 못 덮는 경우(한도 > 범위)는 그대로 둔다."""
+    r = float(rng)
+    if limit_ok(r, ilim):
+        return r
+    ok = [x for x in RANGES if x <= r * (1 + 1e-9) and limit_ok(x, ilim)]
+    best = max(ok) if ok else RANGES[0]
+    return best if best >= float(ilim) * 0.999 else r
+
+
 def next_range(cur_range, current, up=1.05, down=0.95):
     """전류 범위 단계 변경(기존 프로그램 하위 VI 방식).
 
@@ -105,6 +122,25 @@ def next_range(cur_range, current, up=1.05, down=0.95):
         while idx > 0 and a < down * RANGES[idx - 1]:
             idx -= 1
     return RANGES[idx]
+
+
+def visa_kind(addr):
+    """VISA 주소의 연결 방식. GPIB0::18::INSTR → GPIB · USB0::… → USB · TCPIP… → LAN · ASRL… → 시리얼 · 그 밖 → ""."""
+    a = str(addr or "").strip().upper()
+    for pre, name in (("GPIB", "GPIB"), ("USB", "USB"), ("TCPIP", "LAN"), ("ASRL", "시리얼")):
+        if a.startswith(pre):
+            return name
+    return ""
+
+
+def is_open_circuit(current, floor_a):
+    """전류 크기가 하한(기본 1 nA) 아래면 연결이 없는 것(열린 회로). 범위 넘음(None)은 열린 회로가 아니다."""
+    if current is None:
+        return False
+    try:
+        return abs(float(current)) < float(floor_a)
+    except (TypeError, ValueError):
+        return False
 
 
 def parse_float(txt):
@@ -206,7 +242,9 @@ class K2110(_Dev):
 
 
 class K2450(_Dev):
-    """Keithley 2450 - 전압 소스, 전류 측정. 전류 한도(ILIMit)를 항상 건다."""
+    """Keithley 2450 - 전압 소스, 전류 측정. 전류 한도(ILIMit)를 항상 건다. 실제 배선은 뒷면 3축 단자(FORCE HI/LO · SENSE HI/LO) = REAR."""
+
+    out_state = False
 
     def check_scpi(self):  # noqa: D102 - K2450
         """명령 세트 확인. SCPI 가 아니면 (False, 안내)."""
@@ -221,8 +259,14 @@ class K2450(_Dev):
     def configure(self, p):
         """기존 프로그램 순서: 초기화 → 단자 → 원격 감지 → 전압 소스(수준) → 전류 측정(자동 범위 끔 · 시작 범위) → 적분 → 필터 → 자동 영점.
         출력 켬은 예비 냉각이 끝난 뒤(output)."""
-        self.write("*RST")
-        self.write(":ROUT:TERM %s" % ("REAR" if str(p.get("terminal", "FRONT")).upper().startswith("R") else "FRON"))
+        if self.out_state:                                  # 출력이 켜진 채로는 단자를 바꾸지 않는다(매뉴얼: 바꾸면 출력이 꺼짐) - 먼저 끈다
+            self.output(False)
+        self.write("*RST")                                  # 출력도 꺼진다
+        want = "REAR" if str(p.get("terminal", "REAR")).upper().startswith("R") else "FRON"
+        self.write(":ROUT:TERM %s" % want)                  # 단자는 *RST 바로 뒤, 다른 설정보다 먼저
+        got = self.terminal()
+        if got != want:
+            raise VisaError("K2450 단자 설정 실패 · %s 로 읽힘" % (got or "?"))
         self.write(":SENS:CURR:RSEN %s" % ("ON" if p.get("four_wire", True) else "OFF"))
         self.write(":SOUR:FUNC VOLT")
         self.write(":SOUR:VOLT:ILIM %.6g" % float(p["ilim_a"]))
@@ -231,7 +275,7 @@ class K2450(_Dev):
         auto = p.get("range_mode") == "auto"
         self.write(":SENS:CURR:RANG:AUTO %s" % ("ON" if auto else "OFF"))
         if not auto:
-            self.write(":SENS:CURR:RANG %.6g" % float(p["start_range"]))
+            self.write(":SENS:CURR:RANG %.6g" % clamp_range(float(p["start_range"]), float(p["ilim_a"])))
         self.write(":SENS:CURR:NPLC %.6g" % float(p["nplc"]))
         self.write(":SENS:CURR:AVER:TCON REP")
         self.write(":SENS:CURR:AVER:COUN %d" % int(p["filter_n"]))
@@ -241,11 +285,20 @@ class K2450(_Dev):
         if errs:
             raise VisaError("K2450 설정 오류 · " + errs[0][:40])
 
+    def terminal(self):
+        """:ROUT:TERM? 로 지금 단자. "REAR" | "FRON" | "" (읽지 못함)."""
+        try:
+            t = self.query(":ROUT:TERM?").strip().upper()
+        except VisaError:
+            return ""
+        return "REAR" if t.startswith("REAR") else "FRON" if t.startswith("FRON") else ""
+
     def set_range(self, r):
         self.write(":SENS:CURR:RANG %.6g" % float(r))
 
     def output(self, on):
         self.write(":OUTP %s" % ("ON" if on else "OFF"))
+        self.out_state = bool(on)
 
     def read(self):
         """(전류 A | None, 전류 한도 걸림 bool)."""
@@ -258,4 +311,4 @@ class K2450(_Dev):
         return cur, trip
 
 
-__all__ = ["K2110", "K2450", "VisaError", "VisaUnavailable", "list_resources", "resistance", "next_range", "NO_DRIVER", "RANGES"]
+__all__ = ["K2110", "K2450", "VisaError", "VisaUnavailable", "list_resources", "resistance", "is_open_circuit", "visa_kind", "next_range", "clamp_range", "limit_ok", "NO_DRIVER", "RANGES"]

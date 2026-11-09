@@ -1608,7 +1608,7 @@ class App:
                         info[nm] = {"ok": False, "addr": addr, "err": why}
                         continue
                 setattr(self, nm, d)
-                info[nm] = {"ok": True, "addr": addr, "idn": idn}
+                info[nm] = {"ok": True, "addr": addr, "idn": idn, "kind": inst.visa_kind(addr)}
             except inst.VisaUnavailable as e:
                 info[nm] = {"ok": False, "addr": addr, "err": str(e)}
                 info["msg"] = str(e)
@@ -1634,7 +1634,7 @@ class App:
         if not (self.k2110 and self.k2110.is_open and self.k2450 and self.k2450.is_open):
             self.c_inst_connect({}, gen)
         p = rt_mod.params(self.cfg)
-        res = {"k2110": self.k2110.idn_text, "k2450": self.k2450.idn_text, "temp": None, "R": None, "I": None, "err": ""}
+        res = {"k2110": self.k2110.idn_text, "k2450": self.k2450.idn_text, "k2110_kind": inst.visa_kind(self.k2110.addr), "k2450_kind": inst.visa_kind(self.k2450.addr), "temp": None, "R": None, "I": None, "err": ""}
         self._begin("연결 시험")
         try:
             try:
@@ -1642,6 +1642,7 @@ class App:
                 res["temp"] = self.k2110.read_temp()
                 self.k2450.configure({"terminal": p["terminal"], "four_wire": p["four_wire"], "volt": p["volt"], "ilim_a": p["ilim_a"],
                                       "range_mode": p["range_mode"], "start_range": p["start_range"], "nplc": p["nplc"], "filter_n": p["filter_n"]})
+                res["terminal"] = self.k2450.terminal()
                 self.k2450.output(True)
                 try:
                     i, trip = self.k2450.read()
@@ -1650,6 +1651,7 @@ class App:
                         i, trip = self.k2450.read()
                     res["I"] = i
                     res["R"] = inst.resistance(p["volt"], i)
+                    res["open"] = inst.is_open_circuit(i, p["open_a"])
                 finally:
                     self.k2450.output(False)
             except inst.VisaError as e:
@@ -1659,6 +1661,8 @@ class App:
         self.inst_info["test"] = dict(res, t=time.strftime("%H:%M:%S"))
         if res["err"]:
             raise AppError(res["err"])
+        if res.get("open"):
+            raise AppError("연결 없음 · 핀 접촉 · 앞/뒤 단자 설정 확인")
         if res["temp"] is None:
             raise AppError("온도 값 없음 · 열전대 확인")
         return res

@@ -80,13 +80,8 @@ function readout(f, last, lines, col, all) {
 function drawRT(svg, s) {
   const W = 1200, H = 470, m = { l: 78, r: 190, t: 36, b: 52 };
   const pts = T.pts.filter((p) => p.T != null && p.R != null && (p.ph === "가열" || p.ph === "냉각"));
-  let x0 = 25, x1 = 90, y0 = 1e2, y1 = 1e6;
-  if (pts.length) {
-    const tx = pts.map((p) => p.T), ry = pts.map((p) => p.R);
-    x0 = Math.min(x0, Math.floor(Math.min(...tx) / 5) * 5); x1 = Math.max(x1, Math.ceil(Math.max(...tx) / 5) * 5);
-    y0 = Math.min(y0, Math.pow(10, Math.floor(Math.log10(Math.min(...ry))))); y1 = Math.max(y1, Math.pow(10, Math.ceil(Math.log10(Math.max(...ry)))));
-  }
-  const f = frame(svg, W, H, m, [x0, x1], [y0, y1], { ylog: true, xlabel: "Temp [°C]", ylabel: "Resistance [Ohm]", xticks: 13 });
+  const rg = UI.rtRange(pts.map((p) => p.T), pts.map((p) => p.R));
+  const f = frame(svg, W, H, m, rg.x, rg.y, { ylog: true, xlabel: "Temp [°C]", ylabel: "Resistance [Ohm]", xticks: 13 });
   const cyc = Math.max(1, ...pts.map((p) => p.cy));
   const groups = {};
   pts.forEach((p) => { const k = p.ph + p.cy; (groups[k] = groups[k] || { ph: p.ph, cy: p.cy, a: [] }).a.push([f.px(p.T), f.py(p.R)]); });
@@ -219,18 +214,20 @@ function renderHereRight(s) {
   const L = lock, cs = rtEdit(s);
   const rows = [
     group("temp", "온도", ...kvRow("예비 냉각 목표", numField(s, "precool_c", "°C", 0.5, L)), ...kvRow("도달 뒤 유지", numField(s, "hold_s", "s", 1, L)),
-      ...kvRow("max temp", numField(s, "max_temp", "°C", 1, L)), ...kvRow("temp to break", numField(s, "break_temp", "°C", 0.5, L)), ...kvRow("#repeat", numField(s, "repeat", "회", 1, L)),
+      ...kvRow("최고 온도 (max temp)", numField(s, "max_temp", "°C", 1, L)), ...kvRow("냉각 끝 온도 (temp to break)", numField(s, "break_temp", "°C", 0.5, L)), ...kvRow("반복 횟수 (#repeat)", numField(s, "repeat", "회", 1, L)),
       ...kvRow("가열 속도", numField(s, "heat_rate", "°C/분 · 0 최대", 0.5, L)), ...kvRow("냉각 속도", numField(s, "cool_rate", "°C/분 · 0 최대", 0.5, L))),
     group("ctl", "온도 제어 · 안전", ...kvRow("띠", numField(s, "band_c", "°C", 0.05, L)), ...kvRow("최소 켜짐", numField(s, "min_on_s", "s", 0.5, L)), ...kvRow("최소 꺼짐", numField(s, "min_off_s", "s", 0.5, L)),
       ...kvRow("비상 차단", numField(s, "emergency_c", "°C · 비움 = max+10", 1, L, true)), ...kvRow("단계 시간 한도", numField(s, "phase_limit_s", "s", 60, L)),
       ...kvRow("온도 갱신 한도", numField(s, "stale_s", "s", 0.5, L)), ...kvRow("최소 기록 간격", numField(s, "min_interval_s", "s", 0.1, L))),
-    group("k", "K2450 · 열전대", ...kvRow("Set voltage", numField(s, "volt", "V", 0.1, L)), ...kvRow("전류 한도", numField(s, "ilim_a", "A", 0.001, L)),
-      ...kvRow("필터 개수", numField(s, "filter_n", "", 1, L)), ...kvRow("NPLC", numField(s, "nplc", "", 0.01, L)),
+    group("k", "K2450 · 열전대", ...kvRow("전압 (Set voltage)", numField(s, "volt", "V", 0.1, L)), ...kvRow("전류 한도", numField(s, "ilim_a", "A", 0.001, L)),
+      ...kvRow("평균 횟수 (Number of Filter Readings)", numField(s, "filter_n", "", 1, L)), ...kvRow("NPLC", numField(s, "nplc", "", 0.01, L)),
       ...kvRow("범위 방식", selField(s, "range_mode", [["step", "단계(기존)"], ["auto", "장비 자동"]], L)), ...kvRow("시작 범위", numField(s, "start_range", "A", 0.001, L)),
-      ...kvRow("4단자 · 단자", chkField(s, "four_wire", "4P", L), selField(s, "terminal", [["FRONT", "FRONT"], ["REAR", "REAR"]], L)), ...kvRow("열전대", selField(s, "tc_type", ["K", "J", "T", "E", "N", "R", "S", "B"].map((v) => [v, v]), L), h("span", { class: "sub", text: "기준점 내부" }))),
+      ...kvRow("4단자 (4P)", chkField(s, "four_wire", "켬", L)), ...kvRow("단자", selField(s, "terminal", [["REAR", "뒷면 (REAR)"], ["FRONT", "앞면 (FRONT)"]], L)), ...kvRow("열린 회로 하한", numField(s, "open_a", "A", 1e-9, L)), ...kvRow("열전대", selField(s, "tc_type", ["K", "J", "T", "E", "N", "R", "S", "B"].map((v) => [v, v]), L), h("span", { class: "sub", text: "기준점 내부" }))),
     group("misc", "쿨러 · 저장", ...kvRow("쿨러", selField(s, "cooler_target", [["sample", "샘플 구역"], ["all", "전부"], ["custom", "직접"]], L)),
       ...(cs.cooler_target === "custom" ? kvRow("릴레이 번호", txtField(s, "cooler_custom", L)) : []),
-      ...kvRow("File path", txtField(s, "file_path", L, "wide")), ...kvRow("File name", txtField(s, "file_name", L)),
+      ...kvRow("기본 폴더 (File path)", txtField(s, "file_path", L, "wide")), ...kvRow("날짜 폴더 자동", chkField(s, "date_folder", "연도 · YYYYMMDD 를 붙임", L)), ...kvRow("묶음 폴더", txtField(s, "batch_folder", L)),
+      ...kvRow("최종 경로", h("span", { class: "sub mono nasprev", id: "rt-nas-prev", text: UI.nasPath(cs.file_path, cs.date_folder, cs.batch_folder) || "PC 에만 저장" })),
+      ...kvRow("파일 이름 (File name)", txtField(s, "file_name", L)),
       ...kvRow("끝나면", chkField(s, "cooler_off_end", "쿨러 끔", L), chkField(s, "z_top_end", "Z 맨 위", L))),
   ];
   const cond = h("div", { class: "card grow scroll", id: "rt-cond" }, h("div", { class: "row" }, h("h3", { class: "grow", text: "측정 조건" }), btn("기본값으로", "rt-defaults", null, "sm", "측정 조건을 기본값(기존 프로그램 값)으로 되돌립니다. 장비 주소는 그대로입니다.", lock)), ...rows);

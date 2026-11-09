@@ -48,6 +48,8 @@ class Lab:
         self.dev = {}
         self.read_dt = 0.25            # 읽기 한 번에 걸리는 장비 시간(s)
         self.tripped = False
+        self.cable = "REAR"            # 케이블은 K2450 뒷면 단자에 꽂혀 있다 - 앞면 단자 설정이면 열린 회로
+        self.term = "FRON"             # K2450 현재 단자 설정(*RST 뒤 앞면)
 
     # ---- 물리 ------------------------------------------------------
     def _step(self):
@@ -92,6 +94,8 @@ class Lab:
         """(전류 문자열, 한도 걸림). 범위 넘으면(수동 범위) 9.91E37 · 한도 걸리면 한도 전류."""
         r = self.resistance()
         i = self.volt / r if self.out_on else 0.0
+        if self.term != self.cable[:4]:
+            i = 2.0e-12 if self.out_on else 0.0           # 열린 회로: 누설 전류만
         self.tripped = False
         if self.fault["ilim"] and self.out_on:
             self.tripped = True
@@ -154,10 +158,14 @@ class _Res:
             s.update(range=1e-3, auto=False, avg_on=False, avg_n=1, terminal="FRON", rsen=False)
             lab.out_on = False
             lab.ilim, lab.volt = 0.1, 0.0
+            lab.term = "FRON"
         elif u.startswith(":ROUT:TERM"):
             arg = u.split("TERM", 1)[1]
             if arg.startswith(("FRON", "REAR")):
                 s["terminal"] = arg[:4]
+                if lab.out_on:                              # 매뉴얼: 출력이 켜진 채 단자를 바꾸면 출력이 꺼진다
+                    lab.out_on = False
+                lab.term = arg[:4]
             else:
                 self.err.append("bad terminals")
         elif u.startswith(":SENS:CURR:RSEN"):
@@ -225,6 +233,8 @@ class _Res:
             return lab.read_current(s["range"], s["auto"])
         if self.kind == "2450" and u == ":SOUR:VOLT:ILIM:TRIP?":
             return "1" if lab.tripped else "0"
+        if self.kind == "2450" and u == ":ROUT:TERM?":
+            return s["terminal"] + chr(10)
         if self.kind == "2450" and u == ":OUTP?":
             return "1" if lab.out_on else "0"
         self.err.append("unknown query: " + cmd)
@@ -244,7 +254,7 @@ class FakeRM:
             raise TimeoutError("연결 안 됨")
         if "2110" in addr or addr.startswith("USB"):
             r = _Res(self.lab, "2110", addr)
-        elif addr.startswith("GPIB0::18") or "2450" in addr:
+        elif addr.startswith("GPIB") or "2450" in addr:
             r = _Res(self.lab, "2450", addr)
         else:
             raise ValueError("알 수 없는 주소 %s" % addr)

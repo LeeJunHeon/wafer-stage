@@ -12,7 +12,7 @@ import e2e
 from e2e import case, check, full_setup
 from e2e_cases import after_estop, serial_cmds, recover, start_run, wait_run, follow_band
 
-RT = {"max_temp": 45.0, "break_temp": 30.0, "repeat": 3, "precool_c": 26.0, "cooler_target": "all", "file_path": ""}
+RT = {"max_temp": 45.0, "break_temp": 30.0, "repeat": 3, "precool_c": 26.0, "cooler_target": "all", "file_path": "", "date_folder": False, "volt": 1.0, "ilim_a": 0.01}   # 전압 · 한도는 옛 값(전류 한도 시험용) - 새 기본값은 46번
 FAST = {"sim": {"time_scale": 120.0}}
 
 
@@ -87,24 +87,27 @@ def c31(c):
     check(run["cycle"] == 3 and run["repeat"] == 3, "3회차")
     d = run["dir"]
     names = sorted(os.listdir(d))
-    for n in ("1-1_1.00V_1.dat", "1-1_1.00V_2.dat", "1-1_1.00V_3.dat", "1-1_1.00V_merged.dat", "control.csv", "rt.json"):
+    for n in ("1-1_1.00V_0.dat", "1-1_1.00V_1.dat", "1-1_1.00V_2.dat", "1-1_1.00V_merged.dat", "control.csv", "rt.json"):
         check(n in names, "PC 파일 " + n)
-    c1 = open(os.path.join(d, "1-1_1.00V_1.dat"), encoding="utf-8", newline="").read().split("\r\n")
-    check(c1[0] == "Temp\tResistance" and len(c1) > 50, "머리글 Temp<탭>Resistance · 행 %d" % len(c1))
-    check(all(len(x.split("\t")) == 2 and "E" in x for x in c1[1:] if x), "값 %.7E 두 열")
-    n_cyc = sum(len([x for x in open(os.path.join(d, "1-1_1.00V_%d.dat" % i), encoding="utf-8").read().splitlines()[1:] if x]) for i in (1, 2, 3))
-    n_mrg = len([x for x in open(os.path.join(d, "1-1_1.00V_merged.dat"), encoding="utf-8").read().splitlines()[1:] if x])
+    c1 = open(os.path.join(d, "1-1_1.00V_0.dat"), encoding="utf-8", newline="").read().split("\r\n")
+    check(c1[0] == "Temp   Resistance   " and len(c1) > 50 and c1[-1] == "", "머리글 Temp   Resistance   (공백 3) · 행 %d · 끝 CRLF" % len(c1))
+    import re
+    check(all(re.fullmatch(r"-?\d\.\d{7}E[+-]\d{1,3}\t-?\d\.\d{7}E[+-]\d{1,3}", x) for x in c1[1:] if x), "값 LabVIEW %.7E 두 열(E+1 · E-1)")
+    n_cyc = sum(len([x for x in open(os.path.join(d, "1-1_1.00V_%d.dat" % i), encoding="utf-8").read().splitlines()[1:] if x]) for i in (0, 1, 2))
+    n_mrg = len([x for x in open(os.path.join(d, "1-1_1.00V_merged.dat"), encoding="utf-8").read().splitlines() if x])
+    mf = open(os.path.join(d, "1-1_1.00V_merged.dat"), "rb").read()
+    check(not mf.startswith(b"Temp") and mf[:1].isdigit() or mf[:1] == b"-", "merged 는 머리글 없이 숫자부터")
     check(n_cyc == n_mrg, "합친 파일 행 = 회차 합 (%d / %d)" % (n_mrg, n_cyc))
     ctl = open(os.path.join(d, "control.csv"), encoding="utf-8-sig").read().splitlines()
-    check(ctl[0] == "시각,경과 s,온도,목표 온도,저항,전류,한도 걸림,범위,히트건,쿨러,단계" and len(ctl) > 100, "제어 기록 열 · 행 %d" % len(ctl))
-    check(any(x.split(",")[-1] == "예비 냉각" for x in ctl[1:]) and any(x.split(",")[-1] == "가열" for x in ctl[1:]) and any(x.split(",")[-1] == "냉각" for x in ctl[1:]), "단계 3종 기록")
+    check(ctl[0] == "시각,경과 s,온도,목표 온도,저항,전류,한도 걸림,범위,히트건,쿨러,단계,열린 회로" and len(ctl) > 100, "제어 기록 열 · 행 %d" % len(ctl))
+    check(any(x.split(",")[-2] == "예비 냉각" for x in ctl[1:]) and any(x.split(",")[-2] == "가열" for x in ctl[1:]) and any(x.split(",")[-2] == "냉각" for x in ctl[1:]), "단계 3종 기록")
     check(any(x.split(",")[8] == "1" for x in ctl[1:]) and any(x.split(",")[8] == "0" for x in ctl[1:]), "히트건 켜짐/꺼짐 기록")
     # NAS
     c.pump(0.5)
     nn = sorted(os.listdir(nas)) if os.path.isdir(nas) else []
-    check(nn == sorted(["1-1_1.00V_1.dat", "1-1_1.00V_2.dat", "1-1_1.00V_3.dat", "1-1_1.00V_merged.dat"]), "NAS 에는 기존 파일만 (%s)" % nn)
+    check(nn == sorted(["1-1_1.00V_0.dat", "1-1_1.00V_1.dat", "1-1_1.00V_2.dat", "1-1_1.00V_merged.dat"]), "NAS 에는 기존 파일만 (%s)" % nn)
     check("control.csv" not in nn, "제어 기록은 PC 에만")
-    check(open(os.path.join(nas, "1-1_1.00V_2.dat"), "rb").read() == open(os.path.join(d, "1-1_1.00V_2.dat"), "rb").read(), "NAS 파일 = PC 파일")
+    check(open(os.path.join(nas, "1-1_1.00V_1.dat"), "rb").read() == open(os.path.join(d, "1-1_1.00V_1.dat"), "rb").read(), "NAS 파일 = PC 파일")
     # 끝 상태
     check(not c.state["relays"]["heater_on"], "히트건 꺼짐")
     st = lab(c)
@@ -145,7 +148,7 @@ def c32(c):
     check(any("NAS" in w for w in run["warns"]), "경고 (%s)" % run["warns"])
     check(run["nas"] and run["nas"]["ok"] is False and len(run["nas"]["pending"]) >= 2, "미복사 목록 (%s)" % (run["nas"],))
     pc = sorted(f for f in os.listdir(run["dir"]) if f.endswith(".dat"))
-    check(pc == ["1-1_1.00V_1.dat", "1-1_1.00V_merged.dat"], "PC 에는 다 있다 (%s)" % pc)
+    check(pc == ["1-1_1.00V_0.dat", "1-1_1.00V_merged.dat"], "PC 에는 다 있다 (%s)" % pc)
     ok, r = c.send("rt_nas_retry")
     check(not ok, "경로가 그대로면 다시 복사도 실패 (%s)" % (r,))
     os.remove(blocker)
@@ -155,7 +158,7 @@ def c32(c):
     ok, r = c.send("rt_nas_retry")
     check(ok, "[NAS 로 다시 복사] 성공 (%s)" % (r,))
     nn = sorted(os.listdir(nas))
-    check("1-1_1.00V_1.dat" in nn and "1-1_1.00V_merged_1.dat" in nn and "1-1_1.00V_merged.dat" in nn, "같은 이름은 _1 (%s)" % nn)
+    check("1-1_1.00V_0.dat" in nn and "1-1_1.00V_merged_1.dat" in nn and "1-1_1.00V_merged.dat" in nn, "같은 이름은 _1 (%s)" % nn)
     check(open(os.path.join(nas, "1-1_1.00V_merged.dat")).read() == "남의 파일", "남의 파일은 그대로")
 
 
@@ -355,7 +358,7 @@ def c43(c):
     d = os.path.join(run["dir"], "rt_02")
     check(os.path.isdir(d), "샘플 폴더 rt_02")
     names = sorted(os.listdir(d)) if os.path.isdir(d) else []
-    check("T1-2_1.00V_1.dat" in names and "T1-2_1.00V_merged.dat" in names, "파일 이름 = File name + 샘플 번호 (%s)" % names)
+    check("T1-2_1.00V_0.dat" in names and "T1-2_1.00V_merged.dat" in names, "파일 이름 = File name + 샘플 번호 (%s)" % names)
     check(not c.state["relays"]["heater_on"] and lab(c).get("out") is False, "히트건 · 출력 꺼짐")
     c.pump(1.5)
     check(abs(c.state["stage"]["z"]) < 0.06, "Z 맨 위(조건의 마지막 단계)")
@@ -395,7 +398,7 @@ def c44(c):
     check(ok and c.state["settings"]["rt"]["max_temp"] == 70.0, "마지막 값 기억")
     ok, r = c.send("rt_defaults")
     s = c.state["settings"]["rt"]
-    check(ok and s["max_temp"] == 85.0 and s["volt"] == 1.0 and s["heat_rate"] == 0.0 and s["precool_c"] == 24.5 and s["repeat"] == 3, "기본값으로 (%s)" % s["max_temp"])
+    check(ok and s["max_temp"] == 85.0 and s["volt"] == 0.1 and s["ilim_a"] == 0.1 and s["terminal"] == "REAR" and s["heat_rate"] == 0.0 and s["precool_c"] == 24.5 and s["repeat"] == 1, "기본값으로 (%s)" % s["max_temp"])
     check(s["k2450_addr"] == "GPIB0::18::INSTR", "장비 주소는 그대로")
 
 
@@ -419,7 +422,75 @@ def c45(c):
     safe_off(c, "추종")
 
 
+@case("46 새 기본값(0.1 V · 한도 0.1 A · 뒷면 단자) · 파일 형식 · 열린 회로 감지")
+def c46(c):
+    c.send("settings_save", patch={"rt.volt": 0.1, "rt.ilim_a": 0.1, "rt.repeat": 1, "rt.terminal": "REAR", "rt.file_name": "5-1-ncd(380)_"})
+    at_contact(c)
+    ok, r = c.send("inst_test")
+    check(ok and r.get("terminal") == "REAR" and not r.get("open") and r.get("I") and r["I"] > 1e-7, "연결 시험 · 단자 뒷면 · 전류 있음 (%s)" % (r,))
+    ok, r = c.send("rt_start")
+    check(ok, "시작 (%s)" % (r,))
+    check(wait_rt(c, 240), "끝")
+    run = c.state["rt"]["run"]
+    check(run["state"] == "done" and not any("연결 없음" in w for w in run["warns"]), "완료 · 열린 회로 경고 없음 (%s %s)" % (run["state"], run["warns"]))
+    d = run["dir"]
+    names = sorted(os.listdir(d))
+    check("5-1-ncd(380)_0.10V_0.dat" in names and "5-1-ncd(380)_0.10V_merged.dat" in names and not any(n.endswith("_1.dat") for n in names), "파일 이름 5-1-ncd(380)_0.10V_0.dat · merged (%s)" % names)
+    raw = open(os.path.join(d, "5-1-ncd(380)_0.10V_0.dat"), "rb").read()
+    mrg = open(os.path.join(d, "5-1-ncd(380)_0.10V_merged.dat"), "rb").read()
+    check(raw.startswith(b"Temp   Resistance   \r\n") and raw.endswith(b"\r\n"), "회차 파일 머리글 바이트 · 끝 CRLF")
+    check(mrg.split(b"\r\n")[:2] == raw.split(b"\r\n")[1:3], "merged = 머리글 없이 같은 줄")
+    safe_off(c, "새 기본값")
+    # 앞면 단자 설정 = 케이블 없음 → 열린 회로
+    c.send("settings_save", patch={"rt.terminal": "FRONT"})
+    at_contact(c)
+    ok, r = c.send("inst_test")
+    check(not ok and "연결 없음" in str(r), "앞면 설정 연결 시험 = 연결 없음 안내 (%s)" % (r,))
+    ok, r = c.send("rt_start")
+    check(ok, "시작 (%s)" % (r,))
+    check(wait_rt(c, 240), "끝")
+    run = c.state["rt"]["run"]
+    check(run["state"] == "done" and any("연결 없음" in w for w in run["warns"]), "측정은 계속 · 경고 (%s)" % (run["warns"],))
+    ctl = open(os.path.join(run["dir"], "control.csv"), encoding="utf-8-sig").read().splitlines()
+    check(ctl[0].endswith("열린 회로") and any(x.endswith(",1") for x in ctl[1:]), "control.csv 에 열린 회로 표시")
+    safe_off(c, "열린 회로")
+
+
+@case("47 NAS 저장 경로 조합(날짜 자동 · 묶음) · 장비 주소 목록(GPIB · USB) · 연결 방식")
+def c47(c):
+    ok, r = c.send("inst_list")
+    items = (r or {}).get("items", []) if ok else []
+    check(ok and any(i.startswith("GPIB") for i in items) and any(i.startswith("USB") for i in items), "주소 목록에 GPIB · USB (%s)" % (items,))
+    ok, r = c.send("inst_connect")
+    check(ok, "연결 (%s)" % (r,))
+    ink = c.state["rt"]["inst"]
+    check(ink["k2450"].get("kind") == "GPIB" and ink["k2110"].get("kind") == "USB", "연결 방식 표시 (%s / %s)" % (ink["k2450"].get("kind"), ink["k2110"].get("kind")))
+    ok, r = c.send("inst_test")
+    check(ok and r.get("k2450_kind") == "GPIB" and r.get("k2110_kind") == "USB", "연결 시험 결과에 연결 방식 (%s %s)" % (r.get("k2450_kind"), r.get("k2110_kind")))
+    ok, r = c.send("settings_save", patch={"rt.k2450_addr": "GPIB0::6::INSTR"})            # 주소 직접 입력(목록에 없는 값도 저장 · 연결)
+    check(ok, "주소 직접 입력 저장 (%s)" % (r,))
+    ok, r = c.send("inst_connect")
+    check(ok and c.state["rt"]["inst"]["k2450"]["addr"] == "GPIB0::6::INSTR", "직접 입력한 주소로 연결")
+    c.send("settings_save", patch={"rt.k2450_addr": "GPIB0::18::INSTR"})
+    base = os.path.join(c.tmp, "nas47", "data")
+    for auto, batch, label in ((True, "6", "날짜 켬 · 묶음 6"), (True, "", "날짜 켬 · 묶음 없음"), (False, "", "날짜 끔 · 묶음 없음"), (False, "6", "날짜 끔 · 묶음 6")):
+        c.send("settings_save", patch={"rt.file_path": base, "rt.date_folder": auto, "rt.batch_folder": batch, "rt.repeat": 1, "rt.max_temp": 36.0, "rt.break_temp": 30.0})
+        at_contact(c)
+        ok, r = c.send("rt_start")
+        check(ok, label + " 시작 (%s)" % (r,))
+        check(wait_rt(c, 240), label + " 끝")
+        run = c.state["rt"]["run"]
+        parts = [time.strftime("%Y"), time.strftime("%Y%m%d")] if auto else []
+        if batch:
+            parts.append(batch)
+        want = os.path.join(base, *parts)
+        check(run["state"] == "done" and run["nas"] and os.path.normcase(run["nas"]["dir"]) == os.path.normcase(want), label + " · NAS 폴더 %s" % (run["nas"] and run["nas"]["dir"],))
+        check(os.path.isdir(want) and any(n.endswith("_merged.dat") for n in os.listdir(want)), label + " · NAS 에 파일")
+        check(os.path.join("data_v2", "measure") in run["dir"] or os.sep + "measure" + os.sep in run["dir"], label + " · PC 폴더는 그대로 (%s)" % run["dir"])
+        safe_off(c, label)
+
+
 # 케이스별 설정 패치: 오류 시나리오는 단계가 길게(시간 배율 10), 나머지는 빠르게(120)
 for _n, _fn in list(e2e.CASES.items()):
-    if _n[:2].isdigit() and 31 <= int(_n[:2]) <= 45 and not hasattr(_fn, "patch"):
+    if _n[:2].isdigit() and 31 <= int(_n[:2]) <= 47 and not hasattr(_fn, "patch"):
         _fn.patch = patch(sim={"time_scale": 10.0 if int(_n[:2]) in (33, 34, 35, 36) else 20.0 if int(_n[:2]) == 31 else 120.0})

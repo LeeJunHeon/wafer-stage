@@ -269,17 +269,20 @@ function renderPanel(s) {
       h("span", { class: "grow", text: i + 1 === hn ? "히트건" : "쿨러" }),
       btn("2 s 켜 보기", "su-rl-test", { n: i + 1 }, "sm", "이 릴레이를 2 초만 켰다 끕니다.", lock || (nostage ? "스테이지 연결 안 됨" : "") || (r.enabled ? "" : "사용 안 함") || (s.stage && s.stage.locked ? "비상정지 잠금" : ""))));
     const ik = (s.rt && s.rt.inst) || {}, rts = st.rt;
-    const addrSel = (key, val) => { const opts = Array.from(new Set([val, ...(S.instItems || [])])); return h("select", { id: "ia-" + key, onchange: (e) => send("settings_save", { patch: { ["rt." + key]: e.target.value } }) }, opts.map((v) => h("option", { value: v, text: v, selected: v === val }))); };
-    const devLine = (k, d) => h("div", { class: "kv" }, h("span", { text: k }), h("span", { class: d && d.ok ? "chip ok" : "chip no", text: d ? (d.ok ? "연결 · " + (d.idn || "").split(",").slice(0, 2).join(" ") : d.err) : "연결 안 됨" }));
+    /* 주소: 목록(pyvisa 가 찾은 GPIB · USB 전부)에서 고르거나 직접 입력 */
+    const addrSel = (key, val) => h("span", { class: "row grow" }, h("input", { type: "text", class: "grow mono", id: "ia-" + key, list: "ia-list", value: val || "", spellcheck: "false", disabled: !!lock,
+      onchange: async (e) => { const r = await send("settings_save", { patch: { ["rt." + key]: e.target.value.trim() } }); if (!r.ok) e.target.value = val || ""; } }),
+      h("span", { class: "chip", text: addrKind(val) || "?" }));
+    const devLine = (k, d) => h("div", { class: "kv" }, h("span", { text: k }), h("span", { class: d && d.ok ? "chip ok" : "chip no", text: d ? (d.ok ? "연결 · " + (d.kind ? d.kind + " · " : "") + (d.idn || "").split(",").slice(0, 2).join(" ") : d.err) : "연결 안 됨" }));
     const tst = ik.test;
-    kids.push(card("측정 장비", h("div", { class: "sub", text: "K2110(열전대 온도) · K2450(전압 걸고 전류 측정). VISA 주소를 목록에서 고릅니다." }),
+    kids.push(card("측정 장비", h("datalist", { id: "ia-list" }, ...(S.instItems || []).map((v) => h("option", { value: v, label: addrKind(v) }))), h("div", { class: "sub", text: "K2110(열전대 온도) · K2450(전압 걸고 전류 측정). VISA 주소를 목록에서 고릅니다." }),
       ik.msg ? h("div", { class: "why", text: ik.msg }) : null,
       h("div", { class: "kv" }, h("span", { text: "K2110" }), addrSel("k2110_addr", rts.k2110_addr)),
       h("div", { class: "kv" }, h("span", { text: "K2450" }), addrSel("k2450_addr", rts.k2450_addr)),
       h("div", { class: "row" }, btn("목록 새로고침", "su-inst-list", null, "sm", "연결된 VISA 장비 주소를 다시 읽습니다."), btn("연결 시험", "su-inst-test", null, "primary", "두 장비에 연결해 장비 이름 · 온도 1회 · 저항 1회를 잽니다. 저항 1회를 잴 때만 출력을 짧게 켜고 바로 끕니다.", lock || (s.camera.busy ? s.camera.busy + " 중" : "")),
         btn("연결 끊기", "su-inst-off", null, "sm", "두 장비 연결을 닫습니다.", lock || (ik.k2110 || ik.k2450 ? "" : "연결 안 됨"))),
       devLine("K2110", ik.k2110), devLine("K2450", ik.k2450),
-      tst ? h("div", { class: "sub", text: "시험 " + tst.t + " · 온도 " + (tst.temp == null ? "값 없음" : f1(tst.temp, 1) + " °C") + " · 저항 " + (tst.R == null ? "—" : Number(tst.R).toExponential(3) + " Ω") + " · 전류 " + (tst.I == null ? "—" : Number(tst.I).toExponential(3) + " A") + (tst.err ? " · " + tst.err : "") }) : null));
+      tst ? h("div", { class: "sub", text: "시험 " + tst.t + " · 온도 " + (tst.temp == null ? "값 없음" : f1(tst.temp, 1) + " °C") + " · 저항 " + (tst.R == null ? "—" : Number(tst.R).toExponential(3) + " Ω") + " · 전류 " + (tst.I == null ? "—" : Number(tst.I).toExponential(3) + " A") + (tst.k2450_kind ? " · K2450 " + tst.k2450_kind : "") + (tst.k2110_kind ? " · K2110 " + tst.k2110_kind : "") + (tst.terminal ? " · 단자 " + (tst.terminal === "REAR" ? "뒷면" : "앞면") : "") + (tst.open ? " · 연결 없음 · 핀 접촉 · 앞/뒤 단자 설정 확인" : "") + (tst.err ? " · " + tst.err : "") }) : null));
     kids.push(card("릴레이", h("div", { class: "sub", text: "히트건 R" + hn + " · 쿨러 R1–R9. 쓰는 릴레이만 켜 둡니다." }), ...rows,
       h("h3", { text: "쿨러 구역 " + zr.rows + "×" + zr.cols }), h("div", { class: "zgrid" }, ...zcells),
       h("div", { class: "row" }, btn("저장", "su-save-dev", null, "primary", "", lock))));
@@ -327,6 +330,7 @@ UI.acts["su-ztop"] = () => send("z_top");
 UI.acts["su-ct-goto"] = () => send("goto_sample", { no: S.ctNo });
 UI.acts["su-ct-save"] = async () => { const r = await send("contact_save", { no: S.ctNo }); if (r.ok) toast("접촉 높이 저장 · Z " + r.res.z + " mm"); };
 UI.acts["su-ct-try"] = async () => { const r = await send("contact_try", { no: S.ctNo }); if (r.ok) toast("접촉 높이까지 내림"); };
+const addrKind = (a) => { a = String(a || "").toUpperCase(); return a.startsWith("GPIB") ? "GPIB" : a.startsWith("USB") ? "USB" : a.startsWith("TCPIP") ? "LAN" : a.startsWith("ASRL") ? "시리얼" : ""; };
 UI.acts["su-inst-list"] = async () => { const r = await send("inst_list"); if (r.ok) { S.instItems = r.res.items || []; S.instMsg = r.res.msg || ""; S.rightSig = ""; render(); } };
 UI.acts["su-inst-test"] = async () => { const r = await send("inst_test"); if (r.ok) toast("연결 시험 · " + (r.res.temp != null ? f1(r.res.temp, 1) + " °C" : "") + " · " + (r.res.R != null ? Number(r.res.R).toExponential(2) + " Ω" : "")); };
 UI.acts["su-inst-off"] = () => send("inst_disconnect");

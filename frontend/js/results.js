@@ -18,7 +18,7 @@ function renderRtResults(s) {
   const sig = "rt" + JSON.stringify(list.map((x) => [x.dir, x.status, x.cycle]));
   if (sig === R.sig) return;
   R.sig = sig;
-  const th = ["시각", "File name", "회차", "결과", ""];
+  const th = ["시각", "파일 이름", "회차", "결과", ""];
   const trs = list.map((x) => h("tr", { class: x.status === "오류" || x.status === "error" ? "fail" : x.status === "중지됨" ? "check" : "" },
     h("td", { text: x.time }), h("td", { text: (x.mode === "speed" ? "(속도 측정) " : "") + x.name }), h("td", { text: x.cycle }), h("td", { text: (x.status === "done" ? "완료" : x.status) + (x.message && x.status !== "완료" && x.status !== "done" ? " · " + x.message : "") }),
     h("td", {}, h("div", { class: "row" }, btn("그래프 보기", "r-graph", { dir: x.dir, name: x.name }, "sm", "회차별 R–T 그래프를 봅니다.", x.mode === "speed" || !(x.files || []).length ? "그래프 없음" : ""),
@@ -31,9 +31,8 @@ UI.acts["r-graph"] = async (a) => {
   const j = await (await fetch("/rt_data/" + encodeURIComponent(a.dir))).json();
   const svg = svgEl("svg", { class: "gsvg", id: "g-view" });
   const W = 1140, H = 620, pts = j.cycles.flatMap((c) => c.pts);
-  let x0 = 25, x1 = 90, y0 = 1e2, y1 = 1e6;
-  if (pts.length) { x0 = Math.min(x0, Math.floor(Math.min(...pts.map((p) => p[0])) / 5) * 5); x1 = Math.max(x1, Math.ceil(Math.max(...pts.map((p) => p[0])) / 5) * 5); y0 = Math.min(y0, Math.pow(10, Math.floor(Math.log10(Math.min(...pts.map((p) => p[1])))))); y1 = Math.max(y1, Math.pow(10, Math.ceil(Math.log10(Math.max(...pts.map((p) => p[1])))))); }
-  const f = frame(svg, W, H, { l: 78, r: 190, t: 36, b: 52 }, [x0, x1], [y0, y1], { ylog: true, xlabel: "Temp [°C]", ylabel: "Resistance [Ohm]", xticks: 13 });
+  const rg = UI.rtRange(pts.map((p) => p[0]), pts.map((p) => p[1]));
+  const f = frame(svg, W, H, { l: 78, r: 190, t: 36, b: 52 }, rg.x, rg.y, { ylog: true, xlabel: "Temp [°C]", ylabel: "Resistance [Ohm]", xticks: 13 });
   const n = j.cycles.length;
   j.cycles.forEach((c, i) => {
     const hi = c.pts.reduce((m, p, k) => (p[0] > c.pts[m][0] ? k : m), 0);

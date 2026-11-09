@@ -8,12 +8,13 @@
 NAS 쓰기는 별도 스레드 - 느린 네트워크가 히트건 제어를 붙잡지 않는다.
 
 파일(기존 LabVIEW 프로그램과 같다 - K2110 and K2450 for VO2_20250703.vi 2쪽 · 3쪽):
-  [File name][Set voltage 소수 2자리]V_[회차].dat 와 [File name][Set voltage]V_merged.dat   예) 1-1_1.00V_1.dat
-  머리글 "Temp<탭>Resistance", 값은 %.7E, 이어 쓰기.
+  [File name][Set voltage 소수 2자리]V_[회차].dat 와 [File name][Set voltage]V_merged.dat   예) 1-1_0.10V_0.dat (회차 번호는 0 부터)
+  회차 파일 첫 줄 "Temp   Resistance   "(공백 3 · 탭 없음) + CRLF, merged 는 머리글 없음, 값은 LabVIEW %.7E(E+1 · E-1), 탭 구분 · CRLF.
 """
 
 import copy
 import json
+import ntpath
 import os
 import queue
 import shutil
@@ -30,11 +31,12 @@ from core.stage import StageError
 
 OK, ERROR, STOPPED = "완료", "오류", "중지됨"
 RT_KEYS = ["k2110_addr", "k2450_addr", "precool_c", "hold_s", "max_temp", "break_temp", "repeat", "heat_rate", "cool_rate", "band_c",
-           "min_on_s", "min_off_s", "emergency_c", "phase_limit_s", "min_interval_s", "stale_s", "volt", "ilim_a", "four_wire", "terminal",
-           "filter_n", "nplc", "range_mode", "start_range", "tc_type", "cooler_target", "cooler_custom", "file_path", "file_name",
+           "min_on_s", "min_off_s", "emergency_c", "phase_limit_s", "min_interval_s", "stale_s", "volt", "ilim_a", "four_wire", "terminal", "open_a",
+           "filter_n", "nplc", "range_mode", "start_range", "tc_type", "cooler_target", "cooler_custom", "file_path", "date_folder", "batch_folder", "file_name",
            "cooler_off_end", "z_top_end"]
 Z_TOL_MM = 0.5                         # 핀이 접촉 높이라고 보는 허용 오차
 MAX_POINTS = 200000
+OPEN_N = 5                              # 전류가 하한 아래인 읽기가 이만큼 연속이면 경고(측정은 계속)
 NO_RISE_S = 45.0                      # 히트건을 이만큼 연속으로 켰는데
 NO_RISE_C = 0.5                       # 온도가 이만큼도 안 오르면 오류(열전대가 판에서 떨어졌거나 핀이 들림)
 
@@ -61,18 +63,40 @@ def file_stem(file_name, volt):
 
 
 def cycle_name(file_name, volt, cycle):
-    return "%s%d.dat" % (file_stem(file_name, volt), cycle)
+    """회차 파일 이름. 파일 번호는 0 부터(기존 LabVIEW 파일과 같게) - 화면의 "n회" 는 1 부터이므로 cycle(1 부터) - 1."""
+    return "%s%d.dat" % (file_stem(file_name, volt), int(cycle) - 1)
 
 
 def merged_name(file_name, volt):
     return "%smerged.dat" % file_stem(file_name, volt)
 
 
-HEADER = "Temp\tResistance"
+HEADER = "Temp   Resistance   "          # 회차 파일 첫 줄(Temp 뒤 공백 3 · Resistance 뒤 공백 3 · 탭 없음). merged 파일에는 머리글이 없다.
+
+
+def fmt_e(x):
+    """LabVIEW %.7E 형식: 가수 소수 7자리, 지수는 부호를 붙이고 0 을 채우지 않는다(E+1 · E-1 · E+0)."""
+    m, e = ("%.7E" % float(x)).split("E")
+    return "%sE%s%d" % (m, "-" if int(e) < 0 else "+", abs(int(e)))
 
 
 def data_line(t, r):
-    return "%.7E\t%.7E" % (t, r)
+    return "%s\t%s" % (fmt_e(t), fmt_e(r))
+
+
+def nas_target(base, auto_date, batch, now=None):
+    """NAS 저장 폴더 = 기본 폴더 / [연도 / YYYYMMDD(측정 시작 날짜)] / [묶음 번호]. 기본 폴더가 비면 "" (PC 에만 저장).
+    날짜 자동을 끄면 기본 폴더 그대로(묶음 번호가 있으면 그 아래). 화면 미리보기(UI.nasPath)와 같은 규칙."""
+    base = (base or "").strip()
+    if not base:
+        return ""
+    t = time.localtime(time.time() if now is None else now)
+    parts = []
+    if auto_date:
+        parts += [time.strftime("%Y", t), time.strftime("%Y%m%d", t)]
+    if (batch or "").strip():
+        parts.append(batch.strip())
+    return ntpath.join(base, *parts)
 
 
 def unique_path(path):
@@ -218,13 +242,16 @@ class RTRun:
         self.points = []
         self.last = {"T": None, "R": None, "I": None, "target": None, "trip": False, "range": None}
         self.t0 = None
+        self.nas_dir = ""                                # 이번 측정의 NAS 저장 폴더(시작 때 한 번 정함)
         self.t_end = None
         self.files = []
         self.heat = HeatCtl(self.p["min_on_s"], self.p["min_off_s"], conditions.heater_max_s(app.cfg.values))
         self.cooler_on = []
         self.trips = 0
+        self._low = 0                                   # 전류가 하한 아래인 연속 읽기 수(열린 회로 감지)
+        self.open_warned = False
         self.speed = None
-        self._range = float(self.p["start_range"])
+        self._range = inst.clamp_range(float(self.p["start_range"]), float(self.p["ilim_a"]))
         self._last_valid = None
         self._prev_valid = None
         self.out_on = False
@@ -301,7 +328,8 @@ class RTRun:
         threading.Thread(target=self._guard, name="rt-guard", daemon=True).start()
         try:
             os.makedirs(self.run_dir, exist_ok=True)
-            self.nas = NasCopier((self.p.get("file_path") or "").strip(), self._warn) if self.mode == "rt" and (self.p.get("file_path") or "").strip() else None
+            self.nas_dir = nas_target(self.p.get("file_path"), self.p.get("date_folder"), self.p.get("batch_folder"), self.t0) if self.mode == "rt" else ""
+            self.nas = NasCopier(self.nas_dir, self._warn) if self.nas_dir else None
             if self.nas:
                 self.nas.start()
             self._open_ctl()
@@ -403,6 +431,7 @@ class RTRun:
             new = next((r for r in inst.RANGES if r >= need * 0.999 and r > self._range), inst.RANGES[-1])
         else:
             new = inst.next_range(self._range, I)
+        new = inst.clamp_range(new, float(self.p["ilim_a"]))      # 고정 범위에서 한도 ≥ 범위의 10.6 %
         if abs(new - self._range) > 1e-15:
             self.k2450.set_range(new)
             self._range = new
@@ -465,6 +494,11 @@ class RTRun:
             else:
                 self._on_t0 = self._on_T0 = None
             self._last_valid = self.clock.now()                  # 히트건 · 릴레이 쓰기에 걸린 시간은 온도 갱신 한도에 세지 않는다(장비가 늦는 것만 센다)
+            if self.mode == "rt" and self.out_on and I is not None:
+                self._low = self._low + 1 if abs(I) < float(p["open_a"]) else 0
+                if self._low >= OPEN_N and not self.open_warned:
+                    self.open_warned = True
+                    self._warn("연결 없음 의심 · 전류가 하한 아래 %d 회 연속 · 핀 접촉 · 앞/뒤 단자 설정 확인" % OPEN_N)
             if trip:
                 self.trips += 1
                 if self.trips == 1:
@@ -487,10 +521,10 @@ class RTRun:
             self.points.append(pt)
         if self._ctl:
             try:
-                self._ctl.write("%s,%.2f,%s,%s,%s,%s,%d,%s,%d,%d,%s\n" % (
+                self._ctl.write("%s,%.2f,%s,%s,%s,%s,%d,%s,%d,%d,%s,%d\n" % (
                     time.strftime("%H:%M:%S"), el, "" if T is None else "%.3f" % T, "" if tgt is None else "%.3f" % tgt,
                     "" if R is None else "%.7E" % R, "" if I is None else "%.7E" % I, 1 if trip else 0,
-                    "" if self.mode != "rt" else "%g" % self._range, 1 if heater else 0, len(self.cooler_on), phase))
+                    "" if self.mode != "rt" else "%g" % self._range, 1 if heater else 0, len(self.cooler_on), phase, 1 if self._low >= OPEN_N else 0))
                 self._ctl.flush()
             except OSError:
                 pass
@@ -567,8 +601,7 @@ class RTRun:
         d, v = self.run_dir, self.p["volt"]
         if cyc == 1:
             self._mrg_path = os.path.join(d, merged_name(self.name, v))
-            self._mrg_f = open(self._mrg_path, "w", encoding="utf-8", newline="")
-            self._mrg_f.write(HEADER + "\r\n")
+            self._mrg_f = open(self._mrg_path, "w", encoding="utf-8", newline="")     # merged 는 머리글 없음
         path = os.path.join(d, cycle_name(self.name, v, cyc))
         self._cyc_path = self._cyc_path_open = path
         self._cyc_f = open(path, "w", encoding="utf-8", newline="")
@@ -596,7 +629,7 @@ class RTRun:
     def _open_ctl(self):
         try:
             self._ctl = open(os.path.join(self.run_dir, "control.csv"), "w", encoding="utf-8-sig", newline="")
-            self._ctl.write("시각,경과 s,온도,목표 온도,저항,전류,한도 걸림,범위,히트건,쿨러,단계\n")
+            self._ctl.write("시각,경과 s,온도,목표 온도,저항,전류,한도 걸림,범위,히트건,쿨러,단계,열린 회로\n")
         except OSError:
             self._ctl = None
 
@@ -694,9 +727,9 @@ class RTRun:
 
     def retry_nas(self):
         """[NAS 로 다시 복사]: 못 쓴 파일 + 합친 파일 전부를 다시 시도(별도 스레드 · 호출자는 기다린다)."""
-        if not (self.p.get("file_path") or "").strip():
+        if not getattr(self, "nas_dir", ""):
             raise RTFail("NAS 경로 없음")
-        nas = NasCopier(self.p["file_path"].strip(), self._warn)
+        nas = NasCopier(self.nas_dir, self._warn)
         if self.nas:
             nas.names = dict(self.nas.names)
         nas.start()
@@ -773,13 +806,17 @@ def read_dat(path):
     pts = []
     try:
         with open(path, encoding="utf-8") as f:
-            for ln in f.read().splitlines()[1:]:
-                a = ln.split("\t")
-                if len(a) == 2:
+            for ln in f.read().splitlines():                  # 머리글 있는 회차 파일 · 머리글 없는 merged 파일 모두
+                a = ln.split()
+                if len(a) != 2:
+                    continue
+                try:
                     pts.append((float(a[0]), float(a[1])))
-    except (OSError, ValueError):
+                except ValueError:
+                    continue                                  # 머리글 줄
+    except OSError:
         pass
     return pts
 
 
-__all__ = ["RTRun", "HeatCtl", "params", "file_stem", "cycle_name", "merged_name", "target_line", "list_results", "read_dat", "unique_path"]
+__all__ = ["RTRun", "HeatCtl", "params", "file_stem", "cycle_name", "merged_name", "target_line", "list_results", "read_dat", "unique_path", "fmt_e", "nas_target"]

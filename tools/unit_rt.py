@@ -6,6 +6,7 @@ import contextlib
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -116,7 +117,7 @@ class StubApp:
 
 
 def short_params(**kw):
-    d = {"max_temp": 40.0, "break_temp": 30.0, "repeat": 2, "precool_c": 26.0}
+    d = {"max_temp": 40.0, "break_temp": 30.0, "repeat": 2, "precool_c": 26.0, "volt": 1.0, "ilim_a": 0.01}      # 전압 · 한도는 옛 값(범위 넘침 시험용) - 새 기본값은 SchemaTest · Rear 시험
     d.update(kw)
     return d
 
@@ -129,7 +130,7 @@ class ScpiTest(unittest.TestCase):
         app.k2450.configure({"terminal": "FRONT", "four_wire": True, "volt": 1.0, "ilim_a": 0.01, "range_mode": "step", "start_range": 0.001, "nplc": 1.0, "filter_n": 10})
         self.assertEqual(app.lab.dev["2450"].err, [])
         cmds = [c for c in app.k2450.cmds if c not in ("*IDN?", "SYST:ERR?")]
-        want = ["*RST", ":ROUT:TERM FRON", ":SENS:CURR:RSEN ON", ":SOUR:FUNC VOLT", ":SOUR:VOLT:ILIM 0.01", ":SOUR:VOLT 1",
+        want = ["*RST", ":ROUT:TERM FRON", ":ROUT:TERM?", ":SENS:CURR:RSEN ON", ":SOUR:FUNC VOLT", ":SOUR:VOLT:ILIM 0.01", ":SOUR:VOLT 1",
                 ":SENS:FUNC \"CURR\"", ":SENS:CURR:RANG:AUTO OFF", ":SENS:CURR:RANG 0.001", ":SENS:CURR:NPLC 1", ":SENS:CURR:AVER:TCON REP",
                 ":SENS:CURR:AVER:COUN 10", ":SENS:CURR:AVER ON", ":SENS:AZER:ONCE"]
         self.assertEqual(cmds, want)
@@ -146,6 +147,49 @@ class ScpiTest(unittest.TestCase):
         self.assertIn(":SENS:CURR:RSEN OFF", app.k2450.cmds)
         self.assertIn(":SENS:CURR:RANG:AUTO ON", app.k2450.cmds)
         self.assertNotIn(":SENS:CURR:RANG 0.001", app.k2450.cmds)
+
+    def test_k2450_rear_default_order_and_check(self):
+        """실제 장비는 뒷면 3축 단자: *RST → :ROUT:TERM REAR → :ROUT:TERM? 확인 → 나머지 설정, 출력 켬은 그 뒤."""
+        app = StubApp()
+        p = rt_mod.params(app.cfg)
+        self.assertEqual(p["terminal"], "REAR")
+        app.k2450.configure({"terminal": p["terminal"], "four_wire": True, "volt": 0.1, "ilim_a": 0.1, "range_mode": "step", "start_range": 0.001, "nplc": 1.0, "filter_n": 10})
+        cmds = [c for c in app.k2450.cmds if c not in ("*IDN?", "SYST:ERR?")]
+        self.assertEqual(cmds[:3], ["*RST", ":ROUT:TERM REAR", ":ROUT:TERM?"])
+        self.assertEqual(app.k2450.terminal(), "REAR")
+        self.assertFalse(app.lab.out_on)
+        app.k2450.output(True)
+        i, _t = app.k2450.read()
+        self.assertGreater(i, 1e-7)                                  # 케이블이 뒷면 → 전류가 흐른다
+        app.k2450.configure({"terminal": "REAR", "four_wire": True, "volt": 0.1, "ilim_a": 0.1, "range_mode": "step", "start_range": 0.001, "nplc": 1.0, "filter_n": 10})
+        self.assertFalse(app.lab.out_on, "출력이 켜진 채로 단자를 바꾸지 않는다 - 다시 설정하면 먼저 꺼진다")
+
+    def test_k2450_terminal_mismatch_raises(self):
+        app = StubApp()
+        orig = app.lab.dev["2450"].query
+        app.lab.dev["2450"].query = lambda c: "FRON" + chr(10) if c.strip().upper() == ":ROUT:TERM?" else orig(c)
+        with self.assertRaises(inst.VisaError):
+            app.k2450.configure({"terminal": "REAR", "four_wire": True, "volt": 0.1, "ilim_a": 0.1, "range_mode": "step", "start_range": 0.001, "nplc": 1.0, "filter_n": 10})
+
+    def test_open_circuit_helper(self):
+        self.assertTrue(inst.is_open_circuit(2e-12, 1e-9))
+        self.assertTrue(inst.is_open_circuit(-5e-10, 1e-9))
+        self.assertFalse(inst.is_open_circuit(1e-6, 1e-9))
+        self.assertFalse(inst.is_open_circuit(None, 1e-9))                 # 범위 넘음은 열린 회로가 아니다
+
+    def test_limit_rule_ranges(self):
+        """고정 범위에서는 한도 ≥ 범위의 10.6 % . 한도 0.1 A 면 1 A 범위는 쓰지 않는다."""
+        for r in inst.RANGES:
+            self.assertEqual(inst.limit_ok(r, 0.1), r <= 0.9, r)
+        self.assertEqual(inst.clamp_range(1.0, 0.1), 0.1)
+        self.assertEqual(inst.clamp_range(1e-3, 0.1), 1e-3)
+        self.assertEqual(inst.clamp_range(1.0, 0.01), 0.01)
+        # 0.1 A 한도에서 전류 0 ~ 한도를 훑어도 고른 범위는 규칙을 지킨다
+        rng = 1e-3
+        for k in range(0, 200):
+            cur = 10 ** (-9 + 8 * k / 199.0)
+            rng = inst.clamp_range(inst.next_range(rng, cur), 0.1)
+            self.assertTrue(inst.limit_ok(rng, 0.1), (cur, rng))
 
     def test_k2110_thermocouple(self):
         app = StubApp()
@@ -223,14 +267,37 @@ class MathTest(unittest.TestCase):
 
 class FileFormatTest(unittest.TestCase):
     def test_names_match_labview(self):
-        self.assertEqual(rt_mod.cycle_name("1-1_", 1.0, 1), "1-1_1.00V_1.dat")            # PDF 2쪽: File name · Set voltage(소수 2자리) · "V_" · 회차 · ".dat"
-        self.assertEqual(rt_mod.cycle_name("1-1_", 1.0, 3), "1-1_1.00V_3.dat")
-        self.assertEqual(rt_mod.merged_name("1-1_", 1.0), "1-1_1.00V_merged.dat")
-        self.assertEqual(rt_mod.cycle_name("S", 0.5, 2), "S0.50V_2.dat")
+        # 실제 LabVIEW 파일(2026-11-06): 5-1-ncd(380)_0.10V_0.dat · _merged.dat - 파일 회차 번호는 0 부터(화면의 n회 = n+1)
+        self.assertEqual(rt_mod.cycle_name("5-1-ncd(380)_", 0.1, 1), "5-1-ncd(380)_0.10V_0.dat")
+        self.assertEqual(rt_mod.cycle_name("1-1_", 1.0, 3), "1-1_1.00V_2.dat")
+        self.assertEqual(rt_mod.merged_name("5-1-ncd(380)_", 0.1), "5-1-ncd(380)_0.10V_merged.dat")
+        self.assertEqual(rt_mod.cycle_name("S", 0.5, 2), "S0.50V_1.dat")
 
     def test_line_format(self):
-        self.assertEqual(rt_mod.data_line(63.25, 275318.0), "6.3250000E+01\t2.7531800E+05")
-        self.assertEqual(rt_mod.HEADER, "Temp\tResistance")
+        self.assertEqual(rt_mod.data_line(23.691786, 165652.95), "2.3691786E+1\t1.6565295E+5")                # 기존 파일의 실제 줄
+        self.assertEqual(rt_mod.data_line(112.34567, 0.5), "1.1234567E+2\t5.0000000E-1")
+        self.assertEqual(rt_mod.HEADER.encode() + b"\r\n", b"Temp   Resistance   \r\n")
+
+    def test_exponent_edges(self):
+        f = rt_mod.fmt_e
+        self.assertEqual(f(9.99999996), "1.0000000E+1")          # 반올림으로 지수가 올라감
+        self.assertEqual(f(9.9999999), "9.9999999E+0")
+        self.assertEqual(f(0.0), "0.0000000E+0")
+        self.assertEqual(f(1.0), "1.0000000E+0")
+        self.assertEqual(f(0.0123456789), "1.2345679E-2")
+        self.assertEqual(f(-0.5), "-5.0000000E-1")
+        self.assertEqual(f(1.5e-12), "1.5000000E-12")
+        self.assertEqual(f(2.5e105), "2.5000000E+105")
+        self.assertEqual(f(99999999.6), "1.0000000E+8")
+
+    def test_read_dat_header_variants(self):
+        d = tempfile.mkdtemp()
+        a = os.path.join(d, "a.dat")
+        open(a, "wb").write(b"Temp   Resistance   \r\n2.3691786E+1\t1.6565295E+5\r\n2.4E+1\t1.0E+5\r\n")
+        m = os.path.join(d, "m.dat")
+        open(m, "wb").write(b"2.3691786E+1\t1.6565295E+5\r\n-1.5E-1\t9.9E-1\r\n")
+        self.assertEqual(rt_mod.read_dat(a), [(23.691786, 165652.95), (24.0, 100000.0)])
+        self.assertEqual(rt_mod.read_dat(m), [(23.691786, 165652.95), (-0.15, 0.99)])
 
     def test_unique_path(self):
         d = tempfile.mkdtemp()
@@ -241,6 +308,109 @@ class FileFormatTest(unittest.TestCase):
         self.assertTrue(ch and q.endswith("a_1.dat"))
         open(q, "w").close()
         self.assertTrue(rt_mod.unique_path(p)[0].endswith("a_2.dat"))
+
+
+class SavePathTest(unittest.TestCase):
+    BASE = r"\\VanaM_NAS\VanaM_Measurement\VO2\VO2 data (NAS)\data"
+    NOW = time.mktime((2026, 11, 9, 14, 30, 0, 0, 0, -1))
+
+    def test_nas_target_combinations(self):
+        f, B = rt_mod.nas_target, self.BASE
+        self.assertEqual(f(B, True, "6", self.NOW), B + r"\2026\20261109\6")              # 사용자가 쓰는 구조: 기본 폴더\연도\날짜\묶음
+        self.assertEqual(f(B, True, "", self.NOW), B + r"\2026\20261109")                # 묶음 비우면 붙이지 않는다
+        self.assertEqual(f(B, False, "", self.NOW), B)                                    # 날짜 자동 끔 = 기본 폴더 그대로
+        self.assertEqual(f(B, False, "6", self.NOW), B + r"\6")
+        self.assertEqual(f(B + chr(92), True, " 6 ", self.NOW), B + r"\2026\20261109\6")      # 끝 구분자 · 공백 정리
+        self.assertEqual(f("", True, "6", self.NOW), "")                                  # 기본 폴더가 비면 PC 에만
+        self.assertEqual(f(None, True, "6", self.NOW), "")
+        self.assertEqual(f(r"D:\data", True, "", self.NOW), r"D:\data\2026\20261109")
+        # 연말 경계: 날짜는 측정 시작 시각 기준
+        self.assertTrue(f(B, True, "", time.mktime((2026, 12, 31, 23, 59, 59, 0, 0, -1))).endswith(r"\2026\20261231"))
+        self.assertTrue(f(B, True, "", time.mktime((2027, 1, 1, 0, 0, 1, 0, 0, -1))).endswith(r"\2027\20270101"))
+
+    def test_defaults_and_validation(self):
+        d = sch.defaults()["rt"]
+        self.assertEqual(d["file_path"], r"\\VanaM_NAS\VanaM_Measurement\VO2\VO2 data (NAS)\data")
+        self.assertEqual((d["date_folder"], d["batch_folder"]), (True, ""))
+        bad = sch.defaults()
+        bad["rt"]["batch_folder"] = "a/b"
+        self.assertIn("rt.batch_folder", sch.validate(bad)[1])
+        bad["rt"]["batch_folder"] = ".."
+        self.assertIn("rt.batch_folder", sch.validate(bad)[1])
+        bad["rt"]["batch_folder"] = "6"
+        self.assertNotIn("rt.batch_folder", sch.validate(bad)[1])
+
+    def test_run_uses_nas_target(self):
+        """측정이 NAS 로 복사하는 폴더 = nas_target(시작 날짜). PC 쪽 폴더는 그대로."""
+        app = StubApp()
+        base = tempfile.mkdtemp(prefix="nas_")
+        rr = app.make({"max_temp": 36.0, "break_temp": 30.0, "precool_c": 26.0, "repeat": 1})
+        rr.p["file_path"], rr.p["date_folder"], rr.p["batch_folder"] = base, True, "6"
+        rr.run()
+        self.assertEqual(rr.status, rt_mod.OK)
+        want = rt_mod.nas_target(base, True, "6", rr.t0)
+        self.assertEqual(rr.nas_dir, want)
+        self.assertIn("1-1_0.10V_0.dat", os.listdir(want))
+        self.assertIn("1-1_0.10V_merged.dat", os.listdir(want))
+        self.assertNotIn("control.csv", os.listdir(want))
+        self.assertTrue(rr.run_dir.startswith(tempfile.gettempdir()) or "rt_unit_" in rr.run_dir)
+
+
+class VisaKindTest(unittest.TestCase):
+    def test_kind(self):
+        self.assertEqual(inst.visa_kind("GPIB0::18::INSTR"), "GPIB")
+        self.assertEqual(inst.visa_kind("USB0::0x05E6::0x2110::1234567::INSTR"), "USB")
+        self.assertEqual(inst.visa_kind("TCPIP0::192.168.0.5::inst0::INSTR"), "LAN")
+        self.assertEqual(inst.visa_kind("ASRL3::INSTR"), "시리얼")
+        self.assertEqual(inst.visa_kind(""), "")
+        self.assertEqual(inst.visa_kind("foo"), "")
+
+    def test_list_shows_gpib_and_usb_and_direct_entry(self):
+        app = StubApp()
+        items, msg = inst.list_resources()
+        self.assertTrue(any(i.startswith("GPIB") for i in items) and any(i.startswith("USB") for i in items), items)
+        d = inst.K2450("GPIB0::6::INSTR")                  # 목록에 없는 주소를 직접 입력해도 연다
+        d.open()
+        self.assertTrue(d.is_open)
+        self.assertEqual(inst.visa_kind(d.addr), "GPIB")
+
+
+class GraphRangeTest(unittest.TestCase):
+    """화면(JS)의 기본 범위: 저항 1E+1–1E+6, 온도 20–100 °C. 넘으면 넓힌다. node 로 frontend/js/rtutil.js 를 직접 시험."""
+
+    def run_js(self, expr):
+        import json as _json
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node 없음")
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "js", "rtutil.js")
+        code = "const vm=require('vm'),fs=require('fs');const UI={};vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),{UI,Math,Number,String,Date});console.log(JSON.stringify(%s));" % expr
+        out = subprocess.run([node, "-e", code, src], capture_output=True, text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return _json.loads(out.stdout)
+
+    def test_default_range(self):
+        self.assertEqual(self.run_js("UI.rtRange([],[])"), {"x": [20, 100], "y": [10, 1000000]})
+        self.assertEqual(self.run_js("UI.rtRange([25,60,90],[300000,200,5000])"), {"x": [20, 100], "y": [10, 1000000]})   # 범위 안이면 그대로
+
+    def test_widen_when_exceeded(self):
+        self.assertEqual(self.run_js("UI.rtRange([12,121],[5,2e7])"), {"x": [10, 125], "y": [1, 100000000]})
+        self.assertEqual(self.run_js("UI.rtRange([null,50],[null,0,-1,500])"), {"x": [20, 100], "y": [10, 1000000]})        # 값 없음 · 0 이하 저항은 무시
+
+    def test_nas_path_preview_matches_server(self):
+        now = "new Date(2026,10,9,14,30)"
+        base = r"\\VanaM_NAS\VanaM_Measurement\VO2\VO2 data (NAS)\data"
+        for auto, batch in ((True, "6"), (True, ""), (False, ""), (False, "6")):
+            js = self.run_js("UI.nasPath(%s,%s,%s,%s)" % (_json_s(base), "true" if auto else "false", _json_s(batch), now))
+            self.assertEqual(js, rt_mod.nas_target(base, auto, batch, time.mktime((2026, 11, 9, 14, 30, 0, 0, 0, -1))), (auto, batch))
+        self.assertEqual(self.run_js("UI.nasPath('',true,'6',%s)" % now), "")
+
+
+def _json_s(x):
+    import json as _json
+    return _json.dumps(x)
 
 
 class HeatCtlTest(unittest.TestCase):
@@ -284,18 +454,23 @@ class RunTest(unittest.TestCase):
         rr.run()
         self.assertEqual((rr.status, rr.message), (rt_mod.OK, ""))
         names = sorted(os.listdir(rr.run_dir))
-        for n in ("1-1_1.00V_1.dat", "1-1_1.00V_2.dat", "1-1_1.00V_merged.dat", "control.csv", "rt.json"):
+        for n in ("1-1_1.00V_0.dat", "1-1_1.00V_1.dat", "1-1_1.00V_merged.dat", "control.csv", "rt.json"):
             self.assertIn(n, names)
-        c1 = self.read_dat(rr.run_dir, "1-1_1.00V_1.dat").split("\r\n")
-        self.assertEqual(c1[0], "Temp\tResistance")
+        c1 = self.read_dat(rr.run_dir, "1-1_1.00V_0.dat").split("\r\n")
+        self.assertEqual(c1[0], "Temp   Resistance   ")
+        raw = open(os.path.join(rr.run_dir, "1-1_1.00V_0.dat"), "rb").read()
+        self.assertTrue(raw.startswith(b"Temp   Resistance   \r\n") and raw.endswith(b"\r\n") and b"\t" in raw)
+        m3 = open(os.path.join(rr.run_dir, "1-1_1.00V_merged.dat"), "rb").read().split(b"\r\n")[:2]
+        c3 = raw.split(b"\r\n")[1:3]
+        self.assertEqual(m3, c3, "merged 는 머리글 없이 첫 회차 줄부터")
         pts = [tuple(map(float, ln.split("\t"))) for ln in c1[1:] if ln]
         self.assertGreater(len(pts), 100)
-        self.assertRegex(c1[1], r"^\d\.\d{7}E[+-]\d{2}\t\d\.\d{7}E[+-]\d{2}$")
+        self.assertRegex(c1[1], r"^-?\d\.\d{7}E[+-]\d{1,3}\t-?\d\.\d{7}E[+-]\d{1,3}$")
         merged = self.read_dat(rr.run_dir, "1-1_1.00V_merged.dat").split("\r\n")
         n1 = len(pts)
-        n2 = len([x for x in self.read_dat(rr.run_dir, "1-1_1.00V_2.dat").split("\r\n")[1:] if x])
-        self.assertEqual(len([x for x in merged[1:] if x]), n1 + n2)
-        self.assertEqual(merged[0], "Temp\tResistance")
+        n2 = len([x for x in self.read_dat(rr.run_dir, "1-1_1.00V_1.dat").split("\r\n")[1:] if x])
+        self.assertEqual(len([x for x in merged if x]), n1 + n2)
+        self.assertNotIn("Temp", merged[0])
         # 히스테리시스: 가열 쪽(오름)은 66 °C 근처에서, 냉각 쪽(내림)은 58 °C 근처에서 꺾인다
         up = [(t, r) for (t, r), nxt in zip(pts, pts[1:]) if nxt[0] > t]
         half = max(range(len(pts)), key=lambda i: pts[i][0])
@@ -422,6 +597,32 @@ class RunTest(unittest.TestCase):
         self.assertIn("통신 끊김", rr.message)
         self.assertSafe(app, rr)
 
+    def test_new_defaults_run_and_open_circuit(self):
+        """새 기본값(0.1 V · 한도 0.1 A · REAR)으로 끝까지 돈다. 앞면 단자 설정이면 열린 회로 경고 + control.csv 표시, 측정은 계속."""
+        app = StubApp()
+        rr = app.make({"max_temp": 40.0, "break_temp": 30.0, "precool_c": 26.0})
+        self.assertEqual((rr.p["volt"], rr.p["ilim_a"], rr.p["repeat"]), (0.1, 0.1, 1))
+        rr.run()
+        self.assertEqual((rr.status, rr.message), (rt_mod.OK, ""))
+        self.assertFalse(any("연결 없음" in w for w in rr.warns))
+        self.assertEqual(app.lab.dev["2450"].err, [])
+        names = sorted(os.listdir(rr.run_dir))
+        self.assertIn("1-1_0.10V_0.dat", names)
+        self.assertNotIn("1-1_0.10V_1.dat", names)
+        for c in app.k2450.cmds:                                    # 고른 범위가 한도 규칙을 지킨다
+            if c.startswith(":SENS:CURR:RANG ") and "AUTO" not in c:
+                self.assertTrue(inst.limit_ok(float(c.split()[-1]), 0.1), c)
+        app2 = StubApp()
+        rr2 = app2.make({"max_temp": 40.0, "break_temp": 30.0, "precool_c": 26.0, "terminal": "FRONT"})
+        rr2.run()
+        self.assertEqual(rr2.status, rt_mod.OK)
+        self.assertTrue(any("연결 없음" in w for w in rr2.warns), rr2.warns)
+        self.assertEqual(len([w for w in rr2.warns if "연결 없음" in w]), 1, "경고는 한 번")
+        ctl = open(os.path.join(rr2.run_dir, "control.csv"), encoding="utf-8-sig").read().splitlines()
+        self.assertTrue(ctl[0].endswith("열린 회로"))
+        self.assertTrue(any(x.endswith(",1") for x in ctl[1:]))
+        self.assertTrue(all(x.split(",")[-1] in ("0", "1") for x in ctl[1:]))
+
     def test_ilim_trip_warns_continues(self):
         app = StubApp()
         app.lab.fault["ilim"] = True
@@ -544,9 +745,9 @@ class FollowTest(unittest.TestCase):
 class SchemaTest(unittest.TestCase):
     def test_defaults_match_labview_screen(self):
         d = sch.defaults()["rt"]
-        self.assertEqual((d["precool_c"], d["max_temp"], d["break_temp"], d["repeat"], d["volt"], d["filter_n"]), (24.5, 85.0, 25.0, 3, 1.0, 10))
-        self.assertEqual((d["k2450_addr"], d["file_name"], d["nplc"], d["start_range"], d["four_wire"], d["terminal"]), ("GPIB0::18::INSTR", "1-1_", 1.0, 0.001, True, "FRONT"))
-        self.assertEqual(d["file_path"], "\\\\VanaM_NAS\\VanaM_VO2\\VO2 data")
+        self.assertEqual((d["precool_c"], d["max_temp"], d["break_temp"], d["repeat"], d["volt"], d["filter_n"]), (24.5, 85.0, 25.0, 1, 0.1, 10))
+        self.assertEqual((d["k2450_addr"], d["file_name"], d["nplc"], d["start_range"], d["four_wire"], d["terminal"]), ("GPIB0::18::INSTR", "1-1_", 1.0, 0.001, True, "REAR"))
+        self.assertEqual((d["ilim_a"], d["open_a"]), (0.1, 1e-9))
         self.assertEqual((d["band_c"], d["min_on_s"], d["min_off_s"], d["phase_limit_s"], d["stale_s"]), (0.5, 2.0, 2.0, 1800.0, 3.0))
 
     def test_validation(self):

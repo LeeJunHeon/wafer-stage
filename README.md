@@ -38,8 +38,8 @@ python run.py --cleanup    # 창 없이 남은 이전 실행 정리
 **흐름**: 쿨러 켬 · 히트건 끔 → 예비 냉각(24.5 °C 미만 + 유지) → K2450 출력 켬 → #repeat 회 [가열(max temp 초과까지) → 냉각(temp to break 미만까지)] → 끝(히트건 끔 · 출력 끔 · 쿨러 끔 · Z 맨 위 - 뒤 둘은 설정). 시작 조건: 장비 두 대 연결 · 열전대 값 정상 · 핀이 접촉 높이(±0.5 mm).
 **온도 제어**: 가열 속도 · 냉각 속도(°C/분, 0 = 최대). 속도를 지정하면 목표 온도선을 따라 히트건을 켜고 끈다(띠 0.5 °C · 최소 켜짐/꺼짐 2 s · 연속 켜짐 상한 `heater.max_on_s`). 최대 속도: 가열은 계속 켜고 냉각은 계속 끈다. [최대 속도 재기] 로 실제 °C/분을 먼저 잰다.
 **안전**: 비상 차단 온도(기본 max temp + 10 °C) · 온도 값 없음/3 s 갱신 없음 · 단계 시간 한도(30 분) · 비상정지 · 중지 · 오류 · 종료 · 통신 끊김 → 히트건 끔 + K2450 출력 끔. 히트건은 기존 규칙(전용 릴레이 · 끄기 RS 확인 · Hub 독립 감시)을 그대로 쓴다.
-**전류 범위 단계 변경**: 기존 프로그램 방식(전류가 범위의 1.05 배를 넘으면 10배 올리고 0.95 배 아래로 떨어지면 내림). "장비 자동"도 고를 수 있다. 전류 한도(`rt.ilim_a`, 기본 10 mA)는 기존 프로그램에 없던 값이다.
-**파일**: PC `..\data_v2\measure\<시각>_<File name>\` 에 `[File name][Set voltage 소수 2자리]V_[회차].dat` 와 `..._merged.dat`(예 `1-1_1.00V_1.dat`, 머리글 `Temp<탭>Resistance`, 값 `%.7E` 두 열, 이어 쓰기) + `control.csv`(시각 · 경과 · 온도 · 목표 온도 · 저항 · 전류 · 한도 걸림 · 범위 · 히트건 · 쿨러 · 단계 - PC 에만) + `rt.json`. NAS(`rt.file_path`)에는 같은 `.dat` 만 별도 스레드로 복사한다 - 못 쓰면 경고만 하고 측정은 계속, 끝난 뒤 다시 복사, [NAS 로 다시 복사]. NAS 에 같은 이름이 있으면 덮어쓰지 않고 `_1`.
+**전류 범위 단계 변경**: 기존 프로그램 방식(전류가 범위의 1.05 배를 넘으면 10배 올리고 0.95 배 아래로 떨어지면 내림). "장비 자동"도 고를 수 있다. 전류 한도(`rt.ilim_a`, 기본 0.1 A - 기존 데이터에서 저항이 11 Ω 까지 내려가 0.1 V 에서 약 9 mA 라 10 mA 한도는 닿는다)는 기존 프로그램에 없던 값이다. 고정 범위에서는 한도 ≥ 측정 범위의 10.6 % 라 한도 0.1 A 면 1 A 범위는 쓰지 않고(`instruments.clamp_range`), 범위 넘음이면 한도를 덮는 범위(0.1 A)로 올린다. **단자 기본은 뒷면(REAR, 3축 FORCE/SENSE)** - `*RST` 뒤 `:ROUT:TERM` 을 먼저 설정하고 `:ROUT:TERM?` 로 확인한 다음 나머지를 설정, 출력 켬은 그 뒤. **R–T 그래프 기본 범위**(기존 LabVIEW 화면과 같게): 저항 1E+1–1E+6 Ω(세로 로그), 온도 20–100 °C - 값이 넘으면 넓힌다(`frontend/js/rtutil.js`). **장비 주소**: 목록(pyvisa `list_resources` 그대로 - GPIB · USB 모두)에서 고르거나 직접 입력하고, 연결 방식(GPIB · USB · LAN)을 연결 시험 · 상태에 표시한다(기존 PC 의 K2450 은 `GPIB0::18::INSTR`). **열린 회로 감지**: 전류 크기가 하한(`rt.open_a`, 기본 1 nA) 아래면 [연결 시험]이 "연결 없음 · 핀 접촉 · 앞/뒤 단자 설정 확인" 으로 안내하고, 측정 중 연속 5회면 경고 + control.csv 마지막 열 "열린 회로" 1(측정은 계속).
+**파일**: PC `..\data_v2\measure\<시각>_<File name>\` 에 `[File name][Set voltage 소수 2자리]V_[회차].dat` 와 `..._merged.dat`(예 `5-1-ncd(380)_0.10V_0.dat` - **회차 번호는 0 부터**, 화면의 "n회" 는 1 부터. 회차 파일 첫 줄은 정확히 `Temp   Resistance   `+CRLF(Temp 뒤 · Resistance 뒤 공백 3칸, 탭 없음), `_merged.dat` 는 **머리글 없이** 첫 줄부터 숫자. 숫자 줄은 `<온도><탭><저항>`+CRLF, 값은 LabVIEW `%.7E`(가수 7자리 · 지수는 부호 + 0 채우지 않음: `2.3691786E+1` · `1.6565295E+5` · `5.0000000E-1`, `rt.fmt_e`). 마지막 줄도 CRLF. 이어 쓰기) + `control.csv`(시각 · 경과 · 온도 · 목표 온도 · 저항 · 전류 · 한도 걸림 · 범위 · 히트건 · 쿨러 · 단계 - PC 에만) + `rt.json`. NAS 폴더 = 기본 폴더(`rt.file_path`) \ 연도 \ YYYYMMDD(측정 시작 날짜, `rt.date_folder` 기본 켬) \ 묶음 번호(`rt.batch_folder`, 비우면 생략) - 예 `\\VanaM_NAS\VanaM_Measurement\VO2\VO2 data (NAS)\data\2026\20261109\6`(`rt.nas_target`; 날짜 자동을 끄면 기본 폴더 그대로, 묶음이 있으면 그 아래). 화면에 최종 경로를 한 줄로 미리 보인다. PC 쪽 저장 규칙은 그대로. NAS 에는 같은 `.dat` 만 별도 스레드로 복사한다 - 못 쓰면 경고만 하고 측정은 계속, 끝난 뒤 다시 복사, [NAS 로 다시 복사]. NAS 에 같은 이름이 있으면 덮어쓰지 않고 `_1`.
 
 ## 접촉 높이 (고정 절대값)
 Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_z_mm`, 기본은 비어 있음) 측정 때는 그 절대 높이로 내린다. **접촉 판정은 하지 않는다.** `approach_mm`(기본 2) 앞까지는 보통 속도, 남은 거리는 느린 속도(`motion.jog_slow_pps`).
@@ -171,7 +171,7 @@ Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_
 | `rt.hold_s` | 0 | s | 도달 뒤 유지 |
 | `rt.max_temp` | 85 | °C | 최고 온도 |
 | `rt.break_temp` | 25 | °C | 냉각 끝 온도 |
-| `rt.repeat` | 3 |  | 반복 횟수 |
+| `rt.repeat` | 1 |  | 반복 횟수 (#repeat) |
 | `rt.heat_rate` · `rt.cool_rate` | 0 · 0 | °C/분 | 가열 · 냉각 속도(0 = 최대) |
 | `rt.band_c` | 0.5 | °C | 띠 |
 | `rt.min_on_s` · `rt.min_off_s` | 2 · 2 | s | 최소 켜짐 · 꺼짐 |
@@ -179,15 +179,18 @@ Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_
 | `rt.phase_limit_s` | 1800 | s | 단계 시간 한도 |
 | `rt.min_interval_s` | 0 | s | 최소 기록 간격 |
 | `rt.stale_s` | 3 | s | 온도 갱신 한도 |
-| `rt.volt` | 1.0 | V | Set voltage |
-| `rt.ilim_a` | 0.01 | A | 전류 한도 |
-| `rt.four_wire` · `rt.terminal` | True · FRONT |  | 4단자 · 단자 |
+| `rt.volt` | 0.1 | V | 전압 (Set voltage) |
+| `rt.ilim_a` | 0.1 | A | 전류 한도 |
+| `rt.open_a` | 1e-9 | A | 열린 회로 전류 하한 |
+| `rt.four_wire` · `rt.terminal` | True · REAR |  | 4단자 (4P) · 단자 |
 | `rt.filter_n` · `rt.nplc` | 10 · 1 |  | 필터 개수 · 적분 |
 | `rt.range_mode` · `rt.start_range` | step · 0.001 | A | 범위 방식 · 시작 범위 |
 | `rt.tc_type` | K |  | 열전대 종류(기준점 내부) |
 | `rt.cooler_target` · `rt.cooler_custom` | sample ·  |  | 쿨러(샘플 구역 · 전부 · 직접) |
-| `rt.file_path` | \\\\VanaM_NAS\\VanaM_VO2\\VO2 data |  | File path |
-| `rt.file_name` | 1-1_ |  | File name |
+| `rt.file_path` | \\\\VanaM_NAS\\VanaM_Measurement\\VO2\\VO2 data (NAS)\\data |  | 기본 폴더 (File path) |
+| `rt.date_folder` | True |  | 날짜 폴더 자동 (연도\\YYYYMMDD) |
+| `rt.batch_folder` | (빈 값) |  | 묶음 폴더 |
+| `rt.file_name` | 1-1_ |  | 파일 이름 (File name) |
 | `rt.cooler_off_end` · `rt.z_top_end` | True · True |  | 끝나면 쿨러 끔 · Z 맨 위 |
 | `calib.outlier_n` | 4.0 |  | 이상점 배수 |
 | `calib.area_size_mm` | [154.0, 154.0] |  | 판 영역 실제 크기 |
