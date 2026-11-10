@@ -58,6 +58,8 @@ class App:
         self.link_lost_count = 0
         self.image = image
         self.cfg = store.Settings(settings_path)
+        for n in getattr(self.cfg, "migrate_notes", []):         # 설정 파일 판 이전(한 번): 바꾼 값을 시작 로그에 남긴다
+            logger.log("설정 이전 · " + n, "warn")
         for d in (paths.DATA_DIR, paths.SHOTS_DIR, paths.RUNS_DIR, paths.LOGS_DIR, paths.REF_HISTORY_DIR):
             os.makedirs(d, exist_ok=True)
         self.stage = self.motion = self.power = self.hub = None
