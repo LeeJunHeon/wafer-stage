@@ -57,8 +57,8 @@ def c48(c):
     ok, r = c.send("inst_connect")
     check(not ok and "드라이버" in str(r), "장비 연결 실패 · 드라이버 없음 (%s)" % (r,))
     c.pump(0.5)
-    check(band_ids(c) == ["stage", "camera", "k2110", "k2450"], "측정 장비 실패 뒤 띠 넷 (%s)" % band_ids(c))
-    check("inst_connect" in band_acts(c, "k2110") and "inst_connect" in band_acts(c, "k2450"), "측정 장비 띠에 [장비 연결]")
+    check(band_ids(c) == ["stage", "camera", "inst"], "측정 장비 실패 뒤 띠 셋 · 장비 둘은 한 줄 (%s)" % band_ids(c))
+    check("inst_connect" in band_acts(c, "inst"), "측정 장비 띠에 [장비 연결]")
     ms, code = estop_ms(c)
     check(code == 200 and ms <= 100, "비상정지 요청 %.0f ms (기준 100 ms 이하 · 스테이지 없음)" % ms)
 

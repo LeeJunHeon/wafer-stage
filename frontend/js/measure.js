@@ -2,7 +2,7 @@
    화면 원칙: 카드마다 주 동작 하나(보조는 ⋯) · 문제 있을 때만 상태 표시 · 모드 버튼 대신 사진을 직접 다룬다(끌어서 위치 수정 · 더블클릭으로 추가).
    온도 · 계측기는 이 프로그램에 없다(별도 프로그램). 남은 것은 이동 · 접촉 높이 · 쿨러 · 히트건 · 대기 · 확인 대기뿐. */
 "use strict";
-const M = { viewer: null, mode: "live", zoom: "plate", rightSig: "", prepBuilt: false, cond: null, showSteps: false, dragNo: null, sub: "here", subSig: "" };
+const M = { viewer: null, mode: "live", zoom: "plate", rightSig: "", prepBuilt: false, cond: null, showSteps: false, dragNo: null, sub: "here", subSig: "", showMap: false, armAdd: false };
 const SCOL = { done: "#2b9a58", cur: "#2f6fdb", wait: "#8a929b", err: "#d03a3a", stop: "#e08a1e", skip: "#b9bdc2" };
 
 /* 카메라가 없을 때 사진 자리 안내 */
@@ -43,8 +43,8 @@ function buildPrep() {
   M.viewer.onApply = redrawOverlay;
   M.leftPrep = h("div", { class: "viewbox", id: "m-view" }, M.head, M.viewer.el, M.news);
   buildHere();                                                            // R–T 그래프 둘(rt.js) - 카메라 아래
-  M.cardPos = h("div", { class: "card", id: "c-pos" }); M.cardSam = h("div", { class: "card", id: "c-samples" }); M.cardRun = h("div", { class: "card", id: "c-run" });
-  M.right = h("div", { class: "mright" }, h("div", { class: "mtop" }, M.cardPos, M.cardSam), M.cardRun);
+  M.cardPos = h("div", { class: "card", id: "c-pos" }); M.cardRun = h("div", { class: "card", id: "c-run" });
+  M.right = h("div", { class: "mright" }, M.cardPos, M.cardRun);
   pane.replaceChildren(h("div", { class: "mleft" }, M.leftPrep, T.graphs), M.right);
   UI.logRenders = UI.logRenders || [];
   UI.logRenders.push(renderNews);
@@ -98,7 +98,15 @@ function renderLeft(s, running) {
   } else {
     const seg = h("div", { class: "seg" }, btn("실시간", "m-mode", { m: "live" }, M.mode === "live" ? "on" : ""), btn("촬영 사진", "m-mode", { m: "shot" }, M.mode === "shot" ? "on" : ""));
     const seg2 = h("div", { class: "seg" }, btn("판 맞춤", "m-fit", { m: "plate" }, M.zoom === "plate" ? "on" : ""), btn("전체", "m-fit", { m: "all" }, M.zoom === "all" ? "on" : ""));
-    M.head.replaceChildren(seg, h("span", { class: "sub", text: M.mode === "shot" ? (sh ? "촬영 " + sh.time : "촬영 없음") : "" }), h("span", { class: "grow" }), seg2);
+    const more = moreBtn([
+      { label: "샘플 추가 · 사진에서 한 점", fn: () => { M.armAdd = true; toast("추가할 자리를 사진에서 누르십시오"); }, why: sh ? "" : "촬영 필요" },
+      { label: "현재 위치를 샘플로", fn: () => send("sample_here"), why: sh ? (s.calib.status === "done" ? "" : "좌표 보정 필요") : "촬영 필요" },
+      { label: "되돌리기 (Ctrl+Z)", fn: () => send("undo_edit"), why: s.can_undo ? "" : "되돌릴 편집 없음" },
+    ]);
+    const nW = s.n_weak || 0;
+    const samBtn = h("button", { class: "btn sm samchip" + (nW ? " warn" : ""), "data-act": "sam-pop", "data-tip": "샘플 번호 칩 목록을 엽니다. 체크로 측정 대상을 켜고 끕니다.", text: sh || s.samples.length ? sampleSummary(s) + " ▾" : "아직 촬영 안 함" });
+    M.head.replaceChildren(seg, btn("촬영", "capture", null, "primary", "촬영 위치로 가서 한 장 찍고 칩을 찾습니다.", captureWhy(s)), samBtn, more,
+      h("span", { class: "grow" }), seg2, btn("지도", "m-map", null, "sm" + (M.showMap ? " on" : ""), "스테이지 지도를 사진 모서리에 작게 보이거나 감춥니다."));
   }
   M.viewer.mode = M.zoom;
   if (M.mode === "shot") {
@@ -123,11 +131,13 @@ function renderLeft(s, running) {
   if (ce && Date.now() / 1000 - ce.id < 8) M.viewer.el.append(h("div", { class: "cap-err", text: "촬영 실패 · " + ce.text }));
 }
 UI.acts["m-mode"] = (a) => { M.mode = a.m; M.viewer.W = 0; M.viewer.key = null; if (UI.ws) UI.ws.send(JSON.stringify({ cmd: "preview", on: a.m === "live" })); render(); };
+UI.acts["m-map"] = () => { M.showMap = !M.showMap; render(); };
 UI.acts["m-fit"] = (a) => { M.zoom = a.m; M.viewer.fit(a.m, M.viewer.area); render(); };
 
 function onViewClick(u, v) {
   const s = UI.state;
   if (isRunning(s)) return;
+  if (M.armAdd) { M.armAdd = false; if (M.mode !== "shot") { toast("촬영 사진에서 눌러야 합니다", true); return; } send("sample_add", { u, v }); return; }
   let best = null, bd = 1e9;
   s.samples.forEach((p) => { const d = Math.hypot(p.u - u, p.v - v); if (d < bd) { bd = d; best = p; } });
   if (best && bd < 60 / M.viewer.k + 25) { send("sample_select", { no: best.no }); return; }
@@ -178,7 +188,9 @@ function redrawOverlay() {
   v.clear();
   if (M.mode !== "shot" || !s.shot) {
     if (s.calib.area && M.mode === "live") v.svg.append(sv("polygon", { points: s.calib.area.map((p) => p.join(",")).join(" "), fill: "none", stroke: "#2f6fdb", "stroke-width": v.px(2), "stroke-dasharray": v.px(8) + " " + v.px(5) }));
+    drawLiveSamples(v, s);
     drawStageMarks(v, s);
+    drawMinimap(s);
     return;
   }
   const running = isRunning(s);
@@ -217,7 +229,28 @@ function drawStageMarks(v, s) {
     const q = mmToPx(s, st.x, st.y);
     if (q && isFinite(q[0])) v.svg.append(sv("path", { d: "M" + (q[0] - lw(14)) + " " + q[1] + "H" + (q[0] + lw(14)) + "M" + q[0] + " " + (q[1] - lw(14)) + "V" + (q[1] + lw(14)), stroke: "#ff3b30", "stroke-width": lw(3) }));
   }
-  if (MC.mvPx) v.svg.append(sv("circle", { cx: MC.mvPx[0], cy: MC.mvPx[1], r: lw(9), fill: "none", stroke: "#2f6fdb", "stroke-width": lw(3) }));
+  const xv = parseFloat(MC.mv.x), yv = parseFloat(MC.mv.y);                       // 이동 목표: 입력한 X · Y 를 [이동] 전에 십자로 먼저 보인다
+  if (!isNaN(xv) && !isNaN(yv) && s.calib.area_mm) {
+    const q = mmToPx(s, xv, yv), lim = limitsXY(s), out = xv < 0 || xv > lim[0] || yv < 0 || yv > lim[1], col = out ? "#e08a1e" : "#2f6fdb";
+    if (q && isFinite(q[0])) {
+      v.svg.append(sv("circle", { cx: q[0], cy: q[1], r: lw(11), fill: "none", stroke: col, "stroke-width": lw(3) }));
+      v.svg.append(sv("path", { d: "M" + (q[0] - lw(18)) + " " + q[1] + "H" + (q[0] + lw(18)) + "M" + q[0] + " " + (q[1] - lw(18)) + "V" + (q[1] + lw(18)), stroke: col, "stroke-width": lw(2) }));
+      v.svg.append(sv("text", { x: q[0] + lw(16), y: q[1] - lw(14), "font-size": lw(14), fill: col, "font-weight": 700 }, out ? "이동 목표 · 가동범위 밖" : "이동 목표"));
+    }
+  }
+}
+/* 실시간 화면에도 샘플 번호(좌표가 있으면): 스테이지 좌표 → 사진 */
+function drawLiveSamples(v, s) {
+  if (!s.calib.area_mm || !s.calib.area) return;
+  const lw = (n) => n / v.k;
+  s.samples.forEach((p) => {
+    if (p.X == null) return;
+    const q = mmToPx(s, p.X, p.Y);
+    if (!q || !isFinite(q[0])) return;
+    const col = p.no === s.sel ? "#2f6fdb" : p.excluded ? "#8a929b" : p.weak ? "#e08a1e" : "#2b3138";
+    v.svg.append(sv("circle", { cx: q[0], cy: q[1], r: lw(10), fill: col, "fill-opacity": 0.9, stroke: "#fff", "stroke-width": lw(1.5) }));
+    v.svg.append(sv("text", { x: q[0], y: q[1] + lw(4), "text-anchor": "middle", "font-size": lw(11), fill: "#fff", "font-weight": 700 }, String(p.no)));
+  });
 }
 function drawPin(v, s, p, lw) {
   const tool = s.tool, jac = pinJac(s);
@@ -249,8 +282,10 @@ function pinJac(s) {
 function drawMinimap(s) {
   const m = M.mini; m.replaceChildren();
   const am = s.calib.area_mm;
-  m.classList.toggle("hidden", !am || !s.stage);
-  if (!am || !s.stage) return;
+  m.classList.toggle("hidden", !M.showMap || !am || !s.stage);
+  if (!M.showMap || !am || !s.stage) return;
+  const vw = M.viewer.el.clientWidth || 600, vh = M.viewer.el.clientHeight || 300, side = Math.max(90, Math.min(190, Math.floor(Math.sqrt(0.09 * vw * vh))));   // 사진 면적의 10 % 이하
+  m.setAttribute("width", side); m.setAttribute("height", side);
   const xs = am.map((p) => p[0]), ys = am.map((p) => p[1]);
   const x0 = Math.min(...xs) - 10, x1 = Math.max(...xs) + 10, y0 = Math.min(...ys) - 10, y1 = Math.max(...ys) + 10;
   const sc = Math.min(160 / (x1 - x0), 150 / (y1 - y0));

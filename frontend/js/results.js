@@ -66,7 +66,7 @@ function renderResults(s) {
   const res = Object.values(d.results || {}).sort((a, b) => a.no - b.no);
   const sum = d.summary || {};
   const dur = d.end && d.start ? d.end - d.start : null;
-  const title = h("div", { class: "card" }, h("div", { class: "row" }, h("b", { class: "grow", text: new Date(d.start * 1000).toLocaleString("ko-KR") + " · " + (d.condition ? d.condition.name : "") + " · 소요 " + mmss(dur) }),
+  const title = h("div", { class: "card ttlcard" }, h("div", { class: "row" }, h("b", { class: "grow", text: new Date(d.start * 1000).toLocaleString("ko-KR") + " · " + (d.condition ? d.condition.name : "") + " · 소요 " + mmss(dur) }),
     h("span", { class: "chip ok", text: "완료 " + (sum["완료"] || 0) }), h("span", { class: "chip err", text: "오류 " + (sum["오류"] || 0) }),
     h("span", { class: "chip warn", text: "중지됨 " + (sum["중지됨"] || 0) }), h("span", { class: "chip no", text: "측정 제외 " + (sum["측정 제외"] || 0) })));
   const th = ["번호", "X", "Y", "접촉 Z", "시작", "끝", "결과", "사유"];

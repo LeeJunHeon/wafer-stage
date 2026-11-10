@@ -9,9 +9,12 @@
 5. Z 원점이 없으면 X · Y 이동은 거절이다(경고 후 진행이 아니다).
 6. 이동 시간 한도는 거리 · 속도 · 가속으로 계산한다. 넘으면 느낌표 정지 + 재동기 뒤 연결은 유지하되 위치를 못 믿는다(위치 확인 요구).
 7. 히트건이 꺼졌다고 확인되지 않으면 X · Y 이동을 거절한다(pre_xy 훅).
+8. 사람이 보낸 이동 명령(nowait=True)은 이동 잠금을 기다리지 않는다 - 이동 중이면 즉시 거절(줄 세우지 않는다). 비상정지 직후 1 s 는 모두 거절.
+9. 조그 한 번의 한도 · Z 아래 한도 · 핀이 내려가 있을 때 X · Y 거절 등은 jog_guard 훅(App)이 정한다. 회복 중 조그는 한 번 5 mm 이하.
 다른 모듈은 시리얼에 직접 쓰지 않는다.
 """
 
+import contextlib
 import threading
 import time
 
@@ -21,6 +24,8 @@ from core.stage import StageError, StageGuard, StageTimeout, StageWriteTimeout
 Z_TOP_TOL_MM = 0.05
 DEADLINE_MARGIN = 1.5
 DEADLINE_EXTRA_S = 2.0
+ESTOP_QUIET_S = 1.0                           # 비상정지 직후 이 시간 안에는 사람이 보낸 이동 명령을 받지 않는다
+RECOVERY_JOG_MAX_MM = 5.0                     # 잠금 · 원점 없음(회복) 중 조그는 한 번 이 거리 이하만
 
 
 class MotionError(Exception):
@@ -47,6 +52,8 @@ class Motion:
         self.xy_done = {"x": True, "y": True}          # 이번 회복에서 축별 원점을 다시 잡았나(비상정지 · 재부팅 · 시간 초과면 False 로)
         self.slow_pps = 1500                          # 접촉 높이 마지막 구간 속도(설정 motion.jog_slow_pps)
         self.moving = False
+        self.estop_t = -1e9                            # 마지막 비상정지(재부팅 포함) 단조 시각
+        self.jog_guard = None                         # fn(axis, mm, status, opts) - 조그 규칙(Z 아래 한도 · 핀이 내려가 있으면 X · Y 거절 ...). 거절하면 MotionError
         self.last_move_end = 0.0                      # 마지막 이동이 끝난 단조 시각 - 촬영은 이 시각 이후 프레임만 쓴다
         self.speed_pps = stage_mod.DEFAULT_SPEED_PPS
         self.accel = 40000
@@ -118,9 +125,25 @@ class Motion:
         if tok is not None and tok != self.gen:
             raise MotionError("비상정지로 중단", "estop")
 
+    @contextlib.contextmanager
+    def _locked(self, nowait=False):
+        """이동 잠금. nowait 이면(사람이 보낸 명령) 기다리지 않고 즉시 거절한다 - 이동이 끝난 뒤 늦게 실행되는 일이 없게."""
+        if nowait:
+            if time.monotonic() - self.estop_t < ESTOP_QUIET_S:
+                raise MotionError("비상정지 직후 · 잠시 뒤", "estop_recent")
+            if not self.lock.acquire(blocking=False):
+                raise MotionError("이동 중 · 끝난 뒤", "busy")
+        else:
+            self.lock.acquire()
+        try:
+            yield
+        finally:
+            self.lock.release()
+
     # ---- 비상정지 ----------------------------------------------------
     def estop(self, relays_off=False, off_relays=()):
         """어느 스레드에서든 즉시. 잠금을 기다리지 않는다."""
+        self.estop_t = time.monotonic()
         self.gen += 1                                  # 먼저 세대부터 올려 대기 중인 쓰기를 막는다
         self.estop_locked = True
         self.z_ok = False
@@ -131,6 +154,7 @@ class Motion:
             self.log("비상정지 · 세대 %d" % self.gen)
 
     def _reboot(self, line):
+        self.estop_t = time.monotonic()
         self.gen += 1
         self.estop_locked = True
         self.z_ok = False
@@ -204,7 +228,7 @@ class Motion:
                 raise MotionError("Z 올림 실패 · X Y 이동 안 함", "z_lift")
         return True
 
-    def move_xy(self, x, y, gen=None):
+    def move_xy(self, x, y, gen=None, nowait=False):
         """X · Y 이동 하나. 이동 잠금 안에서 Z 올림 -> ST 로 Z=0 확인 -> X -> Y. 설정으로 끌 수 없다."""
         g = self.gen if gen is None else gen             # 잠금 전에 잡는다
         for v in (x, y):
@@ -214,7 +238,7 @@ class Motion:
         lx, ly = _lm["x_max_mm"], _lm["y_max_mm"]
         if not (0 <= x <= lx and 0 <= y <= ly):
             raise MotionError("가동범위 밖 · X %.1f Y %.1f" % (x, y), "range")
-        with self.lock:
+        with self._locked(nowait):
             self._enter(g)
             self._need_origin(xy=True)
             with self.op(g):
@@ -232,9 +256,9 @@ class Motion:
                     self.last_move_end = time.monotonic()
             return self.stage.status()
 
-    def move_z(self, mm, gen=None):
+    def move_z(self, mm, gen=None, nowait=False):
         g = self.gen if gen is None else gen
-        with self.lock:
+        with self._locked(nowait):
             self._enter(g)
             self._need_origin(xy=(mm > Z_TOP_TOL_MM))
             with self.op(g):
@@ -244,19 +268,26 @@ class Motion:
             return self.stage.status()
 
     # ---- 조그 · 원점 (회복 동작은 잠금 상태에서도 허용) ----------------
-    def jog(self, axis, mm, gen=None):
+    def jog(self, axis, mm, gen=None, nowait=False, opts=None, internal=False):
         g = self.gen if gen is None else gen
-        with self.lock:
+        ax = str(axis).lower()
+        with self._locked(nowait):
             self._enter(g)
-            ax = str(axis).lower()
             if not self.z_ok and not (ax == "z" and mm < 0):
                 raise MotionError("Z 원점 잡기 먼저 · 지금은 Z 위쪽 조그만", "no_z")
+            if not internal and (self.estop_locked or not self.z_ok or not self.xy_ok) and abs(float(mm)) > RECOVERY_JOG_MAX_MM + 1e-9:
+                raise MotionError("회복 중 조그는 한 번 최대 %g mm" % RECOVERY_JOG_MAX_MM, "recovery_step")
             with self.op(g):
+                st = None
+                if (ax == "z" and self.z_ok) or (ax in ("x", "y") and self.xy_ok) or self.jog_guard:
+                    st = self.stage.status()
                 if (ax == "z" and self.z_ok) or (ax in ("x", "y") and self.xy_ok):
-                    cur = self.stage.status().get(ax + "_mm")        # 원점이 있는 축은 가동범위 밖으로 몰지 않는다(펌웨어가 그 축 원점을 풀어 버린다)
+                    cur = st.get(ax + "_mm")                         # 원점이 있는 축은 가동범위 밖으로 몰지 않는다(펌웨어가 그 축 원점을 풀어 버린다)
                     hi = stage_mod.limits_mm()[ax + "_max_mm"]
                     if cur is None or not (0.0 <= cur + float(mm) <= hi + 1e-9):
                         raise MotionError("가동범위 밖 · %s 조그 %+g mm 거절" % (ax.upper(), float(mm)), "range")
+                if self.jog_guard and not internal:
+                    self.jog_guard(ax, float(mm), st, opts or {}, self.z_ok)
                 if ax in ("x", "y") and self.pre_xy:
                     self.pre_xy()                                 # X · Y 조그도 히트건 끄기 확인 뒤에(Z 위쪽 조그는 예외)
                 self.moving = True
@@ -267,7 +298,7 @@ class Motion:
                     self.last_move_end = time.monotonic()
 
     # ---- 원점 잡기 (펌웨어 fz) ------------------------------------------
-    def find_origin(self, axis, gen=None, approach_mm=3.0):
+    def find_origin(self, axis, gen=None, approach_mm=3.0, nowait=False):
         """펌웨어 fz 로 원점을 잡는다: 끝단 쪽으로 최대 10 mm 를 느리게 밀고 -> 2 mm 물러나 0 -> EEPROM 저장.
 
         펌웨어 위치가 남아 있으면(비상정지 뒤 · 원점 해제 전) 끝단 approach_mm 앞까지 먼저 다가간다.
@@ -279,7 +310,7 @@ class Motion:
             raise MotionError("축은 X · Y · Z", "range")
         g = self.gen if gen is None else gen
         info = {"approach": False}
-        with self.lock:
+        with self._locked(nowait):
             self._enter(g)
             if ax != "z" and not self.z_ok:
                 raise MotionError("Z 원점 먼저 · Z 원점 잡기", "no_z")
@@ -300,7 +331,7 @@ class Motion:
                 if homed and 0.0 <= pos <= hi:
                     gap = pos - approach_mm
                     if gap > 0.05:
-                        self.jog(ax, -gap, gen=g)
+                        self.jog(ax, -gap, gen=g, internal=True)
                         info["approach"] = True
                     info["from_mm"] = round(pos, 1)
                 self._enter(g)
@@ -328,14 +359,14 @@ class Motion:
             return info
 
     # ---- 접촉 높이 -----------------------------------------------------
-    def descend_contact(self, z_mm, approach_mm, gen=None, check_xy=None):
+    def descend_contact(self, z_mm, approach_mm, gen=None, check_xy=None, nowait=False):
         """저장한 접촉 높이(절대 Z mm)까지 내린다. approach_mm 앞까지는 보통 속도, 남은 거리는 느린 속도(slow_pps).
         check_xy(status) 가 MotionError 를 던지면 내리지 않는다(X · Y 가 샘플 위일 때만)."""
         g = self.gen if gen is None else gen
         zmax = stage_mod.limits_mm()["z_max_mm"]
         if not isinstance(z_mm, (int, float)) or z_mm != z_mm or not (0.0 < z_mm <= zmax):
             raise MotionError("접촉 높이 오류 · Z 0~%g 밖" % zmax, "range")
-        with self.lock:
+        with self._locked(nowait):
             self._enter(g)
             self._need_origin(xy=True)
             with self.op(g):

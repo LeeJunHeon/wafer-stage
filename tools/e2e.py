@@ -57,7 +57,8 @@ class Client:
                 "sim": {"time_scale": 60.0}, "autosave_s": 60,
                 "relay": {"items": [{"enabled": True, "name": "R%d" % (i + 1), "max_on_s": 0} for i in range(10)],                           "on_estop": "off", "on_stop": "off", "on_error": "off", "on_exit": "off"},
                 "photohome": {"grid_n": 3, "grid_margin_mm": 20.0}, "capture_xy": [10.0, 90.0], "park_xy": [10.0, 20.0],
-                "calib": {"area_size_mm": [160.0, 160.0]}, "heater": {"relay": 10, "max_on_s": 120.0}}
+                "calib": {"area_size_mm": [160.0, 160.0]}, "heater": {"relay": 10, "max_on_s": 120.0},
+                "jog": {"z_max_mm": 45.0}}                       # 예전 시험은 Z 를 크게 조그한다 - 모터 안전 시험(56~)은 이 값을 기본(1 mm)으로 되돌린다
         base = _merge(base, patch or {})
         with open(self.settings, "w", encoding="utf-8") as f:
             json.dump(base, f, ensure_ascii=False)
@@ -278,6 +279,7 @@ def run_cases(names):
     import e2e_cases  # noqa: F401  (시나리오 04~30 등록)
     import e2e_rt  # noqa: F401  (R–T 측정 시나리오 31~ 등록)
     import e2e_conn  # noqa: F401  (장치 연결 상태 시나리오 48~ 등록)
+    import e2e_safety  # noqa: F401  (모터 안전 시나리오 56~ 등록)
     sel = [n for n in CASES if not names or any(k in n for k in names)]
     for n in sel:
         print("== %s" % n, flush=True)

@@ -61,7 +61,9 @@ function poly(g, pts, col, w, dash) { if (pts.length < 2) return; g.append(svgEl
 function readout(f, last, lines, col, all) {
   if (!last && lines.length === 1 && lines[0] === "값 없음") {                  // 데이터가 없으면 그래프 칸 안 가운데 옅은 안내
     const svg0 = f.g.parentNode;
-    svg0.append(svgEl("text", { x: f.m.l + f.pw / 2, y: f.m.t + f.ph / 2, "text-anchor": "middle", "font-size": 15, fill: "#8a929b", opacity: 0.8 }, "측정하면 여기에 그려집니다"));
+    const cx = f.m.l + f.pw / 2, cy = f.m.t + f.ph / 2, two = f.pw < 240;                       // 칸이 좁으면 두 줄(눈금 글자와 겹치지 않게)
+    (two ? ["측정하면", "여기에 그려집니다"] : ["측정하면 여기에 그려집니다"]).forEach((t, i, arr) =>
+      svg0.append(svgEl("text", { x: cx, y: cy + (i - (arr.length - 1) / 2) * 18 + 5, "text-anchor": "middle", "font-size": two ? 13 : 15, fill: "#8a929b", opacity: 0.85 }, t)));
     return;
   }
   const { m } = f, svg = f.g.parentNode, right = m.l + f.pw, bottom = m.t + f.ph;
@@ -83,7 +85,7 @@ function readout(f, last, lines, col, all) {
 
 /* ---- 저항–온도 그래프 ---- */
 function drawRT(svg, s) {
-  const [W, H] = boxSize(svg, 1200, 470), m = { l: 66, r: Math.max(70, Math.min(150, W * 0.24)), t: 34, b: 48 };
+  const [W, H] = boxSize(svg, 1200, 470), m = { l: 66, r: Math.max(108, Math.min(150, W * 0.24)), t: 34, b: 48 };
   const pts = T.pts.filter((p) => p.T != null && p.R != null && (p.ph === "가열" || p.ph === "냉각"));
   const rg = UI.rtRange(pts.map((p) => p.T), pts.map((p) => p.R));
   const f = frame(svg, W, H, m, rg.x, rg.y, { ylog: true, xlabel: "온도 [°C]", ylabel: "저항 [Ω]", xticks: 13 });
@@ -101,7 +103,7 @@ function drawRT(svg, s) {
 
 /* ---- 온도–시간 그래프 ---- */
 function drawTt(svg, s) {
-  const [W, H] = boxSize(svg, 1200, 330), m = { l: 66, r: Math.max(70, Math.min(150, W * 0.24)), t: 38, b: 64 };
+  const [W, H] = boxSize(svg, 1200, 330), m = { l: 66, r: Math.max(108, Math.min(150, W * 0.24)), t: 38, b: 64 };
   const pts = T.pts;
   const tmax = Math.max(60, ...pts.map((p) => p.t));
   const tv = pts.filter((p) => p.T != null);
@@ -125,10 +127,10 @@ function drawTt(svg, s) {
     svg.append(svgEl("line", { x1: a, x2: a, y1: m.t - 10, y2: m.t, stroke: "#8a929b" }));
     if (b - a > 44) svg.append(svgEl("text", { x: (a + b) / 2, y: m.t - 14, "text-anchor": "middle", "font-size": 12, fill: PHASE_COL(sg.ph) }, sg.ph === "예비 냉각" ? "예비 냉각" : sg.ph + " " + sg.cy));
   });
-  svg.append(svgEl("line", { x1: m.l + f.pw + 14, x2: m.l + f.pw + 44, y1: H - 22, y2: H - 22, stroke: "#2b3138", "stroke-dasharray": "6 4", "stroke-width": 1.5 }));
-  svg.append(svgEl("text", { x: m.l + f.pw + 50, y: H - 18, "font-size": 12, fill: "#3b434b" }, "목표 온도선"));
+  svg.append(svgEl("line", { x1: m.l + f.pw + 14, x2: m.l + f.pw + 40, y1: H - 22, y2: H - 22, stroke: "#2b3138", "stroke-dasharray": "6 4", "stroke-width": 1.5 }));
+  svg.append(svgEl("text", { x: m.l + f.pw + 46, y: H - 18, "font-size": 12, fill: "#3b434b" }, "목표선"));
   const last = tv.length ? tv[tv.length - 1] : null;
-  readout(f, last ? [X(last.t), f.py(last.T)] : null, last ? [f1(last.T, 1) + " °C", last.tgt != null ? "목표 " + f1(last.tgt, 1) + " °C" : "목표선 없음(최대)", last.h ? "히트건 켜짐" : "히트건 꺼짐"] : ["값 없음"], last ? PHASE_COL(last.ph) : "#8a929b");
+  readout(f, last ? [X(last.t), f.py(last.T)] : null, last ? [f1(last.T, 1) + " °C", last.tgt != null ? "목표 " + f1(last.tgt, 1) + " °C" : "목표 없음", last.h ? "히트건 켜짐" : "히트건 꺼짐"] : ["값 없음"], last ? PHASE_COL(last.ph) : "#8a929b");
 }
 
 /* ---- 서버에서 점 받기 ---- */

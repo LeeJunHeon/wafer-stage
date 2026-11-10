@@ -176,13 +176,15 @@ function renderPanel(s) {
   const camWhy = s.camera.open ? "" : "카메라 연결 안 됨";                 // 사진이 필요한 작업은 카메라가 없으면 비활성 + 사유
   const noPhoto = viewFor(s) === "live" && !s.camera.open;
   const kids = [];
-  const card = (title, ...x) => h("div", { class: "card" }, h("h3", { text: title }), ...x.filter(Boolean));
+  const card = (title, ...x) => h("div", { class: "card" }, typeof title === "string" ? h("h3", { text: title }) : title, ...x.filter(Boolean));
   const jogCard = () => {
     const sg = s.stage;
     const dis = nostage ? "스테이지 연결 안 됨" : sg.moving ? "이동 중" : lock ? lock : "";
-    return card("조그", h("div", { class: "mono", id: "su-pos", text: sg ? xy(sg.x, sg.y) + " · Z " + f1(sg.z, 2) : "—" }),
-      jogStepRow(s), jogPad(s, { why: dis }),
+    const jc = card(cardHead("조그", h("b", { class: "mono nowrap", id: "su-pos", text: sg ? xy(sg.x, sg.y) + " · Z " + f1(sg.z, 2) : "—" })),
+      jogPad(s, { why: dis, free: S.step === 7 }),
       sg && sg.z > 0.5 ? h("div", { class: "sub3", text: "Z 가 내려가 있음 · 다른 점으로 가기 전 Z↑" }) : null);
+    jc.classList.add("jogcardx");
+    return jc;
   };
   let footNode = null;                                   // [다음 단계] 는 패널 맨 아래 오른쪽(카드 밖에 떠 있지 않게)
   const foot = (extra) => { footNode = S.step < 8 ? h("div", { class: "foot" }, extra, btn("다음 단계", "su-next", null, stepDone(s, S.step) ? "primary" : "")) : null; return null; };
@@ -193,16 +195,24 @@ function renderPanel(s) {
     if (!why && sg.moving) why = "이동 중";
     const have = ax === "z" ? sg && sg.z_ok : sg && (sg.xy_ok || sg.done[ax]);
     return h("div", { class: "axrow" }, h("span", { class: "chip " + (have ? "ok" : "warn"), text: ax.toUpperCase() + " " + (have ? "있음" : "없음") }),
-      btn(ax.toUpperCase() + " 원점 잡기", "su-origin", { axis: ax }, have ? "" : "primary", ax.toUpperCase() + " 를 끝단 쪽으로 최대 10 mm 밀어 2 mm 물러난 자리를 원점으로 잡고 저장합니다.", why));
+      btn("원점 잡기", "su-origin", { axis: ax }, have ? "" : "primary", ax.toUpperCase() + " 를 끝단 쪽으로 최대 10 mm 밀어 2 mm 물러난 자리를 원점으로 잡고 저장합니다.", why));
   };
   if (S.step === 1) {
     const sg = s.stage, miss = sg ? (!sg.z_ok ? "z" : !(sg.xy_ok || sg.done.x) ? "x" : !(sg.xy_ok || sg.done.y) ? "y" : null) : null;
     const hint = !sg ? "스테이지 연결 뒤 원점 잡기" : miss ? (sg.fw_homed[miss] ? miss.toUpperCase() + " · 펌웨어 위치가 남아 있어 끝단 3 mm 앞까지 자동으로 다가간 뒤 잡습니다." : miss.toUpperCase() + " · 조그로 끝단 10 mm 안까지 옮긴 뒤 누르세요.") : "원점이 모두 있습니다.";
-    kids.push(card("스테이지", h("div", { class: "kv" }, h("span", { text: "포트" }), h("b", { text: s.port || "—" }), h("span", { text: "펌웨어" }), h("b", { text: s.fw || "—" }),
-      h("span", { text: "저장 기록" }), h("b", { text: EEPROM_TEXT[s.eeprom] || "—" })),
+    if (!S.ports && !S.portsBusy) setTimeout(() => UI.acts["su-ports"](), 0);                 // 처음 들어오면 포트 목록을 읽는다(목록만 읽고 열지 않는다)
+    const pl = (S.ports && S.ports.ports) || [], cur = S.portSel || s.port || (S.ports && S.ports.selected) || "";
+    const portSel = h("select", { class: "portsel", id: "su-port", "data-tip": "연결할 시리얼 포트를 고릅니다. Arduino 로 보이는 것에 표시가 붙습니다.", disabled: !!lock, onchange: (e) => { S.portSel = e.target.value; } },
+      h("option", { value: "", text: pl.length ? "포트 선택" : (S.portsBusy ? "목록 읽는 중…" : "포트 없음 · USB 확인") }),
+      ...pl.map((x) => h("option", { value: x.device, text: x.device + " · " + x.desc.replace(/\s*\(COM\d+\)\s*$/, "") + (x.arduino ? " · Arduino" : ""), selected: x.device === cur })));
+    kids.push(card(cardHead("스테이지", moreBtn([{ label: "대기 위치로", fn: () => UI.acts["su-park"](), why: lock || (nostage ? "스테이지 연결 안 됨" : !(sg.z_ok && sg.xy_ok && !sg.locked) ? "원점 필요" : "") }])),
+      h("div", { class: "row" }, h("span", { class: "sub fl", text: "포트" }), portSel,
+        btn("연결", "su-port-connect", null, "primary sm", "고른 포트로 저장하고 연결합니다.", lock || (!pl.length ? "포트 없음 · USB 확인" : !(S.portSel || cur) ? "포트를 먼저 고름" : "")),
+        btn("목록 새로고침", "su-ports", null, "sm", "시리얼 포트 목록을 다시 읽습니다.", S.portsBusy ? "읽는 중" : "")),
+      h("div", { class: "row wrap kv1" }, h("span", { class: "sub", text: "연결된 포트" }), h("b", { text: s.port || "—" }), h("span", { class: "sub", text: "펌웨어" }), h("b", { text: s.fw || "—" }),
+        h("span", { class: "sub", text: "저장 기록" }), h("b", { text: EEPROM_TEXT[s.eeprom] || "—" })),
       h("div", { class: "axes" }, axisBtn("z"), axisBtn("x"), axisBtn("y")),
-      h("div", { class: "sub", text: hint }), h("div", { class: "sub3", text: "순서 Z → X → Y · 끝단에 닿는 드르륵 소리는 정상입니다." }),
-      h("div", { class: "row" }, btn("대기 위치로", "su-park", null, "", "대기 위치(설정)로 옮기고 위치를 저장합니다.", lock || (nostage ? "스테이지 연결 안 됨" : !(sg.z_ok && sg.xy_ok && !sg.locked) ? "원점 필요" : "")))));
+      h("div", { class: "sub", text: hint + " 순서 Z → X → Y · 끝단에 닿는 드르륵 소리는 정상입니다." })));
     kids.push(jogCard());
     kids.push(foot());
   } else if (S.step === 2) {
@@ -212,7 +222,8 @@ function renderPanel(s) {
       h("div", { class: "row" }, btn("저장", "su-save-cam", null, "primary", "", lock), btn("카메라 찾기", "su-cam-scan", null, "", "번호 0–5 를 차례로 열어 보고 열리는 카메라를 목록으로 보입니다. 백그라운드로 돌립니다.", lock || (s.cam_scan && s.cam_scan.running ? "찾는 중" : "")),
         moreBtn([{ label: "초점 다시 맞추기", fn: () => UI.acts["su-focus"](), why: lock || camWhy }])),
       s.cam_scan ? h("div", { class: "cands" }, s.cam_scan.running ? h("div", { class: "sub", text: "찾는 중 …" }) : null,
-        ...s.cam_scan.items.filter((x) => x.ok).map((x) => h("div", { class: "cand" }, h("b", { text: "번호 " + x.index }), h("span", { class: "grow", text: (x.busy ? "사용 중 · " : "열림 · ") + (x.size ? x.size.join("×") : "") }),
+        ...s.cam_scan.items.filter((x) => x.ok).map((x) => h("div", { class: "cand" }, x.thumb ? h("img", { class: "cthumb", src: "/camthumb/" + x.index + ".jpg?t=" + (s.cam_scan.running ? 0 : s.v), alt: "카메라 " + x.index }) : h("span", { class: "cthumb none", text: "사진 없음" }),
+          h("b", { text: "번호 " + x.index }), h("span", { class: "grow", text: (x.busy ? "사용 중 · " : "열림 · ") + (x.size ? x.size.join("×") : "") }),
           btn(st.camera_index === x.index ? "선택됨" : "이 번호로", "su-cam-pick", { index: x.index }, "sm", "카메라 번호로 저장합니다.", lock || (st.camera_index === x.index ? "이미 선택됨" : "")))),
         !s.cam_scan.running && !s.cam_scan.items.some((x) => x.ok) ? h("div", { class: "sub", text: "열리는 카메라 없음 · USB 확인" }) : null) : null,
       h("div", { class: "sub3", text: "카메라 설정을 바꾸면 3–6 을 다시 확인" })), foot());
@@ -291,9 +302,31 @@ function renderPanel(s) {
       h("h3", { text: "쿨러 구역 " + zr.rows + "×" + zr.cols }), h("div", { class: "zgrid" }, ...zcells),
       h("div", { class: "row" }, btn("저장", "su-save-dev", null, "primary", "", lock))));
   }
-  P.replaceChildren(...kids.filter(Boolean), ...(footNode ? [footNode] : []));
+  let live = kids.filter(Boolean);
+  const jogEl = live.find((k) => k.classList && k.classList.contains("jogcardx"));
+  P.classList.toggle("pj", !!jogEl);
+  if (jogEl) {                                                  // 조그 카드는 패널 아래에 고정(스크롤 밖) · 그 안 아래 오른쪽에 [다음 단계]
+    if (footNode) jogEl.append(footNode);
+    P.replaceChildren(h("div", { class: "pscroll" }, ...live.filter((k) => k !== jogEl)), jogEl);
+    return;
+  }
+  const lastCard = live.length ? live[live.length - 1] : null;
+  if (footNode && lastCard && lastCard.classList && lastCard.classList.contains("card")) lastCard.append(footNode);          // [다음 단계] 는 그 단계 마지막 카드 안 아래 오른쪽
+  P.replaceChildren(...live, ...(footNode && !(lastCard && lastCard.contains && lastCard.contains(footNode)) ? [footNode] : []));
 }
 /* ---- 동작 ---- */
+UI.acts["su-ports"] = async () => {
+  S.portsBusy = true; S.rightSig = ""; render();
+  const r = await send("ports");
+  S.portsBusy = false;
+  if (r.ok) { S.ports = r.res; if (!S.portSel && r.res.selected) S.portSel = r.res.selected; } else S.ports = { ports: [], selected: null };
+  S.rightSig = ""; render();
+};
+UI.acts["su-port-connect"] = async () => {
+  const sel = document.getElementById("su-port"), port = (sel && sel.value) || S.portSel || UI.state.port;
+  const r = await send("port_connect", { port });
+  if (r.ok) { toast("포트 " + port + " 연결"); S.ports = null; S.rightSig = ""; render(); }
+};
 UI.acts["su-cam-scan"] = async () => { const r = await send("cam_scan"); if (r.ok) toast("카메라를 찾는 중"); };
 UI.acts["su-cam-pick"] = async (a) => { const r = await send("settings_save", { patch: { camera_index: a.index } }); if (r.ok) toast("카메라 번호 " + a.index + " 저장"); };
 UI.acts["su-save-cam"] = saveFields({ camera_index: "f-ci", width: "f-w", height: "f-h", exposure: "f-ex", wb_temperature: "f-wb", focus_mode: "f-fm" });

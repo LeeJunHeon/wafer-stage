@@ -33,7 +33,13 @@ function connect() {
   const ws = new WebSocket("ws://" + location.host + "/ws");
   UI.ws = ws;
   ws.onopen = () => { UI.connected = true; UI.previewOn = null; $("#band") && render(); };
-  ws.onclose = () => { UI.connected = false; render(); setTimeout(connect, 1000); };
+  ws.onclose = () => {
+    UI.connected = false;
+    const pend = UI.pend; UI.pend = {};                                      // 대기 중인 명령은 모두 실패로 끝낸다(ack 가 영영 안 온다)
+    Object.keys(pend).forEach((k) => { try { pend[k]({ ok: false, msg: "서버 연결 끊김" }); } catch (e) { /* 무시 */ } });
+    if (typeof jogReset === "function") jogReset();
+    render(); setTimeout(connect, 1000);
+  };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === "state") { UI.state = m.state; if (m.log) UI.logTail = m.log; render(); }
@@ -54,6 +60,8 @@ function send(cmd, args) {
   });
 }
 function estop() {
+  if (typeof jogOnEstop === "function") jogOnEstop();                      // 조그를 먼저 멈춘다(눌려 있던 키 · 버튼은 뗄 때까지 다시 시작하지 않는다)
+  UI.estopT = performance.now();
   try { if (UI.ws && UI.ws.readyState === 1) UI.ws.send(JSON.stringify({ id: ++UI.nid, cmd: "estop" })); } catch (e) { /* HTTP 로 간다 */ }
   fetch("/estop", { method: "POST" }).catch(() => {});
 }
@@ -81,6 +89,7 @@ function openWin(node, cls) {
   w.className = "win " + (cls || "");
   w.replaceChildren(node);
   $("#tip").classList.add("hidden");                                      // 창이 열리면 설명 풍선은 사라진다
+  if (typeof jogKbdOff === "function") jogKbdOff();                       // 창이 열리면 키보드 조그는 꺼진다
   $("#dimmer").classList.remove("hidden"); w.classList.remove("hidden"); $("#estopDock").classList.remove("hidden");
 }
 function closeWin() { $("#tip").classList.add("hidden"); $("#win").classList.add("hidden"); $("#dimmer").classList.add("hidden"); $("#estopDock").classList.add("hidden"); $("#win").replaceChildren(); }
@@ -116,8 +125,12 @@ document.addEventListener("click", (e) => {
   const fn = UI.acts[act];
   if (fn) fn(args, el, e);
 });
-UI.acts.estop = () => estop();
-UI.acts.tab = (a) => { UI.tab = a.tab; $("#tip").classList.add("hidden"); render(); };
+UI.acts.estop = () => { if (UI.estopT && performance.now() - UI.estopT < 800) return; estop(); };     // 누르는 순간(pointerdown)에 이미 보냈으면 click 은 다시 보내지 않는다
+document.addEventListener("pointerdown", (e) => {                           // 비상정지는 누르는 순간 보낸다(클릭이 끝나기를 기다리지 않는다)
+  if (e.button !== undefined && e.button !== 0) return;
+  if (e.target.closest && e.target.closest("[data-act=\"estop\"]")) estop();
+}, true);
+UI.acts.tab = (a) => { UI.tab = a.tab; $("#tip").classList.add("hidden"); if (typeof jogKbdOff === "function") jogKbdOff(); render(); };
 
 /* ---- 렌더 ---- */
 function render() {

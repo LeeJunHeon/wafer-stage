@@ -265,6 +265,7 @@ class Stage:
         # (.ino 395행) 다음 명령을 그냥 보내면 그대로 움직인다. 그래서 드라이버가
         # 잠가야 한다 - 원점을 다시 잡기 전까지 이동을 보내지 않는다.
         self._aborted = False
+        self.bang_wall = []                         # 시험용: 비상정지 "!" 를 쓴 벽시계 시각들
         # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면 검증이
         # 무의미해진다(포인터·맵이 안 움직인다). 보낸 명령대로 위치를 옮겨 둔다.
         self._dry_xy = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -900,6 +901,7 @@ class Stage:
         """
         self._aborted = True
         if self.dry:
+            self.bang_wall.append(time.time())
             self._log("->", "! (abort)" + (" + r all 0" if relays_off else ""))
             self._dry_rx()
             if relays_off:
@@ -921,6 +923,7 @@ class Stage:
         finally:
             if got:
                 self._wlock.release()
+        self.bang_wall.append(time.time())                  # 시험용: '!' 를 쓴 벽시계 시각(비상정지 지연 측정)
         self._log("->", "! (abort)" + (" + " + " + ".join(cmds) if cmds else ""))     # 로그는 쓴 뒤에(파일 I/O 가 '!' 를 늦추지 않게)
         threading.Thread(target=self._after_abort, daemon=True, name="abort-drain").start()
         return True

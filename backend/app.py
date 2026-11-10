@@ -6,6 +6,8 @@
 """
 
 import collections
+import concurrent.futures
+import contextlib
 import copy
 import datetime
 import os
@@ -62,6 +64,11 @@ class App:
         self.head = calibstore.HeadCalib()
         self.vision = vision_mod.Vision(self.cfg, self._true_xy, self.sim, image)
         self.lock = threading.RLock()
+        self._estop_lk = threading.Lock()
+        self._estop_ex = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="estop")
+        self._estop_fut = None
+        self._estop_t = -1e9
+        self._estop_ex.submit(lambda: None).result()                 # 스레드를 미리 만든다(첫 비상정지가 스레드 생성 때문에 늦지 않게)
         self.version = 0
         self.busy = ""                               # 촬영 | 위치 확인 | 헤드 위치 보정 | 공구 가열 | 빈 판 사진 …
         self.alarm = None
@@ -92,6 +99,7 @@ class App:
         self.opens = {"stage": 0, "camera": 0}                # 시험: 실제로 연 횟수
         self.open_delay = {"stage": 0.0}                      # 시험: 열기를 느리게
         self._auto_th = None
+        self.cam_thumbs = {}                         # [카메라 찾기] 번호별 작은 사진(JPEG)
         self.cam_scan = None                         # [카메라 찾기] 결과: {running, items: [{index, ok, size, busy}]}
         self._apply_missing()
         self.k2110 = self.k2450 = None               # 측정 장비(VISA) - [장비 연결] 을 누를 때만 연다
@@ -295,6 +303,7 @@ class App:
         m.speed_pps = int(self.cfg.get("motion.speed_pps"))
         m.accel = int(self.cfg.get("motion.accel"))
         m.slow_pps = int(self.cfg.get("motion.jog_slow_pps"))
+        m.jog_guard = self._jog_guard
 
     def _init_firmware(self):
         """연결 직후 · 재부팅 뒤: 속도 · 가속 · 통신 감시를 다시 보낸다."""
@@ -390,6 +399,18 @@ class App:
     # ------------------------------------------------------------------
     # 비상정지
     # ------------------------------------------------------------------
+    def estop_async(self):
+        """비상정지 요청(WS · HTTP 둘 다 여기로). 전용 스레드 하나에서만 실행한다 - 이벤트 루프 · 명령 풀에서 쓰기 잠금을 기다리지 않는다.
+        300 ms 안의 같은 요청은 앞 요청의 결과를 그대로 돌려준다(한 번만 처리). Future 를 돌려준다."""
+        now = time.monotonic()
+        with self._estop_lk:
+            f = self._estop_fut
+            if f is not None and now - self._estop_t < 0.3:
+                return f
+            self._estop_t = now
+            self._estop_fut = f = self._estop_ex.submit(self.estop)
+            return f
+
     def estop(self):
         """즉시. 잠금을 기다리지 않는다."""
         if self.motion is None:
@@ -551,8 +572,7 @@ class App:
             if not self.calib.area:
                 raise AppError("판 영역 필요 · 장비 설정 3")
             self.cap_error = None
-            lock = self.motion.lock if self.motion else threading.RLock()
-            with lock:
+            with (self.motion._locked(True) if self.motion else contextlib.nullcontext()):
                 if self.motion and gen != self.motion.gen:
                     raise AppError("비상정지로 중단")
                 self._goto_capture_xy(gen)
@@ -816,7 +836,7 @@ class App:
             raise AppError("가동범위 밖 · X %.1f Y %.1f" % (px, py))
         self._begin("이동")
         try:
-            self.motion.move_xy(px, py, gen=gen)
+            self.motion.move_xy(px, py, gen=gen, nowait=True)
             st = self.motion.status()
             self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
         finally:
@@ -826,31 +846,66 @@ class App:
     # 이동 · 조그 · 회복
     # ------------------------------------------------------------------
     def c_jog(self, a, gen):
+        """조그 한 번. 이동 · 작업 중이면 줄 세우지 않고 즉시 거절한다(기존 프로그램과 같다). rep = 누르고 있는 연속 · free = 접촉 높이 화면(Z 아래 한도 없음)."""
         self._need_stage()
         if self.run and self.run.state == "running" and not self.run.paused:
             raise AppError("측정 중 · 일시정지 뒤 가능")
         if self.rt is not None and self.rt.active:
             raise AppError("R–T 측정 중 · 이동 못 함")
-        ax, mm = str(a["axis"]).lower(), float(a["mm"])
+        if self.busy:
+            raise AppError("%s 중 · 끝난 뒤" % self.busy)
+        ax = str(a["axis"]).lower()
+        if ax not in ("x", "y", "z"):
+            raise AppError("축은 X · Y · Z")
+        try:
+            mm = float(a["mm"])
+        except (TypeError, ValueError):
+            raise AppError("거리 값 오류")
+        if mm != mm or mm == 0 or abs(mm) == float("inf"):
+            raise AppError("거리 값 오류")
         if abs(mm) > float(self.cfg.get("jog.max_mm")):
             raise AppError("한 번 최대 %g mm" % self.cfg.get("jog.max_mm"))
-        self.motion.jog(ax, mm, gen=gen)                # 이동 중이면 이동 잠금 뒤에 줄 서고, 그 사이 비상정지가 오면 gen 으로 버려진다
+        self.motion.jog(ax, mm, gen=gen, nowait=True, opts={"rep": bool(a.get("rep")), "free": bool(a.get("free"))})
         st = self.motion.status()
         self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
+
+    def _jog_guard(self, ax, mm, st, opts, z_ok):
+        """조그 규칙(Motion.jog 이 이동 잠금 안에서 부른다). 거절하면 MotionError."""
+        c = self.cfg
+        cz = c.get("contact_z_mm")
+        z = None if st is None else st.get("z_mm")
+        if ax == "z":
+            zmax = float(c.get("jog.z_max_mm"))
+            if abs(mm) > zmax + 1e-9:
+                raise MotionError("Z 는 한 번 최대 %g mm" % zmax, "z_step")
+            if opts.get("rep") and mm > 0:
+                raise MotionError("Z↓ 는 한 번에 한 스텝", "z_repeat")
+            if mm > 0 and cz is not None and z_ok and not opts.get("free"):
+                lim = float(cz) + float(c.get("jog.z_over_contact_mm"))
+                if z is None or z + mm > lim + 1e-9:
+                    raise MotionError("접촉 높이 %.2f + %.1f mm 아래로 못 내림" % (float(cz), float(c.get("jog.z_over_contact_mm"))), "z_deep")
+        else:
+            if opts.get("rep") and abs(mm) > float(c.get("jog.repeat_max_mm")) + 1e-9:
+                raise MotionError("연속 조그는 스텝 %g mm 이하만" % float(c.get("jog.repeat_max_mm")), "repeat")
+            if cz is not None and z_ok:
+                if z is None or z > float(cz) - float(c.get("jog.xy_clear_mm")) + 1e-9:
+                    raise MotionError("핀이 내려가 있음 · Z 를 올린 뒤", "pin_down")
 
     def c_move_xy(self, a, gen):
         self._need_stage()
         self._no_run("이동")
         if self.motion.moving:
             raise AppError("이동 중 · 끝난 뒤")
-        self.motion.move_xy(float(a["x"]), float(a["y"]), gen=gen)
+        st = self.motion.move_xy(float(a["x"]), float(a["y"]), gen=gen, nowait=True)
+        self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
 
     def c_goto_named(self, a, gen):
         self._need_stage()
         self._no_run("이동")
         key = {"park": "park_xy", "capture": "capture_xy"}[a["name"]]
         x, y = self.cfg.get(key)
-        self.motion.move_xy(x, y, gen=gen)
+        st = self.motion.move_xy(x, y, gen=gen, nowait=True)
+        self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
         if a["name"] == "park":
             self.save_position()                            # 대기 위치에 도착 - 다음 부팅에 원점이 복원되게
 
@@ -858,7 +913,8 @@ class App:
         self._need_stage()
         if self.rt is not None and self.rt.active:
             raise AppError("R–T 측정 중 · 이동 못 함")
-        self.motion.move_z(0.0, gen=gen)
+        st = self.motion.move_z(0.0, gen=gen, nowait=True)
+        self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
 
     def c_origin(self, a, gen):
         """원점 잡기(펌웨어 fz): 축 x | y | z. X · Y 는 Z 원점이 있고 Z 가 맨 위일 때만. 펌웨어 위치가 남아 있으면 끝단 5 mm 앞까지 먼저 다가간다."""
@@ -869,7 +925,7 @@ class App:
             raise AppError("축은 X · Y · Z")
         self._begin("원점 잡기")
         try:
-            info = self.motion.find_origin(ax, gen=gen)
+            info = self.motion.find_origin(ax, gen=gen, nowait=True)
             logger.log("%s 원점 잡기 완료%s" % (ax.upper(), " · 끝단 앞까지 자동 접근" if info.get("approach") else ""))
         finally:
             self._end()
@@ -1005,6 +1061,37 @@ class App:
             return {"connecting": True}
         self.set_alarm(None)
 
+    def c_ports(self, a, gen):
+        """시리얼 포트 목록(COM 번호 · 설명 · Arduino 여부). 목록만 읽는다 - 포트를 열지 않는다. 시뮬레이션은 가짜 목록."""
+        cur = self.cfg.get("serial_port")
+        if self.sim:
+            items = [] if "stage" in self.sim_missing else [{"device": "COM3", "desc": "Arduino Mega 2560 (COM3)", "arduino": True}, {"device": "COM5", "desc": "표준 Bluetooth 직렬 링크 (COM5)", "arduino": False}]
+        else:
+            items = []
+            for p in stage_mod.list_ports():
+                txt = ((p.description or "") + " " + (p.manufacturer or "")).lower()
+                items.append({"device": str(p.device), "desc": str(p.description or p.device), "arduino": "arduino" in txt or "ch340" in txt or "usb serial" in txt})
+        return {"ports": items, "selected": cur, "connected": bool(self.stage is not None)}
+
+    def c_port_connect(self, a, gen):
+        """고른 포트로 저장하고 연결한다(설정 키 serial_port 는 그대로). 이동 · 측정 중에는 거절."""
+        self._no_run("포트 바꾸기")
+        port = str(a.get("port") or "").strip()
+        if not port:
+            raise AppError("포트를 고르십시오")
+        if self.busy:
+            raise AppError("%s 중 · 끝난 뒤" % self.busy)
+        if self.motion is not None and self.motion.moving:
+            raise AppError("이동 중 · 끝난 뒤")
+        if port != self.cfg.get("serial_port"):
+            ok, errs, _w = self.cfg.save({"serial_port": port})
+            if not ok:
+                raise AppError("포트 저장 실패 · " + next(iter(errs.values())))
+            if self.stage is not None:
+                self.c_reconnect({}, gen)                       # 이미 연결돼 있으면 새 포트로 다시 연다
+                return {"port": port}
+        return self.c_reconnect({}, gen) or {"port": port}
+
     def c_cam_scan(self, a, gen):
         """[카메라 찾기]: 번호 0–5 를 차례로 열어 본다(백그라운드). 시뮬레이션은 가짜 목록 - 실제 카메라를 열지 않는다."""
         if self.busy:
@@ -1013,6 +1100,7 @@ class App:
             return {}
         self._cam_step, self._cam_next = 0, 0.0
         self.cam_scan = {"running": True, "items": []}
+        self.cam_thumbs = {}
         threading.Thread(target=self._cam_scan, name="cam-scan", daemon=True).start()
         self.touch()
         return {}
@@ -1026,11 +1114,16 @@ class App:
                     break
                 if idx == cur and self.vision.cam is not None and self.vision.frame_ok:
                     it = {"index": idx, "ok": True, "size": list(self.vision.size or []), "busy": True}
+                    if self.vision.preview_jpg:
+                        self.cam_thumbs[idx] = self._thumb_from_jpg(self.vision.preview_jpg)
                 elif self.sim:
                     ok = idx == 1 and not self.vision.missing
                     it = {"index": idx, "ok": ok, "size": [int(os.environ.get("WAFER2_SYNTH_W", "1280")), int(os.environ.get("WAFER2_SYNTH_H", "960"))] if ok else None, "busy": False}
+                    if ok:
+                        self.cam_thumbs[idx] = self._thumb_from_jpg(self.vision.preview_jpg) if self.vision.preview_jpg else self._thumb_blank()
                 else:
                     it = self._probe_cam(idx)
+                it["thumb"] = idx in self.cam_thumbs
                 items.append(it)
                 self.cam_scan = {"running": True, "items": list(items)}
                 self.touch()
@@ -1041,7 +1134,20 @@ class App:
             self.touch()
 
     @staticmethod
-    def _probe_cam(idx):
+    def _thumb_from_jpg(jpg):
+        """미리보기 JPEG 를 작은 사진(가로 200)으로."""
+        try:
+            img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+            return vision_mod.jpeg(img, 200, 70)
+        except Exception:                                   # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _thumb_blank():
+        img = np.full((150, 200, 3), 90, np.uint8)
+        return vision_mod.jpeg(img, 200, 70)
+
+    def _probe_cam(self, idx):
         """번호 하나를 잠깐 열어 프레임이 오는지 본다(실장비 전용)."""
         cap = None
         try:
@@ -1051,6 +1157,7 @@ class App:
             ok, fr = cap.read()
             if not ok or fr is None:
                 return {"index": idx, "ok": False, "size": None, "busy": False}
+            self.cam_thumbs[idx] = vision_mod.jpeg(fr, 200, 70)
             return {"index": idx, "ok": True, "size": [int(fr.shape[1]), int(fr.shape[0])], "busy": False}
         except Exception:                                   # noqa: BLE001
             return {"index": idx, "ok": False, "size": None, "busy": False}
@@ -1303,12 +1410,14 @@ class App:
             busy = c["state"] == "retry"
             out.append({"id": "camera", "text": "카메라 " + ("연결 중" if busy else "연결 안 됨"), "next": "" if busy else "카메라 번호 확인", "err": False,
                         "actions": [re_btn("cam_reconnect", busy, "카메라를 다시 열어 봅니다."), go(2)]})
-        for nm, label in (("k2110", "K2110"), ("k2450", "K2450")):
-            d = dev[nm]
-            if d["state"] == "down":
-                drv = "드라이버" in (d.get("why") or "")
-                out.append({"id": nm, "text": label + " 연결 안 됨", "next": "NI-VISA 설치 확인" if drv else "주소 · 케이블 확인", "err": False,
-                            "actions": [{"act": "inst_connect", "args": {}, "label": "측정 장비 연결", "tip": "두 장비에 다시 연결합니다. 출력은 켜지 않습니다."}, go(8)]})
+        downs = [(nm, label) for nm, label in (("k2110", "K2110"), ("k2450", "K2450")) if dev[nm]["state"] == "down"]
+        inst_act = [{"act": "inst_connect", "args": {}, "label": "측정 장비 연결", "tip": "두 장비에 다시 연결합니다. 출력은 켜지 않습니다."}, go(8)]
+        if len(downs) == 2:                                   # 둘 다 안 되면 한 줄
+            drv = any("드라이버" in (dev[nm].get("why") or "") for nm, _l in downs)
+            out.append({"id": "inst", "text": "측정 장비 연결 안 됨 · K2110 · K2450", "next": "NI-VISA 설치 확인" if drv else "주소 · 케이블 확인", "err": False, "actions": inst_act})
+        for nm, label in downs if len(downs) == 1 else []:
+            drv = "드라이버" in (dev[nm].get("why") or "")
+            out.append({"id": nm, "text": label + " 연결 안 됨", "next": "NI-VISA 설치 확인" if drv else "주소 · 케이블 확인", "err": False, "actions": inst_act})
         return out
 
     # ------------------------------------------------------------------
@@ -1426,8 +1535,7 @@ class App:
         self._need_camera()
         self._begin("빈 판 사진")
         try:
-            lock = self.motion.lock if self.motion else threading.RLock()
-            with lock:
+            with (self.motion._locked(True) if self.motion else contextlib.nullcontext()):
                 if self.motion:
                     self.motion._enter(gen)
                     cx, cy = self.cfg.get("capture_xy")
@@ -1435,7 +1543,7 @@ class App:
                         raise AppError("원점 필요 · 촬영 위치로 못 감")
                     self.cap_text = "촬영 위치로 이동"
                     self.touch()
-                    self.motion.move_xy(cx, cy, gen=gen)
+                    self.motion.move_xy(cx, cy, gen=gen, nowait=True)
                 img, tm = self._grab(gen, n_best=int(self.cfg.get("capture_frames")), poly=self.calib.area)
             return self._install_ref(img)
         finally:
@@ -1530,8 +1638,7 @@ class App:
         self._need_camera()
         self._begin("촬영")
         try:
-            lock = self.motion.lock if self.motion else threading.RLock()
-            with lock:
+            with (self.motion._locked(True) if self.motion else contextlib.nullcontext()):
                 img, tm = self._grab(gen, n_best=1)
             A, why = (None, "") if not self.calib.area else self._align_snap(img)
             self.snap = {"img": img, "A": A, "id": _stamp(), "t": tm, "why": why}
@@ -1621,13 +1728,13 @@ class App:
         try:
             self.head.clear()
             skipped = 0
-            with self.motion.lock:
+            with self.motion._locked(True):
                 self.motion._enter(gen)
                 for i, y in enumerate(ys):
                     for x in (xs if i % 2 == 0 else xs[::-1]):
                         self.cap_text = "격자 %d / %d" % (len(self.head.d["pairs"]) + skipped + 1, n * n)
                         self.touch()
-                        self.motion.move_xy(float(x), float(y), gen=gen)
+                        self.motion.move_xy(float(x), float(y), gen=gen, nowait=True)
                         st = self.motion.status()
                         img, tm = self._grab(gen, n_best=1)
                         _px, rp, why = self._head_px_ref(img)
@@ -1706,7 +1813,7 @@ class App:
             raise AppError("샘플을 고른 뒤")                  # free: 측정 탭 '이 위치 측정' - 사람이 조그로 핀을 맞춘 자리에서 내림
         self._begin("접촉 높이로 내리기")
         try:
-            st = self.motion.descend_contact(float(z), float(self.cfg.get("approach_mm")), gen=gen, check_xy=chk)
+            st = self.motion.descend_contact(float(z), float(self.cfg.get("approach_mm")), gen=gen, check_xy=chk, nowait=True)
             self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
         finally:
             self._end()
@@ -2290,7 +2397,9 @@ class App:
         elif op == "cut" and fk is not None:
             fk.cut_link(float(a["s"]))
         elif op == "bang" and fk is not None:
-            return {"t": fk.bang_times[-1] if fk.bang_times else None}
+            return {"t": fk.bang_times[-1] if fk.bang_times else None, "wall": list(self.stage.bang_wall)}
+        elif op == "bang":
+            return {"t": None, "wall": list(self.stage.bang_wall)}
         elif op == "freeze" and fk is not None:
             fk.freeze(float(a["s"]))
         elif op == "drop" and fk is not None:

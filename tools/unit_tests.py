@@ -209,6 +209,50 @@ class MotionTest(unittest.TestCase):
         self.assertTrue(m.estop_locked)
         self.assertNotIn("sp", " ".join(x.split()[0] for x in sent))
 
+    def test_nowait_rejects_when_busy_not_queued(self):
+        """사람이 보낸 명령(nowait)은 이동 중이면 줄 서지 않고 즉시 거절한다 - 이동이 끝난 뒤 늦게 실행되지 않는다."""
+        m, st, sent = make_motion(move_s=0.4)
+        t = threading.Thread(target=lambda: m.move_xy(50, 60))
+        t.start()
+        time.sleep(0.1)
+        t0 = time.time()
+        for fn in (lambda: m.jog("x", 1.0, nowait=True), lambda: m.move_xy(10, 10, nowait=True), lambda: m.move_z(0.0, nowait=True), lambda: m.find_origin("x", nowait=True)):
+            with self.assertRaises(motion_mod.MotionError) as c:
+                fn()
+            self.assertEqual(c.exception.code, "busy")
+        self.assertLess(time.time() - t0, 0.3, "거절은 즉시여야 함")
+        t.join(5)
+        self.assertFalse([x for x in sent if x.startswith("jx") or x == "mx 10.0"], "거절된 명령이 늦게 실행됨")
+
+    def test_quiet_after_estop(self):
+        m, st, sent = make_motion()
+        m.estop()
+        with self.assertRaises(motion_mod.MotionError) as c:
+            m.jog("z", -0.5, nowait=True)
+        self.assertEqual(c.exception.code, "estop_recent")
+        time.sleep(motion_mod.ESTOP_QUIET_S + 0.1)
+        m.jog("z", -0.5, nowait=True)                           # 1 s 뒤에는 회복 조그를 받는다(Z 위쪽)
+
+    def test_recovery_jog_limited_to_5mm(self):
+        m, st, sent = make_motion()
+        m.estop()
+        time.sleep(motion_mod.ESTOP_QUIET_S + 0.1)
+        with self.assertRaises(motion_mod.MotionError) as c:
+            m.jog("z", -6.0, nowait=True)
+        self.assertEqual(c.exception.code, "recovery_step")
+        self.assertFalse([x for x in sent if x.startswith("jz")])
+
+    def test_jog_guard_can_reject(self):
+        m, st, sent = make_motion()
+
+        def guard(ax, mm, stt, opts, z_ok):
+            raise motion_mod.MotionError("핀이 내려가 있음", "pin_down")
+        m.jog_guard = guard
+        with self.assertRaises(motion_mod.MotionError) as c:
+            m.jog("x", 1.0, nowait=True)
+        self.assertEqual(c.exception.code, "pin_down")
+        self.assertFalse([x for x in sent if x.startswith("jx")])
+
     def test_recovery_order(self):
         m, st, sent = make_motion()
         m.estop()

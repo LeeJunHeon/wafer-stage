@@ -175,6 +175,21 @@ ITEMS = [
     I("jog.max_mm", 50.0, "float", "stage", "조그 · 끝단", "조그 한 번 한도",
       "조그 한 번에 움직일 수 있는 최대 거리입니다. 넘으면 거절합니다.",
       min=0.1, max=1000, step=0.1, unit="mm"),
+    I("jog.z_steps", [0.05, 0.1, 0.5, 1], "list", "stage", "조그 · 끝단", "Z 조그 스텝",
+      "Z 버튼의 스텝 선택지입니다. 쉼표로 구분합니다. Z 한 번 한도(아래) 이하만 됩니다.",
+      item="float", validate="jog_zsteps"),
+    I("jog.z_max_mm", 1.0, "float", "stage", "조그 · 끝단", "Z 조그 한 번 한도",
+      "Z 조그 한 번에 움직일 수 있는 최대 거리입니다. 넘으면 거절합니다. 핀이 판에 닿는 사고를 막기 위해 작게 둡니다.",
+      min=0.05, max=45, step=0.05, unit="mm"),
+    I("jog.z_over_contact_mm", 0.3, "float", "stage", "조그 · 끝단", "접촉 높이 아래 여유",
+      "접촉 높이가 저장돼 있으면 Z 조그는 접촉 높이 + 이 값보다 아래로 내려가지 않습니다(접촉 높이 화면 제외).",
+      min=0, max=2, step=0.05, unit="mm"),
+    I("jog.xy_clear_mm", 0.5, "float", "stage", "조그 · 끝단", "핀 내려감 판정 여유",
+      "접촉 높이가 저장돼 있고 Z 가 (접촉 높이 − 이 값)보다 깊으면 X · Y 조그를 거절합니다.",
+      min=0, max=5, step=0.1, unit="mm"),
+    I("jog.repeat_max_mm", 1.0, "float", "stage", "조그 · 끝단", "연속 조그 스텝 한도",
+      "버튼 · 키를 누르고 있어 연속으로 가는 것은 스텝이 이 값 이하일 때만 됩니다. 더 큰 스텝은 누를 때마다 한 번입니다.",
+      min=0.1, max=5, step=0.1, unit="mm"),
     I("touch.default_mm", 5.0, "float", "stage", "조그 · 끝단", "끝단 이동 기본 거리",
       "끝단 이동 칸의 처음 값입니다.",
       min=1, max=1000, step=1, unit="mm"),
@@ -504,6 +519,7 @@ BY_KEY = {it["key"]: it for it in ITEMS}
 # 목록형 설정의 길이 · 원소 범위(빈 값이 저장돼 촬영이 깨지는 일이 없도록)
 LIST_RULES = {
     "jog.steps": {"min_len": 1, "max_len": 8, "elem": "float", "lo": 0.01, "hi": 100.0},
+    "jog.z_steps": {"min_len": 1, "max_len": 8, "elem": "float", "lo": 0.01, "hi": 45.0},
     "fixed.ref_area_ratio": {"len": 2, "elem": "float", "lo": 0.01, "hi": 100.0},
     "fixed.area_ratio": {"len": 2, "elem": "float", "lo": 0.01, "hi": 100.0},
     "fixed.local_seeds": {"min_len": 1, "max_len": 8, "elem": "float", "lo": 0.5, "hi": 50.0},
@@ -783,6 +799,14 @@ def _v_jog_steps(key, v, values, errs, warns):
         errs[key] = "0 보다 크고 한도(%g) 이하" % mx
 
 
+def _v_jog_zsteps(key, v, values, errs, warns):
+    mx = _num(get_path(values, "jog.z_max_mm")) or 1e9
+    if not 1 <= len(v) <= 6:
+        errs[key] = "1~6개"
+    elif any(x <= 0 or x > mx for x in v):
+        errs[key] = "0 보다 크고 Z 한도(%g) 이하" % mx
+
+
 def _v_touch_max(key, v, values, errs, warns):
     if 0 < v < 1:
         errs[key] = "0 또는 1 이상"
@@ -928,7 +952,7 @@ def _v_rt(key, v, values, errs, warns):
 
 VALIDATORS = {
     "rt": _v_rt, "contact_z": _v_contact_z, "xy_in_limits": _v_xy_in_limits, "seed_grow": _v_seed_grow, "tol_warn": _v_tol_warn,
-    "head_id": _v_head_id, "jog_steps": _v_jog_steps, "touch_max": _v_touch_max,
+    "head_id": _v_head_id, "jog_steps": _v_jog_steps, "jog_zsteps": _v_jog_zsteps, "touch_max": _v_touch_max,
     "markers": _v_markers, "zones": _v_zones, "area_size": _v_area_size, "tools": _v_tools, "tool_active": _v_tool_active,
     "relays": _v_relays, "conditions": _v_conditions, "condition_active": _v_condition_active,
 }

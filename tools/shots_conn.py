@@ -117,10 +117,10 @@ def run_scenario(name, cfg, out, pw):
         if stg and cam and name == "d_all":
             check(not bands.strip(), "[%s] 연결 문제 띠 없음 (%s)" % (title, bands))
         if name == "e_inst_fail":
-            check("K2110 연결 안 됨" in bands and "K2450 연결 안 됨" in bands, "[%s] 측정 장비 띠 (%s)" % (title, bands.replace("\n", " ")))
+            check("측정 장비 연결 안 됨 · K2110 · K2450" in bands, "[%s] 측정 장비 띠 (%s)" % (title, bands.replace("\n", " ")))
             check(pg.locator('#band .band:has-text("K2110") button:has-text("측정 장비 연결")').count() == 1, "[%s] 측정 장비 띠 + [장비 연결]" % title)
         n_rows = pg.locator("#band .band").count()
-        want_rows = (0 if stg else 1) + (0 if cam else 1) + (2 if name == "e_inst_fail" else 0)
+        want_rows = (0 if stg else 1) + (0 if cam else 1) + (1 if name == "e_inst_fail" else 0)
         check(n_rows == want_rows, "[%s] 장치마다 띠 한 줄 (%d / %d)" % (title, n_rows, want_rows))
         # 시작 못 하는 사유는 한 곳에 하나
         txt = pg.inner_text("#tab-measure")

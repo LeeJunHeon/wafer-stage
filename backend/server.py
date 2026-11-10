@@ -42,7 +42,7 @@ HOST, PORT = "127.0.0.1", 8000
 APP = None
 HOLDER = {}
 CLIENTS = set()
-POOL = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="cmd")
+POOL = concurrent.futures.ThreadPoolExecutor(max_workers=32, thread_name_prefix="cmd")      # 긴 명령 여럿이 풀을 다 차지해 조그 · 정지가 밀리지 않게 넉넉히
 _LOOP = None
 _ARGS = None
 
@@ -131,10 +131,14 @@ async def _broadcaster():
                 logger.log("상태 전송 실패 · " + logger.short(e), "warn")
 
 
+def _index_html():
+    with open(os.path.join(FRONT, "index.html"), encoding="utf-8") as f:
+        return f.read().replace("__V__", _asset_v())
+
+
 @app.get("/")
 async def root():
-    with open(os.path.join(FRONT, "index.html"), encoding="utf-8") as f:
-        html = f.read().replace("__V__", _asset_v())
+    html = await asyncio.to_thread(_index_html)                 # 파일 읽기 · 폴더 훑기는 이벤트 루프 밖에서
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
@@ -198,6 +202,15 @@ async def preview():
     return Response(APP.vision.preview_jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
+@app.get("/camthumb/{idx}.jpg")
+def camthumb(idx: int):
+    """[카메라 찾기] 번호별 작은 사진."""
+    jpg = APP.cam_thumbs.get(int(idx)) if APP else None
+    if not jpg:
+        return Response(status_code=204)
+    return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/shot.jpg")
 def shot_jpg():
     return _img_resp(APP.shot["img"] if APP.shot else None, APP.shot["id"] if APP.shot else 0)
@@ -231,9 +244,9 @@ def run_file(name, file):
 
 
 @app.post("/estop")
-def http_estop():
-    """비상정지 우회로: WS 가 끊겨도 도착한다. 잠금을 기다리지 않는다."""
-    APP.estop()
+async def http_estop():
+    """비상정지 우회로: WS 가 끊겨도 도착한다. 전용 스레드에서 실행하고 루프는 기다리기만 한다(막히지 않는다)."""
+    await asyncio.wrap_future(APP.estop_async())
     return JSONResponse({"ok": True})
 
 
@@ -273,8 +286,15 @@ async def ws_endpoint(ws: WebSocket):
             raw = await ws.receive_text()
             msg = json.loads(raw)
             if msg.get("cmd") == "estop":
-                APP.estop()                                          # 줄 세우지 않는다
-                await ws.send_text(json.dumps({"type": "ack", "id": msg.get("id"), "ok": True}))
+                fut = APP.estop_async()                              # 전용 스레드 · 줄 세우지 않는다. 이 루프는 기다리지 않는다
+
+                async def ack_estop(f=fut, i=msg.get("id")):
+                    with contextlib.suppress(Exception):
+                        await asyncio.wrap_future(f)
+                        await ws.send_text(json.dumps({"type": "ack", "id": i, "ok": True}))
+                t = asyncio.create_task(ack_estop())
+                tasks.add(t)
+                t.add_done_callback(tasks.discard)
                 continue
             if msg.get("cmd") == "preview":
                 APP.vision.preview_on = bool(msg.get("on"))

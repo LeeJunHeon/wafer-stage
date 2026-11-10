@@ -114,7 +114,7 @@ def flow_a(p):
         pg.pg.click('#tabs .tab[data-tab="measure"]')
         pg.pg.click('[data-act="capture"]')
         pg.clicks += 1
-        pg.pg.wait_for_function("document.querySelectorAll('.sgrid .sc').length >= 9", timeout=90000)
+        pg.pg.wait_for_function("UI.state && UI.state.samples.length >= 9", timeout=90000)
         # 장비 설정 7 접촉 높이: 샘플 위로 → Z 내리기(0.1 mm 조그 버튼) → 저장
         pg.pg.click('#tabs .tab[data-tab="setup"]')
         pg.pg.click('.sitem >> nth=6')
@@ -122,10 +122,10 @@ def flow_a(p):
         pg.shot("a3_setup_contact")
         pg.pg.click('[data-act="su-ct-goto"]')
         pg.pg.wait_for_timeout(1500)
-        for _ in range(3):
-            pg.pg.click('#tab-setup .jstep[data-v="10"]')
+        pg.pg.click('#tab-setup .jzstep[data-v="1"]')                    # Z 스텝은 따로(1 mm) - Z↓ 는 한 번에 한 스텝
+        for _ in range(7):
             pg.pg.click('#tab-setup .jogpad .btn:has-text("Z ↓")')      # Z↓
-            pg.pg.wait_for_timeout(400)
+            pg.pg.wait_for_timeout(450)
         try:
             pg.pg.wait_for_selector('[data-act="su-ct-save"]', timeout=6000)
         except Exception:
@@ -260,7 +260,7 @@ def flow_dblclick(p):
         pg = Page(c, p)
         pg.pg.click('#tabs .tab[data-tab="measure"]')
         pg.pg.click('[data-act="m-mode"][data-args*="shot"]')          # 촬영 사진에서 더블클릭으로 추가
-        pg.pg.wait_for_function("document.querySelectorAll('.sgrid .sc').length >= 9", timeout=30000)
+        pg.pg.wait_for_function("UI.state && UI.state.samples.length >= 9", timeout=30000)
         pg.pg.wait_for_timeout(1200)
         n0 = len(c.pump(0.3)["samples"])
         pos = pg.pg.evaluate("""() => {

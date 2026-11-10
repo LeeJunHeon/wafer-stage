@@ -166,6 +166,13 @@ def c07(c):
     check(c.wait(lambda s: s["phase"] == "일시정지", 20), "일시정지 표시")
     time.sleep(0.8)
     ok, r = c.send("jog", axis="x", mm=1.0)
+    z = c.state["stage"]["z"]
+    if z > 0.5:                                       # 핀이 접촉 높이에 내려가 있으면 X · Y 조그는 거절(안전) - Z 를 올린 뒤에 된다
+        check(not ok and "핀이 내려가" in str(r), "일시정지 중 핀이 내려가 있으면 X 조그 거절 (%s)" % (r,))
+        for _ in range(int(z) + 2):
+            c.send("jog", axis="z", mm=-1.0)
+        c.pump(0.4)
+        ok, r = c.send("jog", axis="x", mm=1.0)
     check(ok, "일시정지 중 조그 (%s)" % (r,))
     ok, r = c.send("calib_record")
     check(ok, "기준점 위치 기록 (%s)" % (r,))

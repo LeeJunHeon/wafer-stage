@@ -273,3 +273,67 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 }
 
 .nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- 키보드 조그 켬 표시 · Z 스텝 ---- */
+.card.kbd { border-color: var(--sel); box-shadow: 0 0 0 2px var(--sel-bg) inset; }
+.kbdtag { display: none; align-self: flex-start; padding: 2px 8px; border-radius: 10px; background: var(--sel); color: #fff; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.card.kbd .kbdtag { display: inline-block; }
+.zsteps { gap: 4px; } .zsteps .btn { width: 56px; padding: 0; } .zsteps .sub3 { white-space: nowrap; }
+.btn.jogb.dis { opacity: .55; }
+
+/* ---- 측정 화면 배치(노트북 크기): 오른쪽 = 위치 카드(줄어들지 않음) + 측정 카드(가운데만 스크롤) ---- */
+.mleft > #m-view { flex: 1 1 0; min-height: 340px; }
+.mgraphs { flex: 0 1 34%; min-height: 150px; }
+.mright { width: clamp(440px, 34vw, 520px); }
+.mright #c-pos { flex: none; }
+.mright #c-run { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+#c-run > .rtop, #c-run > .rfoot { flex: none; display: flex; flex-direction: column; gap: var(--gap-row); }
+#c-run > .rmid { flex: 1 1 0; min-height: 40px; overflow: auto; display: flex; flex-direction: column; gap: var(--gap-row); margin-top: var(--gap-row); }
+#c-run > .rfoot { margin-top: var(--gap-row); }
+#c-run .rtbig { margin: 0; }
+#c-run .msteps { max-height: none; overflow: visible; }
+.samchip { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.samchip.warn { border-color: var(--warn); background: var(--warn-bg); }
+.pop.sampop { width: 380px; max-height: 70vh; overflow: auto; padding: var(--gap-row); display: flex; flex-direction: column; gap: var(--gap-row); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; box-shadow: 0 4px 14px rgba(0,0,0,.2); z-index: 1100; }
+.sampop .pophead { display: flex; flex-direction: column; gap: 2px; }
+.sampop .sc { cursor: default; } .sampop .scl { display: flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer; } .sampop .scx { cursor: pointer; }
+.sampop .sc.exc { opacity: .6; }
+
+/* ---- 장비 설정: 포트 고르기 · 카메라 찾기 작은 사진 · 다음 단계(카드 안 아래 오른쪽) ---- */
+.portsel { flex: 1 1 0; min-width: 0; }
+.cand { gap: var(--gap-in); } .cthumb { width: 80px; height: 60px; object-fit: cover; border-radius: 3px; border: 1px solid var(--line); flex: none; background: #2a2e33; }
+.cthumb.none { display: flex; align-items: center; justify-content: center; font-size: 11px; color: #aab1b8; }
+.card > .foot { margin-top: var(--gap-row); }
+
+/* ---- 조그 블록(패드 | Z 열 | 스텝 열) · 위치 카드 한 줄들 ---- */
+.jogpad { display: flex; gap: var(--gap-in); align-items: flex-start; position: relative; }
+.pad { grid-template-columns: repeat(3, 56px); }
+.pad .btn.jogb { width: 56px; padding: 0; }
+.padc { display: flex; align-items: center; justify-content: center; width: 56px; height: var(--btn-h); }
+.padc .kbdtag { display: none; font-size: 11px; line-height: 1.15; text-align: center; color: var(--sel); font-weight: 700; padding: 0; background: none; white-space: normal; align-self: center; }
+.card.kbd .padc .kbdtag { display: block; }
+.zpad { gap: var(--gap-in); } .zpad .btn { width: 56px; padding: 0; }
+.jsteps { flex: 1 1 0; min-width: 0; gap: 4px; }
+.jbtns { display: flex; gap: 6px; } .jbtns .btn { flex: 1 1 0; min-width: 0; padding: 0; }
+.jin { gap: var(--gap-in); } .jin .jstep-in { width: 64px; }
+.mvin { width: 76px; }
+.chead .mono { font-size: 14px; }
+.chead .mtarget { flex: 0 1 auto; } .chead .mtarget .btn { flex: 0 0 auto; padding: 0 12px; }
+#c-run .phase { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 55%; }
+.waitbox.row { align-items: center; padding: 6px 10px; }
+.mright { gap: var(--gap-card); }
+
+/* ---- 장비 설정 오른쪽 패널: 조그 카드는 아래에 고정, 나머지 카드만 스크롤 ---- */
+.panel.pj { display: flex; flex-direction: column; overflow: hidden; gap: var(--gap-card); }
+.panel.pj .pscroll { flex: 1 1 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: var(--gap-card); }
+.panel.pj .pscroll > .card { flex: none; margin-bottom: 0; }
+.panel.pj > .card { flex: none; margin-bottom: 0; }
+.axes { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap-in); }
+.axes .axrow { display: flex; flex-direction: column; gap: 4px; align-items: stretch; } .axes .axrow .chip { justify-content: center; } .axes .axrow .btn { width: 100%; }
+.kv1 { gap: 4px var(--gap-in); }
+.ttlcard { min-height: 64px; display: flex; flex-direction: column; justify-content: center; }
+#c-run > .rfoot { gap: 6px; }
+.rtbig { grid-template-columns: repeat(3, 1fr); gap: var(--gap-in); }
+.rtbig > div { display: flex; align-items: baseline; gap: 6px; min-width: 0; } .rtbig .k { flex: none; } .rtbig .v { font-size: 16px; overflow: hidden; text-overflow: ellipsis; }
+.axes .axrow .chip { white-space: nowrap; }
+.vp .world svg, .vp .world svg * { pointer-events: none; }                 /* 사진 위 그림(이동 목표 십자 · 번호 · 윤곽)은 마우스 입력을 가로채지 않는다 - 더블클릭이 두 번째 누름에서 끊기지 않게 */

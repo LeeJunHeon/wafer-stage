@@ -4,6 +4,7 @@
 
   python tools/ui_lint.py [--quick] [--out 폴더]
     --quick  크기 둘(1920×1040 · 1280×680)만
+    --size WxH  그 크기 하나만(예: --size 1366x728) - 크기별로 나눠 돌 때
 
 서버는 --dry + 합성 카메라 + 가짜 장비, 임시 데이터 폴더. 실제 포트 · 카메라 · VISA 는 열지 않는다.
 """
@@ -97,6 +98,42 @@ LINT_JS = r"""
     const wide = Array.from(document.querySelectorAll('#stage *')).filter((e) => e.getBoundingClientRect().right > st.clientWidth + 1 && e.getClientRects().length).slice(0, 3).map((e) => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + '.' + String(e.className).slice(0, 20));
     out.push('가로 스크롤 #stage ' + st.scrollWidth + '>' + st.clientWidth + ' ← ' + wide.join(', '));
   }
+  // (1) 주 동작은 스크롤 없이 보인다: 비상정지 · 조그 · Z · 스텝 · 촬영 · 측정 시작 · 중지 · 일시정지 · 다음 단계 · [다음]
+  if (!inWin) {
+    const MAIN = ['#estop', '#tab-measure .jogpad .jogb', '#tab-measure .jstep', '#tab-measure .jzstep', '#tab-measure [data-act="capture"]', '#tab-measure [data-act="mstart"]', '#tab-measure [data-act="rt-start"]',
+      '#tab-measure [data-act="mstop"]', '#tab-measure [data-act="rt-stop"]', '#tab-measure [data-act="mpause"]', '#tab-measure [data-act="mresume"]', '#tab-measure [data-act="manswer"]',
+      '#tab-setup .jogpad .jogb', '#tab-setup .jstep', '#tab-setup .jzstep', '#tab-setup [data-act="su-next"]'];
+    MAIN.forEach((q) => Array.from(document.querySelectorAll(q)).filter(vis).forEach((e) => {
+      const r = e.getBoundingClientRect(), v = visRect(e);
+      if (r.right > innerWidth + 1 || r.bottom > innerHeight + 1 || r.left < -1 || r.top < -1 || v.width < r.width - 1 || v.height < r.height - 1) out.push('주 동작이 안 보임 ' + key(e) + ' (보이는 ' + Math.round(v.width) + 'x' + Math.round(v.height) + ' / ' + Math.round(r.width) + 'x' + Math.round(r.height) + ')');
+    }));
+  }
+  // (2) 그래프 · 지도 SVG 글자가 틀 밖으로 잘림
+  Array.from(document.querySelectorAll('.gsvg, .minimap')).filter(vis).forEach((sv) => {
+    const sr = sv.getBoundingClientRect();
+    Array.from(sv.querySelectorAll('text')).forEach((t) => {
+      const r = t.getBoundingClientRect();
+      if (!r.width) return;
+      if (r.left < sr.left - 1 || r.right > sr.right + 1 || r.top < sr.top - 1 || r.bottom > sr.bottom + 1) out.push('SVG 글자 잘림 「' + (t.textContent || '').slice(0, 16) + '」 in ' + (sv.parentElement && sv.parentElement.id || sv.getAttribute('class')));
+    });
+  });
+  // (3) 카메라 사진 위를 덮는 요소(지도 · 오류 띠)는 사진 면적의 10 % 이하
+  Array.from(document.querySelectorAll('.vp')).filter(vis).forEach((vp) => {
+    const vr = vp.getBoundingClientRect(), area = vr.width * vr.height;
+    let cov = 0;
+    Array.from(vp.children).forEach((ch) => {
+      if (!vis(ch) || ch.tagName === 'IMG' || ch.tagName === 'CANVAS' || ch.classList.contains('empty') || ch.classList.contains('world') || ch.classList.contains('cap-msg') || (ch.tagName.toLowerCase() === 'svg' && !ch.classList.contains('minimap'))) return;
+      const r = ch.getBoundingClientRect();
+      cov += Math.max(0, Math.min(r.right, vr.right) - Math.max(r.left, vr.left)) * Math.max(0, Math.min(r.bottom, vr.bottom) - Math.max(r.top, vr.top));
+    });
+    if (area > 0 && cov / area > 0.10) out.push('사진을 덮는 요소 ' + Math.round(100 * cov / area) + ' % (한도 10 %)');
+  });
+  // (4) 내용이 있는데 높이가 60 px 미만인 카드
+  Array.from(scope.querySelectorAll('.card, .viewbox, .gbox, .panel')).filter(vis).forEach((e) => {
+    const r = e.getBoundingClientRect();
+    if (e.closest('.pop')) return;
+    if (r.height < 60 && (e.querySelector('button, input, select, svg, img') || (e.textContent || '').trim().length > 3)) out.push('카드 높이 부족 ' + name(e) + '.' + String(e.className).slice(0, 24) + ' ' + Math.round(r.height) + 'px');
+  });
   return Array.from(new Set(out));
 }
 """
@@ -132,6 +169,9 @@ def main():
     if "--out" in args:
         out = args[args.index("--out") + 1]
     sizes = [SIZES[0], SIZES[3]] if "--quick" in args else SIZES
+    if "--size" in args:                                  # 한 크기만(메모리가 모자랄 때 크기별로 나눠 돈다): --size 1366x728
+        w_, h_ = args[args.index("--size") + 1].split("x")
+        sizes = [(int(w_), int(h_))]
     os.makedirs(out, exist_ok=True)
     lint = Lint(out, sizes)
     with sync_playwright() as pw:
@@ -209,6 +249,23 @@ def main():
             tab(pg, "setup")
             for i in range(1, 9):
                 pg.click(".sitem >> nth=%d" % (i - 1)); pg.wait_for_timeout(600); lint.run(pg, "b_setup%d" % i, first_shot=True)
+            pg.close()
+        finally:
+            c.close()
+        # ---- 3) 띠 4줄: 비상정지 경보 + 스테이지(뽑힘) + 카메라 + 측정 장비 ----
+        c = e2e.Client(env={"WAFER2_MISSING": "camera,visa", "WAFER2_AUTO_LINK_S": "3600"}, patch={"jog": {"z_max_mm": 1.0}})
+        try:
+            pg = newpage(c)
+            c.pump(0.5)
+            pg.evaluate("send('inst_connect')"); pg.wait_for_timeout(800)
+            c.http("/estop", "POST"); c.pump(1.2)
+            c.dry("unplug", device="stage"); c.pump(4.0); pg.wait_for_timeout(500)
+            print("띠", [b["id"] for b in c.state.get("bands", [])], flush=True)
+            tab(pg, "measure"); lint.run(pg, "c_measure_band4")
+            tab(pg, "setup")
+            for i in (1, 2, 7):
+                pg.click(".sitem >> nth=%d" % (i - 1)); pg.wait_for_timeout(500); lint.run(pg, "c_setup%d_band4" % i)
+            tab(pg, "results"); lint.run(pg, "c_results_band4")
             pg.close()
         finally:
             c.close()
