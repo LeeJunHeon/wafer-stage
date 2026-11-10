@@ -199,11 +199,19 @@ def _img_resp(img, key):
 async def preview():
     """실시간 그림. 이 요청이 최근 2 s 안에 있었으면 미리보기가 켜져 있다(화면이 켜고 끄는 상태를 따로 기억하지 않는다).
     카메라가 3 s 넘게 새 프레임을 못 주면 옛 그림 대신 204. 응답 헤더: 프레임 번호 · 찍은 시각(벽시계 s)."""
-    r = APP.vision.want_preview()
-    if r is None and APP.vision.cam is not None:                 # 막 켜졌다(옛 그림이 오래됨): 첫 새 프레임을 잠깐 기다린다(루프는 막지 않음) - 빈 화면 깜빡임 방지
+    v = APP.vision
+    n0 = v.preview_n
+    asked = v.want_preview()                                     # 마지막 그림이 주기보다 오래됐으면 다음 프레임을 바로 압축하라고 알린다
+    if asked and v.cam is not None:                              # 그 새 그림을 잠깐 기다린다(한 프레임 + 압축, 이벤트 루프는 막지 않음)
+        for _ in range(8):
+            await asyncio.sleep(0.015)
+            if v.preview_n != n0:
+                break
+    r = v.current_preview()
+    if r is None and v.cam is not None:                          # 막 켜졌다(옛 그림이 오래됨): 첫 새 프레임을 조금 더 기다린다 - 빈 화면 깜빡임 방지
         for _ in range(12):
             await asyncio.sleep(0.05)
-            r = APP.vision.want_preview()
+            r = v.current_preview()
             if r is not None:
                 break
     if r is None:

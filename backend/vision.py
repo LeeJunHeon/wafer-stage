@@ -79,6 +79,7 @@ class Vision:
         self.preview_mono = 0.0
         self._enc_times = collections.deque(maxlen=64)           # 최근 인코딩 시각(실제 갱신 장/초)
         self._cap_req = 0                                        # 촬영이 카메라를 쓰려고 기다리는 중이면 미리보기는 끼어들지 않는다
+        self._enc_now = threading.Event()                        # 화면이 그림을 요청했다 - 다음 grab 한 프레임을 바로 압축한다(주기를 기다리지 않음)
         self._th = None
         self._stop = threading.Event()
         self.last_error = ""
@@ -173,8 +174,18 @@ class Vision:
             self.preview_req_t = time.monotonic()
 
     def want_preview(self):
-        """/preview.jpg 를 한 번 요청받았다: 켜고, 그림이 아직 쓸 만하면 (jpg, seq, 찍은 시각) · 아니면 None."""
-        self.preview_req_t = time.monotonic()
+        """/preview.jpg 를 한 번 요청받았다: 켜고, 마지막 압축이 주기(preview_fps)의 0.9 배보다 오래됐으면 다음에 grab 한 프레임을 바로 압축하라고 알린다
+        (화면 요청 주기와 서버 압축 주기가 따로 돌면 지연이 두 주기만큼 쌓인다). 반환: 압축을 요청했는가."""
+        now = time.monotonic()
+        self.preview_req_t = now
+        period = 1.0 / max(0.5, float(self.cfg.get("preview_fps")))
+        if now - self.preview_mono >= 0.9 * period:
+            self._enc_now.set()
+            return True
+        return False
+
+    def current_preview(self):
+        """지금 그림이 쓸 만하면 (jpg, seq, 찍은 시각) · 아니면(없음 · 3 s 넘게 새 프레임 없음) None."""
         if self.preview_jpg is None or time.monotonic() - self.preview_mono > self.PREVIEW_STALE_S:
             return None
         return self.preview_jpg, self.preview_n, self.preview_t
@@ -217,7 +228,8 @@ class Vision:
                     if self.cam.grab():
                         self.fail_n = 0
                         self.frame_t = t
-                        if t >= next_enc:
+                        if t >= next_enc or self._enc_now.is_set():
+                            self._enc_now.clear()
                             f = self.cam.retrieve()
                             if f is not None:
                                 period = 1.0 / max(0.5, float(self.cfg.get("preview_fps")))
