@@ -695,5 +695,62 @@ class AlignTest(unittest.TestCase):
         self.assertLess(r["resid"], align.RESID_FAIL)
 
 
+class _ChunkSer:
+    """pyserial 모양: readline 이 미리 정한 조각을 하나씩 돌려준다(줄바꿈 없는 조각 = 0.2 s 안에 줄이 끝나지 않은 경우)."""
+
+    def __init__(self, chunks, waiting=b""):
+        self.chunks = list(chunks)
+        self.timeout = 0.2
+        self.waiting = waiting
+
+    def readline(self):
+        return self.chunks.pop(0) if self.chunks else b""
+
+    @property
+    def in_waiting(self):
+        return len(self.waiting)
+
+    def read(self, n):
+        d, self.waiting = self.waiting[:n], self.waiting[n:]
+        return d
+
+
+class SerialLineTest(unittest.TestCase):
+    """D7: 줄바꿈으로 끝나지 않은 조각은 줄로 넘기지 않고 이어 붙인다 · 입력 비우기가 줄 중간에서 끊은 나머지는 버린다 · ST 는 DIRTY= 까지."""
+
+    def _st(self, ser):
+        st = stage_mod.Stage(dry=False)
+        st.ser = ser
+        st._log = lambda *a: None
+        return st
+
+    def test_partial_line_is_joined(self):
+        st = self._st(_ChunkSer([b"ST X=16000 Y=8000 X2=16000 Z=3", b"", b"200 HX=1 HY=1 HZ=1 DIRTY=0\n"]))
+        got = [st._readline() for _ in range(3)]
+        self.assertEqual(got[:2], [None, None])
+        self.assertEqual(got[2], "ST X=16000 Y=8000 X2=16000 Z=3200 HX=1 HY=1 HZ=1 DIRTY=0")
+
+    def test_drain_cut_tail_is_dropped(self):
+        st = self._st(_ChunkSer([b"83.53ms | X=16000 Y=8000 Z=0\n", b"ST X=1 Y=2 X2=1 Z=0 HX=1 HY=1 HZ=1 DIRTY=0\n"], waiting=b"  X  + cmd=16000 out=16000 t=27"))
+        st._drain()
+        self.assertIsNone(st._readline())                   # 옛 완료 보고의 꼬리(" | X=")를 이번 응답으로 읽지 않는다
+        self.assertTrue(st._readline().startswith("ST X=1 "))
+
+    def test_truncated_st_not_accepted(self):
+        st = self._st(_ChunkSer([b"ST X=16000 Y=8000 X2=16000 Z=3\n", b"ST X=16000 Y=8000 X2=16000 Z=3200 HX=1 HY=1 HZ=1 DIRTY=0\n"]))
+        st._write = lambda cmd: None
+        d = st.status()
+        self.assertAlmostEqual(d["z_mm"], 20.0)
+
+    def test_read_exception_is_io_error(self):
+        class Bad(_ChunkSer):
+            def readline(self):
+                raise OSError("장치가 시스템에 부착되어 있지 않습니다")
+        st = self._st(Bad([]))
+        with self.assertRaises(stage_mod.StageIOError):
+            st._readline()
+        self.assertTrue(issubclass(stage_mod.StageIOError, stage_mod.StageTimeout))     # 시간 초과와 같이 다룬다(위치 못 믿음)
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]] + [a for a in sys.argv[1:]], verbosity=2)

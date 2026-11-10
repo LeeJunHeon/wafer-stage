@@ -165,6 +165,7 @@ WD_MARK = "통신 끊김"          # 펌웨어 V11 통신 감시가 릴레이를
 WARN_MARK = "[!]"
 
 
+import collections  # noqa: E402
 import functools  # noqa: E402
 
 SERIAL_FACTORY = None               # 시험용(tools/fake_v11.py): fn(port, baud, timeout) -> pyserial 모양 객체. 설정되면 진짜 시리얼 대신 쓴다
@@ -275,7 +276,7 @@ class Stage:
         # 주고받은 줄을 그대로 넘겨받을 곳(서버가 화면 로그로 보낸다). 파일 로그는
         # 이것과 무관하게 항상 남는다 - 화면에서 껐다고 기록이 사라지면 안 된다.
         self.on_line = None
-        self.warnings = []
+        self.warnings = collections.deque(maxlen=200)      # 펌웨어 경고 줄(오래 켜 두어도 늘지 않게 최근 200 줄만)
         # 비상정지('!')를 보낸 뒤 상태. 펌웨어는 '명령마다' abortFlag 를 지우므로
         # (.ino 395행) 다음 명령을 그냥 보내면 그대로 움직인다. 그래서 드라이버가
         # 잠가야 한다 - 원점을 다시 잡기 전까지 이동을 보내지 않는다.
@@ -284,6 +285,7 @@ class Stage:
         self.stop_seq = 0                           # 정지 횟수
         self.stop_wall = []                         # 시험용: 정지 '!' 를 쓴 벽시계 시각
         self._rbuf = b""                            # 줄바꿈으로 끝나지 않은 조각(다음 읽기에 이어 붙인다)
+        self._skip_partial = False                  # _drain 이 줄 중간에서 끊었다 - 다음 줄(나머지 조각)은 버린다
         self.cut_info = {}                          # 마지막으로 끊긴 이동: {axis, cmd, out, wall}
         self.bang_wall = []                         # 시험용: 비상정지 "!" 를 쓴 벽시계 시각들
         # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면 검증이
@@ -456,6 +458,10 @@ class Stage:
             raw = ser.read(n)
         except Exception:                                   # noqa: BLE001
             return
+        raw = self._rbuf + raw                              # 앞 읽기에서 남은 줄 조각도 함께 버린다
+        self._rbuf = b""
+        if raw and not raw.endswith(b"\n"):
+            self._skip_partial = True                       # 줄 중간에서 끊었다 - 뒤에 올 나머지 조각은 줄로 넘기지 않는다(옛 완료 보고 꼬리를 이번 응답으로 읽지 않게)
         for ln in raw.decode("utf-8", errors="replace").splitlines():
             if not ln.strip():
                 continue
@@ -491,6 +497,10 @@ class Stage:
         self._rbuf = b""
         if not raw.endswith(b"\n"):                          # pyserial 은 시간 안에 줄바꿈이 없으면 줄 중간까지만 준다 - 이어 붙인다
             self._rbuf = raw[-512:]
+            return None
+        if self._skip_partial:                               # _drain 이 줄 중간에서 끊은 나머지: 버린다
+            self._skip_partial = False
+            self._log("<-", "(버림 · 조각) " + raw.decode("utf-8", errors="replace").rstrip("\r\n"))
             return None
         ln = raw.decode("utf-8", errors="replace").rstrip("\r\n")
         self._log("<-", ln)
@@ -667,6 +677,8 @@ class Stage:
         self._dry_busy = True
         try:
             while time.time() < end:
+                if self.dry_unplugged:                      # 이동 중 USB 가 뽑혔다: 완료 보고를 못 받는다(진짜는 읽기 예외)
+                    raise StageIOError("읽기 실패: 포트 없음 (dry 뽑힘)")
                 cut = None
                 if self.abort_seq != tok[0]:
                     cut = StageError("비상정지로 중단됨 · (dry) [!] 중단")
@@ -934,7 +946,7 @@ class Stage:
             def cut(frac):                                  # 펌웨어: 끊기면 위치 카운터는 이미 바뀌었고(틀린 값) 원점 플래그는 fz 전 값
                 self._dry_xy[ax] = prev[0] - frac * n / _ppmm(ax)
                 self._dry_homed[ax] = prev[1]
-            self._dry_wait("원점 잡기", None, tok, dur=self._dry_duration(n) + 0.5 + self._dry_duration(320), on_cut=cut)
+            self._dry_wait("원점 잡기", FZ_TIMEOUT_S, tok, dur=self._dry_duration(n) + 0.5 + self._dry_duration(320), on_cut=cut)
             self._dry_xy[ax] = 0.0
             self._dry_homed[ax] = True
             if ax in self._dry_off:
@@ -1039,7 +1051,9 @@ class Stage:
                 self._wlock.release()
         self.stop_wall.append(time.time())
         self._log("->", "! (stop)")
-        threading.Thread(target=self._after_abort, daemon=True, name="stop-drain").start()
+        # 비상정지와 달리 뒤따르는 입력 비우기를 하지 않는다: 끊긴 이동의 "[!] 중단" 보고는 그 이동을 기다리던 거래가 받고,
+        # 멈춰 있을 때의 "  (이동 중에만 유효)" 는 어떤 거래의 완료 조건과도 맞지 않는다(다음 거래의 _drain 이 버린다).
+        # 비우기 스레드가 거래 잠금을 0.2~0.4 s 잡으면 단독 R–T 측정의 히트건 제어 · 기록이 그만큼 밀린다(e2e 69).
         return True
 
     def _after_abort(self):

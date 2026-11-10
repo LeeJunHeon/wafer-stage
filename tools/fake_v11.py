@@ -229,10 +229,26 @@ class FakeV11:
     def _rs(self):
         self._emit("RS " + " ".join("R%d=%d" % (i + 1, 1 if on else 0) for i, on in enumerate(self.relay)))
 
+    split_st = 0                                            # 시험: 다음 ST 몇 개를 줄 중간에서 둘로 나눠 보낸다(앞 조각은 줄바꿈 없음 - pyserial 이 0.2 s 에 줄 중간까지만 주는 경우)
+    trunc_st = False                                        # 시험: 나눈 앞 조각을 줄바꿈으로 끝낸다(잘린 ST 줄) - 뒤에 바른 줄을 따로 보낸다
+
     def _st(self):
         if os.environ.get("WAFER2_FAKE_SILENT_ST"):                # 시험: ST 에 답하지 않는 보드(연결 중 ST 무응답)
             return
-        self._emit("ST X=%d Y=%d X2=%d Z=%d HX=%d HY=%d HZ=%d DIRTY=%d" % (self.px, self.py, self.px, self.pz, self.hx, self.hy, self.hz, self.dirty))
+        line = "ST X=%d Y=%d X2=%d Z=%d HX=%d HY=%d HZ=%d DIRTY=%d" % (self.px, self.py, self.px, self.pz, self.hx, self.hy, self.hz, self.dirty)
+        if self.split_st > 0 and time.monotonic() >= self.cut_until:
+            self.split_st -= 1
+            cut = line.index(" Z=") + 4                             # "… Z=3" 까지(Z 의 첫 자리만) - 그대로 읽으면 Z 가 맨 위로 보인다
+            now = time.monotonic() + self.latency
+            with self.cv:
+                if self.trunc_st:
+                    self.out.append((now, (line[:cut] + "\n").encode("utf-8")))
+                    self.out.append((now + 0.3, (line + "\n").encode("utf-8")))
+                else:
+                    self.out.append((now, line[:cut].encode("utf-8")))
+                    self.out.append((now + 0.45, (line[cut:] + "\n").encode("utf-8")))
+            return
+        self._emit(line)
 
     def _status(self):
         self._emit("  v=%d a=%d b=%d w=0ms" % (self.v, self.a, self.b))
@@ -383,15 +399,15 @@ class FakeV11:
             self._emit("  [거부] fz 탐색은 1600 펄스(10mm)까지")
             return
         self._emit("--- 원점 탐색 (탐색 %d 펄스) --- 끝에 닿으면 드르륵 소리 (정상)" % n)
-        sv = self.v
+        sv, sa = self.v, self.a
         hx, hy, hz = self.hx, self.hy, self.hz
         self.hx = self.hy = self.hz = True                # 탐색 중에는 범위 검사를 하지 않는다
-        self.v = 1200
+        self.v, self.a = 1200, 20000                       # .ino findZero: vMax = 1200 · accel = 20000
         self._move(ax, -n)
         time.sleep(0.5 * self.time_scale)
         if not self.abort_flag:
             self._move(ax, 320)
-        self.v = sv
+        self.v, self.a = sv, sa
         self.hx, self.hy, self.hz = hx, hy, hz
         if self.abort_flag:
             self._emit("--- 중단됨. 원점 설정 안 됨 ---")            # 위치 카운터는 이미 바뀌어 있다(헛돈 펄스 포함) - 원점 플래그만 fz 전 값

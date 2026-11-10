@@ -61,6 +61,8 @@ class App:
         for d in (paths.DATA_DIR, paths.SHOTS_DIR, paths.RUNS_DIR, paths.LOGS_DIR, paths.REF_HISTORY_DIR):
             os.makedirs(d, exist_ok=True)
         self.stage = self.motion = self.power = self.hub = None
+        # 가동범위는 한 곳(core.stage 의 지금 값)만 본다: 설정 값을 넣고, 연결 때 · 저장 때 다시 넣은 뒤 펌웨어 한계로 자른다
+        stage_mod.set_limits(self.cfg.get("limits.x_max_mm"), self.cfg.get("limits.y_max_mm"), self.cfg.get("limits.z_max_mm"))
         self.calib = calibstore.Calib()
         self.head = calibstore.HeadCalib()
         self.vision = vision_mod.Vision(self.cfg, self._true_xy, self.sim, image)
@@ -159,7 +161,14 @@ class App:
     def shot_dir_name(self):
         return None if not self.shot else self.shot["id"]
 
-    def set_alarm(self, text, nxt=""):
+    bang_fail = None                                 # "비상정지" | "정지": '!' 가 전해지지 않아 다시 보내는 중 - 그동안 다른 경보가 이 경보를 덮지 못한다
+    _held_alarm = None
+
+    def set_alarm(self, text, nxt="", force=False):
+        if self.bang_fail and not force:
+            if text:
+                self._held_alarm = (text, nxt)              # 전송 실패 경보가 우선 - 성공하면 되살린다
+            return
         self.alarm = {"text": text, "next": nxt, "t": time.time()} if text else None
         self.touch()
 
@@ -197,7 +206,9 @@ class App:
             def _mk(*_a):
                 ee = self._fake_next_eeprom or os.environ.get("WAFER2_FAKE_EEPROM") or None
                 self._fake_next_eeprom = None
-                return fake_v11.FakeV11(time_scale=float(os.environ.get("WAFER2_FAKE_SCALE", "0.05")), eeprom=ee)
+                f = fake_v11.FakeV11(time_scale=float(os.environ.get("WAFER2_FAKE_SCALE", "0.05")), eeprom=ee)
+                self._last_fake = f                             # 시험: 연결이 실패해 공개되지 않은 보드도 닫혔는지 본다
+                return f
             stage_mod.SERIAL_FACTORY = _mk
         st = stage_mod.Stage(port=port, dry=self.dry)
         st.on_line = lambda arrow, text: self.serial_log.append((time.strftime("%H:%M:%S"), arrow, text))
@@ -245,6 +256,7 @@ class App:
                 mo._xy_lost()
                 st._aborted = True
             self.stage, self.motion, self.power, self.hub = st, mo, pw, hub          # 여기서 한꺼번에 공개
+            self.bang_fail = None                                                # 새로 연결했다(보드가 재시작돼 모터가 멈춘 상태) - 전달 못 한 '!' 는 끝
             self.eeprom = eeprom
             ok = True
         finally:
@@ -464,8 +476,21 @@ class App:
             if f is not None and now - self._estop_t < 0.3:
                 return f
             self._estop_t = now
+            if f is not None and not f.done():
+                # 앞 비상정지가 아직 끝나지 않았다(쓰기가 막혀 있다) - 새로 누른 것은 그 뒤에 줄 서지 않고 따로 시도한다
+                f = concurrent.futures.Future()
+                threading.Thread(target=self._run_into, args=(f, self.estop, t_req), daemon=True, name="estop-extra").start()
+                self._estop_fut = f
+                return f
             self._estop_fut = f = self._estop_ex.submit(self.estop, t_req)
             return f
+
+    @staticmethod
+    def _run_into(fut, fn, *a):
+        try:
+            fut.set_result(fn(*a))
+        except BaseException as e:                       # noqa: BLE001
+            fut.set_exception(e)
 
     def stop_async(self, t_req=None):
         """정지 요청(WS · HTTP). 비상정지와 같은 수준의 빠른 길이지만 실행 스레드는 따로다. 300 ms 안의 같은 요청은 한 번만."""
@@ -476,6 +501,11 @@ class App:
             if f is not None and now - self._stop_t < 0.3:
                 return f
             self._stop_t = now
+            if f is not None and not f.done():                # 앞 정지가 막혀 있으면 따로 시도(비상정지와 같은 규칙)
+                f = concurrent.futures.Future()
+                threading.Thread(target=self._run_into, args=(f, self.stop, t_req), daemon=True, name="stop-extra").start()
+                self._stop_fut = f
+                return f
             self._stop_fut = f = self._stop_ex.submit(self.stop, t_req)
             return f
 
@@ -497,6 +527,7 @@ class App:
             return {"ok": True}
         heater = int(self.cfg.get("heater.relay"))
         policy_off = self.cfg.get("relay.on_estop") == "off"
+        was_moving = bool(m.moving)
         state = {"done": False, "err": None}
         rest_lk = threading.Lock()
         rest_ran = [False]
@@ -518,13 +549,19 @@ class App:
         state["done"] = True
         tm.cancel()
         rest()
-        self._report_cut("비상정지", t_req, m)
         if state["err"] is not None:
+            # '!' 가 전해지지 않았다: 사람이 멈춘 줄 알면 안 된다 - 다른 경보(통신 끊김 등)가 이 경보를 덮지 못하게 붙들고 다시 보낸다
+            self.bang_fail = "비상정지"
+            self.set_alarm("비상정지 전송 실패 · 모터 전원을 끄십시오", "다시 보내는 중", force=True)
             self._retry_bang(policy_off, heater, True)
+        else:
+            self.bang_fail = None                           # '!' 가 이번에는 전해졌다(앞서 실패한 전송이 있었어도)
+            self._held_alarm = None
+            self.set_alarm("비상정지 · 이동 잠김", "회복: " + " → ".join(m.recovery_steps()), force=True)   # 쓰기가 늦어 "전송 중" 이 먼저 떴으면 바꾼다
+        self._report_cut("비상정지", t_req, m, was_moving)
         return {"ok": True}
 
     def _estop_rest(self, policy_off, heater, state):
-        m = self.motion
         if self.power:
             self.power.owners.clear() if policy_off else self.power.owners.pop(heater, None)
         if self.run:
@@ -536,10 +573,8 @@ class App:
         self.pending_verify = None
         self.stop_band = None
         self._lock_file(True)
-        if state["err"] is not None or not state["done"]:
-            self.set_alarm("비상정지 전송 실패 · 모터 전원을 끄십시오" if state["err"] is not None else "비상정지 전송 중 · 모터 전원을 끄십시오", "다시 보내는 중")
-        else:
-            self.set_alarm("비상정지 · 이동 잠김", "회복: " + " → ".join(m.recovery_steps()))
+        if not state["done"]:                               # '!' 쓰기가 아직 돌아오지 않았다(막힘) - 끝나면 estop() 이 성공 · 실패 경보로 바꾼다
+            self.set_alarm("비상정지 전송 중 · 모터 전원을 끄십시오", "보내는 중", force=True)
         logger.log("비상정지", "err")
 
     def _retry_bang(self, policy_off, heater, is_estop):
@@ -555,16 +590,24 @@ class App:
                         st.abort(relays_off=policy_off, off_relays=(heater,))
                     else:
                         if self.motion is not None and self.motion.estop_locked:
-                            return                                  # 그 사이 비상정지가 눌렸다 - 그쪽이 책임진다
+                            if self.bang_fail == "정지":
+                                self.bang_fail = None           # 그 사이 비상정지가 눌렸다 - 그쪽이 책임진다
+                            return
                         st.stop()
+                    held, self._held_alarm = self._held_alarm, None
+                    if self.bang_fail == ("비상정지" if is_estop else "정지"):
+                        self.bang_fail = None
                     if is_estop:
-                        self.set_alarm("비상정지 · 이동 잠김", "회복: " + " → ".join(self.motion.recovery_steps()))
+                        self.set_alarm("비상정지 · 이동 잠김", "회복: " + " → ".join(self.motion.recovery_steps()), force=True)
+                    elif held and not held[0].startswith("통신 끊김"):
+                        self.set_alarm(held[0], held[1], force=True)   # 붙들어 둔 다른 경보(히트건 끄기 미확인 등)를 되살린다
                     else:
-                        self.set_alarm(None)
+                        self.set_alarm(None, force=True)
                     logger.log("%s 전송 재시도 성공" % ("비상정지" if is_estop else "정지"), "warn")
                     return
                 except Exception:                           # noqa: BLE001
                     time.sleep(0.1)
+            logger.log("%s 전송 10 s 재시도 실패 · 경보 유지" % ("비상정지" if is_estop else "정지"), "err")
         threading.Thread(target=work, daemon=True, name="bang-retry").start()
 
     def stop(self, t_req=None):
@@ -584,7 +627,9 @@ class App:
             err = e
             logger.log("정지 전송 실패 · " + logger.short(e), "err")
         if err is not None:
-            self.set_alarm("정지 전송 실패 · 비상정지를 누르십시오", "다시 보내는 중")
+            if self.bang_fail != "비상정지":
+                self.bang_fail = "정지"
+                self.set_alarm("정지 전송 실패 · 비상정지를 누르십시오", "다시 보내는 중", force=True)
             self._retry_bang(False, 0, False)
         if not solo:
             if run is not None:
@@ -651,7 +696,7 @@ class App:
         m = self.motion
         return "비상정지로 중단" if (m is not None and m.last_estop_gen > gen) else "정지로 중단"
 
-    def move_block(self, what="이동", jog=False, ignore_moving=False):
+    def move_block(self, what="이동", jog=False, ignore_moving=False, ignore_recent=False):
         """지금 사람이 보낸 이동 명령을 받을 수 있는가: 못 받는 사유 한 줄(받을 수 있으면 ""). 모든 이동 명령과 화면의 비활성 사유가 이 하나를 쓴다."""
         m = self.motion
         if m is None:
@@ -671,9 +716,25 @@ class App:
             return "R–T 측정 중 · %s 못 함" % what
         if self.busy:
             return "%s 중 · 끝난 뒤" % self.busy
+        now = time.monotonic()
+        if ignore_recent:                                   # 화면의 비활성 사유(state): 0.5 · 1 s 짧은 거절은 명령이 맡는다(패드가 깜빡이지 않게)
+            pass
+        elif now - m.estop_t < motion_mod.ESTOP_QUIET_S:
+            return "비상정지 직후 · 잠시 뒤"
+        elif now - m.stop_t < motion_mod.STOP_QUIET_S:
+            return "정지 직후 · 잠시 뒤"                 # 끊긴 이동의 보고가 아직 안 와 moving 이 남아 있어도 사유는 이것이다
         if m.moving and not ignore_moving:
             return "이동 중 · 끝난 뒤"
         return ""
+
+    def _need_move_opt(self, what):
+        """스테이지 없이도 되는 작업(촬영 · 빈 판 사진): 스테이지가 있으면 이동 명령 판단(move_block)을 그대로 쓴다."""
+        if self.motion is None:
+            self._no_run(what)
+            if self.busy:
+                raise AppError("%s 중 · 끝난 뒤" % self.busy)
+            return
+        self._need_move(what)
 
     def _need_move(self, what="이동", jog=False):
         why = self.move_block(what, jog)
@@ -752,14 +813,20 @@ class App:
             if not ok:
                 k = next(iter(errs))
                 raise AppError("%s · %s" % (k, errs[k]))
-            if mo is not None:
+            if mo is not None and live:                     # 장치에 닿는 값(속도 · 가속 · 가동범위 · 시간 한도 · 통신 감시)이 바뀐 저장만 펌웨어로 보낸다
                 try:
                     self._apply_live_cfg(mo)
                 except Exception as e:                      # noqa: BLE001 - 반영하지 못했으면 실패로 답한다
                     logger.log("설정 반영 실패 · " + logger.short(e), "err", raw=repr(e))
                     raise AppError("저장했지만 장치에 반영 못 함 · 다시 연결 필요 · " + logger.short(e, 30))
-                if self.power:
-                    self.power.heater_n = int(self.cfg.get("heater.relay"))
+            elif live:                                      # 스테이지 없음: 가동범위 한 값 · 속도는 바로 바꿔 둔다(연결 때 펌웨어 한계로 다시 자른다)
+                c = self.cfg
+                stage_mod.set_limits(c.get("limits.x_max_mm"), c.get("limits.y_max_mm"), c.get("limits.z_max_mm"))
+                stage_mod.configure(speed_pps=c.get("motion.speed_pps"), jog_pps=c.get("motion.jog_pps"), jog_slow_pps=c.get("motion.jog_slow_pps"),
+                                    line_timeout_s=c.get("serial.line_timeout_s"), move_timeout_s=c.get("serial.move_timeout_s"))
+            if self.power:
+                self.power.heater_n = int(self.cfg.get("heater.relay"))
+            if self.hub:
                 self.hub.configure()
         finally:
             if got:
@@ -836,11 +903,11 @@ class App:
         self.touch()
         img, tm = self.vision.frame_after(t_after, n_best=n_best, poly=poly)
         if self.motion and gen != self.motion.gen:
-            raise AppError("촬영 중 비상정지 · 결과 버림")
+            raise AppError("촬영 중 %s · 결과 버림" % ("비상정지" if self.motion.last_estop_gen > gen else "정지"))
         return img, tm
 
     def c_capture(self, a, gen):
-        self._no_run("촬영")
+        self._need_move_opt("촬영")
         self._need_camera()
         self._begin("촬영")
         try:
@@ -1105,7 +1172,8 @@ class App:
             raise AppError("좌표 없음 · 좌표 보정 필요")
         tl = conditions.active_tool(self.cfg.values)
         px, py = s["X"] - float(tl.get("dx_mm") or 0.0), s["Y"] - float(tl.get("dy_mm") or 0.0)
-        lx, ly = self.cfg.get("limits.x_max_mm"), self.cfg.get("limits.y_max_mm")
+        lm = stage_mod.limits_mm()                          # 가동범위는 한 곳(드라이버의 지금 값 - 설정 + 펌웨어 한계 자르기)
+        lx, ly = lm["x_max_mm"], lm["y_max_mm"]
         if not (0 <= px <= lx and 0 <= py <= ly):
             raise AppError("가동범위 밖 · X %.1f Y %.1f" % (px, py))
         self._begin("이동")
@@ -1113,6 +1181,7 @@ class App:
             self.motion.move_xy(px, py, gen=gen, nowait=True)
             st = self.motion.status()
             self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
+            self.stop_band = None
         finally:
             self._end()
 
@@ -1163,6 +1232,7 @@ class App:
         self._need_move("이동")
         st = self.motion.move_xy(float(a["x"]), float(a["y"]), gen=gen, nowait=True)
         self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
+        self.stop_band = None                               # 끊겼던 이동 안내는 새 이동이 끝까지 가면 닫는다
 
     def c_goto_named(self, a, gen):
         self._need_move("이동")
@@ -1170,6 +1240,7 @@ class App:
         x, y = self.cfg.get(key)
         st = self.motion.move_xy(x, y, gen=gen, nowait=True)
         self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
+        self.stop_band = None
         if a["name"] == "park":
             self.save_position()                            # 대기 위치에 도착 - 다음 부팅에 원점이 복원되게
 
@@ -1311,6 +1382,9 @@ class App:
             return [{"act": "apply_position", "args": {}, "label": "적용", "tip": "위치 확인으로 잰 X · Y 를 스테이지에 적용합니다."},
                     {"act": "verify_position", "args": {}, "label": "위치 확인", "tip": "헤드 마커를 다시 찍어 실제 X · Y 를 잽니다."},
                     {"act": "alarm_clear", "args": {}, "label": "확인", "tip": "경보를 닫습니다(위치는 그대로)."}]
+        if t.startswith("정지 전송") or t.startswith("비상정지 전송"):
+            return [{"act": "estop", "args": {}, "label": "비상정지", "tip": "비상정지를 보냅니다(정지가 전해지지 않았습니다)."},
+                    {"act": "reconnect", "args": {}, "label": "다시 연결", "tip": "스테이지를 다시 연결합니다(보드가 다시 시작해 모터가 멈춥니다)."}]
         if t.startswith("통신 끊김"):
             return [{"act": "link_check", "args": {}, "label": "연결 확인", "tip": "스테이지에 상태를 물어 응답이 오면 경보를 닫습니다."},
                     {"act": "reconnect", "args": {}, "label": "다시 연결", "tip": "스테이지를 다시 연결합니다."}]
@@ -1346,6 +1420,8 @@ class App:
         return {"d": d}
 
     def c_alarm_clear(self, a, gen):
+        if self.bang_fail:
+            raise AppError("%s 전송 중 · 모터 전원을 끄십시오" % self.bang_fail)
         if self.motion and self.recovery_actions():
             raise AppError("회복이 남음 · " + " → ".join(self.motion.recovery_steps()))
         self.set_alarm(None)
@@ -1782,8 +1858,7 @@ class App:
 
     def c_verify_position(self, a, gen):
         """위치 확인: 지금 자리에서 한 장 -> 헤드 마커 -> 기준 프레임 -> 헤드 위치 보정 -> 실제 X · Y."""
-        self._need_stage()
-        self._no_run("위치 확인")
+        self._need_move("위치 확인")
         self._need_camera()
         self._begin("위치 확인")
         try:
@@ -1839,7 +1914,7 @@ class App:
     # ------------------------------------------------------------------
     def c_ref_capture(self, a, gen):
         """빈 판 사진: 항상 촬영 위치(Z 맨 위)로 자동 이동한 뒤 찍는다. 교체면 옛 -> 새 정렬 뒤 기하를 옮긴다."""
-        self._no_run("빈 판 사진")
+        self._need_move_opt("빈 판 사진")
         self._need_camera()
         self._begin("빈 판 사진")
         try:
@@ -2022,8 +2097,7 @@ class App:
     # 헤드 위치 보정
     # ------------------------------------------------------------------
     def c_head_calib(self, a, gen):
-        self._need_stage()
-        self._no_run("헤드 위치 보정")
+        self._need_move("헤드 위치 보정")
         self._need_camera()
         c = self.calib
         if not c.ready(self.ref_id(), self._size()):
@@ -2089,7 +2163,7 @@ class App:
             raise AppError("원점 필요 · 장비 설정 1")
         st = self.motion.status()
         z = st.get("z_mm")
-        zmax = float(self.cfg.get("limits.z_max_mm"))
+        zmax = float(stage_mod.limits_mm()["z_max_mm"])
         if z is None or not (0.1 <= z <= zmax):
             raise AppError("Z %s mm · 저장 못 함 (0.1~%g)" % ("?" if z is None else "%.2f" % z, zmax))
         if a.get("no") is not None:
@@ -2111,8 +2185,7 @@ class App:
 
     def c_contact_try(self, a, gen):
         """저장한 접촉 높이로 내려 보기 - X · Y 가 고른 샘플 위일 때만."""
-        self._need_stage()
-        self._no_run("접촉 높이 내려 보기")
+        self._need_move("접촉 높이 내려 보기")
         z = self.cfg.get("contact_z_mm")
         if z is None:
             raise AppError("접촉 높이 필요 · 먼저 저장")
@@ -2241,7 +2314,7 @@ class App:
                 return str(e), []
         if conditions.uses_heat(cond) and not self.cfg.get("relay.items")[int(self.cfg.get("heater.relay")) - 1].get("enabled"):
             return "히트건 릴레이 사용 안 함 · 장비 설정 8", []
-        errs, _w = conditions.validate_condition(cond, self.cfg.values, self.cfg.get("limits.z_max_mm"), prefix="c")
+        errs, _w = conditions.validate_condition(cond, self.cfg.values, stage_mod.limits_mm()["z_max_mm"], prefix="c")
         if errs:
             return "측정 단계 오류 · " + next(iter(errs.values())), []
         for n in conditions.relays_used(cond, self.cfg.values):
@@ -2718,7 +2791,7 @@ class App:
         if op == "world":
             kw = {k: (tuple(v) if isinstance(v, list) and k in ("shift_px", "tilt") else v) for k, v in a["kw"].items()}
             self.vision.set_world(**kw)
-            if self.vision.synth:
+            if self.vision.synth and set(kw) - {"flash"}:              # flash(실시간 지연 시험)는 그림 캐시를 버리지 않는다(다시 그리는 시간이 지연에 끼지 않게)
                 self.vision.synth.cache.clear()
         elif op == "hang":
             if fk is not None:
@@ -2739,12 +2812,26 @@ class App:
             return {"t": fk.bang_times[-1] if fk.bang_times else None, "wall": list(self.stage.bang_wall)}
         elif op == "bang":
             return {"t": None, "wall": list(self.stage.bang_wall)}
+        elif op == "fw" and self.stage is None:             # 공개된 스테이지가 없다(연결 실패 · 연결 중): 마지막 가짜 보드가 닫혔는지만
+            lf = getattr(self, "_last_fake", None)
+            return {"stage": None, "last_alive": None if lf is None else bool(lf.alive), "stop_wall": [], "bang_wall": []}
+        elif op == "hold_txn":                              # 검증 전용: 시리얼 거래 잠금을 s 초 잡는다(늦은 이동 거절 시험)
+            st = self.stage
+
+            def hold(sec=float(a.get("s", 2.0))):
+                with st._txn:
+                    time.sleep(sec)
+            threading.Thread(target=hold, daemon=True, name="hold-txn").start()
+            time.sleep(0.05)
+        elif op == "split_st" and fk is not None:           # 검증 전용: 다음 ST n 개를 줄 중간에서 둘로 나눠 보낸다(앞 조각은 줄바꿈 없음) · trunc=True 면 잘린 줄 + 뒤에 바른 줄
+            fk.split_st = int(a.get("n", 1))
+            fk.trunc_st = bool(a.get("trunc", False))
         elif op == "fw":                                    # 검증 전용: 펌웨어(가짜)가 받은 줄 · 끊긴 이동 · 실제 위치 · 버퍼 넘침
             if fk is not None:
                 return {"log": list(fk.log), "cuts": list(fk.cuts), "bang": list(fk.bang_times), "stop_wall": list(self.stage.stop_wall),
                         "bang_wall": list(self.stage.bang_wall), "real": {k: v / 160.0 for k, v in fk.real.items()},
                         "counter": {"x": fk.px, "y": fk.py, "z": fk.pz}, "hom": [fk.hx, fk.hy, fk.hz], "overflow": fk.overflow, "relay": list(fk.relay),
-                        "mono": time.monotonic()}
+                        "mono": time.monotonic(), "wall": time.time(), "alive": bool(fk.alive)}
             return {"stop_wall": list(self.stage.stop_wall), "bang_wall": list(self.stage.bang_wall), "cut": dict(self.stage.cut_info),
                     "real": {k: self.stage._dry_xy[k] for k in "xyz"}, "relay": list(self.stage._dry_relay), "hom": [self.stage._dry_homed[k] for k in "xyz"]}
         elif op == "set_real" and fk is not None:           # 실제 위치를 카운터와 따로 정한다(펌웨어는 모른다)
@@ -2952,7 +3039,7 @@ class App:
             "stage": None if m is None else {
                 "connected": True, "x": self.pos["x"], "y": self.pos["y"], "z": self.pos["z"], "moving": m.moving, "locked": m.estop_locked,
                 "z_ok": m.z_ok, "xy_ok": m.xy_ok, "recovery": m.recovery_steps(), "gen": m.gen,
-                "jog_block": self.move_block("이동", jog=True, ignore_moving=True), "move_block": self.move_block("이동"),
+                "jog_block": self.move_block("이동", jog=True, ignore_moving=True, ignore_recent=True), "move_block": self.move_block("이동", ignore_recent=True),
                 "done": dict(m.xy_done), "limits": stage_mod.limits_mm(), "fw_homed": dict(self.fw_homed),
                 "origin_text": "원점 정상" if (m.z_ok and m.xy_ok and not m.estop_locked) else "원점 없음"},
             "camera": {"open": cam_ok, "state": dev["camera"]["state"], "size": self.vision.size if cam_ok else None,

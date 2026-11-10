@@ -239,8 +239,9 @@ class Motion:
             self._xy_lost()                            # 위치를 못 믿는다 - 위치 확인(또는 X · Y 원점) 뒤 다시
             if str(what).startswith("Z"):
                 self.z_ok = False                      # Z 가 내려간 채 멈췄을 수 있다 - Z 원점부터 다시(Z 원점 잡기는 먼저 끝단 앞까지 올린다)
-            self.log("%s %s · 정지 + 재동기 %s · %s" % (what, "통신 끊김" if isinstance(e, stage_mod.StageIOError) else "시간 초과", "성공" if ok else "실패", e))
-            raise MotionError("%s 시간 초과 · 위치 확인 필요%s" % (what, "" if ok else " · 재동기 실패"), "timeout") from e
+            io = isinstance(e, stage_mod.StageIOError)
+            self.log("%s %s · 정지 + 재동기 %s · %s" % (what, "통신 끊김" if io else "시간 초과", "성공" if ok else "실패", e))
+            raise MotionError("%s %s · 위치 확인 필요%s" % (what, "통신 끊김" if io else "시간 초과", "" if ok else " · 재동기 실패"), "timeout") from e
         except StageError as e:
             if self.gen != getattr(self._tl, "gen", self.gen):
                 raise self.cancel_err() from e
@@ -457,7 +458,9 @@ class Motion:
         with self.lock:
             self._enter(g)
             if expect_gen is not None and expect_gen != self.gen:
-                raise MotionError("촬영 중 비상정지 · 위치 적용 안 함", "estop")
+                if self.last_estop_gen > expect_gen:
+                    raise MotionError("촬영 중 비상정지 · 위치 적용 안 함", "estop")
+                raise MotionError("촬영 중 정지 · 위치 적용 안 함", "stop")
             if not self.z_ok:
                 raise MotionError("Z 원점 없음 · Z 원점 잡기 먼저", "no_z")
             with self.op(g):

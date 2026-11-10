@@ -82,7 +82,8 @@ function renderSetup(s) {
   const sig = JSON.stringify([S.step, s.dev, s.camera.state, s.cam_scan, lockedBy(s), s.calib, s.ref, s.stage && [s.stage.locked, s.stage.z_ok, s.stage.xy_ok, s.stage.jog_block, s.stage.done, s.stage.fw_homed, s.stage.z > 0.05], s.camera.busy, s.settings.photohome, s.tool, s.verify, JOG.step, S.freeze, S.showPts, S.showHead, S.showRef,
     s.eeprom, s.port, s.fw, s.contact, s.samples.length, s.sel, S.ctNo, s.settings.relay.items, s.settings.cooler, s.settings.heater, s.settings.width, s.settings.exposure, s.settings.wb_temperature,
     s.rt && s.rt.inst, s.settings.rt && [s.settings.rt.k2110_addr, s.settings.rt.k2450_addr], S.instItems, S.instMsg, s.camera.busy]);
-  if (sig !== S.rightSig) { S.rightSig = sig; renderPanel(s); }
+  const holding = JOG.held && JOG.held.src === "pointer" && JOG.held.pad === JOG.pads.s;   // 패드를 누르고 있는 동안은 오른쪽 패널을 다시 짜지 않는다(패드 노드가 옮겨지면 포인터 캡처가 끊긴다)
+  if (sig !== S.rightSig && !holding) { S.rightSig = sig; renderPanel(s); }
   const pd = JOG.pads.s;                                                   // 패드는 다시 만들지 않는다 - 비활성 사유 · 배치만 제자리에서 갱신
   if (pd && pd.isConnected) jogPad(s, { key: "s", why: setupPadWhy(s), free: S.step === 7 });
   const pos = $("#su-pos");

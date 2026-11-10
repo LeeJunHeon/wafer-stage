@@ -119,7 +119,7 @@ function jogStart(axis, sign, src, code, pad, el, pid) {
   pad = pad || jogVisiblePad();
   if (!pad) return;
   if (!jogPadOk(pad)) { if (src === "pointer" && pad.dataset.why) toast(pad.dataset.why, true); return; }
-  if (settling() && src === "pointer") return;                             // 화면이 스스로 바뀐 직후 400 ms 는 누름을 무시한다
+  if (src === "pointer" && settling(el)) return;                           // 화면이 스스로 바뀐 직후 400 ms 는 그 자리의 누름을 무시한다
   const mm = axis === "z" ? JOG.zstep : jogStepNow(pad);
   if (mm == null) { toast(JOG.stepBad || "스텝 값 오류", true); return; }
   if (JOG.timer) { clearTimeout(JOG.timer); JOG.timer = null; }

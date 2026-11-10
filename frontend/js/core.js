@@ -89,8 +89,21 @@ function hideNoDeliver() {
   if (e && !pending) e.classList.add("hidden");
 }
 /* 화면이 스스로 바뀐 직후에는 그 자리의 누름을 잠깐 무시한다(비상정지 · 정지는 예외) */
-function settle(ms) { UI.settleUntil = performance.now() + (ms == null ? 400 : ms); }
-function settling() { return performance.now() < (UI.settleUntil || 0); }
+/* settle(ms, rect): rect 가 없으면 화면 전체(띠의 줄 수가 바뀌어 아래가 밀림), 있으면 그 자리만(닫힌 메뉴 · 창이 덮고 있던 곳 - 더블클릭의 두 번째 누름) */
+function settle(ms, rect) {
+  const until = performance.now() + (ms == null ? 400 : ms);
+  if (rect) (UI.settleRects = (UI.settleRects || []).filter((x) => x.until > performance.now())).push({ r: rect, until });
+  else UI.settleUntil = until;
+}
+function settling(el) {
+  const now = performance.now();
+  if (now < (UI.settleUntil || 0)) return true;
+  const rs = (UI.settleRects || []).filter((x) => x.until > now);
+  if (!rs.length) return false;
+  if (!el || !el.getBoundingClientRect) return true;
+  const r = el.getBoundingClientRect();
+  return rs.some((x) => r.left < x.r.right && x.r.left < r.right && r.top < x.r.bottom && x.r.top < r.bottom);
+}
 
 /* ---- 토스트 · 툴팁 · 창 ---- */
 let toastT = null;
@@ -118,7 +131,7 @@ function openWin(node, cls) {
   if (typeof jogKbdOff === "function") jogKbdOff();                       // 창이 열리면 키보드 조그는 꺼진다
   $("#dimmer").classList.remove("hidden"); w.classList.remove("hidden"); $("#estopDock").classList.remove("hidden");
 }
-function closeWin() { settle(); $("#tip").classList.add("hidden"); $("#win").classList.add("hidden"); $("#dimmer").classList.add("hidden"); $("#estopDock").classList.add("hidden"); $("#win").replaceChildren(); }
+function closeWin() { const w = $("#win"); if (!w.classList.contains("hidden")) settle(400, w.getBoundingClientRect()); $("#tip").classList.add("hidden"); $("#win").classList.add("hidden"); $("#dimmer").classList.add("hidden"); $("#estopDock").classList.add("hidden"); $("#win").replaceChildren(); }
 /* 대화상자: 제목은 질문, 버튼은 동작 이름. buttons = [{label, cls, fn}] */
 function dialog(title, body, buttons) {
   const bs = (buttons || [{ label: "닫기" }]).map((b) => h("button", { tabindex: -1, class: "btn " + (b.cls || ""), text: b.label, onclick: () => { closeWin(); if (b.fn) b.fn(); } }));
@@ -135,19 +148,59 @@ function popMenu(anchor, items) {
   $("#stage").append(m);
   setTimeout(() => document.addEventListener("click", closePop, { once: true }), 0);
 }
-function closePop() { const p = $("#pop"); if (p) { p.remove(); settle(); } }
-function moreBtn(items) { const b = h("button", { tabindex: -1, class: "btn sm", text: "⋯", "data-tip": "더 보기" }); b.addEventListener("click", (e) => { e.stopPropagation(); if (settling()) return; popMenu(b, typeof items === "function" ? items() : items); }); return b; }
+function closePop() { const p = $("#pop"); if (p) { const r = p.getBoundingClientRect(); p.remove(); settle(400, r); } }
+function moreBtn(items) { const b = h("button", { tabindex: -1, class: "btn sm", text: "⋯", "data-tip": "더 보기" }); b.addEventListener("click", (e) => { e.stopPropagation(); if (settling(b)) return; popMenu(b, typeof items === "function" ? items() : items); }); return b; }
 
 /* ---- 스케일 ---- */
 function fit() { UI.scale = 1; }                  /* 창 크기에 맞춰 배치가 늘고 줄며 글자는 줄이지 않는다(좌표 변환용 UI.scale 은 항상 1) */
 window.addEventListener("resize", fit);
+
+/* ---- 화면이 스스로 바뀐 직후 400 ms 는 그 자리의 누름을 무시한다(비상정지 · 정지는 예외) ----
+   settle(): 띠의 줄 수가 바뀜(화면 전체) · 메뉴 · 창이 닫힘(그것이 덮던 자리). slotScan(): 그릴 때마다 보이는 버튼의 자리 · 동작을 기억해 두고,
+   같은 자리의 버튼이 다른 동작으로 바뀌면([일시정지] ↔ [다시 시작] · [다음] 이 나타남 · 띠의 다른 버튼) 그 자리만 400 ms 막는다.
+   onclick 버튼(띠 · 대화상자 · 스텝)도 함께 막도록 캡처 단계에서 본다. */
+const SLOT = { prev: [], changed: [] };
+function rectHit(a, b) { return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom; }
+function slotKey(b) { return (b.getAttribute("data-act") || "") + "|" + (b.getAttribute("data-args") || "") + "|" + (b.dataset.slotName || b.textContent.trim()); }
+function slotScan() {
+  const now = performance.now(), cur = [];
+  document.querySelectorAll("button").forEach((b) => {
+    if (b.offsetParent === null || b.closest(".jogpad") || b.closest("#pop") || b.closest("#win")) return;   // 패드는 다시 만들지 않는다 · 메뉴 · 창은 닫힐 때 settle(창이 열리는 것은 막지 않는다)
+    const act = b.getAttribute("data-act");
+    if (act === "estop" || act === "stop") return;
+    const r = b.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return;
+    cur.push({ r, k: slotKey(b), on: !b.classList.contains("dis") });
+  });
+  // 사람이 방금(1 s 안) 다른 곳을 눌러 바뀐 것(탭 · 단계 · 측정할 곳 고르기)은 막지 않는다 - 누른 자리와 겹치는 변화만. 누른 것이 없으면(서버가 바꿈) 모두.
+  const lp = SLOT.press && now - SLOT.press.t < 1000 ? SLOT.press.r : null;
+  for (const c of cur) {
+    if (!c.on) continue;                                                      // 꺼진 버튼은 눌러도 아무 일이 없다
+    if (lp && !rectHit(c.r, lp)) continue;
+    if (SLOT.prev.some((p) => p.on && p.k !== c.k && rectHit(c.r, p.r)) && !SLOT.prev.some((p) => p.k === c.k && rectHit(c.r, p.r))) SLOT.changed.push({ r: c.r, t: now });
+  }
+  SLOT.prev = cur;
+  SLOT.changed = SLOT.changed.filter((x) => now - x.t < 400);
+}
+document.addEventListener("pointerdown", (e) => { const t = e.target; SLOT.press = { t: performance.now(), r: (t.closest && t.closest("button, [data-act]") || t).getBoundingClientRect() }; }, true);
+function slotChanged(el) {
+  const now = performance.now(), r = el.getBoundingClientRect();
+  return SLOT.changed.some((x) => now - x.t < 400 && rectHit(r, x.r));
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest && e.target.closest("button, [data-act]");
+  if (!b) return;
+  const act = b.getAttribute("data-act");
+  if (act === "estop" || act === "stop") return;
+  if (b.closest(".jogpad") && !b.classList.contains("jstep") && !b.classList.contains("jzstep")) return;   // 패드 방향 · Z 는 누르는 순간(pointerdown)에 판단한다
+  if (settling(b) || slotChanged(b)) { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); }
+}, true);
 
 /* ---- 클릭 위임 ---- */
 document.addEventListener("click", (e) => {
   const el = e.target.closest("[data-act]");
   if (!el) return;
   const act = el.getAttribute("data-act");
-  if (settling() && act !== "estop" && act !== "stop") return;           // 화면이 스스로 바뀐 직후 400 ms 는 그 자리의 누름을 무시한다
   const args = el.getAttribute("data-args") ? JSON.parse(el.getAttribute("data-args")) : {};
   const fn = UI.acts[act];
   if (fn) fn(args, el, e);
@@ -240,7 +293,9 @@ function renderHead(s) {
       band.dataset.sig = sig;
       band.className = "bandbox";
       band.replaceChildren(...bds.map((bd) => h("div", { class: "band " + (bd.err ? "err" : ""), "data-id": bd.id }, h("span", { text: bd.text }), h("span", { class: "next", text: bd.next ? "· " + bd.next : "" }), h("span", { class: "grow" }),
-        ...(bd.actions || []).map((a) => h("button", { tabindex: -1, class: "btn sm" + (a.busy ? " dis" : ""), text: a.label, "data-tip": a.busy ? "연결 중 · 잠시만" : (a.tip || null), onclick: () => { if (!a.busy) bandAct(a); } })))));
+        ...(bd.actions || []).map((a) => a.act === "estop"
+          ? h("button", { tabindex: -1, class: "btn sm danger", "data-act": "estop", text: a.label, "data-tip": a.tip || null })      // 머리줄 비상정지와 같은 길(누르는 순간 · 400 ms 무시 예외)
+          : h("button", { tabindex: -1, class: "btn sm" + (a.busy ? " dis" : ""), text: a.label, "data-tip": a.busy ? "연결 중 · 잠시만" : (a.tip || null), onclick: () => { if (!a.busy) bandAct(a); } })))));
     }
   } else { if (band.dataset.sig) settle(); band.dataset.sig = ""; band.dataset.n = 0; band.className = "bandbox hidden"; band.replaceChildren(); }
 }
@@ -269,6 +324,7 @@ UI.acts.ui_setup = (a) => gotoSetup(a.step || 1);
 function gotoSetup(step) { UI.tab = "setup"; if (typeof S !== "undefined") { S.step = step; S.leftSig = ""; S.rightSig = ""; S.area = null; S.freeze = false; S.showRef = false; } render(); }
 function bandAct(a) {
   if (a.act === "ui_setup") { gotoSetup((a.args || {}).step || 1); return; }
+  if (a.act === "estop") { estop(); return; }                               // 띠의 [비상정지](정지 전송 실패 때)도 머리줄 비상정지와 같은 길(WS + HTTP · 응답 확인)
   const go = async () => { const r = await send(a.act, a.args || {}); if (r.ok && a.act === "origin") toast((a.args.axis || "").toUpperCase() + " 원점 잡기 완료"); };
   if (a.act === "capture" && UI.acts.capture) { UI.acts.capture(); return; }
   if (a.act === "origin") { originConfirm((a.args || {}).axis, go); return; }

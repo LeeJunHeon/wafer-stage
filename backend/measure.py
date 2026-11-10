@@ -15,6 +15,7 @@ import conditions
 import logger
 import store
 from core import motion as motion_mod
+from core import stage as stage_mod
 from core.power import PowerError, HEAT
 from devices import Clock
 
@@ -325,7 +326,8 @@ class Run:
             raise RuntimeError("영상 예외 흉내")
         if t == "move_sample":
             px, py = self._target_xy(s)
-            lx, ly = cfg.get("limits.x_max_mm"), cfg.get("limits.y_max_mm")
+            lm = stage_mod.limits_mm()                       # 가동범위는 한 곳(드라이버의 지금 값)
+            lx, ly = lm["x_max_mm"], lm["y_max_mm"]
             if not (0 <= px <= lx and 0 <= py <= ly):
                 raise FailStep("공구 위치 가동범위 밖 (X %.1f · Y %.1f)" % (px, py))
             app.motion.move_xy(px, py, gen=self.gen)

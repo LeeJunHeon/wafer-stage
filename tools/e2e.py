@@ -1,7 +1,7 @@
 """e2e.py - 전체 흐름 시험(dry + 합성 카메라). 케이스마다 서버를 띄운다: 임시 데이터 폴더(WAFER2_DATA) · 임시 설정 파일(WAFER2_SETTINGS).
 실제 data_v2 · settings.json · COM 포트 · 카메라는 건드리지 않는다.
 
-  python tools/e2e.py [케이스 이름 일부 ...]
+  python tools/e2e.py [케이스 번호(예: 65 · 09b) 또는 이름 일부 ...]
 """
 import json
 import math
@@ -61,7 +61,8 @@ class Client:
                 "relay": {"items": [{"enabled": True, "name": "R%d" % (i + 1), "max_on_s": 0} for i in range(10)],                           "on_estop": "off", "on_stop": "off", "on_error": "off", "on_exit": "off"},
                 "photohome": {"grid_n": 3, "grid_margin_mm": 20.0}, "capture_xy": [10.0, 90.0], "park_xy": [10.0, 20.0],
                 "calib": {"area_size_mm": [160.0, 160.0]}, "heater": {"relay": 10, "max_on_s": 120.0},
-                "jog": {"z_max_mm": 45.0}}                       # 예전 시험은 Z 를 크게 조그한다 - 모터 안전 시험(56~)은 이 값을 기본(1 mm)으로 되돌린다
+                "jog": {"z_max_mm": 45.0},                       # 예전 시험은 Z 를 크게 조그한다 - 모터 안전 시험(56~)은 이 값을 기본(1 mm)으로 되돌린다
+                "rt": {"file_path": ""}}                         # 시험은 실제 NAS(기본 폴더)에 쓰지 않는다 - NAS 시험은 임시 폴더를 준다
         base = _merge(base, patch or {})
         with open(self.settings, "w", encoding="utf-8") as f:
             json.dump(base, f, ensure_ascii=False)
@@ -71,7 +72,7 @@ class Client:
         e.update(env or {})
         self.log = open(os.path.join(self.tmp, "server.log"), "w", encoding="utf-8")
         self.proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "run.py"), "--fake-serial" if MODE == "fake" else "--dry", "--no-window", "--port", str(self.port)],
-                                     env=e, stdout=self.log, stderr=subprocess.STDOUT, cwd=ROOT)
+                                     env=e, stdout=self.log, stderr=subprocess.STDOUT, cwd=self.tmp)     # 상대 경로로 쓰는 것이 있어도 저장소 밖(임시 폴더)
         self.ws = None
         self.state = {}
         self.id = 0
@@ -284,7 +285,9 @@ def run_cases(names):
     import e2e_conn  # noqa: F401  (장치 연결 상태 시나리오 48~ 등록)
     import e2e_safety  # noqa: F401  (모터 안전 시나리오 56~ 등록)
     import e2e_stop  # noqa: F401  (정지 · 원점 · 연결 · 설정 시나리오 65~ 등록)
-    sel = [n for n in CASES if not names or any(k in n for k in names)]
+    def hit(k, n):                                       # "65" · "09b" 처럼 번호만 주면 그 번호의 케이스만(이름 안의 숫자와 섞이지 않게), 아니면 이름 일부
+        return n.split()[0] == k if k.replace("-", "").isalnum() and k[:2].isdigit() and " " not in k else k in n
+    sel = [n for n in CASES if not names or any(hit(k, n) for k in names)]
     for n in sel:
         print("== %s" % n, flush=True)
         c = None

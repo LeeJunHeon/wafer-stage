@@ -4,7 +4,7 @@
 
   latency  비상정지 버튼 pointerdown → 가짜 펌웨어에 '!' 가 쓰인 순간(ms). 상태마다(쉼 · X·Y 이동 · Z 이동 · 접촉 높이로 내리기 · 마우스 연속 조그 ·
            키보드 연속 조그 · 원점 잡기 · 창 열림(도크) · 카메라 자동 시도 중 · 카메라 열기 지연 중 · CPU 부하 · 측정 단계 · R–T 측정). 한도 100 ms.
-  keys     키보드 조그 범위(조그 카드 안에서만) · 창 열림 · 탭 바뀜 · 포커스 잃음 · 비상정지 때 눌려 있던 키로 다시 안 움직임
+  keys     키보드 조그 범위(패드를 직접 눌렀을 때만) · 창 열림 · 탭 바뀜 · 포커스 잃음 · 비상정지 때 눌려 있던 키로 다시 안 움직임
   pad      패드 입력: pointerleave · 탭 숨김 · 서버 끊김에서 멈춤, 다시 연결 뒤 패드 정상
   z        Z 스텝 분리 · Z↓ 연속 없음 · 큰 스텝 한 번만 · 클릭 한 번 = 정확히 한 스텝(펄스 수)
 "지연 <상태> <ms>" 줄은 보고용 표다.
@@ -85,6 +85,9 @@ def ui_latency(pg, c, name, sel="#estop", dispatch=False, limit=100.0):
     check(ms is not None and ms <= limit, "화면 비상정지 지연 · %s · %s ms (한도 %.0f)" % (name, "—" if ms is None else "%.0f" % ms, limit))
 
 
+KBD_ON = '#tab-measure .jogpad .jzstep.on'               # 키보드 조그는 패드(방향 · Z · 스텝 버튼)를 직접 눌렀을 때만 켜진다 - 지금 Z 스텝 버튼을 누르면 스텝은 그대로
+
+
 def kbd_hold(pg, key, secs, step=0.05):
     end = time.time() + secs
     while time.time() < end:
@@ -124,8 +127,8 @@ def run_latency(br):
         ui_latency(pg, c, "마우스 연속 조그", dispatch=True)
         pg.mouse.up()
         rec(c)
-        # 키보드 연속 조그: 카드 안을 눌러 켠 뒤 ↑ 를 누른 채 - 비상정지는 마우스로
-        pg.click('#tab-measure .jogpad .padc')
+        # 키보드 연속 조그: 패드(지금 Z 스텝 버튼)를 눌러 켠 뒤 ↑ 를 누른 채 - 비상정지는 마우스로
+        pg.click(KBD_ON)
         kbd_hold(pg, "ArrowUp", 1.0)
         ui_latency(pg, c, "키보드 연속 조그")
         pg.keyboard.up("ArrowUp")
@@ -206,9 +209,9 @@ def run_keys(br):
         n = nj()
         pg.keyboard.press("ArrowUp"); pg.wait_for_timeout(500)
         check(nj() == n, "다른 버튼에 포커스: ↑ 키가 조그를 보내지 않음 (%d → %d)" % (n, nj()))
-        # (b) 조그 카드 안을 누르면 켜짐 + 표시
-        pg.click('#tab-measure .jogpad .padc')
-        check(pg.locator("#tab-measure #c-pos.kbd").count() == 1, "카드 안을 누르면 '키보드 조그 켬' (카드 강조)")
+        # (b) 패드를 직접 누르면 켜짐 + 표시(가운데 칸은 [정지] - 키보드 조그를 켜지 않는다)
+        pg.click(KBD_ON)
+        check(pg.locator("#tab-measure #c-pos.kbd").count() == 1, "패드(스텝 버튼)를 누르면 '키보드 조그 켬' (카드 강조)")
         check(pg.locator("#tab-measure .kbdtag").first.is_visible(), "'키보드 조그' 표시가 보임")
         n = nj()
         pg.keyboard.press("ArrowUp"); pg.wait_for_timeout(700)
@@ -219,7 +222,7 @@ def run_keys(br):
         pg.keyboard.press("ArrowUp"); pg.wait_for_timeout(400)
         check(nj() == n and pg.locator("#tab-measure #c-pos.kbd").count() == 0, "카드 밖을 누르면 꺼짐")
         # (d) 창이 열려 있으면 어떤 경우에도 안 됨
-        pg.click('#tab-measure .jogpad .padc')
+        pg.click(KBD_ON)
         pg.click('button:has-text("기록 보기")')
         pg.wait_for_timeout(300)
         n = nj()
@@ -229,23 +232,23 @@ def run_keys(br):
         pg.keyboard.press("ArrowLeft"); pg.wait_for_timeout(500)
         check(nj() == n, "창을 닫아도 키보드 조그는 꺼진 채(카드를 다시 눌러야 켜짐)")
         # (e) 탭이 바뀌면 꺼짐
-        pg.click('#tab-measure .jogpad .padc')
+        pg.click(KBD_ON)
         pg.click('#tabs .tab[data-tab="results"]'); pg.wait_for_timeout(300)
         pg.click('#tabs .tab[data-tab="measure"]'); pg.wait_for_timeout(300)
         pg.keyboard.press("ArrowUp"); pg.wait_for_timeout(500)
         check(nj() == n, "탭을 바꿨다 돌아오면 꺼져 있음")
         # (f) 창 포커스를 잃으면 꺼짐
-        pg.click('#tab-measure .jogpad .padc')
+        pg.click(KBD_ON)
         pg.evaluate("window.dispatchEvent(new Event('blur'))")
         pg.keyboard.press("ArrowUp"); pg.wait_for_timeout(500)
         check(nj() == n, "창 포커스를 잃으면 꺼짐")
         # (g) 입력 칸에서는 안 됨
-        pg.click('#tab-measure .jogpad .padc')
+        pg.click(KBD_ON)
         pg.click("#m-x")
         pg.keyboard.press("ArrowUp"); pg.wait_for_timeout(400)
         check(nj() == n, "X 입력 칸에서는 ↑ 키가 조그를 보내지 않음")
         # (h) 비상정지 때 누른 채인 키: 뗄 때까지 다시 시작하지 않음(자동 반복 포함)
-        pg.click('#tab-measure .jogpad .padc')
+        pg.click(KBD_ON)
         pg.keyboard.down("PageUp")                     # Z↑ (0 이라 거절되지만 보냄 시도는 센다)
         pg.keyboard.up("PageUp")
         n = nj()
@@ -350,7 +353,7 @@ def run_z(br):
         pg.wait_for_timeout(600)
         check(len(pulses("jx")) == n0 + 1, "스텝 10 mm 를 1.5 s 누르고 있어도 한 번만 (%d 번)" % (len(pulses("jx")) - n0))
         # 키보드 ↓ 자동 반복도 한 번
-        pg.click('#tab-measure .jogpad .padc')
+        pg.click(KBD_ON)
         n0 = len(pulses("jx"))
         kbd_hold(pg, "ArrowDown", 1.2); pg.keyboard.up("ArrowDown"); pg.wait_for_timeout(600)
         check(len(pulses("jx")) == n0 + 1, "스텝 10 mm 키보드 자동 반복도 한 번만 (%d 번)" % (len(pulses("jx")) - n0))
@@ -377,7 +380,7 @@ def run_z(br):
         pg.wait_for_timeout(600)
         check(len(pulses("jz")) == n0 + 1, "Z↓ 를 1.5 s 누르고 있어도 한 스텝 (%d 번)" % (len(pulses("jz")) - n0))
         n0 = len(pulses("jz"))
-        pg.click('#tab-measure .jogpad .padc')
+        pg.click(KBD_ON)
         kbd_hold(pg, "PageDown", 1.2); pg.keyboard.up("PageDown"); pg.wait_for_timeout(600)
         check(len(pulses("jz")) == n0 + 1, "PageDown 자동 반복도 한 스텝 (%d 번)" % (len(pulses("jz")) - n0))
         # Z↑ 연속은 됨(스텝 0.1)

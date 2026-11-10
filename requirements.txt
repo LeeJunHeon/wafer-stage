@@ -6,3 +6,4 @@ fastapi==0.136.1
 uvicorn[standard]==0.46.0
 pywebview==6.1
 pyvisa>=1.14          # 측정 장비(K2110 · K2450). 백엔드는 NI-VISA - 드라이버가 없으면 화면에서 안내하고 프로그램은 계속 돈다
+psutil                # 시험 도구(tools/mem_check.py: 서버 메모리 · CPU)만 쓴다 - 프로그램 실행에는 필요 없다

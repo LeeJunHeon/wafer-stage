@@ -62,7 +62,7 @@ class Page:
             if b.inner_text() == label:
                 b.click()
                 self.clicks += 1
-                self.pg.wait_for_timeout(300)
+                self.pg.wait_for_timeout(450)                   # 창이 닫힌 자리는 400 ms 누름 무시(더블클릭 방지)
                 return True
         return False
 
@@ -157,6 +157,7 @@ def flow_a(p):
         pg.pg.wait_for_timeout(800)
         if pg.pg.query_selector("#win:not(.hidden) .btn.primary"):
             pg.pg.click("#win:not(.hidden) .btn.primary")
+            pg.pg.wait_for_timeout(450)
         pg.pg.wait_for_function("document.querySelector('#pill') && /측정 중|대기/.test(document.querySelector('#pill').textContent)", timeout=30000)
         pg.pg.wait_for_timeout(1500)
         pg.shot("a6_measure_running")

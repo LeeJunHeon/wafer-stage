@@ -352,4 +352,6 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 .livestale { color: var(--warn) !important; border-color: var(--warn) !important; font-weight: 800; }
 .livefps { position: absolute; right: 8px; bottom: 6px; font-size: 11px; color: #fff; background: rgba(0,0,0,.45); padding: 1px 6px; border-radius: 3px; pointer-events: none; z-index: 5; }
 
-.chead h3 { white-space: nowrap; flex: none; } .chead .mono { flex: none; white-space: nowrap; } .chead > .sub.nowrap { flex: 0 0 auto; }
+.chead h3 { white-space: nowrap; flex: none; } .chead .mono { flex: none; white-space: nowrap; }
+/* 머리줄이 좁을 때(1280 · 키보드 조그 켬 표시까지): 좌표 · 제목은 그대로, 접촉 높이 글자가 먼저 줄어든다(툴팁에 전체) */
+.chead > .sub.nowrap { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; } .chead .kbdtag { flex: none; white-space: nowrap; }

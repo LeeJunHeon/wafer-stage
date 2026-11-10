@@ -216,7 +216,7 @@ def main():
             pg.click('[data-act="m-mode"][data-args*="live"]'); pg.wait_for_timeout(400)
             pg.click('[data-act="m-target"][data-args*="samples"]'); pg.wait_for_timeout(500); lint.run(pg, "b_measure_samples")
             pg.click('[data-act="steps-toggle"]'); pg.wait_for_timeout(400); lint.run(pg, "b_measure_steps")
-            pg.click('[data-act="cond-edit"]'); pg.wait_for_timeout(600); lint.run(pg, "b_cond_edit"); pg.click(".win .btns .btn:has-text('닫기')"); pg.wait_for_timeout(300)
+            pg.click('[data-act="cond-edit"]'); pg.wait_for_timeout(600); lint.run(pg, "b_cond_edit"); pg.click(".win .btns .btn:has-text('닫기')"); pg.wait_for_timeout(450)      # 창이 닫힌 자리는 400 ms 누름 무시
             pg.click('[data-act="steps-toggle"]'); pg.click('[data-act="m-target"][data-args*="here"]'); pg.wait_for_timeout(400)
             # 설정 창: 분류 전부
             pg.click('[data-act="m-cond"] >> nth=0'); pg.wait_for_selector(".setwin .setrows", timeout=6000); pg.wait_for_timeout(400)
@@ -224,7 +224,7 @@ def main():
             for k in range(n_tabs):
                 pg.locator(".setnav .ni").nth(k).click(); pg.wait_for_timeout(350)
                 lint.run(pg, "b_settings_%02d" % k, first_shot=(k < 3))
-            pg.click('[data-act="set-cancel"]'); pg.wait_for_timeout(400)
+            pg.click('[data-act="set-cancel"]'); pg.wait_for_timeout(450)
             # 이 위치 측정 진행
             c.send("move_xy", x=70.0, y=70.0); c.pump(1.0)
             c.send("contact_try", free=True); c.pump(1.5)
@@ -235,7 +235,7 @@ def main():
             lint.run(pg, "b_rt_stopped")
             # 대화상자
             pg.evaluate("dialog('측정을 중지할까요?', '지금 단계를 끊고 히트건을 끄고 K2450 출력을 끕니다.', [{ label: '계속 측정' }, { label: '중지', cls: 'danger' }])"); pg.wait_for_timeout(400)
-            lint.run(pg, "b_dialog"); pg.evaluate("closeWin()")
+            lint.run(pg, "b_dialog"); pg.evaluate("closeWin()"); pg.wait_for_timeout(450)
             # 샘플 측정(순회)
             pg.click('[data-act="m-target"][data-args*="samples"]'); pg.wait_for_timeout(400)
             c.send("measure_start", condition="수동 측정", nos=[2, 3], ok_weak=True); c.pump(2.0); pg.wait_for_timeout(800)

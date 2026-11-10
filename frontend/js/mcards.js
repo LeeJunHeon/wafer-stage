@@ -18,7 +18,8 @@ function stageWhy(s) {
   if (!st) return "스테이지 연결 안 됨";
   return rl || st.move_block || (st.locked ? "비상정지 잠금" : "") || (!(st.z_ok && st.xy_ok) ? "원점 필요 · 스테이지 설정" : "");
 }
-function limitsXY(s) { const l = s.stage && s.stage.limits; if (!l) return [247.6, 247.8]; return Array.isArray(l) ? [l[0], l[1]] : [l.x, l.y]; }
+/* 가동범위는 서버의 한 값(드라이버의 지금 값 - 설정 + 펌웨어 한계 자르기)만 쓴다 */
+function limitsXY(s) { const l = s.stage && s.stage.limits; if (!l) return [247.6, 247.8]; return Array.isArray(l) ? [l[0], l[1]] : [l.x_max_mm, l.y_max_mm]; }
 
 /* ---- 사진 좌표 ↔ 스테이지 좌표(좌표 보정의 판 영역 네 점으로 근사) ---- */
 function areaQuads(s) {

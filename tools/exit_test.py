@@ -27,7 +27,7 @@ def run_once(i):
     env = dict(os.environ, WAFER2_DATA=os.path.join(tmp, "data"), WAFER2_SETTINGS=st, PYTHONUTF8="1", WAFER2_SYNTH_W="1280", WAFER2_SYNTH_H="960")
     out = open(os.path.join(tmp, "out.txt"), "w", encoding="utf-8")
     t0 = time.time()
-    p = subprocess.Popen([sys.executable, os.path.join(ROOT, "run.py"), "--dry"], env=env, stdout=out, stderr=subprocess.STDOUT, cwd=ROOT)
+    p = subprocess.Popen([sys.executable, os.path.join(ROOT, "run.py"), "--dry"], env=env, stdout=out, stderr=subprocess.STDOUT, cwd=tmp)
     url = None
     while time.time() - t0 < 40:
         txt = open(os.path.join(tmp, "out.txt"), encoding="utf-8", errors="replace").read()

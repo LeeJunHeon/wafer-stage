@@ -13,6 +13,7 @@ dry 스테이지의 '실제' 위치(보고 위치 + 검증용 탈조 오프셋)�
 import math
 import os
 import sys
+import threading
 
 import cv2
 import numpy as np
@@ -219,45 +220,64 @@ def render_plate(w, h, head_xy=None, params=None, seed=3, shift_mm=(0.0, 0.0), c
 class SynthCamera:
     """판 · 칩 · 스테이지 위치에 따른 헤드 마커를 그리는 카메라. core.camera.Camera 와 같은 grab / retrieve.
 
-    - 큐 잔류: 드라이버 큐처럼 grab 한 프레임이 depth 번 뒤에 나온다(이동 직전 프레임이 이동 뒤에도 남는다).
+    실제 USB 카메라 드라이버처럼 움직인다(실시간 · 촬영 시험이 실제와 다른 조건에서 통과하지 않게):
+    - 프레임은 카메라 속도(fps, WAFER2_SYNTH_FPS 기본 30)로 생긴다. 드라이버 큐는 depth 장 - 큐가 차 있으면 새 프레임을 버린다
+      (그래서 드문드문 grab 하면 옛 장면이 depth 장만큼 남는다 = 실시간이 1~2 s 늦던 증상). grab() 은 가장 오래된 프레임을 꺼내고,
+      큐가 비어 있으면 다음 프레임이 생길 때까지 기다린다(쉬지 않고 grab 하면 큐가 비어 늘 최신 장면).
+    - 프레임은 생길 때의 장면(헤드 위치 · world)만 기억하고, 그림은 retrieve() 때 그린다(grab 은 가볍다 - 실제 카메라처럼).
+    - 빠른 모드(WAFER2_SYNTH_FAST=1, 메모리 · CPU 측정용): 판 그림을 한 번만 그리고 프레임마다 복사본에 헤드 표시만 그린다
+      (4080×3060 에서 프레임마다 다시 그리면 4 s 씩 걸려 카메라가 아니라 합성기를 재게 된다).
     - 카메라 평행 이동 · 기울기: world["shift_px"] (dx, dy) · world["rot_deg"] · world["tilt"] (원근 계수).
     - world["empty"] 가 참이면 칩 없는 빈 판(빈 판 사진용), world["chips"] 는 스테이지 mm 위치 목록.
     """
 
-    def __init__(self, true_xy_fn, w=1280, h=960, depth=4, params=None):
+    def __init__(self, true_xy_fn, w=1280, h=960, depth=4, params=None, fps=None, fast=None):
         from collections import deque
+        import time as _t
+        self._t = _t
         self.true_xy = true_xy_fn
         self.w, self.h = int(w), int(h)
-        self.depth = int(depth)
+        self.depth = max(1, int(depth))
+        self.fps = float(fps if fps is not None else (os.environ.get("WAFER2_SYNTH_FPS") or 30.0))
+        self.period = 1.0 / max(1.0, self.fps)
+        self.fast = bool(int(os.environ.get("WAFER2_SYNTH_FAST", "0") or 0)) if fast is None else bool(fast)
         self.params = params or {"photohome": {"marker_id": 10, "marker_mm": 40.0, "dict": "4X4_50"}}
         self.world = {"empty": False, "chips": list(PLATE_SAMPLES_MM), "shift_px": (0.0, 0.0), "rot_deg": 0.0,
-                      "tilt": (0.0, 0.0), "head": True, "seed": 5}
-        self.q = deque()
-        self.cur = None
+                      "tilt": (0.0, 0.0), "head": True, "seed": 5, "flash": 0}
+        self.q = deque()                                  # 드라이버 큐: (생긴 단조 시각, 장면 키, 번호)
+        self.cur = None                                   # 마지막으로 grab 한 프레임의 (시각, 장면 키, 번호)
         self.cache = {}
         self.opened = True
+        self.n_made = 0                                   # 카메라가 만든 프레임 수(버린 것 포함)
+        self.n_drop = 0                                   # 큐가 차서 버린 프레임 수
+        self._cv = threading.Condition()
+        self._th = None                                   # 카메라 쪽 스레드(첫 grab 때 시작, release 에서 끝)
 
     def set_world(self, **kw):
         self.world.update(kw)
 
-    def _render(self):
+    def _key(self):
         wd = self.world
         xy = self.true_xy() if wd["head"] else None
-        key = (self.w, self.h, wd["empty"], tuple(map(tuple, wd["chips"])), tuple(wd["shift_px"]), wd["rot_deg"], tuple(wd["tilt"]),
-               None if xy is None else (round(xy[0], 2), round(xy[1], 2)))
+        return (self.w, self.h, wd["empty"], tuple(map(tuple, wd["chips"])), tuple(wd["shift_px"]), wd["rot_deg"], tuple(wd["tilt"]),
+                None if xy is None else (round(xy[0], 2), round(xy[1], 2)), wd["seed"], int(wd.get("flash") or 0))
+
+    def _render_key(self, key):
+        key = key[:9]                                     # flash 는 그림 캐시와 무관(retrieve 가 복사본에 그린다)
         if key in self.cache:
             return self.cache[key]
-        img, _t = render_plate(self.w, self.h, head_xy=xy, params=self.params, seed=wd["seed"], chips=not wd["empty"], texture=True,
-                               samples_mm=list(wd["chips"]))
-        dx, dy = wd["shift_px"]
-        if dx or dy or wd["rot_deg"] or any(wd["tilt"]):
+        w, h, empty, chips, shift_px, rot_deg, tilt, xy, seed = key
+        img, _t = render_plate(self.w, self.h, head_xy=xy, params=self.params, seed=seed, chips=not empty, texture=True,
+                               samples_mm=[tuple(c) for c in chips])
+        dx, dy = shift_px
+        if dx or dy or rot_deg or any(tilt):
             c = (self.w / 2.0, self.h / 2.0)
-            R = cv2.getRotationMatrix2D(c, wd["rot_deg"], 1.0)
+            R = cv2.getRotationMatrix2D(c, rot_deg, 1.0)
             M = np.vstack([R, [0, 0, 1.0]])
             M[0, 2] += dx
             M[1, 2] += dy
             P = np.eye(3)
-            P[2, 0], P[2, 1] = wd["tilt"]
+            P[2, 0], P[2, 1] = tilt
             M = M @ P
             img = cv2.warpPerspective(img, M, (self.w, self.h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
         if len(self.cache) > 12:
@@ -265,18 +285,69 @@ class SynthCamera:
         self.cache[key] = img
         return img
 
+    def _render_fast(self, key, n):
+        """빠른 모드: 판(헤드 없음)은 한 번만 그리고, 프레임마다 복사본에 헤드 자리 표시 + 프레임 번호만 그린다."""
+        base_key = key[:7] + (None,) + key[8:9]
+        base = self._render_key(base_key)
+        out = base.copy()                                  # 실제 카메라도 프레임마다 새 버퍼(디코딩 결과)를 준다
+        xy = key[7]
+        if xy is not None:
+            p = true_homography(self.w, self.h) @ np.array([xy[0] + HEAD_OFFSET_MM[0], xy[1] + HEAD_OFFSET_MM[1], 1.0])
+            u, v = int(p[0] / p[2]), int(p[1] / p[2])
+            r = max(6, self.w // 64)
+            cv2.rectangle(out, (u - r, v - r), (u + r, v + r), (20, 20, 20), -1)
+        cv2.putText(out, str(n), (10, self.h - 10), cv2.FONT_HERSHEY_SIMPLEX, max(0.5, self.w / 1280.0), (255, 255, 255), 2)
+        return out
+
     delay_s = 0.0
+
+    def _producer(self):
+        """카메라 쪽: fps 마다 프레임 하나(그때의 장면 키). 큐가 차 있으면 버린다(드라이버가 새 프레임을 못 받는다)."""
+        nxt = self._t.monotonic()
+        while self.opened:
+            nxt += self.period
+            d = nxt - self._t.monotonic()
+            if d > 0:
+                self._t.sleep(d)
+            else:
+                nxt = self._t.monotonic()                 # 밀렸으면 따라잡지 않는다(실제 카메라도 건너뛴다)
+            try:
+                key = self._key()
+            except Exception:                             # noqa: BLE001 - 서버가 닫히는 중
+                continue
+            with self._cv:
+                self.n_made += 1
+                if len(self.q) < self.depth:
+                    self.q.append((self._t.monotonic(), key, self.n_made))
+                    self._cv.notify_all()
+                else:
+                    self.n_drop += 1
 
     def grab(self):
         if self.delay_s:
-            import time as _t
-            _t.sleep(self.delay_s)
-        self.q.append(self._render())
-        self.cur = self.q.popleft() if len(self.q) > self.depth else self.q[0]
+            self._t.sleep(self.delay_s)
+        if not self.opened:
+            return False
+        if self._th is None:
+            self._th = threading.Thread(target=self._producer, daemon=True, name="synth-cam")
+            self._th.start()
+        with self._cv:
+            if not self.q:                                # 큐가 비었다 - 다음 프레임이 생길 때까지 기다린다(실제 grab 처럼 막힌다)
+                self._cv.wait(timeout=1.0)
+            if not self.q:
+                return False
+            self.cur = self.q.popleft()
         return True
 
     def retrieve(self):
-        return None if self.cur is None else self.cur.copy()
+        if self.cur is None:
+            return None
+        _t0, key, n = self.cur
+        img = self._render_fast(key, n) if self.fast else self._render_key(key).copy()
+        if key[9]:                                        # 시험(실시간 지연): 그리기 비용 없이 장면을 바로 바꾼다 - 왼쪽 위 1/4 을 칠한다
+            col = (255, 255, 255) if key[9] % 2 else (0, 0, 0)
+            cv2.rectangle(img, (0, 0), (self.w // 2, self.h // 2), col, -1)
+        return img
 
     def read(self):
         self.grab()

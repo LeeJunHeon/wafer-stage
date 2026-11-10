@@ -404,7 +404,8 @@ class GraphRangeTest(unittest.TestCase):
         base = r"\\VanaM_NAS\VanaM_Measurement\VO2\VO2 data (NAS)\data"
         for auto, batch in ((True, "6"), (True, ""), (False, ""), (False, "6")):
             js = self.run_js("UI.nasPath(%s,%s,%s,%s)" % (_json_s(base), "true" if auto else "false", _json_s(batch), now))
-            self.assertEqual(js, rt_mod.nas_target(base, auto, batch, time.mktime((2026, 11, 9, 14, 30, 0, 0, 0, -1))), (auto, batch))
+            srv = rt_mod.nas_target(base, auto, batch, time.mktime((2026, 11, 9, 14, 30, 0, 0, 0, -1)))
+            self.assertEqual(js, srv.replace(os.sep, "\\"), (auto, batch))        # 서버는 운영체제 구분자(Windows = '\\'), 화면 미리보기는 늘 '\\'(Windows 기준)
         self.assertEqual(self.run_js("UI.nasPath('',true,'6',%s)" % now), "")
 
 
