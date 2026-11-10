@@ -56,10 +56,12 @@ class Page:
         return False
 
     def confirm_dialog(self, label):
-        """질문 대화상자의 동작 버튼을 누른다."""
+        """질문 대화상자의 동작 버튼을 누른다. 원점 잡기는 펌웨어 위치가 없으면(X · Y) "끝단 10 mm 안까지 옮겼습니까?" 로 묻고 [옮겼음 · 원점 잡기](C2)."""
         self.pg.wait_for_selector("#win:not(.hidden)", timeout=4000)
+        self.last_dialog = self.pg.inner_text("#win")
+        labels = (label, "옮겼음 · 원점 잡기") if label.endswith("원점 잡기") else (label,)
         for b in self.pg.query_selector_all("#win .btn"):
-            if b.inner_text() == label:
+            if b.inner_text() in labels:
                 b.click()
                 self.clicks += 1
                 self.pg.wait_for_timeout(450)                   # 창이 닫힌 자리는 400 ms 누름 무시(더블클릭 방지)
@@ -101,6 +103,7 @@ def flow_a(p):
         done = pg.press_recovery(["Z 원점 잡기", "X 원점 잡기", "Y 원점 잡기"], dialog_for=("Z 원점 잡기", "X 원점 잡기", "Y 원점 잡기"))
         pg.pg.wait_for_timeout(800)
         check(done == ["Z 원점 잡기", "X 원점 잡기", "Y 원점 잡기"], "버튼으로 Z → X → Y 원점 %s" % done)
+        check("끝단 10 mm 안까지 옮겼습니까" in (getattr(pg, "last_dialog", "") or ""), "펌웨어 위치가 없는 X · Y 는 확인 창이 질문으로 묻는다 (%s)" % (getattr(pg, "last_dialog", "") or "")[:40])
         check(not pg.band_text(), "원점 완료 · 띠 사라짐")
         # 장비 설정 1: 원점 상태 표시
         pg.pg.click('#tabs .tab[data-tab="setup"]')
@@ -295,17 +298,20 @@ def main(out=None):
     global OUT
     if out:
         OUT = out
+    flows = [("흐름 A 첫 실행", lambda p: flow_a(p)),
+             ("흐름 B 비상정지 회복 · 헤드 위치 보정 있음", lambda p: flow_recover(p, True, "b")),
+             ("흐름 C 비상정지 회복 · 헤드 위치 보정 없음", lambda p: flow_recover(p, False, "c")),
+             ("흐름 D 막다른 상태 점검", lambda p: flow_dead_ends(p)),
+             ("흐름 E 사진 빈 곳 더블클릭 → 샘플 추가", lambda p: flow_dblclick(p))]
     with sync_playwright() as p:
-        print("== 흐름 A 첫 실행", flush=True)
-        flow_a(p)
-        print("== 흐름 B 비상정지 회복 · 헤드 위치 보정 있음", flush=True)
-        flow_recover(p, True, "b")
-        print("== 흐름 C 비상정지 회복 · 헤드 위치 보정 없음", flush=True)
-        flow_recover(p, False, "c")
-        print("== 흐름 D 막다른 상태 점검", flush=True)
-        flow_dead_ends(p)
-        print("== 흐름 E 사진 빈 곳 더블클릭 → 샘플 추가", flush=True)
-        flow_dblclick(p)
+        for name, fn in flows:
+            print("== " + name, flush=True)
+            try:
+                fn(p)
+            except Exception:                                    # noqa: BLE001 - 한 흐름이 예외로 끝나도 실패로 세고 나머지를 돈다
+                import traceback
+                traceback.print_exc()
+                check(False, "예외 · " + name)
     print("\n검사 %d · 실패 %d" % (e2e.CHECKS[0], len(e2e.FAILS)))
     for f in e2e.FAILS:
         print("  - " + f)
