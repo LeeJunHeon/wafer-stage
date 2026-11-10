@@ -158,7 +158,11 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) jogRe
 document.addEventListener("pointerdown", (e) => {
   const t = e.target;
   const onPad = t.closest && t.closest(".jogpad") && t.closest("button.jogb, button.jstep, button.jzstep") && !t.closest(".jstop");
-  if (onPad && !jogWinOpen()) jogKbdOn(); else jogKbdOff();
+  if (onPad && !jogWinOpen()) {
+    const a = document.activeElement;                                          // 패드 버튼(방향 · Z · 스텝)을 누르면 입력 칸의 포커스를 뺀다 - 그 뒤 화살표는 조그(칸의 숫자를 바꾸지 않는다)
+    if (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) a.blur();
+    jogKbdOn();
+  } else jogKbdOff();
 }, true);
 document.addEventListener("focusin", (e) => {                                  // 패드 밖으로 포커스가 가면(Tab · 클릭) 꺼진다
   const t = e.target;
