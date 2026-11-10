@@ -77,7 +77,7 @@ def pad_same(pg):
 def goto_setup(pg, i):
     pg.click('#tabs .tab[data-tab="setup"]')
     pg.wait_for_timeout(300)
-    pg.click('#tab-setup .sitem[data-act="su-step"][data-args=\'{"i": %d}\']' % i)
+    pg.click("#tab-setup .sitem >> nth=%d" % (i - 1))
     pg.wait_for_timeout(600)
 
 
@@ -594,7 +594,12 @@ def main(argv):
         try:
             for n in names:
                 print("== 화면 시험 · %s (%s)" % (n, e2e.MODE), flush=True)
-                RUNS[n](br)
+                try:
+                    RUNS[n](br)
+                except Exception:                                  # noqa: BLE001 - 한 시험이 예외로 끝나도 실패로 세고 나머지를 돈다
+                    import traceback
+                    traceback.print_exc()
+                    check(False, "예외 · " + n)
         finally:
             br.close()
     print("\n검사 %d · 실패 %d" % (e2e.CHECKS[0], len(e2e.FAILS)))

@@ -71,14 +71,14 @@ def latency(c, pages, scope, name, n=3):
 def goto_setup(pg, i):
     pg.click('#tabs .tab[data-tab="setup"]')
     pg.wait_for_timeout(300)
-    pg.click('#tab-setup .sitem[data-act="su-step"][data-args=\'{"i": %d}\']' % i)
+    pg.click("#tab-setup .sitem >> nth=%d" % (i - 1))
     pg.wait_for_timeout(500)
 
 
 def goto_measure_live(pg):
     pg.click('#tabs .tab[data-tab="measure"]')
     pg.wait_for_timeout(300)
-    b = pg.locator('#tab-measure [data-act="m-mode"][data-args=\'{"m": "live"}\']').first
+    b = pg.locator('#tab-measure [data-act="m-mode"][data-args*="live"]').first
     if b.count():
         b.click()
     pg.wait_for_timeout(500)
@@ -162,7 +162,12 @@ def main(argv):
         br = p.chromium.launch()
         try:
             for d in depths:
-                run_depth(br, d)
+                try:
+                    run_depth(br, d)
+                except Exception:                                  # noqa: BLE001
+                    import traceback
+                    traceback.print_exc()
+                    check(False, "예외 · 큐 %d" % d)
         finally:
             br.close()
     print("\n검사 %d · 실패 %d" % (e2e.CHECKS[0], len(e2e.FAILS)))
