@@ -261,7 +261,7 @@
 - `python tools/flows.py` — 화면 흐름(playwright 클릭: 첫 실행 원점 → 설정 → 촬영 → 측정, 비상정지 회복 두 경우, 막다른 상태 점검)
 - `python tools/perf4080.py` — 4080×3060 촬영→인식 시간 · 실시간 프레임
 - `python tools/e2e.py 65 … 79` — 정지 · 원점 · 연결 · 설정 · 릴레이 · 시리얼(실제 속도, `E2E_MODE=dry|fake`, 번호 하나씩 나눠 돌린다). 인자가 번호(`65` · `09b`)면 그 번호의 케이스만, 아니면 이름 일부. 실패한 케이스는 서버 · 파일 · 시리얼 로그를 임시 폴더의 `wafer2_e2e_fail\<모드>_<번호>` 에 남긴다
-- `python tools/safety_ui2.py [hold stop input keys steps enter menu pause band press dead]` — 패드 · [정지] · 키보드 범위 · 입력 칸 · 일시정지 더블클릭 · 띠 400 ms · 서버 끊김(playwright, 실제 속도)
+- `python tools/safety_ui2.py [hold stop input keys steps enter menu pause band press dead]` — 패드 · [정지] · 키보드 범위 · 입력 칸 · 일시정지 더블클릭 · 띠 400 ms · 서버 끊김(playwright, 실제 속도). 측정 중에 누르는 시험(pause · press)은 시간 배율 10 · 측정 중 상태는 확인 대기로 잡는다(배율 100 이면 측정이 누르기 전에 끝나 결과가 흔들린다)
 - `python tools/live_check.py [4 8]` — 실시간: 측정 탭 · 장비 설정 1 · 2 · 4 · 5 · 6 · 7 에서 장면이 바뀌면 0.6 s 안에 그림이 바뀜(합성 카메라 큐 4 · 8 장, 그림 내용 비교) · 탭 이동 · 창 · 촬영 · 측정 끝 · 화면 두 개 뒤에도 · 카메라 뽑힘 2 s 안에 멈춤 표시
 - `python tools/mem_check.py [--quick] [--size 4080]` — 서버 RSS(시작 · 실시간 10 분 · 촬영 50 번 · 측정 한 번) · 실시간 CPU, 기준 1280: +50 MB 이내 · 1 GB 이하 / 4080: +150 MB 이내 / 전체 최고치 +3 GB 이하
 - `python tools/fixed_regress.py [--loo] [--update]` — ..\data_v2	ruth 전 항목, 단일 / 빈 판 사진 두 경로. `tools/fixed_regress_base.json` 보다 나쁘면 exit 1.
