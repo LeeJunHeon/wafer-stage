@@ -4,8 +4,8 @@
   python tools/live_check.py 4          # 큐 4 장만
 
 "실시간" 이라고 쓰인 모든 화면(측정 탭 · 장비 설정 1 · 2 · 4 · 5 · 6 · 7)에서 기본 설정(preview_fps 4)으로 장면이 바뀌면 0.6 s 안에 그림이 바뀐다.
-장면 바꾸기 = 합성 카메라의 flash(왼쪽 위 1/4 을 바로 칠함 - 합성기가 다시 그리는 시간이 지연에 끼지 않게). 지연 = 장면을 바꾼 순간 → 화면의 <img> 에
-그려진 그림(캔버스로 읽은 16×12 회색)이 바뀐 순간. 탭 이동 · 창 열고 닫기 · 촬영 · 측정 끝 · 화면 두 개 접속 뒤에도 같은지 본다.
+장면 바꾸기 = 합성 카메라의 flash(왼쪽 위 1/4 을 흰색 · 검정으로 번갈아 칠함 - 합성기가 다시 그리는 시간이 지연에 끼지 않게). 지연 = 장면을 바꾼 순간 →
+화면의 <img> 에 그려진 그림(캔버스로 읽은 16×12 회색)의 왼쪽 위 1/4 이 그 색이 된 순간. 탭 이동 · 창 열고 닫기 · 촬영 · 측정 끝 · 화면 두 개 접속 뒤에도 같은지 본다.
 카메라를 뽑으면 2 s 안에 "실시간 멈춤" 표시 또는 빈 화면.
 """
 import os
@@ -36,32 +36,41 @@ def sig(pg, scope):
     return pg.evaluate(SIG_JS, scope)
 
 
-def diff(a, b):
-    if a is None or b is None:
-        return 0.0
-    return max(abs(x - y) for x, y in zip(a, b))
+def quad_mean(sg):
+    """16×12 회색 중 왼쪽 위 1/4(flash 가 칠하는 곳: 열 0~7 · 행 0~5)의 평균."""
+    if sg is None:
+        return None
+    v = [sg[r * 16 + c] for r in range(6) for c in range(8)]
+    return sum(v) / len(v)
+
+
+def shows_flash(sg, k):
+    """그림이 flash k 의 장면인가: 홀수 = 흰색, 짝수 = 검정(번갈아 칠해서 바로 앞 장면과 늘 구별된다)."""
+    m = quad_mean(sg)
+    if m is None:
+        return False
+    return m > 225 if k % 2 else m < 30
 
 
 def latency(c, pages, scope, name, n=3):
-    """장면을 n 번 바꿔 각 화면(pages)의 그림이 바뀌기까지 걸린 시간(ms) 최대."""
+    """장면을 n 번 바꿔(flash) 각 화면(pages)의 그림이 그 장면을 보이기까지 걸린 시간(ms) 최대."""
     worst = 0.0
     for _ in range(n):
         for pg in pages:
-            pg.wait_for_timeout(400)
-        base = [sig(pg, scope) for pg in pages]
-        if any(b is None for b in base):
-            for pg in pages:
-                pg.wait_for_timeout(1000)
-            base = [sig(pg, scope) for pg in pages]
+            pg.wait_for_timeout(500)
         FLASH[0] += 1
-        c.dry("world", kw={"flash": FLASH[0]})
+        k = FLASH[0]
+        before = [shows_flash(sig(pg, scope), k) for pg in pages]
+        if any(before):
+            check(False, "%s · 장면을 바꾸기 전에 이미 새 장면으로 보임(판정 오류)" % name)
+        c.dry("world", kw={"flash": k})
         t0 = time.time()
         got = [None] * len(pages)
         while time.time() - t0 < 4.0 and any(g is None for g in got):
-            for k, pg in enumerate(pages):
-                if got[k] is None and diff(sig(pg, scope), base[k]) > 60:
-                    got[k] = (time.time() - t0) * 1000.0
-            time.sleep(0.02)
+            for i, pg in enumerate(pages):
+                if got[i] is None and shows_flash(sig(pg, scope), k):
+                    got[i] = (time.time() - t0) * 1000.0
+            time.sleep(0.01)
         ms = max(g if g is not None else 9999.0 for g in got)
         worst = max(worst, ms)
     check(worst <= LIMIT_MS, "%s · 장면이 바뀌면 %.0f ms 안에 그림이 바뀜 (한도 %.0f)" % (name, worst, LIMIT_MS))
