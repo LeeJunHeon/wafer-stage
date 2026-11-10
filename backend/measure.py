@@ -386,6 +386,7 @@ class Run:
         rr = rt_mod.RTRun(app, p, "%s%s_" % (p["file_name"], s["no"]), run_dir=self._rt_dir(int(s["no"])),
                           cancel_fn=self._cancelled, relays=[int(s["cooler_relay"])], z_top_end=False, gen=self.gen)
         app.rt = rr
+        app.rt_last["auto"] = rr
         th = threading.Thread(target=rr.run, name="rt-run", daemon=True)
         th.start()
         while not rr.finished.wait(0.2):

@@ -155,9 +155,9 @@ def serial_json(n: int = 200):
 
 
 @app.get("/rt.json")
-def rt_json(since: int = 0, id: str = ""):
-    """R–T 측정 그래프용 점: since 번째부터. id 가 지금 측정(stamp)과 다르면 처음부터 다시 준다."""
-    r = APP.rt if APP else None
+def rt_json(since: int = 0, id: str = "", kind: str = "auto"):
+    """R–T 측정 그래프용 점: since 번째부터. id 가 지금 측정(stamp)과 다르면 처음부터 다시 준다. kind = auto(측정 탭) · manual(수동 측정 탭)."""
+    r = APP.rt_last.get("manual" if kind == "manual" else "auto") if APP else None
     if r is None:
         return JSONResponse({"id": "", "n": 0, "points": []}, headers={"Cache-Control": "no-store"})
     if id != r.stamp + r.mode:
@@ -167,10 +167,10 @@ def rt_json(since: int = 0, id: str = ""):
 
 
 @app.get("/rt_data/{name}")
-def rt_data(name: str):
-    """결과 탭 [그래프 보기]: 측정 폴더의 회차 파일(.dat)들을 [[T, R], ...] 로."""
+def rt_data(name: str, root: str = "measure"):
+    """결과 탭 [그래프 보기]: 측정 폴더의 회차 파일(.dat)들을 [[T, R], ...] 로. root = measure(자동) · manual(수동)."""
     import rt as rt_mod
-    d = os.path.join(paths.DATA_DIR, "measure", os.path.basename(name))
+    d = rt_mod.result_dir(name, root)
     try:
         files = sorted(f for f in os.listdir(d) if f.endswith(".dat") and not f.endswith("merged.dat"))
     except OSError:

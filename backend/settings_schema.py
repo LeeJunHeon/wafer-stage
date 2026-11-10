@@ -48,8 +48,17 @@ N_RELAY = 10
 POLICY_OPTS = [{"value": "off", "label": "전부 끄기"}, {"value": "keep", "label": "그대로"}]
 
 
+HEATER_RELAY = 1                       # 실제 배선(2026-11 장비 PC): 히트건 = R1 · 쿨러 = R2~R10
+
+
 def _relays_default():
-    """쿨러 R1~R9 · 히트건 R10. 켜기는 사람이 누르거나 측정 조건이 할 때만이다."""
+    """히트건 R1 · 쿨러 R2~R10(이름 "쿨러 1"~"쿨러 9" = 쿨러 구역 번호). 켜기는 사람이 누르거나 측정 조건이 할 때만이다."""
+    return [{"enabled": True, "name": ("히트건" if i == HEATER_RELAY - 1 else "쿨러 %d" % i), "max_on_s": 0}
+            for i in range(N_RELAY)]
+
+
+def _relays_default_v1():
+    """예전 기본값(쿨러 R1~R9 · 히트건 R10) - 설정 이전에서 '예전 기본값 그대로' 인지 볼 때만 쓴다."""
     return [{"enabled": True, "name": ("히트건" if i == N_RELAY - 1 else "쿨러 %d" % (i + 1)), "max_on_s": 0}
             for i in range(N_RELAY)]
 
@@ -314,10 +323,10 @@ ITEMS = [
 
     # ---------------- 릴레이 · 접촉 높이 (쿨러 · 히트건) ----------------
     I("cooler.zones", zones_mod.default_zones(), "object", "measure", "쿨러 구역",
-      "쿨러 구역", "판 사각형 좌표(mm, 0~판 영역 실제 크기)를 행 × 열로 나눈 칸마다 쿨러 번호(표시용) · 릴레이 번호 · 이름입니다(행 우선, 사진 기준 위에서 아래 · 왼쪽에서 오른쪽). 샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러입니다. 칸을 눌러 지정하고 경계는 mm 로 입력하거나 실시간에서 끕니다.",
+      "쿨러 구역", "판 사각형 좌표(mm, 0~판 영역 실제 크기)를 행 × 열로 나눈 칸마다 쿨러 번호(표시용) · 릴레이 번호 · 이름입니다(행 우선, 사진 기준 위에서 아래 · 왼쪽에서 오른쪽). 샘플 중심이 속한 칸의 쿨러가 그 샘플의 쿨러입니다. 기본은 R2~R10 을 행 우선으로 둔 것이며 실제 배치는 [2 초 켜 보기]로 확인합니다. 칸을 눌러 지정하고 경계는 mm 로 입력하거나 실시간에서 끕니다.",
       editor="zones", validate="zones", apply="즉시"),
-    I("heater.relay", 10, "int", "measure", "히트건", "히트건 릴레이",
-      "히트건 전원 릴레이 번호입니다. 이 릴레이는 측정 단계의 히트건 단계와 R–T 측정만 켭니다.", min=1, max=10, step=1,
+    I("heater.relay", HEATER_RELAY, "int", "measure", "히트건", "히트건 릴레이",
+      "히트건 전원 릴레이 번호입니다. 이 릴레이는 측정 단계의 히트건 단계와 R–T 측정만 켭니다. 쿨러 구역에 있는 릴레이로 바꾸면 그 구역과 맞바꿉니다.", min=1, max=10, step=1,
       apply="다음 측정"),
     I("heater.max_on_s", 120.0, "float", "measure", "히트건", "히트건 최대 시간",
       "히트건을 연속으로 켜 둘 수 있는 시간의 상한이며 넘기면 시간이 되기 전에 끕니다.",
@@ -338,13 +347,13 @@ ITEMS = [
       "온도(열전대)를 재는 Keithley 2110 의 VISA 주소입니다. 장비 설정 8 의 목록에서 고릅니다.", apply="다음 측정"),
     I("rt.k2450_addr", "GPIB0::18::INSTR", "str", "rt", "측정 장비", "K2450 주소",
       "전압을 걸고 전류를 재는 Keithley 2450 의 VISA 주소입니다.", apply="다음 측정"),
-    I("rt.precool_c", 24.5, "float", "rt", "온도", "예비 냉각 목표", "측정 전에 이 온도 미만이 될 때까지 쿨러로 식힙니다.",
+    I("rt.precool_c", 0.0, "float", "rt", "온도", "예비 냉각 목표", "측정 전에 이 온도 미만이 될 때까지 쿨러로 식히며 0 이면 예비 냉각을 건너뜁니다.",
       min=-20, max=200, step=0.5, unit="°C", apply="다음 측정"),
     I("rt.hold_s", 0.0, "float", "rt", "온도", "도달 뒤 유지", "예비 냉각 목표 미만에 닿은 뒤 이 시간만큼 더 유지합니다.",
       min=0, max=3600, step=1, unit="s", apply="다음 측정"),
     I("rt.max_temp", 85.0, "float", "rt", "온도", "최고 온도 (max temp)", "가열이 이 온도에 닿으면 냉각으로 바꿉니다.",
       min=30, max=300, step=1, unit="°C", apply="다음 측정", validate="rt"),
-    I("rt.break_temp", 25.0, "float", "rt", "온도", "냉각 끝 온도 (temp to break)", "냉각 중 이 온도 아래로 내려가면 그 회차를 끝냅니다.",
+    I("rt.break_temp", 30.0, "float", "rt", "온도", "냉각 끝 온도 (temp to break)", "냉각 중 이 온도 아래로 내려가면 그 회차를 끝냅니다.",
       min=-20, max=200, step=0.5, unit="°C", apply="다음 측정", validate="rt"),
     I("rt.repeat", 1, "int", "rt", "온도", "반복 횟수 (#repeat)", "가열과 냉각을 한 번으로 세어 되풀이할 횟수입니다.",
       min=1, max=50, step=1, apply="다음 측정"),
@@ -358,15 +367,19 @@ ITEMS = [
       min=0, max=60, step=0.5, unit="s", apply="다음 측정"),
     I("rt.min_off_s", 2.0, "float", "rt", "온도 제어", "최소 꺼짐 시간", "히트건을 한 번 끄면 최소 이 시간은 꺼 둡니다.",
       min=0, max=60, step=0.5, unit="s", apply="다음 측정"),
-    I("rt.emergency_c", None, "float", "rt", "안전", "비상 차단 온도", "이 온도 이상이면 히트건을 즉시 끄고 오류로 끝내며 비우면 최고 온도 + 10 °C 입니다.",
-      nullable=True, min=30, max=400, step=1, unit="°C", apply="다음 측정", validate="rt"),
+    I("rt.emergency_c", 110.0, "float", "rt", "안전", "비상 차단 온도", "이 온도 이상이면 히트건을 즉시 끄고 오류로 끝내며 최고 온도보다 높아야 합니다.",
+      min=30, max=400, step=1, unit="°C", apply="다음 측정", validate="rt"),
+    I("rt.cool_stall_s", 180.0, "float", "rt", "온도", "냉각 멈춤 시간", "냉각 · 예비 냉각 중 이 시간 동안 아래 값만큼도 안 내려가면 방 온도에 닿은 것으로 보고 그 회차를 정상으로 끝냅니다.",
+      min=10, max=3600, step=10, unit="s", apply="다음 측정"),
+    I("rt.cool_stall_c", 0.3, "float", "rt", "온도", "냉각 멈춤 폭", "냉각 멈춤 시간 동안 이만큼도 안 내려가면 냉각 멈춤입니다.",
+      min=0.05, max=10, step=0.05, unit="°C", apply="다음 측정"),
     I("rt.phase_limit_s", 1800.0, "float", "rt", "안전", "단계 시간 한도", "예비 냉각 · 가열 · 냉각 한 단계가 이 시간을 넘으면 오류로 끝냅니다.",
       min=10, max=86400, step=60, unit="s", apply="다음 측정"),
     I("rt.min_interval_s", 0.0, "float", "rt", "기록", "최소 기록 간격", "0 이면 장비가 읽는 속도대로 기록합니다.",
       min=0, max=60, step=0.1, unit="s", apply="다음 측정"),
     I("rt.stale_s", 3.0, "float", "rt", "안전", "온도 갱신 한도", "온도 값이 없거나 이 시간 동안 새 값이 없으면 히트건을 끄고 오류로 끝냅니다.",
       min=1, max=60, step=0.5, unit="s", apply="다음 측정"),
-    I("rt.volt", 0.1, "float", "rt", "K2450", "전압 (Set voltage)", "시료에 거는 전압이며 저항은 이 값을 전류로 나눠 구합니다.",
+    I("rt.volt", 1.0, "float", "rt", "K2450", "전압 (Set voltage)", "시료에 거는 전압이며 저항은 이 값을 전류로 나눠 구합니다.",
       min=0.001, max=200, step=0.1, unit="V", apply="다음 측정"),
     I("rt.ilim_a", 0.1, "float", "rt", "K2450", "전류 한도", "전압 소스의 전류 한도이며 저항이 11 Ω 까지 내려가도 닿지 않게 기본 0.1 A 로 둡니다.",
       min=1e-6, max=1.0, step=0.001, unit="A", apply="다음 측정"),
@@ -390,6 +403,9 @@ ITEMS = [
     I("rt.date_folder", True, "bool", "rt", "저장", "날짜 폴더 자동", "켜면 기본 폴더 아래에 연도와 YYYYMMDD(측정 시작 날짜) 폴더를 붙이고 끄면 기본 폴더를 그대로 씁니다.", apply="다음 측정"),
     I("rt.batch_folder", "", "str", "rt", "저장", "묶음 폴더", "날짜 폴더 아래에 붙일 묶음 번호이며 비우면 붙이지 않습니다.", apply="다음 측정", validate="rt"),
     I("rt.file_name", "1-1_", "str", "rt", "저장", "파일 이름 (File name)", "파일 이름의 앞부분이며 뒤에 전압과 회차 번호가 붙습니다.", apply="다음 측정", validate="rt"),
+    I("manual.cooler_relays", "2", "str", "rt", "수동 측정", "쿨러 릴레이",
+      "수동 측정 탭의 R–T 에서 켤 쿨러 릴레이 번호를 쉼표로 나눠 적습니다(예 2 · 2,3). 히트건 릴레이가 들어 있으면 시작하지 않습니다.",
+      apply="다음 측정", validate="manual"),
     I("rt.cooler_off_end", True, "bool", "rt", "끝", "끝나면 쿨러 끔", "측정이 끝나면 쿨러를 끕니다.", apply="다음 측정"),
     I("rt.z_top_end", True, "bool", "rt", "끝", "끝나면 Z 맨 위", "측정이 끝나면 Z 를 맨 위로 올립니다.", apply="다음 측정"),
     # ---------------- 측정 순서 ----------------
@@ -639,7 +655,84 @@ def migrate(raw, fill=True):
         s["capture_xy"] = list(s["park_xy"])
     if s.get("wb_temperature") is None and "wb_temperature" in s:
         s["wb_temperature"] = 0
+    if fill:
+        notes += migrate_defaults(s)
     return s, notes
+
+
+SETTINGS_REV = 2                       # 설정 파일 판 번호(settings_rev). 1 = 예전 기본값 시절(표시 없음)
+# 판 1 → 2: 저장된 값이 **예전 기본값과 정확히 같을 때만** 새 기본값으로 바꾼다(사람이 바꾼 값은 그대로). 한 번만(판 번호를 남긴다).
+OLD_DEFAULTS_V1 = {"rt.volt": 0.1, "rt.break_temp": 25.0, "rt.emergency_c": None, "rt.precool_c": 24.5,
+                   "rt.filter_n": 10, "rt.four_wire": True, "rt.terminal": "REAR", "rt.max_temp": 85.0, "rt.repeat": 1,
+                   "rt.file_name": "1-1_", "rt.heat_rate": 0.0}
+
+
+def _same(a, b):
+    if isinstance(a, bool) or isinstance(b, bool) or a is None or b is None:
+        return a is b or a == b and type(a) is type(b)
+    fa, fb = _num(a), _num(b)
+    if fa is not None and fb is not None:
+        return abs(fa - fb) < 1e-12
+    return a == b
+
+
+def migrate_defaults(s):
+    """settings_rev < 2 인 파일: 예전 기본값 그대로인 값만 새 기본값으로. 바꾼 것 설명 목록. s 를 제자리에서 고친다."""
+    try:
+        rev = int(s.get("settings_rev") or 1)
+    except (TypeError, ValueError):
+        rev = 1
+    if rev >= SETTINGS_REV:
+        return []
+    new = defaults()
+    notes = []
+    for k, old in OLD_DEFAULTS_V1.items():
+        if has_path(s, k) and _same(get_path(s, k), old):
+            nv = get_path(new, k)
+            if not _same(nv, old):
+                set_path(s, k, copy.deepcopy(nv))
+                notes.append("%s %s → %s (예전 기본값)" % (k, old, nv))
+    # 릴레이: 히트건 R10 · 쿨러 구역 R1~R9 · 이름이 예전 기본값 그대로일 때만(셋을 함께 - 따로 바꾸면 구역과 히트건이 겹친다)
+    hr = get_path(s, "heater.relay") if has_path(s, "heater.relay") else None
+    zz = get_path(s, "cooler.zones") if has_path(s, "cooler.zones") else None
+    ri = get_path(s, "relay.items") if has_path(s, "relay.items") else None
+    hr_old = hr is None or _same(hr, 10)
+    zz_old = zz is None or zz == zones_mod.default_zones(relay0=1)
+    if hr_old and zz_old:
+        if hr is not None:
+            set_path(s, "heater.relay", get_path(new, "heater.relay"))
+            notes.append("heater.relay 10 → %d (예전 기본값)" % get_path(new, "heater.relay"))
+        if zz is not None:
+            set_path(s, "cooler.zones", copy.deepcopy(get_path(new, "cooler.zones")))
+            notes.append("cooler.zones R1~R9 → R2~R10 (예전 기본값)")
+        if ri is not None and ri == _relays_default_v1():
+            set_path(s, "relay.items", _relays_default())
+            notes.append("relay.items 이름 R1 히트건 · R2~R10 쿨러 (예전 기본값)")
+    elif hr_old or zz_old:
+        notes.append("릴레이 기본값 이전 안 함 · 히트건 또는 쿨러 구역을 바꿔 둠 · 장비 설정 8 에서 확인")
+    s["settings_rev"] = SETTINGS_REV
+    return notes
+
+
+def swap_heater_zone(zones, relays, old_hr, new_hr):
+    """고급 설정에서 히트건만 바꿀 때: 새 히트건 릴레이를 쓰던 쿨러 구역 칸을 옛 히트건 릴레이로 맞바꾼다.
+    릴레이 이름이 "히트건" 인 것은 이름도 맞바꾼다. 반환 (새 구역, 새 릴레이 목록, 바꾼 칸 번호 | None)."""
+    z = copy.deepcopy(zones)
+    rl = copy.deepcopy(relays)
+    old_hr, new_hr = int(old_hr), int(new_hr)
+    cell = None
+    for i, c in enumerate(z.get("cells") or []):
+        try:
+            if int(c.get("relay")) == new_hr:
+                c["relay"] = old_hr
+                cell = i + 1
+        except (TypeError, ValueError):
+            pass
+    if isinstance(rl, list) and len(rl) >= max(old_hr, new_hr):
+        a, b = rl[old_hr - 1], rl[new_hr - 1]
+        if isinstance(a, dict) and isinstance(b, dict) and str(a.get("name")) == "히트건":
+            a["name"], b["name"] = b.get("name"), a.get("name")
+    return z, rl, cell
 
 
 def normalize(values):
@@ -936,6 +1029,10 @@ def _v_rt(key, v, values, errs, warns):
         errs[key] = "최고 온도(%g)보다 낮아야 함" % mx
     elif key == "rt.emergency_c" and v is not None and mx is not None and v <= mx:
         errs[key] = "최고 온도(%g)보다 높아야 함" % mx
+    elif key == "rt.max_temp":
+        em = _num(get_path(values, "rt.emergency_c"))
+        if em is not None and v is not None and v >= em:
+            errs[key] = "비상 차단 온도(%g)보다 낮아야 함" % em
     elif key == "rt.start_range":
         if not any(abs(math.log10(v / r)) < 1e-6 for r in (1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0)):
             errs[key] = "10 nA~1 A 의 10배 단위"
@@ -952,14 +1049,29 @@ def _v_rt(key, v, values, errs, warns):
                 errs[key] = "1~10 (히트건 제외)"
     elif key == "rt.batch_folder":
         b = (v or "").strip()
-        if b and (any(c in b for c in '\/:*?"<>|') or b in (".", "..")):
+        if b and (any(c in b for c in '\\/:*?"<>|') or b in (".", "..")):
             errs[key] = "폴더 이름에 쓸 수 없는 글자"
     elif key == "rt.file_name":
         if not v or any(c in v for c in '\\/:*?"<>|'):
             errs[key] = "파일 이름에 쓸 수 없는 글자 · 빈 값"
 
 
+def _v_manual(key, v, values, errs, warns):
+    txt = (v or "").replace(" ", "")
+    if not txt:
+        errs[key] = "릴레이 번호 하나 이상"
+        return
+    try:
+        ns = [int(x) for x in txt.split(",")]
+    except ValueError:
+        errs[key] = "릴레이 번호를 쉼표로"
+        return
+    if any(n < 1 or n > N_RELAY for n in ns) or len(set(ns)) != len(ns):
+        errs[key] = "1~10 · 겹치지 않게"
+
+
 VALIDATORS = {
+    "manual": _v_manual,
     "rt": _v_rt, "contact_z": _v_contact_z, "xy_in_limits": _v_xy_in_limits, "seed_grow": _v_seed_grow, "tol_warn": _v_tol_warn,
     "head_id": _v_head_id, "start_pps": _v_start_pps, "jog_steps": _v_jog_steps, "jog_zsteps": _v_jog_zsteps, "touch_max": _v_touch_max,
     "markers": _v_markers, "zones": _v_zones, "area_size": _v_area_size, "tools": _v_tools, "tool_active": _v_tool_active,

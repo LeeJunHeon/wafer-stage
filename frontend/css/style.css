@@ -355,3 +355,19 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 .chead h3 { white-space: nowrap; flex: none; } .chead .mono { flex: none; white-space: nowrap; }
 /* 머리줄이 좁을 때(1280 · 키보드 조그 켬 표시까지): 좌표 · 제목은 그대로, 접촉 높이 글자가 먼저 줄어든다(툴팁에 전체) */
 .chead > .sub.nowrap { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; } .chead .kbdtag { flex: none; white-space: nowrap; }
+
+/* ---- 수동 측정 탭(manual.js): 왼쪽 그래프 둘(위 저항–온도 · 아래 시간) · 오른쪽 주 카드(늘 보임) + 나머지 카드(안에서 스크롤) ---- */
+#tab-manual.tabpane { padding: var(--gap-card); gap: var(--gap-card); }
+.mnleft { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: var(--gap-card); }
+.mnleft .gbox { flex: 1 1 0; min-width: 0; min-height: 120px; position: relative; padding: 0; overflow: hidden; }
+.mnleft .gsvg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.mnright { width: clamp(420px, 34vw, 520px); flex: none; display: flex; flex-direction: column; gap: var(--gap-card); min-height: 0; }
+.mnright #c-man { flex: none; }
+.mnright .mntop { flex: 1 1 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: var(--gap-card); }
+.mnright .mntop > .card { flex: none; }
+#c-man .rtbig { margin: 0; }
+#c-man .phase { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 55%; }
+#c-man .chead .chip { flex: none; white-space: nowrap; }
+.zgrid.mnz { margin: 0; gap: var(--gap-in); }
+.zgrid.mnz .btn { width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mnout { margin: 0; max-height: 120px; overflow: auto; background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }

@@ -18,10 +18,13 @@ import copy
 DEFAULT_ROWS = DEFAULT_COLS = 3
 
 
-def default_zones(rows=DEFAULT_ROWS, cols=DEFAULT_COLS):
+DEFAULT_RELAY0 = 2                     # 기본 배치: 3×3 칸에 R2~R10 을 행 우선으로(히트건 = R1). 실제 배치는 [2 초 켜 보기]로 확인
+
+
+def default_zones(rows=DEFAULT_ROWS, cols=DEFAULT_COLS, relay0=DEFAULT_RELAY0):
     n = rows * cols
     return {"rows": rows, "cols": cols, "row_edges": None, "col_edges": None,
-            "cells": [{"cooler": i + 1, "relay": i + 1, "name": "쿨러 %d" % (i + 1)} for i in range(n)]}
+            "cells": [{"cooler": i + 1, "relay": i + relay0, "name": "쿨러 %d" % (i + 1)} for i in range(n)]}
 
 
 def migrate(z):

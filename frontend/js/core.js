@@ -244,7 +244,7 @@ function render() {
   if (s.stop_note && s.stop_note.n !== UI.noteN) { if (UI.noteN != null) toast(s.stop_note.text); UI.noteN = s.stop_note.n; }
   else if (UI.noteN == null) UI.noteN = s.stop_note ? s.stop_note.n : 0;
   renderHead(s);
-  for (const t of ["measure", "results", "setup"]) $("#tab-" + t).classList.toggle("hidden", UI.tab !== t);
+  for (const t of ["measure", "results", "setup", "manual"]) $("#tab-" + t).classList.toggle("hidden", UI.tab !== t);
   $$("#tabs .tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === UI.tab));
   for (const fn of UI.renders) fn(s);
 }

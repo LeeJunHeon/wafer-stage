@@ -1089,9 +1089,32 @@ class Stage:
         self._aborted = False
 
     # ---- 릴레이 · 호밍 센서(V10) ----------------------------------------
-    def _read_bits(self, cmd, head, key, n, what):
-        """"RS R1=0 ..." / "HS H1=0 ..." 한 줄을 [bool]*n 으로."""
-        ln = self._collect(LINE_TIMEOUT_S, lambda s: s.startswith(head + " "), what)
+    def _read_bits(self, cmd, head, key, n, what, mark=None):
+        """"RS R1=0 ..." / "HS H1=0 ..." 한 줄을 [bool]*n 으로. 응답의 짝을 맞춘다:
+
+        - mark 가 있으면(r n 1|0 = "  릴레이 Rn 켜짐|꺼짐", r all 0 = "  릴레이 전부 꺼짐") 그 줄 **다음의** RS 를 결과로 한다.
+        - 펌웨어 통신 감시가 끈 줄("[!] 통신 끊김 · 릴레이 전부 꺼짐")과 그 뒤에 펌웨어가 찍는 RS 는 이 명령의 응답이 아니다 -
+          감시 사건은 _readline 이 처리하고(경보 · 링크 끊김) 그 RS 는 건너뛴다. 감시는 우리 줄을 받기 전에만 걸리므로 우리 응답은 그 뒤에 온다.
+        - [거부] 는 오류(_collect)."""
+        st = {"mark": mark is None, "wd": False}
+
+        def done(s):
+            if WD_MARK in s:
+                st["wd"] = True                              # 다음 RS 는 감시가 찍은 것
+                return False
+            if not st["mark"]:
+                if s.strip() == mark.strip():
+                    st["mark"] = True
+                    st["wd"] = False                         # 표시 줄 다음 RS 는 이 명령의 것
+                return False
+            if s.startswith(head + " "):
+                if st["wd"]:
+                    st["wd"] = False
+                    self._log("<-", "(감시 RS · 이 명령의 응답 아님) " + s)
+                    return False
+                return True
+            return False
+        ln = self._collect(LINE_TIMEOUT_S, done, what)
         d = dict(t.split("=", 1) for t in ln.split()[1:] if "=" in t)
         try:
             return [d["%s%d" % (key, i + 1)] == "1" for i in range(n)]
@@ -1100,7 +1123,7 @@ class Stage:
 
     @_tx
     def relay_set(self, n, on):
-        """릴레이 n(1~10)을 켜거나 끈다. 펌웨어가 돌려주는 RS 상태를 돌려준다.
+        """릴레이 n(1~10)을 켜거나 끈다. 펌웨어가 돌려주는 RS 상태를 돌려준다("  릴레이 Rn 켜짐|꺼짐" 다음 줄의 RS).
 
         비상정지·forget 은 릴레이를 건드리지 않는다(펌웨어 정책과 같다).
         """
@@ -1113,20 +1136,27 @@ class Stage:
         if self.dry:
             self._dry_relay[n - 1] = bool(on)
             return list(self._dry_relay)
-        return self._read_bits(cmd, "RS", "R", N_RELAY, "릴레이")
+        bits = self._read_bits(cmd, "RS", "R", N_RELAY, "릴레이", mark="  릴레이 R%d %s" % (n, "켜짐" if on else "꺼짐"))
+        if bits[n - 1] != bool(on):
+            raise StageError("릴레이 R%d %s 응답과 상태가 다름" % (n, "켜짐" if on else "꺼짐"))
+        return bits
 
     @_tx
     def relay_all_off(self):
+        """r all 0 → 정확히 "  릴레이 전부 꺼짐" 다음의 RS 를 결과로."""
         self._need_fw(10, "릴레이")
         self._write("r all 0")
         if self.dry:
             self._dry_relay = [False] * N_RELAY
             return list(self._dry_relay)
-        return self._read_bits("r all 0", "RS", "R", N_RELAY, "릴레이")
+        bits = self._read_bits("r all 0", "RS", "R", N_RELAY, "릴레이", mark="  릴레이 전부 꺼짐")
+        if any(bits):
+            raise StageError("릴레이 전부 끄기 · 켜진 릴레이 남음")
+        return bits
 
     @_tx
     def relay_status(self):
-        """'rs' -> [bool]*10 (True = 켜짐, 극성과 무관한 논리 상태)."""
+        """'rs' -> [bool]*10 (True = 켜짐, 극성과 무관한 논리 상태). 통신 감시가 찍은 RS 는 건너뛴다."""
         self._need_fw(10, "릴레이")
         self._write("rs")
         if self.dry:

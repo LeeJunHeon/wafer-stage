@@ -15,20 +15,20 @@ function kindBar(s, kind) {
 }
 function renderRtResults(s) {
   const pane = $("#tab-results"), list = (s.rt && s.rt.results) || [];
-  const sig = "rt" + JSON.stringify(list.map((x) => [x.dir, x.status, x.cycle]));
+  const sig = "rt" + JSON.stringify(list.map((x) => [x.dir, x.root, x.status, x.cycle]));
   if (sig === R.sig) return;
   R.sig = sig;
-  const th = ["시각", "파일 이름", "회차", "결과", ""];
+  const th = ["시각", "종류", "파일 이름", "회차", "결과", ""];
   const trs = list.map((x) => h("tr", { class: x.status === "오류" || x.status === "error" ? "fail" : x.status === "중지됨" ? "check" : "" },
-    h("td", { text: x.time }), h("td", { text: (x.mode === "speed" ? "(속도 측정) " : "") + x.name }), h("td", { text: x.cycle }), h("td", { text: (x.status === "done" ? "완료" : x.status) + (x.message && x.status !== "완료" && x.status !== "done" ? " · " + x.message : "") }),
-    h("td", {}, h("div", { class: "row" }, btn("그래프 보기", "r-graph", { dir: x.dir, name: x.name }, "sm", "회차별 R–T 그래프를 봅니다.", x.mode === "speed" || !(x.files || []).length ? "그래프 없음" : ""),
-      btn("폴더 열기", "r-rt-open", { dir: x.dir }, "sm", "이 측정의 파일 폴더를 엽니다.")))));
-  pane.replaceChildren(h("div", { class: "col grow" }, kindBar(s, "rt"), h("div", { class: "card grow scroll" }, list.length ? h("table", { class: "tb", id: "rt-table" }, h("tr", {}, th.map((t) => h("th", { text: t }))), ...trs) : h("div", { text: "R–T 측정 기록 없음 · 측정 탭의 '이 위치 측정' 에서 측정하면 여기에 쌓입니다." }))));
+    h("td", { text: x.time }), h("td", { text: x.kind || "자동" }), h("td", { text: (x.mode === "speed" ? "(속도 측정) " : x.mode === "manual_cont" ? "(연속) " : "") + x.name }), h("td", { text: x.cycle }), h("td", { text: (x.status === "done" ? "완료" : x.status) + (x.message && x.status !== "완료" && x.status !== "done" ? " · " + x.message : "") }),
+    h("td", {}, h("div", { class: "row" }, btn("그래프 보기", "r-graph", { dir: x.dir, name: x.name, root: x.root || "measure" }, "sm", "회차별 R–T 그래프를 봅니다.", x.mode === "speed" || !(x.files || []).length ? "그래프 없음" : ""),
+      btn("폴더 열기", "r-rt-open", { dir: x.dir, root: x.root || "measure" }, "sm", "이 측정의 파일 폴더를 엽니다.")))));
+  pane.replaceChildren(h("div", { class: "col grow" }, kindBar(s, "rt"), h("div", { class: "card grow scroll" }, list.length ? h("table", { class: "tb", id: "rt-table" }, h("tr", {}, th.map((t) => h("th", { text: t }))), ...trs) : h("div", { text: "R–T 측정 기록 없음 · 측정 탭이나 수동 측정 탭에서 측정하면 여기에 쌓입니다." }))));
 }
 UI.acts["r-kind"] = (a) => { R.kind = a.k; R.sig = ""; render(); };
-UI.acts["r-rt-open"] = (a) => send("open_folder", { measure: a.dir });
+UI.acts["r-rt-open"] = (a) => send("open_folder", { measure: a.dir, root: a.root });
 UI.acts["r-graph"] = async (a) => {
-  const j = await (await fetch("/rt_data/" + encodeURIComponent(a.dir))).json();
+  const j = await (await fetch("/rt_data/" + encodeURIComponent(a.dir) + "?root=" + encodeURIComponent(a.root || "measure"))).json();
   const svg = svgEl("svg", { class: "gsvg", id: "g-view" });
   const W = 1140, H = 620, pts = j.cycles.flatMap((c) => c.pts);
   const rg = UI.rtRange(pts.map((p) => p[0]), pts.map((p) => p[1]));

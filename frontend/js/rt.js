@@ -58,7 +58,7 @@ function frame(svg, W, H, m, xr, yr, o) {
 function dots(g, pts, col, r) { if (!pts.length) return; g.append(svgEl("path", { d: pts.map((p) => "M" + p[0].toFixed(1) + " " + p[1].toFixed(1) + "h0").join(""), stroke: col, "stroke-width": r * 2, "stroke-linecap": "round", fill: "none" })); }
 function poly(g, pts, col, w, dash) { if (pts.length < 2) return; g.append(svgEl("path", { d: "M" + pts.map((p) => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L"), stroke: col, "stroke-width": w, fill: "none", "stroke-linejoin": "round", "stroke-dasharray": dash || null })); }
 /* 읽는 값은 오른쪽 바깥 띠에 적고 지시선으로 마지막 점과 잇는다. 지시선은 데이터 점과 가장 덜 겹치는 방향(오른쪽 · 위 · 아래)으로 그림 밖까지 나간 뒤 바깥 띠를 따라 글자에 닿는다. */
-function readout(f, last, lines, col, all) {
+function readout(f, last, lines, col, all, dx) {
   if (!last && lines.length === 1 && lines[0] === "값 없음") {                  // 데이터가 없으면 그래프 칸 안 가운데 옅은 안내
     const svg0 = f.g.parentNode;
     const cx = f.m.l + f.pw / 2, cy = f.m.t + f.ph / 2, two = f.pw < 240;                       // 칸이 좁으면 두 줄(눈금 글자와 겹치지 않게)
@@ -67,7 +67,7 @@ function readout(f, last, lines, col, all) {
     return;
   }
   const { m } = f, svg = f.g.parentNode, right = m.l + f.pw, bottom = m.t + f.ph;
-  const x0 = right + 14, y0 = Math.max(m.t + 18, Math.min(bottom - 8 - lines.length * 18, last ? last[1] - 18 : m.t + 18));
+  const x0 = right + (dx || 14), y0 = Math.max(m.t + 18, Math.min(bottom - 8 - lines.length * 18, last ? last[1] - 18 : m.t + 18));
   if (last && last[0] >= m.l && last[0] <= right) {
     const near = (ax, ay, bx, by) => (all || []).filter((p) => { if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 9) return false; const dx = bx - ax, dy = by - ay, t = Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / (dx * dx + dy * dy || 1))); return Math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy)) < 5; }).length;
     const cand = [["r", near(last[0], last[1], right, last[1])], ["u", near(last[0], last[1], last[0], m.t)], ["d", near(last[0], last[1], last[0], bottom)]];

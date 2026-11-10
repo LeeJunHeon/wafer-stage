@@ -3,11 +3,15 @@
 SCPI 문자열 · 범위 단계 변경 · 저항 계산 · 파일 이름 · 형식 · 히트건 켜고 끄기 · 목표 온도선 추종 · 안전 경로(전부 히트건 꺼짐 + 출력 꺼짐).
 """
 import contextlib
+import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
+
+os.environ.setdefault("WAFER2_DATA", tempfile.mkdtemp(prefix="unit_rt_data_"))     # 로그 · 설정 직전본이 실제 데이터 폴더에 쌓이지 않게
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -107,6 +111,16 @@ class StubApp:
 
     def on_rt_end(self, rr):
         self.ended.append(rr)
+
+    alarms = None
+
+    def set_alarm(self, text, nxt="", force=False):
+        if self.alarms is None:
+            self.alarms = []
+        self.alarms.append(text)
+
+    def cancel_text(self, gen):
+        return "비상정지로 중단"
 
     def make(self, over=None, relays=(1,), mode="rt", name="1-1_"):
         p = rt_mod.params(self.cfg)
@@ -350,8 +364,8 @@ class SavePathTest(unittest.TestCase):
         self.assertEqual(rr.status, rt_mod.OK)
         want = rt_mod.nas_target(base, True, "6", rr.t0)
         self.assertEqual(rr.nas_dir, want)
-        self.assertIn("1-1_0.10V_0.dat", os.listdir(want))
-        self.assertIn("1-1_0.10V_merged.dat", os.listdir(want))
+        self.assertIn("1-1_1.00V_0.dat", os.listdir(want))
+        self.assertIn("1-1_1.00V_merged.dat", os.listdir(want))
         self.assertNotIn("control.csv", os.listdir(want))
         self.assertTrue(rr.run_dir.startswith(tempfile.gettempdir()) or "rt_unit_" in rr.run_dir)
 
@@ -599,17 +613,17 @@ class RunTest(unittest.TestCase):
         self.assertSafe(app, rr)
 
     def test_new_defaults_run_and_open_circuit(self):
-        """새 기본값(0.1 V · 한도 0.1 A · REAR)으로 끝까지 돈다. 앞면 단자 설정이면 열린 회로 경고 + control.csv 표시, 측정은 계속."""
+        """새 기본값(1 V · 한도 0.1 A · REAR · 평균 10 · 4단자)으로 끝까지 돈다. 앞면 단자 설정이면 열린 회로 경고 + control.csv 표시, 측정은 계속."""
         app = StubApp()
         rr = app.make({"max_temp": 40.0, "break_temp": 30.0, "precool_c": 26.0})
-        self.assertEqual((rr.p["volt"], rr.p["ilim_a"], rr.p["repeat"]), (0.1, 0.1, 1))
+        self.assertEqual((rr.p["volt"], rr.p["ilim_a"], rr.p["repeat"], rr.p["filter_n"], rr.p["four_wire"]), (1.0, 0.1, 1, 10, True))
         rr.run()
         self.assertEqual((rr.status, rr.message), (rt_mod.OK, ""))
         self.assertFalse(any("연결 없음" in w for w in rr.warns))
         self.assertEqual(app.lab.dev["2450"].err, [])
         names = sorted(os.listdir(rr.run_dir))
-        self.assertIn("1-1_0.10V_0.dat", names)
-        self.assertNotIn("1-1_0.10V_1.dat", names)
+        self.assertIn("1-1_1.00V_0.dat", names)
+        self.assertNotIn("1-1_1.00V_1.dat", names)
         for c in app.k2450.cmds:                                    # 고른 범위가 한도 규칙을 지킨다
             if c.startswith(":SENS:CURR:RANG ") and "AUTO" not in c:
                 self.assertTrue(inst.limit_ok(float(c.split()[-1]), 0.1), c)
@@ -746,7 +760,9 @@ class FollowTest(unittest.TestCase):
 class SchemaTest(unittest.TestCase):
     def test_defaults_match_labview_screen(self):
         d = sch.defaults()["rt"]
-        self.assertEqual((d["precool_c"], d["max_temp"], d["break_temp"], d["repeat"], d["volt"], d["filter_n"]), (24.5, 85.0, 25.0, 1, 0.1, 10))
+        # 2026-11 장비 PC 기준(단독 스크립트 measure_test.py 와 같은 1 V · 4단자 · 평균 10): 예비 냉각 0 = 건너뜀 · 냉각 끝 30 · 비상 차단 110 고정
+        self.assertEqual((d["precool_c"], d["max_temp"], d["break_temp"], d["repeat"], d["volt"], d["filter_n"]), (0.0, 85.0, 30.0, 1, 1.0, 10))
+        self.assertEqual((d["emergency_c"], d["heat_rate"], d["cool_stall_s"], d["cool_stall_c"]), (110.0, 0.0, 180.0, 0.3))
         self.assertEqual((d["k2450_addr"], d["file_name"], d["nplc"], d["start_range"], d["four_wire"], d["terminal"]), ("GPIB0::18::INSTR", "1-1_", 1.0, 0.001, True, "REAR"))
         self.assertEqual((d["ilim_a"], d["open_a"]), (0.1, 1e-9))
         self.assertEqual((d["band_c"], d["min_on_s"], d["min_off_s"], d["phase_limit_s"], d["stale_s"]), (0.5, 2.0, 2.0, 1800.0, 3.0))
@@ -766,6 +782,402 @@ class SchemaTest(unittest.TestCase):
         bad = sch.defaults()
         bad["rt"]["cooler_custom"] = "1,10"
         self.assertIn("rt.cooler_custom", sch.validate(bad)[1])
+
+
+class VisaErrorQueueTest(unittest.TestCase):
+    """A1: SYST:ERR? 응답 앞 번호(쉼표 앞 정수)가 0 이면 오류 없음 - 2110 '+0, "No error"' · 2450 '0,"No error;0;0"'."""
+
+    def test_error_code_formats(self):
+        self.assertEqual(inst.error_code('+0, "No error"'), 0)
+        self.assertEqual(inst.error_code('0,"No error;0;0"'), 0)
+        self.assertEqual(inst.error_code('-113,"Undefined header"'), -113)
+        self.assertEqual(inst.error_code('+100,"x"'), 100)
+        self.assertIsNone(inst.error_code("garbage"))
+
+    def test_drain_plus_zero_is_empty(self):
+        class D:
+            def __init__(self, rs):
+                self.rs = list(rs)
+
+            def query(self, c):
+                return self.rs.pop(0)
+        self.assertEqual(inst._drain_errors(D(['+0, "No error"'])), [])                 # 예전: "+0" 은 '0' 으로 시작하지 않아 오류로 읽었다
+        self.assertEqual(inst._drain_errors(D(['0,"No error;0;0"'])), [])
+        self.assertEqual(inst._drain_errors(D(['-113,"Undefined header"', '+0, "No error"'])), ['-113,"Undefined header"'])
+
+    def test_k2110_configure_with_real_reply(self):
+        app = StubApp()
+        app.k2110.configure("K", "REAL")                                 # 가짜 K2110 도 실제처럼 '+0, "No error"' 로 답한다
+        self.assertEqual(app.k2110.cmds.count("SYST:ERR?"), 1)
+        app.k2110.write("SENS:TEMP:TRAN TC")
+        with self.assertRaises(inst.VisaError) as c:
+            app.k2110.check_errors()
+        self.assertIn("-113", str(c.exception))
+
+
+class VisaAddrTest(unittest.TestCase):
+    """A2: 목록에서 시리얼(ASRL) 제외 · 자동 찾기(0x2110 · 0x2450 USB · 없으면 GPIB0::18) · 일련번호 없는 USB 형식."""
+
+    def test_list_excludes_serial(self):
+        StubApp()
+        items, _ = inst.list_resources()
+        self.assertTrue(items)
+        self.assertFalse(any(i.upper().startswith("ASRL") for i in items), items)
+
+    def test_find_addr(self):
+        items = ["USB0::0x05E6::0x2110::8017862::INSTR", "GPIB0::18::INSTR", "GPIB0::6::INSTR"]
+        self.assertEqual(inst.find_addr("k2110", items), items[0])
+        self.assertEqual(inst.find_addr("k2450", items), "GPIB0::18::INSTR")
+        self.assertEqual(inst.find_addr("k2450", items + ["USB0::0x05E6::0x2450::04584338::INSTR"]), "USB0::0x05E6::0x2450::04584338::INSTR")
+        self.assertIsNone(inst.find_addr("k2110", ["ASRL4::INSTR", "GPIB0::18::INSTR"]))
+        self.assertIsNone(inst.find_addr("k2450", ["ASRL5::INSTR", "USB0::0x05E6::0x2110::1::INSTR"]))
+        self.assertTrue(inst.usb_no_serial("USB0::0x05E6::0x2110::INSTR"))
+        self.assertFalse(inst.usb_no_serial("USB0::0x05E6::0x2110::8017862::INSTR"))
+        self.assertFalse(inst.usb_no_serial("GPIB0::18::INSTR"))
+
+
+class VisaLogTest(unittest.TestCase):
+    """A3: <데이터>/logs/YYYYMMDD_visa.log 한 줄씩(시각 · 장비 · 주소 · 명령 · 응답 · ms · 예외) + 크기 상한."""
+
+    def test_log_lines_and_cap(self):
+        d = tempfile.mkdtemp(prefix="visalog_")
+        old = (inst.LOG_DIR, inst.VISA_LOG_MAX)
+        inst.LOG_DIR = d
+        try:
+            app = StubApp()
+            app.k2110.configure("K", "REAL")
+            app.k2110.read_temp()
+            fp = inst.visa_log_path()
+            self.assertTrue(os.path.basename(fp).endswith("_visa.log") and os.path.basename(fp)[:8].isdigit())
+            txt = open(fp, encoding="utf-8").read()
+            self.assertRegex(txt, r"\d\d:\d\d:\d\d\.\d{3} K2110 USB0::0x05E6::0x2110::INSTR write \*RST \(\d+\.\d ms\)")
+            self.assertIn('query SYST:ERR? -> +0, "No error"', txt)
+            self.assertRegex(txt, r"K2110 \S+ query READ\? -> [+-]\d")
+            app.lab.fault["disconnect"] = True
+            with self.assertRaises(inst.VisaError):
+                app.k2110.read_temp()
+            app.lab.fault["disconnect"] = False
+            self.assertIn("query READ? (", open(fp, encoding="utf-8").read().splitlines()[-1])
+            self.assertIn("!! TimeoutError", open(fp, encoding="utf-8").read().splitlines()[-1])
+            inst.VISA_LOG_MAX = 3000
+            for _ in range(80):
+                app.k2110.query("*IDN?")
+            self.assertTrue(os.path.exists(fp[:-4] + ".1.log"))
+            self.assertLess(os.path.getsize(fp), 3000 + 400)
+        finally:
+            inst.LOG_DIR, inst.VISA_LOG_MAX = old
+
+
+class SettingsMigrateTest(unittest.TestCase):
+    """A4 · B1: 예전 기본값과 정확히 같은 값만 새 기본값으로(한 번 - settings_rev 2), 사람이 바꾼 값은 그대로. B2: 히트건 · 구역 한 번에 저장 · 맞바꾸기."""
+
+    def _old(self):
+        import copy
+        from core import zones as zones_mod
+        v = sch.defaults()
+        v.pop("settings_rev", None)
+        v["rt"].update({"volt": 0.1, "break_temp": 25.0, "emergency_c": None, "precool_c": 24.5})
+        v["heater"]["relay"] = 10
+        v["cooler"]["zones"] = zones_mod.default_zones(relay0=1)
+        v["relay"]["items"] = copy.deepcopy(sch._relays_default_v1())
+        return v
+
+    def _load(self, raw):
+        import store
+        fp = os.path.join(tempfile.mkdtemp(prefix="set_"), "settings.json")
+        with open(fp, "w", encoding="utf-8") as f:
+            json.dump(raw, f, ensure_ascii=False)
+        return store.Settings(fp), fp
+
+    def test_old_defaults_become_new(self):
+        cfg, fp = self._load(self._old())
+        g = cfg.get
+        self.assertEqual((g("rt.volt"), g("rt.break_temp"), g("rt.emergency_c"), g("rt.precool_c")), (1.0, 30.0, 110.0, 0.0))
+        self.assertEqual(g("heater.relay"), 1)
+        self.assertEqual([c["relay"] for c in g("cooler.zones")["cells"]], list(range(2, 11)))
+        self.assertEqual(g("relay.items")[0]["name"], "히트건")
+        self.assertEqual(g("relay.items")[1]["name"], "쿨러 1")
+        on_disk = json.load(open(fp, encoding="utf-8"))
+        self.assertEqual(on_disk["settings_rev"], 2)                    # 바로 저장(한 번만)
+        self.assertEqual(on_disk["heater"]["relay"], 1)
+        self.assertTrue(any("예전 기본값" in n for n in cfg.migrate_notes))
+        REPORT["설정 이전(예전 기본값 그대로)"] = " / ".join(cfg.migrate_notes)
+
+    def test_user_values_kept(self):
+        v = self._old()
+        v["rt"]["volt"] = 0.5
+        v["rt"]["break_temp"] = 27.0
+        cells = v["cooler"]["zones"]["cells"]
+        cells[0]["relay"], cells[1]["relay"] = cells[1]["relay"], cells[0]["relay"]    # 사람이 구역을 바꿔 둠
+        cfg, _fp = self._load(v)
+        self.assertEqual((cfg.get("rt.volt"), cfg.get("rt.break_temp"), cfg.get("rt.emergency_c")), (0.5, 27.0, 110.0))
+        self.assertEqual(cfg.get("heater.relay"), 10)                   # 구역을 바꿔 둔 사람의 히트건은 그대로(구역과 겹치지 않게)
+        self.assertEqual([c["relay"] for c in cfg.get("cooler.zones")["cells"]][:2], [2, 1])
+        self.assertTrue(any("이전 안 함" in n for n in cfg.migrate_notes))
+
+    def test_rev2_not_migrated_again(self):
+        v = self._old()
+        v["settings_rev"] = 2
+        v["rt"]["emergency_c"] = 110.0
+        cfg, _fp = self._load(v)
+        self.assertEqual((cfg.get("rt.volt"), cfg.get("heater.relay")), (0.1, 10))   # 판 2 의 0.1 V 는 사람이 고른 값
+
+    def test_joint_heater_and_zones_save(self):
+        """B2: R10 → R1 + 구역 R1~R9 → R2~R10 을 한 번에 저장하면 최종 상태 하나로 검증해 통과(따로따로는 서로 막는다)."""
+        from core import zones as zones_mod
+        v = self._old()
+        v["settings_rev"] = 2
+        v["rt"]["emergency_c"] = 110.0
+        cfg, _fp = self._load(v)
+        ok, errs, _w = cfg.save({"heater.relay": 1})
+        self.assertFalse(ok)
+        self.assertIn("cooler.zones", errs)
+        ok, errs, _w = cfg.save({"heater.relay": 1, "cooler.zones": zones_mod.default_zones()})
+        self.assertTrue(ok, errs)
+        self.assertEqual(cfg.get("heater.relay"), 1)
+
+    def test_swap_heater_zone(self):
+        from core import zones as zones_mod
+        z, rl, cell = sch.swap_heater_zone(zones_mod.default_zones(relay0=1), sch._relays_default_v1(), 10, 1)
+        self.assertEqual(cell, 1)
+        self.assertEqual(z["cells"][0]["relay"], 10)
+        self.assertEqual((rl[0]["name"], rl[9]["name"]), ("히트건", "쿨러 1"))
+        v = sch.defaults()
+        v["heater"]["relay"], v["cooler"]["zones"], v["relay"]["items"] = 1, z, rl
+        self.assertEqual(sch.validate(v)[1], {})
+
+    def test_emergency_vs_max(self):
+        v = sch.defaults()
+        v["rt"]["max_temp"] = 110.0
+        errs = sch.validate(v)[1]
+        self.assertIn("rt.max_temp", errs)
+        self.assertIn("rt.emergency_c", errs)
+        p = rt_mod.params(StubCfg({"rt.max_temp": 120.0, "rt.emergency_c": 110.0}))
+        self.assertIn("비상 차단", rt_mod.params_block(p))
+
+    def test_no_syntax_warning(self):
+        """A7: settings_schema 에 잘못된 escape('\\/') 가 없다(시작 시 SyntaxWarning 없음)."""
+        import warnings
+        src = open(os.path.join(ROOT, "backend", "settings_schema.py"), encoding="utf-8").read()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            compile(src, "settings_schema.py", "exec")
+
+
+class StubStage:
+    """B4 시험: relay_status 가 power.owners 를 그대로 돌려주다가 flip 이 정해지면 그 릴레이를 뒤집는다."""
+
+    def __init__(self, app):
+        self.app = app
+        self.flip = None
+        self.calls = 0
+        self.all_off = 0
+
+    def relay_status(self):
+        self.calls += 1
+        bits = [(i + 1) in self.app.power.owners for i in range(10)]
+        if self.flip is not None and self.calls >= self.flip[0]:
+            bits[self.flip[1] - 1] = not bits[self.flip[1] - 1]
+        return bits
+
+    def relay_all_off(self):
+        self.all_off += 1
+        self.app.power.owners.clear()
+        return [False] * 10
+
+
+class CoolStallTest(unittest.TestCase):
+    """A5: 냉각 · 예비 냉각이 cool_stall_s 동안 cool_stall_c 도 안 내려가면 '냉각 멈춤 · 방 온도에 닿음' → 그 회차 정상 종료(기록 유지)."""
+
+    def test_cooling_stall_ends_cycle_ok(self):
+        app = StubApp()
+        app.lab.t_cool = 27.0                                     # 쿨러로도 27 °C 까지만(방 온도) - 냉각 끝 25 °C 에 못 닿는다
+        rr = app.make(short_params(max_temp=40.0, break_temp=25.0, repeat=1, precool_c=0.0, cool_stall_s=60.0))
+        rr.run()
+        self.assertEqual(rr.status, rt_mod.OK, rr.message)
+        self.assertIn("냉각 1", rr.stalls)
+        self.assertTrue(any("냉각 멈춤" in w for w in rr.warns))
+        rows = open(os.path.join(rr.run_dir, "1-1_1.00V_0.dat"), encoding="utf-8").read().splitlines()
+        self.assertGreater(len(rows), 20)
+        self.assertNotIn(10, app.power.owners)
+
+    def test_precool_stall_continues_and_zero_skips(self):
+        app = StubApp()
+        app.lab.t_cool = 27.0
+        rr = app.make(short_params(max_temp=36.0, break_temp=28.0, repeat=1, precool_c=24.5, cool_stall_s=60.0))
+        rr.run()
+        self.assertEqual(rr.status, rt_mod.OK, rr.message)
+        self.assertIn("예비 냉각", rr.stalls)
+        app2 = StubApp()
+        rr2 = app2.make(short_params(max_temp=36.0, break_temp=30.0, repeat=1, precool_c=0.0))
+        rr2.run()
+        self.assertEqual(rr2.status, rt_mod.OK, rr2.message)
+        self.assertFalse(any(p["ph"] == "예비 냉각" for p in rr2.points))   # 0 = 예비 냉각 건너뜀
+
+
+class FastRiseTest(unittest.TestCase):
+    """A6: 가열 중 5 °C/s 보다 빨리 오르면 한 번만 경보(띠 · 로그 · 중단 안 함) + 히트건 끈 뒤 오버슈트 기록."""
+
+    def test_fast_rise_warns_once(self):
+        app = StubApp()
+        app.lab.tau, app.lab.tau_sensor = 3.0, 0.3                 # 열전대가 히트건 바람을 직접 맞음(빠른 상승)
+        rr = app.make(short_params(max_temp=60.0, break_temp=40.0, repeat=2, precool_c=0.0))
+        rr.run()
+        self.assertEqual(rr.status, rt_mod.OK, rr.message)
+        self.assertEqual(len([w for w in rr.warns if rt_mod.FAST_RISE_TEXT in w]), 1)
+        self.assertEqual(app.alarms, [rt_mod.FAST_RISE_TEXT])
+        self.assertIsNotNone(rr.overshoot)
+        meta = json.load(open(os.path.join(rr.run_dir, "rt.json"), encoding="utf-8"))
+        self.assertIn("overshoot", meta)
+        REPORT["빠른 가열 시험 · 끈 뒤 오버슈트"] = "%+.1f °C" % rr.overshoot
+
+    def test_normal_rise_no_warning(self):
+        app = StubApp()
+        rr = app.make(short_params(max_temp=40.0, break_temp=30.0, repeat=1, precool_c=0.0))
+        rr.run()
+        self.assertFalse(rr._fast_warned)
+
+
+class RelayStateTest(unittest.TestCase):
+    """B4: R–T 중 루프마다 펌웨어 RS 와 있어야 할 상태(쿨러 켜짐 · 히트건 단계대로 · 나머지 꺼짐)를 비교 - 다르면 중단."""
+
+    def test_mismatch_stops(self):
+        app = StubApp()
+        app.stage = StubStage(app)
+        app.stage.flip = (40, 2)                                  # 40 번째 읽기부터 쿨러 R2 가 꺼져 있다고 답한다(감시가 끔 · 재부팅)
+        rr = app.make(short_params(max_temp=40.0, break_temp=30.0, repeat=1, precool_c=0.0), relays=(2,))
+        rr.run()
+        self.assertEqual(rr.status, rt_mod.ERROR)
+        self.assertIn("릴레이 상태 다름", rr.message)
+        self.assertIn("R2 꺼짐", rr.message)
+        self.assertNotIn(10, app.power.owners)
+        self.assertFalse(app.lab.out_on)
+        self.assertGreaterEqual(app.stage.all_off, 1)               # 오류 끝: r all 0 으로 꺼짐 확인
+
+    def test_match_runs_to_end(self):
+        app = StubApp()
+        app.stage = StubStage(app)
+        rr = app.make(short_params(max_temp=40.0, break_temp=30.0, repeat=1, precool_c=0.0), relays=(2,))
+        rr.run()
+        self.assertEqual(rr.status, rt_mod.OK, rr.message)
+        self.assertGreater(app.stage.calls, 20)
+
+    def test_fake_fw_cut_link_during_cooling(self):
+        """fake_v11 cut_link: 냉각 중 4 초 끊김 → 중단 · 히트건 · 쿨러 전부 꺼짐(펌웨어 RS) · K2450 출력 꺼짐."""
+        import fake_v11
+        from core import power as power_mod
+        from core import stage as stage_mod
+        fw = fake_v11.FakeV11(time_scale=0.05)
+        try:
+            st = stage_mod.Stage(dry=False)
+            st.ser = fw
+            st.fw_version = "V11"
+            st._log = lambda *a: None
+            app = StubApp()
+            app.stage = st
+            app.power = power_mod.Power(st, heater_n=10)
+            clk = app.clock
+            app.lab.sleep = lambda s: (clk.advance(s), time.sleep(0.004))
+            rr = app.make(short_params(max_temp=40.0, break_temp=22.0, repeat=1, precool_c=0.0), relays=(2,))
+            th = threading.Thread(target=rr.run, daemon=True)
+            th.start()
+            t_end = time.time() + 60
+            while rr.phase != "냉각" and time.time() < t_end and not rr.finished.is_set():
+                time.sleep(0.02)
+            self.assertEqual(rr.phase, "냉각")
+            self.assertTrue(fw.relay[1], "쿨러 R2 켜짐")
+            fw.cut_link(4.0)
+            t0 = time.time()
+            self.assertTrue(rr.finished.wait(30))
+            REPORT["냉각 중 4 s 끊김 → 측정 끝까지"] = "%.1f s" % (time.time() - t0)
+            self.assertEqual(rr.status, rt_mod.ERROR)
+            self.assertIn("통신", rr.message)
+            if rr.relay_off_failed:
+                self.assertTrue(rt_mod.relays_off_retry(app, secs=15, every=0.3))
+            self.assertEqual(fw.relay, [False] * 10)
+            self.assertFalse(app.lab.out_on)
+        finally:
+            fw.close()
+
+
+class GuardTest(unittest.TestCase):
+    """B5(확인): VISA 가 막혀도(K2110 응답 8 s 지연) 독립 감시가 히트건을 끈다 - 걸린 시간 보고."""
+
+    def test_guard_turns_heater_off_when_visa_hangs(self):
+        app = StubApp()
+        clk = app.clock
+        app.lab.sleep = lambda s: (clk.advance(s), time.sleep(0.01))
+        rr = app.make(short_params(max_temp=80.0, break_temp=30.0, repeat=1, precool_c=0.0))
+        th = threading.Thread(target=rr.run, daemon=True)
+        th.start()
+        t_end = time.time() + 20
+        while not (rr.phase == "가열" and 10 in app.power.owners) and time.time() < t_end:
+            time.sleep(0.01)
+        self.assertIn(10, app.power.owners)
+        app.lab.fault["slow"] = 8.0
+        t0 = time.monotonic()
+        while 10 in app.power.owners and time.monotonic() - t0 < 15:
+            time.sleep(0.05)
+        dt = time.monotonic() - t0
+        app.lab.fault["slow"] = 0.0
+        rr.stop()
+        self.assertTrue(rr.finished.wait(40))
+        REPORT["감시 · K2110 8 s 지연 → 히트건 꺼짐"] = "%.1f s (온도 갱신 한도 %g s + 여유 2 s)" % (dt, rr.p["stale_s"])
+        self.assertLess(dt, float(rr.p["stale_s"]) + 2.0 + 1.0)
+        self.assertNotIn(10, app.power.owners)
+
+
+class ManualModeTest(unittest.TestCase):
+    """수동 측정: 이동 계층을 부르지 않는다(Z 올림 없음) · 자동과 같은 파일 형식 · 연속 측정은 control.csv 만 · 끝나면 전부 꺼짐."""
+
+    def test_manual_rt_files_and_no_motion(self):
+        app = StubApp()
+        app.motion = None                                         # 이동 계층 없이도 돈다
+        app.stage = StubStage(app)
+        p = rt_mod.params(app.cfg)
+        p.update(short_params(max_temp=40.0, break_temp=30.0, repeat=2, precool_c=0.0))
+        p["file_path"] = ""
+        rr = rt_mod.RTRun(app, p, "m1_", run_dir=tempfile.mkdtemp(prefix="man_"), relays=[2], mode="manual_rt")
+        self.assertFalse(rr.z_top_end)
+        rr.run()
+        self.assertEqual((rr.status, rr.message), (rt_mod.OK, ""))
+        names = sorted(os.listdir(rr.run_dir))
+        for n in ("m1_1.00V_0.dat", "m1_1.00V_1.dat", "m1_1.00V_merged.dat", "control.csv", "rt.json"):
+            self.assertIn(n, names)
+        raw = open(os.path.join(rr.run_dir, "m1_1.00V_0.dat"), "rb").read()
+        self.assertTrue(raw.startswith(b"Temp   Resistance   \r\n") and raw.endswith(b"\r\n"))
+        n0 = len(raw.split(b"\r\n")) - 2
+        n1 = len(open(os.path.join(rr.run_dir, "m1_1.00V_1.dat"), "rb").read().split(b"\r\n")) - 2
+        nm = len(open(os.path.join(rr.run_dir, "m1_1.00V_merged.dat"), "rb").read().split(b"\r\n")) - 1
+        self.assertEqual(nm, n0 + n1)
+        ctl = open(os.path.join(rr.run_dir, "control.csv"), encoding="utf-8-sig").read().splitlines()
+        self.assertEqual(ctl[0] + "\n", rt_mod.MANUAL_CTL_HEAD)
+        self.assertEqual(len(ctl[1].split(",")), 11)
+        self.assertEqual(app.power.owners, {})
+        self.assertGreaterEqual(app.stage.all_off, 1)              # 끝: r all 0 으로 꺼짐 확인
+        self.assertEqual(json.load(open(os.path.join(rr.run_dir, "rt.json"), encoding="utf-8"))["kind"], "수동")
+
+    def test_manual_continuous_stop(self):
+        app = StubApp()
+        app.motion = None
+        app.power = None                                          # 스테이지 없이 연속 측정(릴레이 안 씀)
+        app.lab.heater_fn = app.lab.cooler_fn = lambda: False
+        clk = app.clock
+        app.lab.sleep = lambda s: (clk.advance(s), time.sleep(0.002))
+        p = rt_mod.params(app.cfg)
+        p["file_path"] = ""
+        rr = rt_mod.RTRun(app, p, "c1_", run_dir=tempfile.mkdtemp(prefix="man_"), mode="manual_cont")
+        th = threading.Thread(target=rr.run, daemon=True)
+        th.start()
+        t_end = time.time() + 10
+        while len(rr.points) < 30 and time.time() < t_end:
+            time.sleep(0.01)
+        rr.stop()
+        self.assertTrue(rr.finished.wait(10))
+        self.assertEqual(rr.status, rt_mod.STOPPED)
+        self.assertEqual(sorted(os.listdir(rr.run_dir)), ["control.csv", "rt.json"])
+        self.assertFalse(app.lab.out_on)
+        self.assertTrue(all(pt["R"] is not None for pt in rr.points[2:]))
 
 
 if __name__ == "__main__":

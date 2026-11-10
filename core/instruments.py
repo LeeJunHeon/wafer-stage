@@ -13,7 +13,9 @@ pyvisa 나 NI-VISA 가 없으면 VisaUnavailable 로 알리고 프로그램은 �
 """
 
 import math
+import os
 import threading
+import time
 
 NO_DRIVER = "장비 통신 드라이버 없음 · NI-VISA 설치 필요"
 OVERFLOW = 9.0e37                      # SCPI 범위 넘음 · 열전대 끊김 표기 9.91E+37
@@ -49,27 +51,109 @@ def _rm():
 
 
 def list_resources():
-    """(주소 목록, 안내 문구). 드라이버가 없으면 빈 목록 + 안내."""
+    """(주소 목록, 안내 문구). 드라이버가 없으면 빈 목록 + 안내.
+
+    시리얼(ASRL) 주소는 뺀다 - 측정 장비는 USB · GPIB 이고, 장비 PC 의 ASRL 은 스테이지(COM5) · 예전 LabVIEW 보드(COM4)다.
+    목록에 두면 고르거나 자동으로 찾을 때 그 포트를 열어 보드가 리셋된다."""
     try:
         rm = _rm()
-        return list(rm.list_resources()), ""
+        items = [str(a) for a in rm.list_resources()]
     except VisaUnavailable as e:
         return [], str(e)
     except Exception as e:                              # noqa: BLE001
         return [], "장비 목록 읽기 실패 · %s" % str(e)[:40]
+    return [a for a in items if visa_kind(a) != "시리얼"], ""
 
 
-def open_resource(addr):
+K2450_GPIB = "GPIB0::18::INSTR"                      # 기존 LabVIEW 프로그램의 K2450 주소
+
+
+def find_addr(kind, items):
+    """목록(ASRL 뺀 것)에서 장비 주소를 찾는다. kind "k2110" = '0x2110' 이 든 주소 · "k2450" = '0x2450' 이 든 USB 주소, 없으면 GPIB0::18::INSTR.
+    못 찾으면 None."""
+    up = [(a, a.upper()) for a in items or [] if visa_kind(a) != "시리얼"]
+    if kind == "k2110":
+        for a, u in up:
+            if "0X2110" in u:
+                return a
+        return None
+    for a, u in up:
+        if u.startswith("USB") and "0X2450" in u:
+            return a
+    for a, u in up:
+        if u == K2450_GPIB:
+            return a
+    return None
+
+
+def usb_no_serial(addr):
+    """USB0::0x05E6::0x2110::INSTR 처럼 일련번호가 빠진 USB 주소인가(제조사 · 모델 뒤에 바로 INSTR)."""
+    parts = [p for p in str(addr or "").strip().upper().split("::")]
+    return len(parts) == 4 and parts[0].startswith("USB") and parts[-1] == "INSTR"
+
+
+def open_resource(addr, name="VISA"):
     rm = _rm()
+    t0 = time.monotonic()
     try:
         res = rm.open_resource(addr)
     except Exception as e:                              # noqa: BLE001
+        visa_log(name, addr, "open", "", None, time.monotonic() - t0, e)
         raise VisaError("장비 열기 실패 · %s · %s" % (addr, str(e)[:40])) from e
+    visa_log(name, addr, "open", "", "ok", time.monotonic() - t0, None)
     try:
         res.timeout = VISA_TIMEOUT_MS
     except Exception:                                   # noqa: BLE001
         pass
     return res
+
+
+# --------------------------------------------------------------------------
+# VISA 명령 로그: <데이터>/logs/YYYYMMDD_visa.log (화면 로그와 같은 폴더 · 날짜 규칙)
+# --------------------------------------------------------------------------
+VISA_LOG_MAX = 20 * 1024 * 1024        # 하루 파일이 이만큼 넘으면 .1 로 옮기고 새로 쓴다(하루 최대 두 개 = 40 MB)
+LOG_DIR = None                         # None = core.paths.LOGS_DIR (시험이 바꿀 수 있다)
+_LOG_LOCK = threading.Lock()
+
+
+def _log_dir():
+    if LOG_DIR:
+        return LOG_DIR
+    from core import paths
+    return paths.LOGS_DIR
+
+
+def visa_log_path(day=None):
+    return os.path.join(_log_dir(), (day or time.strftime("%Y%m%d")) + "_visa.log")
+
+
+def _clip(t, n=200):
+    t = str(t).replace("\r", "\\r").replace("\n", "\\n")
+    return t if len(t) <= n else t[:n] + "…"
+
+
+def visa_log(name, addr, op, cmd, resp, dt, exc):
+    """한 줄: 시각 · 장비 · 주소 · 동작(open · write · query · close) · 명령 · 응답 · 걸린 시간(ms) · 예외. 실패해도 측정은 계속한다."""
+    line = "%s.%03d %s %s %s %s" % (time.strftime("%H:%M:%S"), int(time.time() * 1000) % 1000, name, addr, op, _clip(cmd))
+    if resp is not None:
+        line += " -> " + _clip(resp)
+    line += " (%.1f ms)" % (dt * 1000.0)
+    if exc is not None:
+        line += " !! %s: %s" % (type(exc).__name__, _clip(exc))
+    try:
+        with _LOG_LOCK:
+            d = _log_dir()
+            os.makedirs(d, exist_ok=True)
+            fn = visa_log_path()
+            try:
+                if os.path.getsize(fn) > VISA_LOG_MAX:
+                    os.replace(fn, fn[:-4] + ".1.log")
+            except OSError:
+                pass
+            with open(fn, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -159,6 +243,9 @@ def parse_float(txt):
 
 # --------------------------------------------------------------------------
 class _Dev:
+    NAME = "VISA"
+    MODEL = ""
+
     def __init__(self, addr):
         self.addr = addr
         self.res = None
@@ -167,9 +254,17 @@ class _Dev:
         self.cmds = []                                  # 시험용: 보낸 명령 기록(최근)
 
     def open(self):
-        self.res = open_resource(self.addr)
-        self.idn_text = self.query("*IDN?")
+        self.res = open_resource(self.addr, self.NAME)
+        try:
+            self.idn_text = self.query("*IDN?")
+        except VisaError:
+            self.close()
+            raise
         return self.idn_text
+
+    def model_ok(self):
+        """*IDN? 에 모델 번호(2110 · 2450)가 있는가 - 다른 장비를 이 장비로 쓰지 않는다."""
+        return not self.MODEL or self.MODEL in (self.idn_text or "")
 
     def _log(self, c):
         self.cmds.append(c)
@@ -181,43 +276,66 @@ class _Dev:
             raise VisaError("장비 연결 안 됨")
         with self.lock:
             self._log(cmd)
+            t0 = time.monotonic()
             try:
                 self.res.write(cmd)
             except Exception as e:                      # noqa: BLE001
+                visa_log(self.NAME, self.addr, "write", cmd, None, time.monotonic() - t0, e)
                 raise VisaError("장비 통신 끊김 · %s" % str(e)[:40]) from e
+            visa_log(self.NAME, self.addr, "write", cmd, None, time.monotonic() - t0, None)
 
     def query(self, cmd):
         if self.res is None:
             raise VisaError("장비 연결 안 됨")
         with self.lock:
             self._log(cmd)
+            t0 = time.monotonic()
             try:
-                return str(self.res.query(cmd)).strip()
+                r = str(self.res.query(cmd)).strip()
             except Exception as e:                      # noqa: BLE001
+                visa_log(self.NAME, self.addr, "query", cmd, None, time.monotonic() - t0, e)
                 raise VisaError("장비 통신 끊김 · %s" % str(e)[:40]) from e
+            visa_log(self.NAME, self.addr, "query", cmd, r, time.monotonic() - t0, None)
+            return r
 
     def close(self):
         r, self.res = self.res, None
         if r is not None:
+            t0 = time.monotonic()
             try:
                 r.close()
-            except Exception:                           # noqa: BLE001
-                pass
+                visa_log(self.NAME, self.addr, "close", "", None, time.monotonic() - t0, None)
+            except Exception as e:                      # noqa: BLE001
+                visa_log(self.NAME, self.addr, "close", "", None, time.monotonic() - t0, e)
 
     @property
     def is_open(self):
         return self.res is not None
 
 
+def error_code(resp):
+    """SYST:ERR? 응답의 오류 번호(쉼표 앞 정수). '+0, "No error"'(2110) · '0,"No error;0;0"'(2450) → 0 · '-113,"Undefined header"' → -113.
+    번호를 읽지 못하면 None."""
+    head = str(resp or "").strip().split(",", 1)[0].strip()
+    try:
+        return int(head)
+    except ValueError:
+        try:
+            f = float(head)
+        except ValueError:
+            return None
+        return int(f) if math.isfinite(f) and f == int(f) else None
+
+
 def _drain_errors(dev):
-    """장비 오류 큐(SYST:ERR?)를 비우며 읽는다. 오류 문구 목록."""
+    """장비 오류 큐(SYST:ERR?)를 비우며 읽는다. 오류 문구 목록. 번호 0 = 오류 없음(큐가 비었다)."""
     out = []
     for _ in range(8):
         try:
             r = dev.query("SYST:ERR?")
         except VisaError:
             break
-        if r.startswith("0") or not r:
+        if not r or error_code(r) == 0:
             break
         out.append(r)
     return out
@@ -225,6 +343,9 @@ def _drain_errors(dev):
 
 class K2110(_Dev):
     """Keithley 2110 5½ 자리 멀티미터 - K형 열전대 온도(°C, 기준점 내부)."""
+
+    NAME = "K2110"
+    MODEL = "2110"
 
     def configure(self, tc_type="K", rjun="REAL"):
         self.write("*RST")
@@ -247,6 +368,8 @@ class K2110(_Dev):
 class K2450(_Dev):
     """Keithley 2450 - 전압 소스, 전류 측정. 전류 한도(ILIMit)를 항상 건다. 실제 배선은 뒷면 3축 단자(FORCE HI/LO · SENSE HI/LO) = REAR."""
 
+    NAME = "K2450"
+    MODEL = "2450"
     out_state = False
 
     def check_scpi(self):  # noqa: D102 - K2450
@@ -314,4 +437,4 @@ class K2450(_Dev):
         return cur, trip
 
 
-__all__ = ["K2110", "K2450", "VisaError", "VisaUnavailable", "list_resources", "resistance", "is_open_circuit", "visa_kind", "next_range", "clamp_range", "limit_ok", "NO_DRIVER", "RANGES"]
+__all__ = ["K2110", "K2450", "VisaError", "VisaUnavailable", "list_resources", "find_addr", "usb_no_serial", "error_code", "visa_log", "resistance", "is_open_circuit", "visa_kind", "next_range", "clamp_range", "limit_ok", "NO_DRIVER", "RANGES"]

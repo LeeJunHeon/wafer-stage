@@ -61,6 +61,9 @@ class Client:
                 "relay": {"items": [{"enabled": True, "name": "R%d" % (i + 1), "max_on_s": 0} for i in range(10)],                           "on_estop": "off", "on_stop": "off", "on_error": "off", "on_exit": "off"},
                 "photohome": {"grid_n": 3, "grid_margin_mm": 20.0}, "capture_xy": [10.0, 90.0], "park_xy": [10.0, 20.0],
                 "calib": {"area_size_mm": [160.0, 160.0]}, "heater": {"relay": 10, "max_on_s": 120.0},
+                # 예전 시험은 히트건 R10 · 쿨러 R1~R9 배치를 쓴다(판 2 = 기본값 이전을 하지 않음). 새 기본값(R1 · R2~R10)은 unit_rt · e2e 수동 측정이 본다
+                "settings_rev": 2, "cooler": {"zones": {"rows": 3, "cols": 3, "row_edges": None, "col_edges": None,
+                                                       "cells": [{"cooler": i + 1, "relay": i + 1, "name": "쿨러 %d" % (i + 1)} for i in range(9)]}},
                 "jog": {"z_max_mm": 45.0},                       # 예전 시험은 Z 를 크게 조그한다 - 모터 안전 시험(56~)은 이 값을 기본(1 mm)으로 되돌린다
                 "rt": {"file_path": ""}}                         # 시험은 실제 NAS(기본 폴더)에 쓰지 않는다 - NAS 시험은 임시 폴더를 준다
         base = _merge(base, patch or {})
@@ -285,6 +288,7 @@ def run_cases(names):
     import e2e_conn  # noqa: F401  (장치 연결 상태 시나리오 48~ 등록)
     import e2e_safety  # noqa: F401  (모터 안전 시나리오 56~ 등록)
     import e2e_stop  # noqa: F401  (정지 · 원점 · 연결 · 설정 시나리오 65~ 등록)
+    import e2e_manual  # noqa: F401  (측정 장비 주소 · 수동 측정 시나리오 80~ 등록)
     def hit(k, n):                                       # "65" · "09b" 처럼 번호만 주면 그 번호의 케이스만(이름 안의 숫자와 섞이지 않게), 아니면 이름 일부
         return n.split()[0] == k if k.replace("-", "").isalnum() and k[:2].isdigit() and " " not in k else k in n
     sel = [n for n in CASES if not names or any(hit(k, n) for k in names)]

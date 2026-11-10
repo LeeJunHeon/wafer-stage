@@ -50,6 +50,8 @@ class Lab:
         self.tripped = False
         self.cable = "REAR"            # 케이블은 K2450 뒷면 단자에 꽂혀 있다 - 앞면 단자 설정이면 열린 회로
         self.term = "FRON"             # K2450 현재 단자 설정(*RST 뒤 앞면)
+        self.addrs = None              # VISA 목록(None = ADDRS) - 주소 찾기 시험이 바꾼다
+        self.opened = []               # 연 주소 순서(시험)
 
     # ---- 물리 ------------------------------------------------------
     def _step(self):
@@ -219,8 +221,10 @@ class _Res:
         lab, s = self.lab, self.s
         if u == "*IDN?":
             return ("KEITHLEY INSTRUMENTS,MODEL 2450,SIM0001,1.7.0\n" if self.kind == "2450" else "KEITHLEY INSTRUMENTS INC.,MODEL 2110,SIM0002,02.03-02.03-02.02\n")
-        if u == "SYST:ERR?":
-            return ('-113,"Undefined header"\n' if self.err else '0,"No error"\n') if not self.err else ('-113,"Undefined header; %s"\n' % self.err.pop(0))
+        if u == "SYST:ERR?":                                 # 실제 장비 응답 형식: 2110 '+0, "No error"' · 2450 '0,"No error;0;0"'
+            if self.err:
+                return '-113,"Undefined header; %s"\n' % self.err.pop(0)
+            return '+0, "No error"\n' if self.kind == "2110" else '0,"No error;0;0"\n'
         if u == "*LANG?":
             return "SCPI\n" if getattr(lab, "lang", "SCPI") == "SCPI" else "TSP\n"
         if self.kind == "2110" and u == "READ?":
@@ -241,21 +245,37 @@ class _Res:
         return "0"
 
 
+ADDRS = ["ASRL4::INSTR", "ASRL5::INSTR", "USB0::0x05E6::0x2110::SIM0002::INSTR", "GPIB0::18::INSTR", "GPIB0::6::INSTR"]
+
+
 class FakeRM:
     def __init__(self, lab):
         self.lab = lab
-        self.addrs = ["USB0::0x05E6::0x2110::SIM0002::INSTR", "GPIB0::18::INSTR", "GPIB0::6::INSTR"]
+        # 장비 PC 목록처럼: 시리얼 포트(ASRL - 스테이지 · 예전 보드)가 섞여 있다. 앱은 이것을 열면 안 된다(열면 오류로 남긴다)
+        if getattr(lab, "addrs", None) is None:
+            lab.addrs = list(ADDRS)
+        self.opened = []                                     # 시험: 연 주소 순서
+
+    @property
+    def addrs(self):
+        return self.lab.addrs
 
     def list_resources(self):
         return tuple(self.addrs)
 
     def open_resource(self, addr):
+        self.opened.append(addr)
+        self.lab.opened.append(addr)
         if self.lab.fault.get("disconnect"):
             raise TimeoutError("연결 안 됨")
-        if "2110" in addr or addr.startswith("USB"):
-            r = _Res(self.lab, "2110", addr)
-        elif addr.startswith("GPIB") or "2450" in addr:
+        if addr.upper().startswith("ASRL"):
+            raise RuntimeError("시리얼 포트를 측정 장비로 열었음 (시험 실패)")
+        if addr not in self.addrs and not inst.usb_no_serial(addr):   # 일련번호 없는 USB 주소는 실제 NI-VISA 처럼 첫 장비로 열린다
+            raise RuntimeError("VI_ERROR_RSRC_NFOUND %s" % addr)
+        if "2450" in addr or addr.startswith("GPIB"):
             r = _Res(self.lab, "2450", addr)
+        elif "2110" in addr or addr.startswith("USB"):
+            r = _Res(self.lab, "2110", addr)
         else:
             raise ValueError("알 수 없는 주소 %s" % addr)
         self.lab.dev[r.kind] = r

@@ -752,5 +752,92 @@ class SerialLineTest(unittest.TestCase):
         self.assertTrue(issubclass(stage_mod.StageIOError, stage_mod.StageTimeout))     # 시간 초과와 같이 다룬다(위치 못 믿음)
 
 
+def _rs_line(on):
+    return ("RS " + " ".join("R%d=%d" % (i + 1, 1 if (i + 1) in on else 0) for i in range(10)) + "\n").encode()
+
+
+class RelayReplyTest(unittest.TestCase):
+    """B3: 릴레이 응답 짝 맞추기 - r n 1|0 은 "  릴레이 Rn 켜짐|꺼짐" 다음 RS, r all 0 은 "  릴레이 전부 꺼짐" 다음 RS,
+    통신 감시가 찍은 RS 는 이 명령의 결과가 아니다(사건은 처리), [거부] 는 오류."""
+
+    def _st(self, ser):
+        st = stage_mod.Stage(dry=False)
+        st.ser = ser
+        st._log = lambda *a: None
+        st._write = lambda cmd: None
+        self.ev = []
+        st.on_event = lambda kind, line: self.ev.append(kind)
+        return st
+
+    def test_wd_rs_before_reply_is_skipped(self):
+        st = self._st(_ChunkSer(["  [!] 통신 끊김 · 릴레이 전부 꺼짐\n".encode(),
+                                 _rs_line(()), "  릴레이 R1 켜짐\n".encode(), _rs_line((1,))]))
+        bits = st.relay_set(1, True)
+        self.assertTrue(bits[0])                             # 예전: 감시가 찍은 RS(전부 꺼짐)를 이번 응답으로 읽었다
+        self.assertIn("wd_trip", self.ev)                    # 감시 사건은 처리됨(경보 · 링크 끊김)
+
+    def test_stale_rs_without_mark_not_taken(self):
+        st = self._st(_ChunkSer([_rs_line((2,)), "  릴레이 R2 꺼짐\n".encode(), _rs_line(())]))
+        bits = st.relay_set(2, False)
+        self.assertFalse(bits[1])                            # 표시 줄 앞의 옛 RS(R2 켜짐)를 결과로 쓰지 않는다
+
+    def test_all_off_needs_exact_mark(self):
+        st = self._st(_ChunkSer([_rs_line((3,)), "  릴레이 R3 꺼짐\n".encode(), _rs_line(()), "  릴레이 전부 꺼짐\n".encode(), _rs_line(())]))
+        self.assertEqual(st.relay_all_off(), [False] * 10)
+        st = self._st(_ChunkSer([_rs_line((3,))] + [b""] * 3))
+        st_mod_t = stage_mod.LINE_TIMEOUT_S
+        stage_mod.LINE_TIMEOUT_S = 0.3
+        try:
+            with self.assertRaises(stage_mod.StageTimeout):      # 표시 줄 없이 RS 만 오면 받지 않는다
+                st.relay_all_off()
+        finally:
+            stage_mod.LINE_TIMEOUT_S = st_mod_t
+
+    def test_reject_is_error(self):
+        st = self._st(_ChunkSer(["  [거부] 릴레이 번호는 1~10\n".encode()]))
+        with self.assertRaises(stage_mod.StageError):
+            st.relay_set(4, True)
+
+    def test_rs_after_wd_takes_own_reply(self):
+        st = self._st(_ChunkSer(["  [!] 통신 끊김 · 릴레이 전부 꺼짐\n".encode(), _rs_line(()), _rs_line((5,))]))
+        self.assertTrue(st.relay_status()[4])                # 감시 RS 뒤의 우리 RS
+
+    def test_fake_fw_cut_freeze_drop(self):
+        """fake_v11: 줄 잃음(drop_next) · 링크 끊김(cut_link) · 멈춤(freeze) 에서 엉뚱한 RS 를 결과로 쓰지 않고 오류로 끝난다. 감시가 끈 뒤에는 사건 + 새 응답."""
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import fake_v11
+        fw = fake_v11.FakeV11(time_scale=0.05)
+        try:
+            st = stage_mod.Stage(dry=False)
+            st.ser = fw
+            st.fw_version = "V11"
+            st._log = lambda *a: None
+            ev = []
+            st.on_event = lambda kind, line: ev.append(kind)
+            st.relay_set(2, True)
+            old = stage_mod.LINE_TIMEOUT_S
+            stage_mod.LINE_TIMEOUT_S = 0.6
+            try:
+                fw.drop_next(1)                                  # "  릴레이 R3 켜짐" 을 잃음 → 그 뒤 RS 를 결과로 받지 않는다
+                with self.assertRaises(stage_mod.StageTimeout):
+                    st.relay_set(3, True)
+                fw.cut_link(0.5)                                 # 보낸 줄이 사라짐 → 응답 없음
+                with self.assertRaises(stage_mod.StageTimeout):
+                    st.relay_set(4, True)
+                time.sleep(0.5)
+                fw.freeze(0.3)                                   # 펌웨어 멈춤 0.3 s - 한도 안에 풀리면 바른 응답
+                self.assertTrue(st.relay_set(4, True)[3])
+            finally:
+                stage_mod.LINE_TIMEOUT_S = old
+            fw.wd_ms = 150                                       # 감시가 릴레이를 끈다 → 다음 거래의 비우기가 사건 처리
+            fw.last_rx = time.monotonic()
+            time.sleep(0.5)
+            bits = st.relay_set(5, True)
+            self.assertIn("wd_trip", ev)
+            self.assertEqual([i + 1 for i, b in enumerate(bits) if b], [5])
+        finally:
+            fw.close()
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]] + [a for a in sys.argv[1:]], verbosity=2)

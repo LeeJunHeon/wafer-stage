@@ -15,6 +15,7 @@
         <button class="tab on" data-act="tab" data-tab="measure" data-args='{"tab":"measure"}'>측정</button>
         <button class="tab" data-act="tab" data-tab="results" data-args='{"tab":"results"}'>결과</button>
         <button class="tab" data-act="tab" data-tab="setup" data-args='{"tab":"setup"}'>장비 설정</button>
+        <button class="tab" data-act="tab" data-tab="manual" data-args='{"tab":"manual"}' data-tip="모터를 움직이지 않고 온도 · 저항 · R–T 를 잽니다.">수동 측정</button>
       </nav>
       <div id="pill" class="pill idle">연결 안 됨</div>
       <div id="cells"></div>
@@ -25,6 +26,7 @@
       <section id="tab-measure" class="tabpane"></section>
       <section id="tab-results" class="tabpane hidden"></section>
       <section id="tab-setup" class="tabpane hidden"></section>
+      <section id="tab-manual" class="tabpane hidden"></section>
     </main>
   </div>
   <div id="dimmer" class="hidden"></div>
@@ -43,6 +45,7 @@
 <script src="/static/js/results.js?v=__V__"></script>
 <script src="/static/js/settings.js?v=__V__"></script>
 <script src="/static/js/setup.js?v=__V__"></script>
+<script src="/static/js/manual.js?v=__V__"></script>
 <script src="/static/js/app.js?v=__V__"></script>
 </body>
 </html>

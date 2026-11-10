@@ -47,7 +47,7 @@ class Settings:
         self.path = path or paths.SETTINGS_PATH
         self.lock = threading.RLock()
         raw = read_json(self.path, {}) or {}
-        mig, _n = sch.migrate(raw, fill=True)
+        mig, notes = sch.migrate(raw, fill=True)
         vals, errs, _w = sch.validate(sch.deep_merge(sch.defaults(), mig))
         if errs:                                              # 깨진 값은 기본값으로 되돌리고 시작
             bad = sch.defaults()
@@ -56,6 +56,15 @@ class Settings:
                     sch.set_path(vals, k, sch.get_path(bad, k))
         self.values = vals
         self.extra = {k: v for k, v in raw.items() if k not in vals}
+        self.migrate_notes = [n for n in notes if "예전 기본값" in n or "이전 안 함" in n]
+        if raw and raw.get("settings_rev") != vals.get("settings_rev"):   # 판 번호를 올린 이전(한 번만): 바로 저장한다(직전본은 settings_backup 에)
+            try:
+                self._backup()
+                out = dict(self.extra)
+                out.update(vals)
+                write_json(self.path, out)
+            except OSError as e:
+                self.migrate_notes.append("설정 이전 저장 실패 · %s" % e)
 
     def get(self, key, default=None):
         return sch.get_path(self.values, key, default)
