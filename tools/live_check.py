@@ -63,8 +63,8 @@ def latency(c, pages, scope, name, n=3):
         before = [shows_flash(sig(pg, scope), k) for pg in pages]
         if any(before):
             check(False, "%s · 장면을 바꾸기 전에 이미 새 장면으로 보임(판정 오류)" % name)
-        c.dry("world", kw={"flash": k})
-        t0 = time.time()
+        t0 = time.time()                                                     # 명령을 보내기 직전부터 잰다(응답을 기다리지 않는다 - 기다리면 그만큼 빠진다)
+        c.send_nowait("dry", op="world", kw={"flash": k})
         got = [None] * len(pages)
         while time.time() - t0 < 4.0 and any(g is None for g in got):
             for i, pg in enumerate(pages):
@@ -121,7 +121,9 @@ def run_depth(br, depth):
         pg.evaluate("() => closeWin()")
         pg.wait_for_timeout(500)
         latency(c, [pg], "#tab-measure", "큐 %d · 창 열고 닫기 뒤" % depth, n=2)
-        # 촬영 뒤(촬영 사진으로 바뀐 화면을 실시간으로 되돌린다)
+        # 촬영 뒤(촬영 사진으로 바뀐 화면을 실시간으로 되돌린다). 칠한 장면을 지운 뒤 찍는다(촬영 사진이 빈 판 사진과 맞아야 측정이 시작된다)
+        c.dry("world", kw={"flash": 0})
+        c.pump(0.8)
         ok, r = c.send("capture")
         check(ok, "촬영 (%s)" % (r,))
         goto_measure_live(pg)

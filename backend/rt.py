@@ -14,6 +14,7 @@ NAS 쓰기는 별도 스레드 - 느린 네트워크가 히트건 제어를 붙�
 
 import copy
 import json
+import ntpath
 import os
 import queue
 import shutil
@@ -95,7 +96,10 @@ def nas_target(base, auto_date, batch, now=None):
         parts += [time.strftime("%Y", t), time.strftime("%Y%m%d", t)]
     if (batch or "").strip():
         parts.append(batch.strip())
-    return os.path.join(base, *parts)                  # Windows 에서는 ntpath.join 과 같다(다른 운영체제에서 '\' 를 이름에 붙이지 않게)
+    # Windows 형식 기본 폴더(\\NAS\... · D:\...)는 Windows 규칙으로, 그 밖(시험의 임시 폴더 등)은 운영체제 규칙으로 잇는다.
+    # Windows 에서는 둘 다 ntpath.join 이라 결과가 같다 - 다른 운영체제에서 '\' 가 이름에 붙어 폴더가 하나로 뭉치지 않게.
+    win = "\\" in base or (len(base) >= 2 and base[1] == ":" and base[0].isalpha())
+    return (ntpath.join if win else os.path.join)(base, *parts)
 
 
 def unique_path(path):
