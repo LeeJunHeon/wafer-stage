@@ -291,6 +291,7 @@ def run_cases(names):
     for n in sel:
         print("== %s" % n, flush=True)
         c = None
+        nf0 = len(FAILS)
         try:
             c = Client(patch=getattr(CASES[n], "patch", None), env=getattr(CASES[n], "env", None), precreate=getattr(CASES[n], "precreate", None))
             CASES[n](c)
@@ -299,6 +300,19 @@ def run_cases(names):
             check(False, "예외 · " + n)
         finally:
             if c:
+                if len(FAILS) > nf0:                     # 실패한 케이스는 서버 로그 · 파일 로그 · 시리얼 로그를 남긴다(임시 폴더는 지워진다)
+                    keep = os.path.join(tempfile.gettempdir(), "wafer2_e2e_fail", MODE + "_" + n.split()[0])
+                    try:
+                        shutil.rmtree(keep, ignore_errors=True)
+                        os.makedirs(keep, exist_ok=True)
+                        c.log.flush()
+                        shutil.copy(os.path.join(c.tmp, "server.log"), keep)
+                        ld = os.path.join(c.data, "logs")
+                        if os.path.isdir(ld):
+                            shutil.copytree(ld, os.path.join(keep, "logs"), dirs_exist_ok=True)
+                        print("  (실패 로그: %s)" % keep, flush=True)
+                    except Exception:                    # noqa: BLE001
+                        pass
                 c.close()
     print("\n검사 %d · 실패 %d" % (CHECKS[0], len(FAILS)))
     for f in FAILS:

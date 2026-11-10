@@ -257,6 +257,7 @@ class App:
                 st._aborted = True
             self.stage, self.motion, self.power, self.hub = st, mo, pw, hub          # 여기서 한꺼번에 공개
             self.bang_fail = None                                                # 새로 연결했다(보드가 재시작돼 모터가 멈춘 상태) - 전달 못 한 '!' 는 끝
+            self._port_gone = False                                              # 사람이 다시 연결했어도 "포트 사라짐" 이 남으면 자동 연결이 한 번 더 연다(보드 리셋 한 번 더)
             self.eeprom = eeprom
             ok = True
         finally:
