@@ -513,10 +513,14 @@ def c77(c):
         if how == "통신 끊김":
             if MODE == "fake":
                 c.dry("cut", s=0.0)
+                c.pump(0.5)
+                ok_l, r_l = c.send("link_check")                          # 응답이 다시 오면 통신 끊김 경보를 닫는다
+                check(ok_l, "케이블이 돌아오면 연결 확인 (%s)" % (r_l,))
             else:
+                c.wait(lambda s: s["alarm"] and s["alarm"]["text"].startswith("통신 끊김"), 15, "통신 끊김")   # 뽑힘을 알아챈 뒤에 다시 꽂는다(e2e 52 와 같은 순서)
                 c.dry("replug", device="stage")
-            c.wait(lambda s: s["stage"] is not None and s["dev"]["stage"]["state"] == "ok", 40, "다시 연결")
-            c.send("link_check")
+                check(c.wait(lambda s: s["stage"] is not None and s["dev"]["stage"]["state"] == "ok" and not (s["alarm"] and s["alarm"]["text"].startswith("통신 끊김")), 40, "다시 연결"),
+                      "다시 꽂으면 자동으로 다시 연결")
             c.pump(1.0)
         elif how == "시간 초과":
             c.dry("hang", on=False)
