@@ -78,7 +78,9 @@ def c49(c):
     check(c.wait(lambda s: s["dev"]["stage"]["state"] == "ok", 20, "스테이지 자동 연결"), "스테이지 자동 연결")
     s = c.state
     check(s["stage"] is not None and s["relays"] is not None and s["port"], "연결되면 딸린 값이 채워짐 (포트 %s)" % (s.get("port"),))
-    check(s["dev"]["camera"]["state"] == "down" and band_ids(c) == ["camera"], "카메라는 아직 없음 · 띠 하나 (%s)" % band_ids(c))
+    # 연결 안 된 동안 누른 비상정지는 남는다(D2: 이동 계층이 없을 때의 비상정지 → estop.lock → 연결되면 잠금으로 시작). 띠 = 경보(잠금 이어짐) + 카메라
+    check(s["dev"]["camera"]["state"] == "down" and band_ids(c) == ["alarm", "camera"], "카메라는 아직 없음 · 띠 = 비상정지 잠금 + 카메라 (%s)" % band_ids(c))
+    check(s["stage"]["locked"] and s["alarm"] and "잠금" in s["alarm"]["text"], "연결 안 된 동안 누른 비상정지 → 잠금으로 시작 (%s)" % (s["alarm"] and s["alarm"]["text"]))
     check(s["eeprom"] in ("restored", "unsaved", "none", ""), "스테이지 연결 규칙(EEPROM 확인)을 그대로 탐 (%s)" % s["eeprom"])
     ok, r = c.dry("missing", camera=False)
     check(c.wait(lambda s: s["dev"]["camera"]["state"] == "ok", 20, "카메라 자동 연결"), "카메라 자동 연결")
