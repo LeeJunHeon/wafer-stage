@@ -186,6 +186,7 @@ def run_stop(br):
         check(off, "비상정지 잠금 · 패드가 꺼져 있음")
         clear(pg)
         n0 = len(c.dry("fw")[1].get("stop_wall", []))
+        x, y = center(sb)                                                    # 비상정지 띠가 생겨 화면이 내려갔다 - 자리를 다시 잰다
         pg.mouse.move(x, y)
         pg.mouse.down()
         pg.mouse.up()
@@ -209,9 +210,9 @@ def run_stop(br):
         pg = page(br, c)
         c.pump(0.5)
         from e2e_cases import start_run, wait_run
-        ok, r = start_run(c, "가열", nos=[1])
+        ok, r = start_run(c, "수동 측정", nos=[1])                           # 확인 대기에서 사람을 기다리는 동안 = 측정 중(시간 배율과 무관하게 멈춰 있다)
         check(ok, "측정 시작 (%s)" % (r,))
-        c.wait(lambda s: s["relays"] and s["relays"]["heater_on"], 90, "가열")
+        check(c.wait(lambda s: s["run"] and s["run"]["waiting"] == "확인 대기", 90, "확인 대기"), "측정 중(확인 대기)")
         pg.wait_for_timeout(500)
         off = pg.evaluate("() => document.querySelector('#tab-measure .jogpad').hasAttribute('data-off')")
         check(off, "측정 중 · 패드가 꺼져 있음")
@@ -270,7 +271,9 @@ def run_input(br):
             check(v[0] == text and v[1] == sel[1:], "%s 칸 값 %r · 포커스 유지 (%s)" % (sel, v[0], v[1]))
         mark = len(serial_cmds(c))
         pg.click('[data-act="m-move"]')
-        c.pump(4.0)
+        end = time.time() + 20.0
+        while time.time() < end and not any(x.startswith("my ") for x in serial_cmds(c)[mark:]):
+            c.pump(0.3)
         cmds = serial_cmds(c)[mark:]
         check("mx 150.0" in cmds and "my 87.5" in cmds, "[이동] → mx 150.0 · my 87.5 (%s)" % [x for x in cmds if x[:2] in ("mx", "my")])
     finally:
@@ -396,6 +399,7 @@ def run_steps(br):
 def run_enter(br):
     c = e2e.Client(patch=PATCH, env=REAL)
     try:
+        e2e.full_setup(c)                                                    # [촬영] 은 판 영역 · 빈 판 사진이 있어야 눌린다
         pg = page(br, c)
         c.pump(0.5)
         pg.fill("#m-x", "60")
