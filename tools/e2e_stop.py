@@ -559,8 +559,10 @@ def c77(c):
     check(cmds.index("fz z 1600") > max(i for i, x in enumerate(cmds) if x.startswith("jz")), "fz 앞에 전체 스트로크")
     f = fw(c)
     check(abs(f["real"]["z"]) < 0.05, "0 이 끝단 2 mm 아래에 잡힘 (실제 Z %.2f mm · 끝단 -2.00)" % f["real"]["z"])
-    vs = [x for x in cmds if x.startswith("v ")]
-    check(vs and int(vs[0].split()[1]) <= 1200, "전체 스트로크는 느린 속도 (%s)" % vs[:2])
+    lg = f.get("log") or []                                            # 펌웨어가 받은 줄 전부: 전체 스트로크 조그 직전에 마지막으로 정해진 속도
+    ij = max([i for i, x in enumerate(lg) if x.startswith("jz -") and abs(int(x.split()[1])) >= int((45.0 + 3.0) * 160) - 1] or [-1])
+    vs = [x for x in lg[:ij] if x.startswith("v ")] if ij >= 0 else []
+    check(vs and int(vs[-1].split()[1]) <= 1200, "전체 스트로크는 느린 속도 (그때 속도 %s)" % (vs[-1:] or "없음",))
     # (3) 그 도중 정지 → 0 등록 없음
     c.dry("set_real", axis="z", mm=30.0)
     c.dry("forget_z")
