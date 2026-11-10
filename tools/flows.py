@@ -83,6 +83,7 @@ class Page:
             if not ok:
                 done.append("(없음:%s)" % lab)
                 break
+            self.pg.wait_for_timeout(450)               # 같은 자리의 버튼이 다른 동작으로 바뀐 직후([위치 확인] → [적용]) 400 ms 는 누름을 무시한다(B8) - 사람처럼 보고 누른다
             self.click_band(lab)
             if lab in dialog_for:
                 self.confirm_dialog(lab)
@@ -229,7 +230,7 @@ def flow_dead_ends(p):
         ec.wait_run(c, 60)
         audit("측정 오류")
         c.dry("fault", name="step_exc", on=False)
-        pg.pg.wait_for_timeout(300)
+        pg.pg.wait_for_timeout(450)                   # 띠가 바뀐 직후 400 ms 는 누름 무시
         pg.click_band("확인")
         pg.pg.wait_for_timeout(600)
         check(not pg.band_text(), "[확인] 으로 오류 띠 닫힘")
