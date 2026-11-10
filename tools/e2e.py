@@ -47,9 +47,12 @@ def _merge(a, b):
 
 
 class Client:
-    def __init__(self, patch=None, env=None):
+    def __init__(self, patch=None, env=None, precreate=None):
         self.tmp = tempfile.mkdtemp(prefix="wafer2_e2e_")
         self.data = os.path.join(self.tmp, "data")
+        if precreate:                                    # 서버를 띄우기 전에 데이터 폴더에 파일을 미리 둔다(예: estop.lock)
+            os.makedirs(self.data, exist_ok=True)
+            precreate(self.data)
         self.settings = os.path.join(self.tmp, "settings.json")
         base = {"width": W, "height": H, "capture_frames": 2, "preview_fps": 2, "status_poll_s": 0.5,
                 "capture": {"settle_s": 0.2, "fresh_frames": 5},
@@ -280,12 +283,13 @@ def run_cases(names):
     import e2e_rt  # noqa: F401  (R–T 측정 시나리오 31~ 등록)
     import e2e_conn  # noqa: F401  (장치 연결 상태 시나리오 48~ 등록)
     import e2e_safety  # noqa: F401  (모터 안전 시나리오 56~ 등록)
+    import e2e_stop  # noqa: F401  (정지 · 원점 · 연결 · 설정 시나리오 65~ 등록)
     sel = [n for n in CASES if not names or any(k in n for k in names)]
     for n in sel:
         print("== %s" % n, flush=True)
         c = None
         try:
-            c = Client(patch=getattr(CASES[n], "patch", None), env=getattr(CASES[n], "env", None))
+            c = Client(patch=getattr(CASES[n], "patch", None), env=getattr(CASES[n], "env", None), precreate=getattr(CASES[n], "precreate", None))
             CASES[n](c)
         except Exception:
             traceback.print_exc()

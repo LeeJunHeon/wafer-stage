@@ -162,12 +162,12 @@ ITEMS = [
       min=1000, max=200000, step=1000, unit="pps²"),
     I("motion.start_pps", 300, "int", "stage", "속도", "시작 속도",
       "가속을 시작하는 속도입니다. 연결 직후와 저장 때 펌웨어로 보냅니다.",
-      min=50, max=5000, step=50, unit="pps"),
-    I("motion.jog_pps", 6000, "int", "stage", "속도", "조그 속도",
-      "원점이 있을 때 수동 이동의 속도입니다.",
-      min=100, max=20000, step=100, unit="pps"),
-    I("motion.jog_slow_pps", 1500, "int", "stage", "속도", "원점 없을 때 조그 속도",
-      "원점이 없을 때(상대 이동) 속도입니다. 끝단에 닿아도 살살 닿게 느리게 둡니다.",
+      min=50, max=5000, step=50, unit="pps", validate="start_pps"),
+    I("motion.jog_pps", 6000, "int", "stage", "속도", "조그 속도(안 씀)",
+      "쓰이지 않는 값입니다(모든 조그는 아래 조그 속도로 갑니다). 설정 파일 호환을 위해 키만 남깁니다.",
+      min=100, max=20000, step=100, unit="pps", hidden=True),
+    I("motion.jog_slow_pps", 1500, "int", "stage", "속도", "조그 속도(모든 조그 · 접촉 높이 마지막 구간)",
+      "모든 조그와 접촉 높이로 내리는 마지막 구간의 속도입니다. 끝단에 닿아도 살살 닿게 느리게 둡니다.",
       min=100, max=10000, step=100, unit="pps"),
     I("jog.steps", [0.1, 1, 10, 50], "list", "stage", "조그 · 끝단", "조그 스텝",
       "수동 이동 패드의 스텝 선택지입니다. 쉼표로 구분합니다.",
@@ -791,6 +791,15 @@ def _v_head_id(key, v, values, errs, warns):
         errs[key] = "판 마커 번호(%s)와 겹침" % ",".join(str(i) for i in sorted(plate))
 
 
+def _v_start_pps(key, v, values, errs, warns):
+    """시작 속도는 느린 속도들(조그 속도 · 원점 탐색 1200)보다 클 수 없다 - 펌웨어는 시작 속도가 최고 속도보다 크면 시작 속도로 달려 느려야 할 구간이 빨라진다."""
+    v = _num(v)
+    slow = _num(get_path(values, "motion.jog_slow_pps"))
+    lim = min(x for x in (slow, 1200) if x)
+    if v is not None and v > lim:
+        errs[key] = "느린 속도(%g pps · 원점 탐색 1200) 이하" % lim
+
+
 def _v_jog_steps(key, v, values, errs, warns):
     mx = _num(get_path(values, "jog.max_mm")) or 1e9
     if not 1 <= len(v) <= 6:
@@ -952,7 +961,7 @@ def _v_rt(key, v, values, errs, warns):
 
 VALIDATORS = {
     "rt": _v_rt, "contact_z": _v_contact_z, "xy_in_limits": _v_xy_in_limits, "seed_grow": _v_seed_grow, "tol_warn": _v_tol_warn,
-    "head_id": _v_head_id, "jog_steps": _v_jog_steps, "jog_zsteps": _v_jog_zsteps, "touch_max": _v_touch_max,
+    "head_id": _v_head_id, "start_pps": _v_start_pps, "jog_steps": _v_jog_steps, "jog_zsteps": _v_jog_zsteps, "touch_max": _v_touch_max,
     "markers": _v_markers, "zones": _v_zones, "area_size": _v_area_size, "tools": _v_tools, "tool_active": _v_tool_active,
     "relays": _v_relays, "conditions": _v_conditions, "condition_active": _v_condition_active,
 }

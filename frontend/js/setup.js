@@ -34,6 +34,9 @@ function stepInfo(s, i) {
     }
   }
 }
+/* 장비 설정의 조그 패드 비활성 사유: 서버 판단(jog_block) 하나 + 측정 중 잠김. 비상정지 잠금 중에는 회복 조그를 해야 하므로 꺼지지 않는다 */
+function stopBtn(tip) { return h("button", { tabindex: -1, class: "btn stopbtn", "data-act": "stop", text: "정지", "data-tip": tip }); }
+function setupPadWhy(s) { return !s.stage ? "스테이지 연결 안 됨" : (s.stage.jog_block || lockedBy(s) || ""); }
 function lockedBy(s) { return s.run && ["running", "paused", "stopping"].includes(s.run.state) ? "측정 중 · 변경 잠김" : ""; }
 
 /* 단계에 맞는 화면 */
@@ -56,7 +59,7 @@ function buildSetup() {
   S.center = h("div", { class: "viewbox grow" }, S.vhead, S.viewer.el, S.vfoot);
   S.panel = h("div", { class: "col panel" });
   pane.replaceChildren(S.list, S.center, S.panel);
-  setInterval(() => { const s = UI.state; if (s && UI.tab === "setup" && viewFor(s) === "live" && S.viewer && s.camera.open) { const sz = s.camera.size || [1280, 960]; S.viewer.set("/preview.jpg", sz[0], sz[1], Date.now()); } }, 250);
+  setInterval(() => { const s = UI.state; if (s && UI.tab === "setup" && viewFor(s) === "live" && S.viewer && s.camera.open) { const sz = s.camera.size || [1280, 960]; S.viewer.set("/preview.jpg", sz[0], sz[1], Date.now()); liveTick(S.viewer); } }, 250);
   S.built = true;
 }
 
@@ -76,10 +79,12 @@ function renderSetup(s) {
         btn("이전 설정 가져오기", "su-import", null, "sm", "이전 프로그램의 포트 · 카메라 · 가동범위 · 속도 · 위치 · 릴레이 · 쿨러 설정을 읽어 옵니다. 가져온 뒤 스테이지를 다시 연결합니다. 보정 파일은 가져오지 않습니다.", lockedBy(s))));
   }
   renderSetupView(s);
-  const sig = JSON.stringify([S.step, s.dev, s.camera.state, s.cam_scan, lockedBy(s), s.calib, s.ref, s.stage && [s.stage.locked, s.stage.z_ok, s.stage.xy_ok, s.stage.moving, s.stage.done, s.stage.fw_homed, s.stage.z > 0.05], s.camera.busy, s.settings.photohome, s.tool, s.verify, JOG.step, S.freeze, S.showPts, S.showHead, S.showRef,
+  const sig = JSON.stringify([S.step, s.dev, s.camera.state, s.cam_scan, lockedBy(s), s.calib, s.ref, s.stage && [s.stage.locked, s.stage.z_ok, s.stage.xy_ok, s.stage.jog_block, s.stage.done, s.stage.fw_homed, s.stage.z > 0.05], s.camera.busy, s.settings.photohome, s.tool, s.verify, JOG.step, S.freeze, S.showPts, S.showHead, S.showRef,
     s.eeprom, s.port, s.fw, s.contact, s.samples.length, s.sel, S.ctNo, s.settings.relay.items, s.settings.cooler, s.settings.heater, s.settings.width, s.settings.exposure, s.settings.wb_temperature,
     s.rt && s.rt.inst, s.settings.rt && [s.settings.rt.k2110_addr, s.settings.rt.k2450_addr], S.instItems, S.instMsg, s.camera.busy]);
   if (sig !== S.rightSig) { S.rightSig = sig; renderPanel(s); }
+  const pd = JOG.pads.s;                                                   // 패드는 다시 만들지 않는다 - 비활성 사유 · 배치만 제자리에서 갱신
+  if (pd && pd.isConnected) jogPad(s, { key: "s", why: setupPadWhy(s), free: S.step === 7 });
   const pos = $("#su-pos");
   if (pos && s.stage) pos.textContent = xy(s.stage.x, s.stage.y) + " · Z " + f1(s.stage.z, 2);
 }
@@ -91,7 +96,7 @@ function renderSetupView(s) {
   const key = kind + ":" + (kind === "ref" ? s.ref && s.ref.id : kind === "snap" ? S.snapV : "");
   if (key !== S.viewKey) { S.viewKey = key; v.W = 0; v.key = null; }
   const title = { live: "실시간", ref: "빈 판 사진", snap: "정지 화면" }[kind];
-  S.vhead.replaceChildren(h("b", { text: title + " · " + STEPS[S.step - 1] }), h("span", { class: "grow" }),
+  S.vhead.replaceChildren(h("b", { class: kind === "live" ? "livetitle" : "", text: title + " · " + STEPS[S.step - 1] }), h("span", { class: "grow" }),
     h("div", { class: "seg" }, btn("판 맞춤", "su-fit", { m: "plate" }, S.zoom === "plate" ? "on" : ""), btn("전체", "su-fit", { m: "all" }, S.zoom === "all" ? "on" : "")));
   S.vfoot.replaceChildren(h("span", { text: S.step === 5 ? "점선 = 판 영역 · 번호 = 기준점" : S.step === 8 ? "점선 격자 = 쿨러 구역" : S.step === 6 && kind === "snap" ? "주황 상자 = 헤드 마커(정렬에서 뺀 영역)" : "점선 = 판 영역" }), h("span", { class: "grow" }), h("span", { class: "mono", text: s.camera.text }));
   v.mode = S.zoom;
@@ -179,9 +184,9 @@ function renderPanel(s) {
   const card = (title, ...x) => h("div", { class: "card" }, typeof title === "string" ? h("h3", { text: title }) : title, ...x.filter(Boolean));
   const jogCard = () => {
     const sg = s.stage;
-    const dis = nostage ? "스테이지 연결 안 됨" : sg.moving ? "이동 중" : lock ? lock : "";
-    const jc = card(cardHead("조그", h("b", { class: "mono nowrap", id: "su-pos", text: sg ? xy(sg.x, sg.y) + " · Z " + f1(sg.z, 2) : "—" })),
-      jogPad(s, { why: dis, free: S.step === 7 }),
+    const dis = setupPadWhy(s);
+    const jc = card(cardHead("조그", h("b", { class: "mono nowrap", id: "su-pos", text: sg ? xy(sg.x, sg.y) + " · Z " + f1(sg.z, 2) : "—" }), jogKbdTag()),
+      jogPad(s, { key: "s", why: dis, free: S.step === 7 }),
       sg && sg.z > 0.5 ? h("div", { class: "sub3", text: "Z 가 내려가 있음 · 다른 점으로 가기 전 Z↑" }) : null);
     jc.classList.add("jogcardx");
     return jc;
@@ -192,7 +197,6 @@ function renderPanel(s) {
     const sg = s.stage;
     let why = lock || (nostage ? "스테이지 연결 안 됨" : "");
     if (!why && ax !== "z") why = !sg.z_ok ? "Z 원점 먼저" : (sg.z != null && Math.abs(sg.z) > 0.05 ? "Z 맨 위 먼저 · Z↑" : "");
-    if (!why && sg.moving) why = "이동 중";
     const have = ax === "z" ? sg && sg.z_ok : sg && (sg.xy_ok || sg.done[ax]);
     return h("div", { class: "axrow" }, h("span", { class: "chip " + (have ? "ok" : "warn"), text: ax.toUpperCase() + " " + (have ? "있음" : "없음") }),
       btn("원점 잡기", "su-origin", { axis: ax }, have ? "" : "primary", ax.toUpperCase() + " 를 끝단 쪽으로 최대 10 mm 밀어 2 mm 물러난 자리를 원점으로 잡고 저장합니다.", why));
@@ -235,7 +239,8 @@ function renderPanel(s) {
   } else if (S.step === 4) {
     const hist = (s.ref && s.ref.history) || [];
     kids.push(card("빈 판 사진", h("div", { class: "sub", text: "판 위의 샘플을 모두 치웁니다. 촬영 위치로 자동 이동한 뒤 찍습니다." }),
-      h("div", { class: "row" }, btn("촬영 위치로 이동 · 촬영", "su-ref", null, "primary", "", lock || (c.area ? "" : "판 영역 필요") || (s.camera.busy ? s.camera.busy + " 중" : "") || camWhy)),
+      h("div", { class: "row" }, btn("촬영 위치로 이동 · 촬영", "su-ref", null, "primary", "", lock || (c.area ? "" : "판 영역 필요") || (s.camera.busy ? s.camera.busy + " 중" : "") || camWhy),
+        s.camera.busy && nostage === false ? stopBtn("움직이는 모터를 멈추고 이 작업을 중단합니다(잠그지 않음).") : null),
       S.refRes ? h("div", { class: "sub", text: "교체 결과 · " + (S.refRes.moved ? "이동 " + S.refRes.moved.shift_px + " px · 잔차 " + S.refRes.moved.resid + " · 성공" : "기하 이동 없음") }) : null,
       hist.length ? h("div", { class: "row" }, h("span", { class: "sub grow", text: "이력 " + hist.length + "개" }), moreBtn(hist.slice(0, 8).map((x) => ({ label: x.time + " 로 되돌리기", fn: () => UI.acts["su-ref-restore"]({ id: x.id }), why: lock })))) : null), foot());
   } else if (S.step === 5) {
@@ -254,6 +259,7 @@ function renderPanel(s) {
     const hc = c.head, v = s.verify;
     kids.push(card("헤드 위치 보정", h("div", { class: "sub", text: "격자 n×n 으로 자동 이동 · 촬영해 헤드 마커 위치를 잽니다." }),
       h("div", { class: "row" }, btn("자동 보정", "su-head", null, "primary", "", lock || (c.status === "done" ? "" : "좌표 보정 필요") || (nostage ? "스테이지 연결 안 됨" : "") || camWhy),
+        s.camera.busy && nostage === false ? stopBtn("움직이는 모터를 멈추고 자동 보정을 중단합니다. 이전 보정은 그대로 남습니다.") : null,
         moreBtn([{ label: "지금 위치 확인", fn: () => UI.acts["su-verify"](), why: lock || (hc.status === "done" ? "" : "헤드 위치 보정 필요") || camWhy || (nostage ? "스테이지 연결 안 됨" : "") }])),
       h("div", { class: "row" }, h("span", { class: "grow", text: hc.pairs.length ? "점 " + hc.pairs.length + (hc.rms != null ? " · 잔차 " + f1(hc.rms, 2) + " mm · " + rate(hc.rms) : "") : "아직 안 함" }), btn(S.showHead ? "점 접기 ▴" : "점 보기 ▾", "su-hpts", null, "sm")),
       S.showHead ? h("div", { class: "scroll" }, h("table", { class: "tb" }, h("tr", {}, ["X", "Y", "잔차"].map((t) => h("th", { text: t }))), ...hc.pairs.map((p) => h("tr", {}, h("td", { text: f1(p.x) }), h("td", { text: f1(p.y) }), h("td", { text: p.res_mm != null ? f1(p.res_mm, 2) : "—" }))))) : null,

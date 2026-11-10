@@ -19,11 +19,13 @@ import threading
 import time
 
 from core import stage as stage_mod
-from core.stage import StageError, StageGuard, StageTimeout, StageWriteTimeout
+from core.stage import StageError, StageGuard, StageLate, StageStopped, StageTimeout, StageWriteTimeout
 
 Z_TOP_TOL_MM = 0.05
 DEADLINE_MARGIN = 1.5
 DEADLINE_EXTRA_S = 2.0
+STOP_QUIET_S = 0.5                            # 정지 직후 이 시간 안에는 사람이 보낸 이동 명령을 받지 않는다
+LATE_START_S = 1.0                            # 사람이 보낸 이동 명령은 받은 뒤 이 시간 안에 첫 줄을 쓰지 못하면 거절
 ESTOP_QUIET_S = 1.0                           # 비상정지 직후 이 시간 안에는 사람이 보낸 이동 명령을 받지 않는다
 RECOVERY_JOG_MAX_MM = 5.0                     # 잠금 · 원점 없음(회복) 중 조그는 한 번 이 거리 이하만
 
@@ -43,15 +45,18 @@ class Motion:
         self.lock = threading.RLock()                 # 이동 잠금 - 하나
         self.gen = 0                                  # 비상정지 세대
         self.estop_locked = False
-        self.z_ok = True                              # Z 원점이 믿을 만함
-        self.xy_ok = True                             # X · Y 위치가 믿을 만함
+        self.z_ok = False                             # Z 원점이 믿을 만함(기본은 못 믿음 - ST 동기화가 끝난 뒤에만 올린다)
+        self.xy_ok = False                            # X · Y 위치가 믿을 만함
+        self.stop_t = -1e9                            # 마지막 정지(세대를 올린 것만) 단조 시각
+        self.last_estop_gen = 0                       # 가장 최근 비상정지 · 재부팅이 만든 세대 번호
         self.rebooted = False
         self.pre_xy = None                            # fn() - X · Y 이동 전 점검(히트건 꺼짐 확인). 거절하면 MotionError
         self.on_reboot = None                         # fn(line) - 서버가 wd · 속도 · 가속 재전송, ST · RS 재읽기, 측정 중지
         self._tl = threading.local()
-        self.xy_done = {"x": True, "y": True}          # 이번 회복에서 축별 원점을 다시 잡았나(비상정지 · 재부팅 · 시간 초과면 False 로)
+        self.xy_done = {"x": False, "y": False}        # 이번 회복에서 축별 원점을 다시 잡았나(비상정지 · 재부팅 · 시간 초과면 False 로)
         self.slow_pps = 1500                          # 접촉 높이 마지막 구간 속도(설정 motion.jog_slow_pps)
         self.moving = False
+        self.cur_op = ""                               # 지금 도는 이동의 종류(xy | "") - 정지가 끊은 것이 X · Y 절대 이동인지 가른다
         self.estop_t = -1e9                            # 마지막 비상정지(재부팅 포함) 단조 시각
         self.jog_guard = None                         # fn(axis, mm, status, opts) - 조그 규칙(Z 아래 한도 · 핀이 내려가 있으면 X · Y 거절 ...). 거절하면 MotionError
         self.last_move_end = 0.0                      # 마지막 이동이 끝난 단조 시각 - 촬영은 이 시각 이후 프레임만 쓴다
@@ -96,7 +101,19 @@ class Motion:
     def _guard(self, cmd):
         tok = getattr(self._tl, "gen", None)
         if tok is not None and tok != self.gen:
-            raise StageGuard("비상정지 · 쓰기 취소 (%s)" % cmd)
+            raise StageGuard("%s · 쓰기 취소 (%s)" % ("비상정지" if self.last_estop_gen > tok else "정지", cmd))
+        dl = getattr(self._tl, "late", None)
+        if dl is not None:                              # 첫 이동 줄 직전: 받은 지 너무 오래됐으면 쓰지 않는다
+            self._tl.late = None
+            if time.monotonic() > dl:
+                raise StageLate("늦은 이동 · 거절 (%s)" % cmd)
+
+    def cancel_err(self, gen=None):
+        """세대가 바뀌어 취소된 이유: 그 사이 비상정지가 있었으면 비상정지, 아니면 정지."""
+        g = gen if gen is not None else getattr(self._tl, "gen", None)
+        if g is not None and self.last_estop_gen > g:
+            return MotionError("비상정지로 중단", "estop")
+        return MotionError("정지로 중단", "stop")
 
     class _Op:
         def __init__(self, m, gen=None):
@@ -118,26 +135,31 @@ class Motion:
     def _enter(self, gen):
         """잠금을 얻은 직후 부른다: 명령이 들어온 뒤 비상정지가 있었으면 쓰지 않고 중단."""
         if gen is not None and gen != self.gen:
-            raise MotionError("비상정지로 중단", "estop")
+            raise self.cancel_err(gen)
 
     def _check_gen(self):
         tok = getattr(self._tl, "gen", None)
         if tok is not None and tok != self.gen:
-            raise MotionError("비상정지로 중단", "estop")
+            raise self.cancel_err(tok)
 
     @contextlib.contextmanager
     def _locked(self, nowait=False):
         """이동 잠금. nowait 이면(사람이 보낸 명령) 기다리지 않고 즉시 거절한다 - 이동이 끝난 뒤 늦게 실행되는 일이 없게."""
+        t_in = time.monotonic()
         if nowait:
-            if time.monotonic() - self.estop_t < ESTOP_QUIET_S:
+            if t_in - self.estop_t < ESTOP_QUIET_S:
                 raise MotionError("비상정지 직후 · 잠시 뒤", "estop_recent")
+            if t_in - self.stop_t < STOP_QUIET_S:
+                raise MotionError("정지 직후 · 잠시 뒤", "stop_recent")
             if not self.lock.acquire(blocking=False):
                 raise MotionError("이동 중 · 끝난 뒤", "busy")
+            self._tl.late = t_in + LATE_START_S
         else:
             self.lock.acquire()
         try:
             yield
         finally:
+            self._tl.late = None
             self.lock.release()
 
     # ---- 비상정지 ----------------------------------------------------
@@ -145,6 +167,7 @@ class Motion:
         """어느 스레드에서든 즉시. 잠금을 기다리지 않는다."""
         self.estop_t = time.monotonic()
         self.gen += 1                                  # 먼저 세대부터 올려 대기 중인 쓰기를 막는다
+        self.last_estop_gen = self.gen
         self.estop_locked = True
         self.z_ok = False
         self._xy_lost()
@@ -153,9 +176,21 @@ class Motion:
         finally:
             self.log("비상정지 · 세대 %d" % self.gen)
 
+    def stop(self, bump=True):
+        """정지: 어느 스레드에서든 즉시. 세대를 올려 뒤따르는 쓰기를 막고 '!' 만 쓴다 - 잠그지 않고 릴레이 · 원점도 건드리지 않는다.
+        bump=False(단독 R-T 측정 중): 세대를 올리지 않는다 - 올리면 측정 스레드의 히트건 켜기 쓰기가 막힌다."""
+        if bump:
+            self.stop_t = time.monotonic()
+            self.gen += 1
+        try:
+            return self.stage.stop()                   # '!' 를 먼저 쓴다
+        finally:
+            self.log("정지 · 세대 %d" % self.gen)
+
     def _reboot(self, line):
         self.estop_t = time.monotonic()
         self.gen += 1
+        self.last_estop_gen = self.gen
         self.estop_locked = True
         self.z_ok = False
         self._xy_lost()
@@ -186,8 +221,12 @@ class Motion:
         """이동 한 번. 시간 초과 -> 정지 + 재동기, 세대 변경 -> 중단 보고."""
         try:
             return fn()
+        except StageLate as e:
+            raise MotionError("늦은 이동 · 거절 · 다시 누르세요", "late") from e
         except StageGuard as e:
-            raise MotionError("비상정지로 중단", "estop") from e
+            raise self.cancel_err() from e
+        except StageStopped as e:
+            raise MotionError("정지로 중단", "stop") from e
         except StageWriteTimeout as e:
             self._xy_lost()                            # 쓰기가 막혔다 - 명령이 늦게 도착해 움직일 수 있다: 위치를 못 믿고 절대 이동을 잠근다
             self.stage._aborted = True
@@ -200,11 +239,11 @@ class Motion:
             self._xy_lost()                            # 위치를 못 믿는다 - 위치 확인(또는 X · Y 원점) 뒤 다시
             if str(what).startswith("Z"):
                 self.z_ok = False                      # Z 가 내려간 채 멈췄을 수 있다 - Z 원점부터 다시(Z 원점 잡기는 먼저 끝단 앞까지 올린다)
-            self.log("%s 시간 초과 · 정지 + 재동기 %s · %s" % (what, "성공" if ok else "실패", e))
+            self.log("%s %s · 정지 + 재동기 %s · %s" % (what, "통신 끊김" if isinstance(e, stage_mod.StageIOError) else "시간 초과", "성공" if ok else "실패", e))
             raise MotionError("%s 시간 초과 · 위치 확인 필요%s" % (what, "" if ok else " · 재동기 실패"), "timeout") from e
         except StageError as e:
             if self.gen != getattr(self._tl, "gen", self.gen):
-                raise MotionError("비상정지로 중단", "estop") from e
+                raise self.cancel_err() from e
             raise MotionError(_short(e), "stage") from e
 
     def _need_origin(self, xy=True):
@@ -245,6 +284,7 @@ class Motion:
                 if self.pre_xy:
                     self.pre_xy()                      # 히트건 끄기 전송 + 확인 - 거절하면 여기서 끝
                 self.moving = True
+                self.cur_op = "xy"
                 try:
                     self.lift_z()
                     cur = self.stage.status()
@@ -253,6 +293,7 @@ class Motion:
                     self._run("Y 이동", lambda: self.stage.move_y_mm(y, deadline_s=self.deadline_s(abs(y - cur["y_mm"]))))
                 finally:
                     self.moving = False
+                    self.cur_op = ""
                     self.last_move_end = time.monotonic()
             return self.stage.status()
 
@@ -263,12 +304,16 @@ class Motion:
             self._need_origin(xy=(mm > Z_TOP_TOL_MM))
             with self.op(g):
                 cur = self.stage.status().get("z_mm") or 0.0
-                self._run("Z 이동", lambda: self.stage.move_z_mm(mm, deadline_s=self.deadline_s(abs(mm - cur), stage_mod.Z_PPMM)))
-                self.last_move_end = time.monotonic()
+                self.moving = True
+                try:
+                    self._run("Z 이동", lambda: self.stage.move_z_mm(mm, deadline_s=self.deadline_s(abs(mm - cur), stage_mod.Z_PPMM)))
+                finally:
+                    self.moving = False
+                    self.last_move_end = time.monotonic()
             return self.stage.status()
 
     # ---- 조그 · 원점 (회복 동작은 잠금 상태에서도 허용) ----------------
-    def jog(self, axis, mm, gen=None, nowait=False, opts=None, internal=False):
+    def jog(self, axis, mm, gen=None, nowait=False, opts=None, internal=False, speed=None):
         g = self.gen if gen is None else gen
         ax = str(axis).lower()
         with self._locked(nowait):
@@ -292,7 +337,7 @@ class Motion:
                     self.pre_xy()                                 # X · Y 조그도 히트건 끄기 확인 뒤에(Z 위쪽 조그는 예외)
                 self.moving = True
                 try:
-                    return self._run("조그", lambda: self.stage.jog_rel(axis, mm))
+                    return self._run("조그", lambda: self.stage.jog_rel(axis, mm, speed=speed))
                 finally:
                     self.moving = False
                     self.last_move_end = time.monotonic()
@@ -328,7 +373,13 @@ class Motion:
                 homed = bool(st.get("homed_" + ax))
                 pos = float(st.get(ax + "_mm") or 0.0)
                 hi = stage_mod.limits_mm()[ax + "_max_mm"]
-                if homed and 0.0 <= pos <= hi:
+                if ax == "z" and not (homed and self.z_ok and 0.0 <= pos <= hi):
+                    # Z 위치를 모른다(펌웨어 원점 없음 · 믿을 수 없는 카운터): 위쪽 끝단까지 전체 스트로크 + 3 mm 를 느리게 먼저 민다.
+                    # 위로 미는 것은 언제나 안전하다(끝단에서 헛돈다). 0 등록은 그 뒤 fz 한 번뿐 - 중간에 끊겨도 틀린 0 이 저장되지 않는다.
+                    sp = min(max(300, int(self.slow_pps)), 1200)
+                    self.jog("z", -(hi + 3.0), gen=g, internal=True, speed=sp)
+                    info["full_stroke"] = True
+                elif homed and 0.0 <= pos <= hi:
                     gap = pos - approach_mm
                     if gap > 0.05:
                         self.jog(ax, -gap, gen=g, internal=True)
@@ -337,6 +388,13 @@ class Motion:
                 self._enter(g)
                 if ax != "z" and self.pre_xy:
                     self.pre_xy()
+                # fz 를 쓰기 직전에 그 축의 원점 신뢰를 내린다 - 어떻게 끝나든(시간 초과 · 정지 · 비상정지 · 통신 오류 · 거부)
+                # "원점 설정 완료" 를 받은 뒤에만 올린다(fz 가 끊기면 펌웨어는 "원점 있음" 이라고 답하지만 위치 카운터는 틀리다).
+                if ax == "z":
+                    self.z_ok = False
+                else:
+                    self.xy_done[ax] = False
+                    self.xy_ok = False
                 self.moving = True
                 try:
                     self._run("원점 잡기", lambda: self.stage.find_zero(ax))

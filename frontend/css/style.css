@@ -36,7 +36,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); f
 .btn.on { background: var(--sel-bg); border-color: var(--sel); color: var(--sel); font-weight: 700; }
 .btn.dis { opacity: .45; cursor: not-allowed; }
 .btn.block { width: 100%; }
-.btn.estop { position: fixed; right: 16px; top: 9px; z-index: 1100; width: 200px; height: 54px; background: #d41f1f; border: 2px solid #ff8a8a; color: #fff; font-size: 20px; font-weight: 800; border-radius: 6px; flex: none; }
+.btn.estop { position: fixed; right: 16px; top: 9px; z-index: 3000; width: 200px; height: 54px; background: #d41f1f; border: 2px solid #ff8a8a; color: #fff; font-size: 20px; font-weight: 800; border-radius: 6px; flex: none; }
 .btn.estop:hover { background: #ee2a2a; }
 .band { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 16px; font-size: 15px; font-weight: 700; color: #fff; background: var(--warn); }
 .band.err { background: var(--err); }
@@ -216,7 +216,7 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 .why.one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 0; }
 
 /* ---- v2 한 화면 측정 · 설정 창 · 간격 규칙 ---- */
-.btn.estop.dock { position: fixed; z-index: 1200; }
+.btn.estop.dock { position: fixed; z-index: 3000; }
 #tab-measure.tabpane { padding: var(--gap-card); gap: var(--gap-card); }
 .mleft { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: var(--gap-card); }
 .mleft > #m-view { flex: 6 1 0; min-height: 0; }
@@ -337,3 +337,19 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 .rtbig > div { display: flex; align-items: baseline; gap: 6px; min-width: 0; } .rtbig .k { flex: none; } .rtbig .v { font-size: 16px; overflow: hidden; text-overflow: ellipsis; }
 .axes .axrow .chip { white-space: nowrap; }
 .vp .world svg, .vp .world svg * { pointer-events: none; }                 /* 사진 위 그림(이동 목표 십자 · 번호 · 윤곽)은 마우스 입력을 가로채지 않는다 - 더블클릭이 두 번째 누름에서 끊기지 않게 */
+
+/* ---- 정지 버튼(패드 가운데) · 키보드 조그 표시 · 스텝 칸 오류 · 전달 안 됨 ---- */
+.btn.jogb.jstop, .btn.stopbtn { background: #fff; border: 2px solid var(--err); color: var(--err); font-weight: 800; }
+.btn.jogb.jstop:hover:not(.dis), .btn.stopbtn:hover { background: var(--err-bg); border-color: var(--err); }
+.btn.jogb.jstop.mv { background: var(--err); color: #fff; }                    /* 모터가 움직이는 동안은 붉은 채움(색만 바꾼다) */
+.btn.jogb.jstop.dis { opacity: .45; }
+.btn.stopbtn { padding: 0 14px; }
+.kbdtag.jogkbd { display: none; } .kbdtag.jogkbd.on { display: inline-block; align-self: center; }
+.jin .jstep-in.bad { border: 2px solid var(--err); background: var(--err-bg); }
+.nodeliver { position: fixed; left: 50%; top: 40%; transform: translate(-50%, -50%); z-index: 4000; background: var(--err); color: #fff; font-size: 34px; font-weight: 800; padding: 28px 44px; border-radius: 10px; border: 4px solid #fff; box-shadow: 0 8px 40px rgba(0,0,0,.5); pointer-events: none; text-align: center; max-width: 90vw; }
+.nodeliver.hidden { display: none; }
+
+.livestale { color: var(--warn) !important; border-color: var(--warn) !important; font-weight: 800; }
+.livefps { position: absolute; right: 8px; bottom: 6px; font-size: 11px; color: #fff; background: rgba(0,0,0,.45); padding: 1px 6px; border-radius: 3px; pointer-events: none; z-index: 5; }
+
+.chead h3 { white-space: nowrap; flex: none; } .chead .mono { flex: none; white-space: nowrap; } .chead > .sub.nowrap { flex: 0 0 auto; }

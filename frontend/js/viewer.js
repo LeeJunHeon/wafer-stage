@@ -144,3 +144,34 @@ function pointInPoly(p, poly) {
   }
   return c;
 }
+
+
+/* ---- 실시간 정직한 표시: 프레임 번호가 1.5 s 넘게 그대로면 제목을 "실시간 멈춤 · n s 전 그림"(주황)으로, 구석에 실제 갱신 횟수(장/초) ---- */
+const LIVE = { seq: -1, seqT: 0, age: null, fps: 0, polling: false, t: 0 };
+function liveTick(viewer) {
+  const now = performance.now();
+  if (!LIVE.polling && now - LIVE.t > 200) {
+    LIVE.polling = true; LIVE.t = now;
+    fetch("/preview.json", { cache: "no-store" }).then((r) => r.json()).then((j) => {
+      if (j.seq !== LIVE.seq) { LIVE.seq = j.seq; LIVE.seqT = performance.now(); }
+      LIVE.age = j.age; LIVE.fps = j.fps; LIVE.open = j.open;
+    }).catch(() => {}).finally(() => { LIVE.polling = false; liveApply(viewer); });
+  }
+  liveApply(viewer);
+}
+function liveApply(viewer) {
+  const stale = LIVE.seqT > 0 && performance.now() - LIVE.seqT > 1500;
+  const secs = LIVE.age != null ? Math.max(1, Math.round(LIVE.age)) : Math.round((performance.now() - LIVE.seqT) / 1000);
+  document.querySelectorAll(".livetitle").forEach((e) => {
+    const base = e.dataset.base || (e.dataset.base = e.tagName === "BUTTON" ? "실시간" : e.textContent);
+    const t = stale ? (e.tagName === "BUTTON" ? "실시간 멈춤 · " + secs + " s 전 그림" : base.replace(/^실시간/, "실시간 멈춤 · " + secs + " s 전 그림")) : base;
+    if (e.textContent !== t) e.textContent = t;
+    e.classList.toggle("livestale", stale);
+  });
+  if (viewer && viewer.el) {
+    let b = viewer.el.querySelector(".livefps");
+    if (!b) { b = h("div", { class: "livefps" }); viewer.el.append(b); }
+    const t = LIVE.fps.toFixed(1) + " 장/초";
+    if (b.textContent !== t) b.textContent = t;
+  }
+}

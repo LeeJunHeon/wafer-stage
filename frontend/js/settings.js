@@ -15,6 +15,12 @@ function setGet(o, k) { return k.split(".").reduce((a, p) => (a == null ? a : a[
 function setItems(tab) { return SET.sch.items.filter((it) => it.tab === tab && it.type !== "object" && it.editor == null && !it.hidden); }
 function setVal(it) { return SET.edits[it.key] !== undefined ? SET.edits[it.key] : setGet(SET.vals, it.key); }
 function setLocked() { const s = UI.state; return (s && typeof lockedBy === "function" && lockedBy(s)) || (s && typeof rtLock === "function" && rtLock(s)) || ""; }
+/* [가져오기] 는 운영체제 파일 창을 연다 - 열려 있는 동안 화면 전체가 막혀 비상정지 · 정지도 못 누른다. 이동 · 작업 · 측정이 도는 동안에는 끈다 */
+function setImportWhy() {
+  const s = UI.state; if (!s) return "";
+  const st = s.stage;
+  return setLocked() || (st && st.moving ? "이동 중 · 끝난 뒤" : "") || (st && st.move_block ? st.move_block : "") || (s.camera && s.camera.busy ? s.camera.busy + " 중 · 끝난 뒤" : "");
+}
 
 function setInput(it, locked) {
   const v0 = setVal(it);
@@ -98,6 +104,8 @@ UI.acts["set-export"] = () => {
   toast("설정을 내보냈습니다");
 };
 UI.acts["set-import"] = () => {
+  const why = setImportWhy();
+  if (why) { toast(why, true); return; }                              // 누르는 순간에도 다시 확인한다(화면이 그린 뒤 상태가 바뀔 수 있다)
   const inp = h("input", { type: "file", accept: ".json,application/json", class: "hidden" });
   inp.addEventListener("change", async () => {
     try {
@@ -120,7 +128,7 @@ async function openSettings(tab, group, keep) {
   SET.cur = tab || SET.cur || SET.sch.tabs[0].id;
   SET.open = true;
   const nav = h("div", { class: "setnav" }, SET.sch.tabs.map((t) => h("button", { class: "ni" + (t.id === SET.cur ? " on" : ""), "data-tab": t.id, "data-act": "set-tab", "data-args": JSON.stringify({ tab: t.id }), text: t.label })));
-  const foot = h("div", { class: "setfoot" }, btn("내보내기", "set-export", null, "sm", "지금 저장된 설정을 파일로 내보냅니다."), btn("가져오기", "set-import", null, "sm", "설정 파일을 읽어 값을 채웁니다. 저장하기 전에는 적용되지 않습니다.", setLocked()),
+  const foot = h("div", { class: "setfoot" }, btn("내보내기", "set-export", null, "sm", "지금 저장된 설정을 파일로 내보냅니다."), btn("가져오기", "set-import", null, "sm", "설정 파일을 읽어 값을 채웁니다. 저장하기 전에는 적용되지 않습니다.", setImportWhy()),
     h("span", { class: "sub", id: "set-cnt" }), h("span", { class: "grow" }), btn("취소", "set-cancel", null, ""), btn("저장", "set-save", null, "primary", "고친 값을 검증한 뒤 저장합니다.", ""));
   foot.querySelector("[data-act=\"set-save\"]").id = "set-save";
   openWin(h("div", { class: "setwrap" }, h("div", { class: "seth" }, h("h2", { text: "설정" })), h("div", { class: "setbody" }, nav, h("div", { class: "setmain", id: "set-main" })), foot), "setwin");

@@ -5,6 +5,7 @@
 - 합성 카메라(dry): WAFER2_DRY_CAMERA=synth - tools/synth_cam.py.
 """
 
+import collections
 import os
 import sys
 import threading
@@ -72,8 +73,12 @@ class Vision:
         self.fs = None
         self.lock = threading.RLock()
         self.preview_jpg = None
-        self.preview_on = False
+        self.preview_req_t = -1e9                                # 마지막 /preview.jpg 요청 단조 시각 - 최근 2 s 안에 있었으면 미리보기가 켜져 있다(화면이 상태를 따로 기억하지 않는다)
         self.preview_n = 0                                       # 만든 실시간 프레임 수(성능 측정용)
+        self.preview_t = 0.0                                     # 마지막으로 만든 프레임을 찍은 벽시계 시각
+        self.preview_mono = 0.0
+        self._enc_times = collections.deque(maxlen=64)           # 최근 인코딩 시각(실제 갱신 장/초)
+        self._cap_req = 0                                        # 촬영이 카메라를 쓰려고 기다리는 중이면 미리보기는 끼어들지 않는다
         self._th = None
         self._stop = threading.Event()
         self.last_error = ""
@@ -155,6 +160,30 @@ class Vision:
         self._release()
 
     # ---- 미리보기 -----------------------------------------------------
+    PREVIEW_ON_S = 2.0                                           # /preview.jpg 요청이 이 시간 안에 있었으면 켜진 것
+    PREVIEW_STALE_S = 3.0                                        # 이 시간 넘게 새 프레임이 없으면 옛 그림 대신 204
+
+    @property
+    def preview_on(self):
+        return time.monotonic() - self.preview_req_t < self.PREVIEW_ON_S
+
+    @preview_on.setter
+    def preview_on(self, v):                                     # 옛 호환(시험 · 화면의 preview 명령): 켜면 요청이 있었던 것으로 친다
+        if v:
+            self.preview_req_t = time.monotonic()
+
+    def want_preview(self):
+        """/preview.jpg 를 한 번 요청받았다: 켜고, 그림이 아직 쓸 만하면 (jpg, seq, 찍은 시각) · 아니면 None."""
+        self.preview_req_t = time.monotonic()
+        if self.preview_jpg is None or time.monotonic() - self.preview_mono > self.PREVIEW_STALE_S:
+            return None
+        return self.preview_jpg, self.preview_n, self.preview_t
+
+    def preview_fps(self):
+        now = time.monotonic()
+        n = sum(1 for t in self._enc_times if now - t <= 2.0)
+        return round(n / 2.0, 1)
+
     def start_preview(self):
         if self._th and self._th.is_alive():
             return
@@ -169,38 +198,63 @@ class Vision:
         self._th = None
 
     def _loop(self):
+        """켜져 있는 동안 쉬지 않고 grab 해서 드라이버 큐를 비우고, 주기(preview_fps)마다 가장 새 프레임 하나만 꺼내(retrieve) 압축한다
+        (주기마다 한 번만 grab 하면 큐에 쌓인 옛 프레임부터 나와 장면보다 1~2 초 늦다). 촬영이 카메라를 쓰는 동안에는 끼어들지 않는다."""
+        next_enc = 0.0
         while not self._stop.is_set():
-            period = 1.0 / max(0.5, float(self.cfg.get("preview_fps")))
-            t0 = time.monotonic()
-            if self.preview_on and self.lock.acquire(timeout=0.2):
-                lost = False
-                try:
-                    if self.cam is not None:
-                        st = self.fs.latest()
-                        if st is not None:
-                            self.preview_jpg = jpeg(st.frame, int(self.cfg.get("preview_max_w")), 70)
-                            self.preview_n += 1
-                            self.size = (st.frame.shape[1], st.frame.shape[0])
-                            self.frame_t, self.fail_n = time.monotonic(), 0
-                        else:
-                            self.fail_n += 1
-                except Exception as e:                           # noqa: BLE001
-                    self.last_error = str(e)
-                    self.fail_n += 1
-                finally:
-                    lost = self.cam is not None and self.fail_n >= FAIL_LIMIT
-                    self.lock.release()
-                if lost:                                         # 프레임이 계속 안 오면 카메라가 빠진 것으로 본다
-                    self.last_error = self.last_error or "프레임 끊김"
-                    self.unplug()
-            time.sleep(max(0.02, period - (time.monotonic() - t0)))
+            if not self.preview_on or self._cap_req > 0:
+                next_enc = 0.0
+                time.sleep(0.03)
+                continue
+            if not self.lock.acquire(timeout=0.05):
+                continue
+            idle = 0.0
+            lost = False
+            try:
+                if self.cam is not None:
+                    t = time.monotonic()
+                    wall = time.time()
+                    if self.cam.grab():
+                        self.fail_n = 0
+                        self.frame_t = t
+                        if t >= next_enc:
+                            f = self.cam.retrieve()
+                            if f is not None:
+                                period = 1.0 / max(0.5, float(self.cfg.get("preview_fps")))
+                                self.preview_jpg = jpeg(f, int(self.cfg.get("preview_max_w")), 70)
+                                self.preview_n += 1
+                                self.preview_t, self.preview_mono = wall, t
+                                self._enc_times.append(t)
+                                self.size = (f.shape[1], f.shape[0])
+                                next_enc = t + period
+                        idle = 0.004
+                    else:
+                        self.fail_n += 1
+                        idle = 0.02
+                else:
+                    idle = 0.05
+            except Exception as e:                               # noqa: BLE001
+                self.last_error = str(e)
+                self.fail_n += 1
+                idle = 0.02
+            finally:
+                lost = self.cam is not None and self.fail_n >= FAIL_LIMIT
+                self.lock.release()
+            if lost:                                             # 프레임이 계속 안 오면 카메라가 빠진 것으로 본다
+                self.last_error = self.last_error or "프레임 끊김"
+                self.unplug()
+            time.sleep(idle)
 
     # ---- 촬영 ---------------------------------------------------------
     def frame_after(self, t_after, settle_s=None, n_best=1, poly=None, timeout_s=30.0):
         """t_after 이후 프레임. n_best > 1 이면 이어서 받은 n 장 중 가장 선명한 한 장. 반환 (bgr, 단조 시각)."""
         self.open()
         settle = float(self.cfg.get("capture.settle_s")) if settle_s is None else settle_s
-        with self.lock:
+        self._cap_req += 1                                       # 미리보기가 잠금을 놓고 비켜 준다
+        lk = self.lock.acquire(timeout=timeout_s + 5)
+        try:
+            if not lk:
+                raise RuntimeError("카메라가 다른 작업 중")
             st = self.fs.frame_after(t_after, settle, timeout_s)
             best, bt, bs = st.frame, st.t, sharpness(st.frame, poly) if n_best > 1 else 0.0
             for _ in range(max(0, n_best - 1)):
@@ -212,6 +266,10 @@ class Vision:
                     best, bt, bs = s2.frame, s2.t, sc
             self.size = (best.shape[1], best.shape[0])
             return best.copy(), bt
+        finally:
+            if lk:
+                self.lock.release()
+            self._cap_req -= 1
 
     def set_world(self, **kw):
         if self.synth is not None:

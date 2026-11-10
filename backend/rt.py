@@ -360,7 +360,7 @@ class RTRun:
             status, msg = ERROR, "오류 · " + logger.short(e, 40)
         finally:
             if status == ERROR and app.motion.gen != self.gen:       # 비상정지로 쓰기가 취소된 것은 오류가 아니라 중단이다
-                status, msg = STOPPED, "비상정지로 중단"
+                status, msg = STOPPED, app.cancel_text(self.gen)
             self._finish(status, msg)
 
     def _guard(self):
@@ -704,6 +704,11 @@ class RTRun:
         if self.z_top_end and app.motion.gen == self.gen and app.motion.z_ok and not app.motion.estop_locked:
             try:
                 app.motion.move_z(0.0)
+            except MotionError as e:
+                if e.code == "stop":                             # 단독 측정 끝의 Z 올림이 정지로 끊김: 결과는 정상, 메시지만
+                    msg = (msg + " · " if msg else "") + "Z 올림 · 정지로 중단"
+                else:
+                    errs.append("Z 맨 위 실패 · " + logger.short(e))
             except Exception as e:                               # noqa: BLE001
                 errs.append("Z 맨 위 실패 · " + logger.short(e))
         if errs:

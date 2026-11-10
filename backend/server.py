@@ -197,9 +197,22 @@ def _img_resp(img, key):
 
 @app.get("/preview.jpg")
 async def preview():
-    if APP.vision.preview_jpg is None:
-        return Response(status_code=204)
-    return Response(APP.vision.preview_jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    """실시간 그림. 이 요청이 최근 2 s 안에 있었으면 미리보기가 켜져 있다(화면이 켜고 끄는 상태를 따로 기억하지 않는다).
+    카메라가 3 s 넘게 새 프레임을 못 주면 옛 그림 대신 204. 응답 헤더: 프레임 번호 · 찍은 시각(벽시계 s)."""
+    r = APP.vision.want_preview()
+    if r is None:
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+    jpg, seq, t = r
+    return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store", "X-Preview-Seq": str(seq), "X-Preview-T": "%.3f" % t,
+                                                           "Access-Control-Expose-Headers": "X-Preview-Seq, X-Preview-T"})
+
+
+@app.get("/preview.json")
+async def preview_info():
+    """화면의 "실시간 멈춤" 표시용: 프레임 번호 · 몇 초 전 그림 · 실제 갱신 장/초. 이 요청은 미리보기를 켜지 않는다."""
+    v = APP.vision
+    age = None if v.preview_mono <= 0 else round(time.monotonic() - v.preview_mono, 2)
+    return JSONResponse({"seq": v.preview_n, "age": age, "fps": v.preview_fps(), "open": v.cam is not None}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/camthumb/{idx}.jpg")
@@ -246,8 +259,15 @@ def run_file(name, file):
 @app.post("/estop")
 async def http_estop():
     """비상정지 우회로: WS 가 끊겨도 도착한다. 전용 스레드에서 실행하고 루프는 기다리기만 한다(막히지 않는다)."""
-    await asyncio.wrap_future(APP.estop_async())
+    await asyncio.wrap_future(APP.estop_async(time.time()))
     return JSONResponse({"ok": True})
+
+
+@app.post("/stop")
+async def http_stop():
+    """정지 우회로: 비상정지와 같은 수준의 빠른 길(실행 스레드만 따로). 움직이는 모터를 멈추고 이어질 이동을 취소한다 - 잠그지 않는다."""
+    r = await asyncio.wrap_future(APP.stop_async(time.time()))
+    return JSONResponse({"ok": True, "cut": bool(r.get("cut"))})
 
 
 async def _run_cmd(msg, gen):
@@ -285,8 +305,8 @@ async def ws_endpoint(ws: WebSocket):
         while True:
             raw = await ws.receive_text()
             msg = json.loads(raw)
-            if msg.get("cmd") == "estop":
-                fut = APP.estop_async()                              # 전용 스레드 · 줄 세우지 않는다. 이 루프는 기다리지 않는다
+            if msg.get("cmd") in ("estop", "stop"):
+                fut = (APP.estop_async if msg.get("cmd") == "estop" else APP.stop_async)(time.time())     # 전용 스레드 · 줄 세우지 않는다. 이 루프는 기다리지 않는다
 
                 async def ack_estop(f=fut, i=msg.get("id")):
                     with contextlib.suppress(Exception):
@@ -296,8 +316,7 @@ async def ws_endpoint(ws: WebSocket):
                 tasks.add(t)
                 t.add_done_callback(tasks.discard)
                 continue
-            if msg.get("cmd") == "preview":
-                APP.vision.preview_on = bool(msg.get("on"))
+            if msg.get("cmd") == "preview":                           # 옛 호환: 무시한다(켜짐 · 꺼짐은 /preview.jpg 요청으로만 정해진다)
                 continue
             gen = APP.motion.gen if APP.motion else 0                # 명령이 들어온 순간의 세대
 

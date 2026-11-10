@@ -84,7 +84,8 @@ function refreshLive() {
   const s = UI.state;
   if (!s || UI.tab !== "measure" || M.mode !== "live" || !M.viewer || isRunning(s) || !s.camera.open) return;
   const sz = s.camera.size || [1280, 960];
-  M.viewer.set("/preview.jpg", sz[0], sz[1], Date.now());
+  M.viewer.set("/preview.jpg", sz[0], sz[1], Date.now());                  // 이 요청이 서버의 미리보기를 켠다(최근 2 s 안에 요청이 있으면 켜짐)
+  liveTick(M.viewer);
 }
 
 /* ---- 왼쪽 ---- */
@@ -96,7 +97,7 @@ function renderLeft(s, running) {
       h("span", { class: "legend" }, ...[["done", "완료"], ["cur", "진행"], ["wait", "대기"], ["err", "오류"]].map(([k, l]) => h("span", {}, h("i", { class: "lg-" + k }), l))));
     M.zoom = "plate";
   } else {
-    const seg = h("div", { class: "seg" }, btn("실시간", "m-mode", { m: "live" }, M.mode === "live" ? "on" : ""), btn("촬영 사진", "m-mode", { m: "shot" }, M.mode === "shot" ? "on" : ""));
+    const seg = h("div", { class: "seg" }, btn("실시간", "m-mode", { m: "live" }, (M.mode === "live" ? "on " : "") + "livetitle"), btn("촬영 사진", "m-mode", { m: "shot" }, M.mode === "shot" ? "on" : ""));
     const seg2 = h("div", { class: "seg" }, btn("판 맞춤", "m-fit", { m: "plate" }, M.zoom === "plate" ? "on" : ""), btn("전체", "m-fit", { m: "all" }, M.zoom === "all" ? "on" : ""));
     const more = moreBtn([
       { label: "샘플 추가 · 사진에서 한 점", fn: () => { M.armAdd = true; toast("추가할 자리를 사진에서 누르십시오"); }, why: sh ? "" : "촬영 필요" },
@@ -130,7 +131,7 @@ function renderLeft(s, running) {
   const ce = s.camera.cap_error;
   if (ce && Date.now() / 1000 - ce.id < 8) M.viewer.el.append(h("div", { class: "cap-err", text: "촬영 실패 · " + ce.text }));
 }
-UI.acts["m-mode"] = (a) => { M.mode = a.m; M.viewer.W = 0; M.viewer.key = null; if (UI.ws) UI.ws.send(JSON.stringify({ cmd: "preview", on: a.m === "live" })); render(); };
+UI.acts["m-mode"] = (a) => { M.mode = a.m; M.viewer.W = 0; M.viewer.key = null; render(); };
 UI.acts["m-map"] = () => { M.showMap = !M.showMap; render(); };
 UI.acts["m-fit"] = (a) => { M.zoom = a.m; M.viewer.fit(a.m, M.viewer.area); render(); };
 
@@ -142,7 +143,7 @@ function onViewClick(u, v) {
   s.samples.forEach((p) => { const d = Math.hypot(p.u - u, p.v - v); if (d < bd) { bd = d; best = p; } });
   if (best && bd < 60 / M.viewer.k + 25) { send("sample_select", { no: best.no }); return; }
   const mm = pxToMm(s, u, v);                                              // 빈 곳을 한 번 누르면 그 자리 좌표를 X · Y 칸에 채운다
-  if (mm) { MC.mv.x = f1(mm[0], 1); MC.mv.y = f1(mm[1], 1); MC.mvPx = [u, v]; MC.sigs.pos = ""; render(); redrawOverlay(); }
+  if (mm) { MC.mv.x = f1(mm[0], 1); MC.mv.y = f1(mm[1], 1); MC.mvPx = [u, v]; MC.mvVer = (MC.mvVer || 0) + 1; render(); redrawOverlay(); }
 }
 
 function sampleBBox(p) {

@@ -2,15 +2,21 @@
    왼쪽은 위 카메라(measure.js) · 아래 R–T 그래프 두 개(rt.js). '이 위치 측정' · '샘플 순회' 하위 탭은 없다:
    측정할 곳 [지금 위치 | 샘플 N개] 로 고른다. 측정 동작(rt.py · measure.py) · 결과 · 파일 형식은 그대로다. */
 "use strict";
-const MC = { mv: { x: "", y: "" }, mvPx: null, target: "here", sampleNo: null, sigs: {}, showSteps: false };
+const MC = { mv: { x: "", y: "" }, mvVer: 0, mvApplied: 0, pos: null, mvPx: null, target: "here", sampleNo: null, sigs: {}, showSteps: false };
 
 function cardHead(title, ...right) { return h("div", { class: "chead" }, h("h3", { text: title }), h("span", { class: "grow" }), ...right.filter(Boolean)); }
 
-/* 이동 · 조그가 안 되는 이유(없으면 "") */
+/* 조그 패드가 꺼지는 이유(없으면 ""): 서버 판단 하나(jog_block)를 그대로 쓴다. "이동 중" 은 사유가 아니다(서버가 거절하고 [정지] 가 강조된다) */
+function padWhy(s) {
+  const st = s.stage, rl = typeof rtLock === "function" ? rtLock(s) : "";
+  if (!st) return "스테이지 연결 안 됨";
+  return rl || st.jog_block || (st.locked ? "비상정지 잠금" : "") || (!(st.z_ok && st.xy_ok) ? "원점 필요 · 스테이지 설정" : "");
+}
+/* 이동 명령(이동 · 샘플 위로 · Z 맨 위 …)이 안 되는 이유(없으면 "") */
 function stageWhy(s) {
   const st = s.stage, rl = typeof rtLock === "function" ? rtLock(s) : "";
-  return rl || (isRunning(s) ? "측정 중" : "") || (s.camera.busy ? s.camera.busy + " 중" : "") || (!st ? "스테이지 연결 안 됨" : "") || (st && st.locked ? "비상정지 잠금" : "")
-    || (st && !(st.z_ok && st.xy_ok) ? "원점 필요 · 스테이지 설정" : "") || (st && st.moving ? "이동 중" : "");
+  if (!st) return "스테이지 연결 안 됨";
+  return rl || st.move_block || (st.locked ? "비상정지 잠금" : "") || (!(st.z_ok && st.xy_ok) ? "원점 필요 · 스테이지 설정" : "");
 }
 function limitsXY(s) { const l = s.stage && s.stage.limits; if (!l) return [247.6, 247.8]; return Array.isArray(l) ? [l[0], l[1]] : [l.x, l.y]; }
 
@@ -22,34 +28,72 @@ function areaQuads(s) {
 function pxToMm(s, u, v) { const q = areaQuads(s); if (!q) return null; return projective(q.px, q.mm)(u, v); }
 function mmToPx(s, x, y) { const q = areaQuads(s); if (!q) return null; return projective(q.mm, q.px)(x, y); }
 
-/* ---- 카드 1 위치 ---- */
-function cardPos(s) {
-  const st = s.stage, why = stageWhy(s), lim = limitsXY(s);
-  const xv = parseFloat(MC.mv.x), yv = parseFloat(MC.mv.y);
-  const bad = isNaN(xv) || isNaN(yv) ? "X · Y 를 입력" : (xv < 0 || xv > lim[0] || yv < 0 || yv > lim[1]) ? "가동범위 밖 · X 0~" + f1(lim[0], 0) + " · Y 0~" + f1(lim[1], 0) : "";
-  const inp = (k, id) => h("input", { type: "number", class: "mvin", id, step: "any", value: MC.mv[k], placeholder: k.toUpperCase() + " mm", oninput: (e) => { MC.mv[k] = e.target.value; refreshMoveBtn(); } });
-  const sampleSel = h("select", { class: "msel grow", onchange: (e) => { MC.sampleNo = e.target.value ? Number(e.target.value) : null; refreshGoto(); } }, h("option", { value: "", text: "샘플 선택" }),
-    ...s.samples.filter((p) => p.X != null).map((p) => h("option", { value: p.no, text: p.no + "번 · " + Math.round(p.X) + ", " + Math.round(p.Y), selected: MC.sampleNo === p.no })));
-  const savePos = (key, label) => ({ label: "지금 위치를 " + label + " 위치로 저장", fn: async () => { const r = await send("settings_save", { patch: { [key]: [Math.round(st.x * 10) / 10, Math.round(st.y * 10) / 10] } }); if (r.ok) toast(label + " 위치 저장"); }, why: !st ? "스테이지 연결 안 됨" : "" });
-  const more = moreBtn([
-    { label: "대기 위치로 이동", fn: () => send("goto_named", { name: "park" }), why: why },
-    { label: "촬영 위치로 이동", fn: () => send("goto_named", { name: "capture" }), why: why },
-    savePos("park_xy", "대기"), savePos("capture_xy", "촬영"),
-  ]);
-  const contact = s.contact.z == null ? "접촉 높이 없음" : "접촉 높이 Z " + f1(s.contact.z, 2);
-  return h("div", { class: "card", id: "c-pos" },
-    h("div", { class: "chead" }, h("h3", { text: "위치" }), h("b", { class: "mono nowrap", id: "m-pos", text: st ? "X " + f1(st.x) + " · Y " + f1(st.y) + " · Z " + f1(st.z, 2) : "—" }), h("span", { class: "grow" }), h("span", { class: "sub nowrap", text: contact }), more),
-    jogPad(s, { why, ztop: { act: "rt-ztop", why } }),
-    h("div", { class: "row" }, h("span", { class: "sub", text: "X" }), inp("x", "m-x"), h("span", { class: "sub", text: "Y" }), inp("y", "m-y"),
-      btn("이동", "m-move", null, "sm primary", "입력한 X · Y 로 옮깁니다. 사진에 이동 목표 십자가 먼저 보입니다. Z 를 먼저 맨 위로 올린 뒤 움직입니다.", why || bad),
-      btn("지금 좌표 넣기", "m-fillnow", null, "sm", "지금 스테이지 좌표를 X · Y 칸에 넣습니다.", st ? "" : "스테이지 연결 안 됨")),
-    h("div", { class: "row" }, sampleSel, btn("샘플 위로", "m-goto", null, "sm", "고른 샘플 위로 공구를 옮깁니다(좌표 보정이 있을 때).", why || (MC.sampleNo == null ? "샘플을 먼저 고름" : "")),
-      btn("접촉 높이로 내리기", "rt-down", null, "sm primary", "저장한 접촉 높이까지 내립니다. 지금 X · Y 에서 그대로 내리니 핀이 샘플 위인지 눈으로 확인하십시오. 마지막 " + s.contact.approach + " mm 는 느리게 내립니다.", why || (s.contact.z == null ? "접촉 높이 필요 · 장비 설정 7" : ""))));
+/* ---- 카드 1 위치 ----
+   한 번만 만들고(buildPos) 이후에는 제자리에서 글자 · class · 속성만 바꾼다(updatePos). 입력 칸 · 패드 · 선택 칸은 다시 그려지지 않으므로
+   친 글자 · 커서 · 포커스 · 누르고 있는 패드가 유지된다. */
+function setBtn(el, why, act, tip) {
+  el.classList.toggle("dis", !!why);
+  if (why) { el.removeAttribute("data-act"); el.setAttribute("data-tip", why); } else { if (act) el.setAttribute("data-act", act); if (tip) el.setAttribute("data-tip", tip); }
 }
-function refreshMoveBtn() { /* 입력이 바뀌면 카드를 다시 그려 [이동] 의 사유를 새로 계산한다 */ MC.sigs.pos = ""; const a = document.activeElement; const id = a && a.id; renderMeasure(UI.state); if (id) { const e = document.getElementById(id); if (e) { e.focus(); try { e.setSelectionRange(e.value.length, e.value.length); } catch (x) { /* number 칸 */ } } } }
-function refreshGoto() { MC.sigs.pos = ""; renderMeasure(UI.state); }
-UI.acts["m-move"] = () => send("move_xy", { x: parseFloat(MC.mv.x), y: parseFloat(MC.mv.y) });
-UI.acts["m-fillnow"] = () => { const st = UI.state.stage; if (!st) return; MC.mv.x = f1(st.x, 1); MC.mv.y = f1(st.y, 1); MC.mvPx = null; MC.sigs.pos = ""; renderMeasure(UI.state); if (M.viewer) redrawOverlay(); };
+function posMenu(s) {
+  const why = stageWhy(s), st = s.stage;
+  const saveHere = (name, label) => ({ label: "지금 위치를 " + label + " 위치로 저장", fn: async () => { const r = await send("save_here", { name }); if (r.ok) toast(label + " 위치 저장"); }, why: !st ? "스테이지 연결 안 됨" : (st.moving ? "이동 중 · 끝난 뒤" : "") });
+  return [
+    { label: "대기 위치로 이동", fn: () => send("goto_named", { name: "park" }), why },
+    { label: "촬영 위치로 이동", fn: () => send("goto_named", { name: "capture" }), why },
+    saveHere("park", "대기"), saveHere("capture", "촬영"),
+  ];
+}
+function buildPos(s) {
+  const P = MC.pos = {};
+  P.pos = h("b", { class: "mono nowrap", id: "m-pos", text: "—" });
+  P.contact = h("span", { class: "sub nowrap" });
+  const inp = (k, id) => h("input", { type: "number", class: "mvin", id, step: "any", value: MC.mv[k], placeholder: k.toUpperCase() + " mm",
+    oninput: (e) => { MC.mv[k] = e.target.value; MC.mvVer = (MC.mvVer || 0); updatePos(UI.state); } });
+  P.x = inp("x", "m-x"); P.y = inp("y", "m-y");
+  P.sel = h("select", { class: "msel grow", onchange: (e) => { MC.sampleNo = e.target.value ? Number(e.target.value) : null; updatePos(UI.state); } });
+  P.move = btn("이동", "m-move", null, "sm primary", "입력한 X · Y 로 옮깁니다. 사진에 이동 목표 십자가 먼저 보입니다. Z 를 먼저 맨 위로 올린 뒤 움직입니다.");
+  P.fill = btn("지금 좌표 넣기", "m-fillnow", null, "sm", "지금 스테이지 좌표를 X · Y 칸에 넣습니다.");
+  P.goto = btn("샘플 위로", "m-goto", null, "sm", "고른 샘플 위로 공구를 옮깁니다(좌표 보정이 있을 때).");
+  P.down = btn("접촉 높이로 내리기", "rt-down", null, "sm primary", "");
+  P.pad = jogPad(s, { key: "m", why: "", ztop: { act: "rt-ztop", why: "" } });
+  P.more = moreBtn(() => posMenu(UI.state));
+  P.selSig = null;
+  M.cardPos.replaceChildren(
+    h("div", { class: "chead" }, h("h3", { text: "위치" }), P.pos, jogKbdTag(), h("span", { class: "grow" }), P.contact, P.more),
+    P.pad,
+    h("div", { class: "row" }, h("span", { class: "sub", text: "X" }), P.x, h("span", { class: "sub", text: "Y" }), P.y, P.move, P.fill),
+    h("div", { class: "row" }, P.sel, P.goto, P.down));
+}
+function updatePos(s) {
+  if (!MC.pos) buildPos(s);
+  const P = MC.pos, st = s.stage, why = stageWhy(s), lim = limitsXY(s);
+  P.contact.textContent = s.contact.z == null ? "접촉 높이 없음" : "접촉 Z " + f1(s.contact.z, 2);
+  P.contact.setAttribute("data-tip", s.contact.z == null ? "저장된 접촉 높이가 없습니다(장비 설정 7)." : "저장된 접촉 높이(절대 Z)입니다.");
+  if (MC.mvApplied !== MC.mvVer) {                                          // 프로그램이 넣은 좌표(사진 클릭 · 지금 좌표 넣기)만 칸에 반영한다 - 친 글자는 건드리지 않는다
+    MC.mvApplied = MC.mvVer;
+    if (P.x.value !== MC.mv.x) P.x.value = MC.mv.x;
+    if (P.y.value !== MC.mv.y) P.y.value = MC.mv.y;
+  }
+  const xv = parseFloat(P.x.value), yv = parseFloat(P.y.value);
+  const bad = isNaN(xv) || isNaN(yv) ? "X · Y 를 입력" : (xv < 0 || xv > lim[0] || yv < 0 || yv > lim[1]) ? "가동범위 밖 · X 0~" + f1(lim[0], 0) + " · Y 0~" + f1(lim[1], 0) : "";
+  setBtn(P.move, why || bad, "m-move");
+  setBtn(P.fill, st ? "" : "스테이지 연결 안 됨", "m-fillnow");
+  const ssig = JSON.stringify(s.samples.filter((p) => p.X != null).map((p) => [p.no, Math.round(p.X), Math.round(p.Y)]));
+  if (P.selSig !== ssig) {                                                  // 샘플 목록이 바뀔 때만 선택 칸 안을 다시 채운다
+    P.selSig = ssig;
+    P.sel.replaceChildren(h("option", { value: "", text: "샘플 선택" }), ...s.samples.filter((p) => p.X != null).map((p) => h("option", { value: p.no, text: p.no + "번 · " + Math.round(p.X) + ", " + Math.round(p.Y) })));
+    if (MC.sampleNo != null && !s.samples.some((p) => p.no === MC.sampleNo && p.X != null)) MC.sampleNo = null;
+  }
+  const want = MC.sampleNo == null ? "" : String(MC.sampleNo);
+  if (P.sel.value !== want) P.sel.value = want;
+  setBtn(P.goto, why || (MC.sampleNo == null ? "샘플을 먼저 고름" : ""), "m-goto");
+  setBtn(P.down, why || (s.contact.z == null ? "접촉 높이 필요 · 장비 설정 7" : ""), "rt-down",
+    "저장한 접촉 높이까지 내립니다. 지금 X · Y 에서 그대로 내리니 핀이 샘플 위인지 눈으로 확인하십시오. 마지막 " + s.contact.approach + " mm 는 느리게 내립니다.");
+  jogPad(s, { key: "m", why: padWhy(s), ztop: { act: "rt-ztop", why } });
+}
+UI.acts["m-move"] = () => send("move_xy", { x: parseFloat(MC.pos.x.value), y: parseFloat(MC.pos.y.value) });
+UI.acts["m-fillnow"] = () => { const st = UI.state.stage; if (!st) return; MC.mv.x = f1(st.x, 1); MC.mv.y = f1(st.y, 1); MC.mvPx = null; MC.mvVer = (MC.mvVer || 0) + 1; updatePos(UI.state); if (M.viewer) redrawOverlay(); };
 UI.acts["m-goto"] = () => { if (MC.sampleNo != null) send("goto_sample", { no: MC.sampleNo }); };
 
 /* ---- 샘플: 카메라 머리줄의 요약 칩 + 번호 칩 목록 팝업(측정 대상 켜고 끄기) ---- */
@@ -192,8 +236,7 @@ function renderMeasure(s) {
   const running = isRunning(s);
   renderLeft(s, running);
   const run = s.rt && s.rt.run;
-  const sigPos = JSON.stringify([s.dev && s.dev.stage, s.stage && [s.stage.locked, s.stage.z_ok, s.stage.xy_ok, s.stage.moving, s.stage.limits], s.contact, s.samples.map((p) => p.no + ":" + p.X), MC.sampleNo, MC.mv, JOG.step, JOG.zstep, s.camera.busy, running, run && run.state, s.calib.status, s.calib.area_mm]);
-  if (sigPos !== MC.sigs.pos) { MC.sigs.pos = sigPos; M.cardPos.replaceChildren(...cardPos(s).childNodes); }
+  updatePos(s);                                                              // 위치 카드는 다시 만들지 않는다(제자리 갱신)
   if (MC.samOpen) drawSamPop(s);
   const tour = s.run;
   const sigRun = JSON.stringify([MC.target, MC.showSteps, M.cond, s.active_condition, s.conditions, s.settings.rt, s.settings.condition, s.dev, s.rt.block, s.start_block, s.samples.length, s.samples.filter((p) => !p.excluded).length, run && [run.state, run.status, run.message, run.warns, run.mode],

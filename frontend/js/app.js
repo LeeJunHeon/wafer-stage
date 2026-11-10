@@ -1,10 +1,2 @@
-/* app.js - 시작 연결 · 탭 바뀔 때 실시간 미리보기 켜고 끄기. */
+/* app.js - 시작 연결. 실시간 미리보기의 켜짐 · 꺼짐은 화면이 기억하지 않는다 - 서버가 /preview.jpg 요청이 최근 2 s 안에 있었는지로 스스로 정한다. */
 "use strict";
-(function () {
-  let last = "";
-  setInterval(() => {
-    const want = (UI.tab === "measure" && typeof M !== "undefined" && M.mode === "live") || (UI.tab === "setup" && typeof S !== "undefined" && S.view === "live");
-    const k = String(want);
-    if (k !== last && UI.ws && UI.ws.readyState === 1) { last = k; UI.ws.send(JSON.stringify({ cmd: "preview", on: want })); }
-  }, 400);
-})();

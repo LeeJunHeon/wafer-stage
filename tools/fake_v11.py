@@ -7,11 +7,20 @@ firmware/stage_v11/stage_v11.ino 의 앱이 쓰는 명령과 출력 형식을 �
   출력: 시작 배너 · 이동 완료 줄(" | X=") · "  이미 그 위치" · "  [거부] …" · "  [!] 중단" · ST · RS · "  [!] 통신 끊김 · 릴레이 전부 꺼짐"
   통신 감시: 받은 줄마다 lastRx 갱신 · 블로킹 이동 중에는 판정 안 함 · 이동이 끝나는 순간 타이머 재시작.
 
-시험용 조작: latency(응답 지연) · drop_next(줄 하나 잃음) · reboot(eeprom=) · freeze(초) · slip(dx, dy) · time_scale(이동 시간 배율) · block_write(초: 쓰기 막힘).
+.ino 에 맞춘 것(시험이 실제와 다른 조건에서 통과하지 않게):
+  - 이동 시간 = 사다리꼴(가속 · 정속 · 감속). time_scale 1.0 이면 .ino 와 같은 시간.
+  - '!' 확인은 64 펄스마다(그 순간 속도로 걸리는 시간 간격, 첫 펄스 전 포함). 끊긴 이동의 out 은 그때까지 나간 펄스(64 의 배수).
+  - 축마다 "실제 위치(real)" 와 끝단(하드스톱)이 있다: 끝단을 넘는 펄스는 실제 위치를 바꾸지 않는다(헛돈다 - 카운터만 바뀐다).
+  - dirty: 움직이면 dirty, save 하면 해제. 재부팅 때 dirty 면 "save 하지 않고 꺼짐" + 원점 없음 + 위치 0, 아니면 마지막 save 위치를 복원.
+  - 수신 버퍼 64 바이트(넘치면 버린다). fz 의 0.5 s 대기 중에 온 '!' 는 물러나는 이동의 첫 펄스에서 끊긴다.
+  - cuts: 끊긴 이동마다 {cmd, out, p_at_bang, t_bang, t_halt} - 정지 · 비상정지 지연 시험은 '!' 를 쓴 시각이 아니라 펌웨어가 멈춘 시각 · 펄스 수로 잰다.
+
+시험용 조작: set_real_mm(축, mm) · latency(응답 지연) · drop_next(줄 하나 잃음) · reboot(eeprom=) · freeze(초) · slip(dx, dy) · time_scale(이동 시간 배율) · block_write(초: 쓰기 막힘).
 EEPROM 상태(부팅 배너): restored(마지막 저장 위치 복원 - 원점 있음) · unsaved(save 없이 꺼짐 - 원점 없음) · none(기록 없음 - 원점 없음).
 """
 
 import collections
+import os
 import threading
 import time
 
@@ -30,7 +39,9 @@ class FakeV11:
         self.latency = 0.0                          # 응답 한 줄이 시리얼에 나타나기까지 지연(s)
         self.hang_move = False                      # 다음 이동이 끝나지 않는다('!' 가 올 때까지 - 모터 멈춤 흉내)
         self.cut_until = 0.0                        # 이 시각까지 케이블이 끊김: 보낸 줄은 사라지고 응답도 호스트에 안 닿는다(펌웨어는 계속 돈다)
-        self.bang_times = []                        # '!' 가 도착한 단조 시각(비상정지 지연 측정)
+        self.bang_times = []                        # '!' 가 도착한 단조 시각(쓰기 시각이라 '!' 가 가려져도 남는다 - 지연 시험은 cuts 를 쓴다)
+        self.cuts = []                              # 끊긴 이동: {cmd, out, p_at_bang, t_bang, t_halt, ax}
+        self.overflow = 0                           # 수신 버퍼(64 바이트)가 넘쳐 버려진 바이트 수
         self.freeze_until = 0.0                     # 이 시각까지 아무것도 처리 · 응답하지 않음(링크 멈춤)
         self._drop = 0
         self.lock = threading.Lock()
@@ -39,7 +50,7 @@ class FakeV11:
         self.cv = threading.Condition()
         self.alive = True
         self.unplugged = False                      # USB 가 뽑혔다: 읽기 · 쓰기가 serial.SerialException (다시 꽂아도 이 객체는 계속 오류 - 새로 열어야 새 보드)
-        self.true_off = [0.0, 0.0]                  # 탈조 - 실제 위치 = 보고 + off (mm)
+        self.true_off = [0.0, 0.0]                  # 탈조 - 실제 위치 = real + off (mm)
         self._init_state(bool(homed) and self.eeprom == "restored")
         self.wd_ms = 0
         self.last_rx = time.monotonic()
@@ -81,7 +92,10 @@ class FakeV11:
         if b"!" in data:
             self.bang_times.append(time.monotonic())
         with self.cv:
-            self.inbuf += bytes(data)
+            room = max(0, 64 - len(self.inbuf))             # 아두이노 수신 버퍼 64 바이트 - 넘치면 버린다
+            if len(data) > room:
+                self.overflow += len(data) - room
+            self.inbuf += bytes(data)[:room]
             self.cv.notify_all()
         return len(data)
 
@@ -160,6 +174,13 @@ class FakeV11:
         self.abort_flag = True
         if eeprom:
             self.eeprom = eeprom
+        elif self.dirty:                                      # save 없이 움직였다 - 부팅 때 "save 하지 않고 꺼짐" + 원점 없음 + 위치 0
+            self.eeprom = "unsaved"
+        if self.eeprom == "restored":
+            self.px, self.py, self.pz = self.saved
+        else:
+            self.px = self.py = self.pz = 0
+        self.dirty = False
         self.hx = self.hy = self.hz = (self.eeprom == "restored")
         self.relay = [False] * N_RELAY
         self.v, self.a, self.b = 6000, 40000, 300
@@ -168,10 +189,15 @@ class FakeV11:
         self._banner()
 
     def true_xy(self):
-        return (self.px / PPMM + self.true_off[0], self.py / PPMM + self.true_off[1])
+        return (self.real["x"] / PPMM + self.true_off[0], self.real["y"] / PPMM + self.true_off[1])
 
     def set_z_mm(self, mm):
         self.pz = int(mm * PPMM)
+        self.real["z"] = self.pz
+
+    def set_real_mm(self, ax, mm):
+        """시험용: 그 축의 실제(물리) 위치를 정한다(카운터는 그대로 - 펌웨어는 모른다)."""
+        self.real[ax] = int(round(mm * PPMM))
 
     # ---- 출력 ---------------------------------------------------------
     def _emit(self, text):
@@ -185,6 +211,8 @@ class FakeV11:
 
     def _init_state(self, homed):
         self.px = self.py = self.pz = 0
+        self.real = {"x": 0, "y": 0, "z": 0}
+        self.saved = (0, 0, 0)
         self.hx = self.hy = self.hz = bool(homed)
         self.dirty = False
         self.relay = [False] * N_RELAY
@@ -202,6 +230,8 @@ class FakeV11:
         self._emit("RS " + " ".join("R%d=%d" % (i + 1, 1 if on else 0) for i, on in enumerate(self.relay)))
 
     def _st(self):
+        if os.environ.get("WAFER2_FAKE_SILENT_ST"):                # 시험: ST 에 답하지 않는 보드(연결 중 ST 무응답)
+            return
         self._emit("ST X=%d Y=%d X2=%d Z=%d HX=%d HY=%d HZ=%d DIRTY=%d" % (self.px, self.py, self.px, self.pz, self.hx, self.hy, self.hz, self.dirty))
 
     def _status(self):
@@ -295,6 +325,7 @@ class FakeV11:
         elif c == "save":
             self.dirty = False
             self.eeprom = "restored"
+            self.saved = (self.px, self.py, self.pz)
             self._emit("  저장됨 (신뢰 확정)")
         elif c == "fz":
             self._fz(tok)
@@ -363,13 +394,13 @@ class FakeV11:
         self.v = sv
         self.hx, self.hy, self.hz = hx, hy, hz
         if self.abort_flag:
-            self._emit("--- 중단됨. 원점 설정 안 됨 ---")
+            self._emit("--- 중단됨. 원점 설정 안 됨 ---")            # 위치 카운터는 이미 바뀌어 있다(헛돈 펄스 포함) - 원점 플래그만 fz 전 값
             return
         self._setpos(ax, 0)
         setattr(self, "h" + ax, True)
-        self.true_off[0 if ax == "x" else 1] = 0.0 if ax in ("x", "y") else self.true_off[1]
         self.dirty = False
         self.eeprom = "restored"
+        self.saved = (self.px, self.py, self.pz)
         self._emit("--- 원점 설정 완료 (저장됨) ---")
         self._st()
 
@@ -437,27 +468,103 @@ class FakeV11:
             self._emit("  [!] %s 가동범위 밖 → 원점 해제 (다시 등록 필요)" % ax.upper())
         self._report(ax, d, out)
 
+    def _profile(self, n):
+        """n 펄스 사다리꼴: (총 시간(s, 배율 전), pulses_at(t))."""
+        v = max(float(self.v), float(self.b))
+        a, b = float(self.a), min(float(self.b), v)
+        d_acc = (v * v - b * b) / (2.0 * a)
+        if n >= 2.0 * d_acc:
+            t_acc = (v - b) / a
+            t_cru = (n - 2.0 * d_acc) / v
+            T = 2.0 * t_acc + t_cru
+
+            def pa(t):
+                if t <= 0:
+                    return 0.0
+                if t < t_acc:
+                    return b * t + a * t * t / 2.0
+                if t < t_acc + t_cru:
+                    return d_acc + v * (t - t_acc)
+                if t < T:
+                    r = T - t
+                    return n - (b * r + a * r * r / 2.0)
+                return float(n)
+        else:
+            vp = (b * b + a * n) ** 0.5
+            th = (vp - b) / a
+            T = 2.0 * th
+
+            def pa(t):
+                if t <= 0:
+                    return 0.0
+                if t < th:
+                    return b * t + a * t * t / 2.0
+                if t < T:
+                    r = T - t
+                    return n - (b * r + a * r * r / 2.0)
+                return float(n)
+        return T, pa
+
+    def _time_of(self, n, pa, T):
+        """pulses_at 의 역함수(이분법): n 펄스째가 나가는 시각."""
+        lo, hi = 0.0, T
+        for _ in range(40):
+            mid = (lo + hi) / 2.0
+            if pa(mid) < n:
+                lo = mid
+            else:
+                hi = mid
+        return hi
+
     def _move(self, ax, d, report=True):
-        """블로킹 이동. 시간이 걸리고 그동안 '!' 만 본다. 반환: 실제 움직인 펄스."""
-        total = abs(d) / max(1.0, float(self.v)) * self.time_scale
+        """블로킹 이동(사다리꼴). 64 펄스마다 버퍼 맨 앞 바이트가 '!' 인지만 본다(첫 펄스 전 포함). 반환: 실제 움직인 펄스."""
+        n = abs(int(d))
+        sign = 1 if d >= 0 else -1
+        sc = self.time_scale
         if self.hang_move:
-            total = 1e9
+            T, pa = 1e9, (lambda t: self.v * t)
             self.hang_move = False
+        else:
+            T, pa = self._profile(n)
         t0 = time.monotonic()
         self.busy = True
-        moved = d
+        out = 0
+        aborted = False
+        p_at_bang = None
+        t_bang = None
         while True:
-            el = time.monotonic() - t0
-            if self._peek_abort() or self.abort_flag:
-                frac = min(1.0, el / total) if total > 0 else 1.0
-                moved = int(d * frac)
+            el = (time.monotonic() - t0) / sc
+            if self._peek_abort() or self.abort_flag:                 # 64 펄스 경계(또는 첫 펄스 전)에서만 보인다
+                aborted = True
+                p_el = pa(el)
+                t_arr = None
+                if self.bang_times and self.bang_times[-1] >= t0:
+                    t_bang = self.bang_times[-1]
+                    t_arr = max(0.0, (t_bang - t0) / sc)                # '!' 바이트가 버퍼에 들어온 시각(이동 시작 뒤)
+                    p_at_bang = pa(t_arr)
+                p_chk = p_at_bang if p_at_bang is not None else p_el
+                out = min(n, int(-(-p_chk // 64)) * 64) if (el > 0 and p_chk > 0) else 0     # 그 뒤 첫 64 펄스 경계(첫 펄스 전이면 0)
+                # 경계 펄스까지 마저 나간 뒤 멈춘다
+                if out > p_el and out > 0:
+                    t_b = self._time_of(out, pa, T) * sc
+                    wait = t0 + t_b - time.monotonic()
+                    if wait > 0:
+                        time.sleep(wait)
                 self.abort_flag = True
                 break
-            if el >= total:
+            if el >= T:
+                out = n
                 break
-            time.sleep(0.004)
+            time.sleep(0.002 if sc >= 0.5 else 0.001)
         self.busy = False
+        moved = out * sign
         self._setpos(ax, self._pos(ax) + moved)
+        lo, hi = -320, {"x": X_MAX + 320, "y": Y_MAX + 320, "z": Z_MAX}[ax]
+        self.real[ax] = max(lo, min(hi, self.real[ax] + moved))      # 끝단을 넘는 펄스는 실제 위치를 바꾸지 않는다(헛돈다)
+        if out:
+            self.dirty = True
+        if aborted:
+            self.cuts.append({"ax": ax, "cmd": n, "out": out, "p_at_bang": p_at_bang, "t_bang": t_bang, "t_halt": time.monotonic()})
         if report:
             self._report(ax, d, moved, t0)
         return moved

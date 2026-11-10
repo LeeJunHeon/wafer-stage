@@ -24,7 +24,7 @@ function xy(x, y) { return x == null ? "—" : "X " + f1(x) + " · Y " + f1(y); 
 function mmss(s) { if (s == null) return "—"; s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
 function btn(label, act, args, cls, tip, disWhy) {
   const dis = !!disWhy;
-  return h("button", { class: "btn " + (cls || "") + (dis ? " dis" : ""), "data-act": dis ? null : act, "data-args": args ? JSON.stringify(args) : null,
+  return h("button", { tabindex: -1, class: "btn " + (cls || "") + (dis ? " dis" : ""), "data-act": dis ? null : act, "data-args": args ? JSON.stringify(args) : null,
     "data-tip": dis ? disWhy : tip, text: label });
 }
 
@@ -32,7 +32,7 @@ function btn(label, act, args, cls, tip, disWhy) {
 function connect() {
   const ws = new WebSocket("ws://" + location.host + "/ws");
   UI.ws = ws;
-  ws.onopen = () => { UI.connected = true; UI.previewOn = null; $("#band") && render(); };
+  ws.onopen = () => { UI.connected = true; $("#band") && render(); };
   ws.onclose = () => {
     UI.connected = false;
     const pend = UI.pend; UI.pend = {};                                      // 대기 중인 명령은 모두 실패로 끝낸다(ack 가 영영 안 온다)
@@ -59,12 +59,38 @@ function send(cmd, args) {
     UI.ws.send(JSON.stringify({ id, cmd, args: args || {} }));
   });
 }
-function estop() {
-  if (typeof jogOnEstop === "function") jogOnEstop();                      // 조그를 먼저 멈춘다(눌려 있던 키 · 버튼은 뗄 때까지 다시 시작하지 않는다)
-  UI.estopT = performance.now();
-  try { if (UI.ws && UI.ws.readyState === 1) UI.ws.send(JSON.stringify({ id: ++UI.nid, cmd: "estop" })); } catch (e) { /* HTTP 로 간다 */ }
-  fetch("/estop", { method: "POST" }).catch(() => {});
+/* 비상정지 · 정지: 누르는 순간 WS 와 HTTP 둘 다로 보낸다. 0.5 s 안에 서버 응답(WS ack · HTTP 200 중 하나)이 없으면 화면 가운데에
+   "전달 안 됨 · 모터 전원을 끄십시오" 를 크게 띄우고 응답이 올 때까지 계속 다시 보낸다(서버가 죽었을 때 아무 표시가 없던 것을 막는다). */
+function emergency(kind) {
+  if (kind === "estop") { if (typeof jogOnEstop === "function") jogOnEstop(); } else if (typeof jogOnStop === "function") jogOnStop();    // 조그를 먼저 멈춘다(눌려 있던 키 · 버튼은 뗄 때까지 다시 시작하지 않는다)
+  UI[kind + "T"] = performance.now();
+  const rec = { acked: false, tries: 0, t0: performance.now() };
+  UI.em = UI.em || {}; UI.em[kind] = rec;
+  const got = () => { if (rec.acked) return; rec.acked = true; rec.ms = performance.now() - rec.t0; clearInterval(rec.iv); hideNoDeliver(); };
+  const fire = () => {
+    rec.tries++;
+    try { if (UI.ws && UI.ws.readyState === 1) { const id = ++UI.nid; UI.pend[id] = (m) => { if (m && m.ok !== false) got(); }; UI.ws.send(JSON.stringify({ id, cmd: kind })); } } catch (e) { /* HTTP 로 간다 */ }
+    fetch("/" + kind, { method: "POST" }).then((r) => { if (r && r.ok) got(); }).catch(() => {});
+  };
+  fire();
+  rec.iv = setInterval(() => { if (rec.acked) return; showNoDeliver(); fire(); }, 300);
+  setTimeout(() => { if (!rec.acked) showNoDeliver(); }, 500);
 }
+function estop() { emergency("estop"); }
+function stopMotors() { emergency("stop"); }
+function showNoDeliver() {
+  let e = document.getElementById("nodeliver");
+  if (!e) { e = h("div", { id: "nodeliver", class: "nodeliver", text: "전달 안 됨 · 모터 전원을 끄십시오" }); document.body.append(e); }
+  e.classList.remove("hidden");
+}
+function hideNoDeliver() {
+  const pending = Object.values(UI.em || {}).some((r) => !r.acked);
+  const e = document.getElementById("nodeliver");
+  if (e && !pending) e.classList.add("hidden");
+}
+/* 화면이 스스로 바뀐 직후에는 그 자리의 누름을 잠깐 무시한다(비상정지 · 정지는 예외) */
+function settle(ms) { UI.settleUntil = performance.now() + (ms == null ? 400 : ms); }
+function settling() { return performance.now() < (UI.settleUntil || 0); }
 
 /* ---- 토스트 · 툴팁 · 창 ---- */
 let toastT = null;
@@ -92,10 +118,10 @@ function openWin(node, cls) {
   if (typeof jogKbdOff === "function") jogKbdOff();                       // 창이 열리면 키보드 조그는 꺼진다
   $("#dimmer").classList.remove("hidden"); w.classList.remove("hidden"); $("#estopDock").classList.remove("hidden");
 }
-function closeWin() { $("#tip").classList.add("hidden"); $("#win").classList.add("hidden"); $("#dimmer").classList.add("hidden"); $("#estopDock").classList.add("hidden"); $("#win").replaceChildren(); }
+function closeWin() { settle(); $("#tip").classList.add("hidden"); $("#win").classList.add("hidden"); $("#dimmer").classList.add("hidden"); $("#estopDock").classList.add("hidden"); $("#win").replaceChildren(); }
 /* 대화상자: 제목은 질문, 버튼은 동작 이름. buttons = [{label, cls, fn}] */
 function dialog(title, body, buttons) {
-  const bs = (buttons || [{ label: "닫기" }]).map((b) => h("button", { class: "btn " + (b.cls || ""), text: b.label, onclick: () => { closeWin(); if (b.fn) b.fn(); } }));
+  const bs = (buttons || [{ label: "닫기" }]).map((b) => h("button", { tabindex: -1, class: "btn " + (b.cls || ""), text: b.label, onclick: () => { closeWin(); if (b.fn) b.fn(); } }));
   openWin(h("div", {}, h("h2", { text: title }), h("div", { text: body }), h("div", { class: "btns" }, bs)));
 }
 
@@ -103,14 +129,14 @@ function dialog(title, body, buttons) {
 function popMenu(anchor, items) {
   closePop();
   const r = anchor.getBoundingClientRect(), sc = UI.scale || 1;
-  const m = h("div", { class: "pop", id: "pop" }, items.map((it) => h("button", { class: "btn sm block" + (it.why ? " dis" : ""), text: it.label, "data-tip": it.why || null,
+  const m = h("div", { class: "pop", id: "pop" }, items.map((it) => h("button", { tabindex: -1, class: "btn sm block" + (it.why ? " dis" : ""), text: it.label, "data-tip": it.why || null,
     onclick: () => { if (it.why) return; closePop(); it.fn(); } })));
   m.style.left = Math.min(window.innerWidth - 240, r.left) + "px"; m.style.top = r.bottom + 4 + "px";
   $("#stage").append(m);
   setTimeout(() => document.addEventListener("click", closePop, { once: true }), 0);
 }
-function closePop() { const p = $("#pop"); if (p) p.remove(); }
-function moreBtn(items) { const b = h("button", { class: "btn sm", text: "⋯", "data-tip": "더 보기" }); b.addEventListener("click", (e) => { e.stopPropagation(); popMenu(b, items); }); return b; }
+function closePop() { const p = $("#pop"); if (p) { p.remove(); settle(); } }
+function moreBtn(items) { const b = h("button", { tabindex: -1, class: "btn sm", text: "⋯", "data-tip": "더 보기" }); b.addEventListener("click", (e) => { e.stopPropagation(); if (settling()) return; popMenu(b, typeof items === "function" ? items() : items); }); return b; }
 
 /* ---- 스케일 ---- */
 function fit() { UI.scale = 1; }                  /* 창 크기에 맞춰 배치가 늘고 줄며 글자는 줄이지 않는다(좌표 변환용 UI.scale 은 항상 1) */
@@ -121,32 +147,53 @@ document.addEventListener("click", (e) => {
   const el = e.target.closest("[data-act]");
   if (!el) return;
   const act = el.getAttribute("data-act");
+  if (settling() && act !== "estop" && act !== "stop") return;           // 화면이 스스로 바뀐 직후 400 ms 는 그 자리의 누름을 무시한다
   const args = el.getAttribute("data-args") ? JSON.parse(el.getAttribute("data-args")) : {};
   const fn = UI.acts[act];
   if (fn) fn(args, el, e);
 });
 UI.acts.estop = () => { if (UI.estopT && performance.now() - UI.estopT < 800) return; estop(); };     // 누르는 순간(pointerdown)에 이미 보냈으면 click 은 다시 보내지 않는다
-document.addEventListener("pointerdown", (e) => {                           // 비상정지는 누르는 순간 보낸다(클릭이 끝나기를 기다리지 않는다)
+UI.acts.stop = () => { if (UI.stopT && performance.now() - UI.stopT < 800) return; stopMotors(); };
+document.addEventListener("pointerdown", (e) => {                           // 비상정지 · 정지는 누르는 순간 보낸다(클릭이 끝나기를 기다리지 않는다)
   if (e.button !== undefined && e.button !== 0) return;
   if (e.target.closest && e.target.closest("[data-act=\"estop\"]")) estop();
+  else if (e.target.closest && e.target.closest("[data-act=\"stop\"]")) stopMotors();
 }, true);
+
+/* 버튼은 마우스 · 터치로만 눌린다: 포커스를 받지 않고 Enter · Space 로 눌리지 않는다(포커스가 남아 있다가 Space 가 이동 명령을 다시 보내는 일을 없앤다).
+   입력 칸에서 Enter 로 값을 확정하는 것은 그대로. */
+document.addEventListener("mousedown", (e) => { const b = e.target.closest && e.target.closest("button"); if (b) e.preventDefault(); }, true);
+document.addEventListener("focusin", (e) => { const t = e.target; if (t && t.tagName === "BUTTON") t.blur(); }, true);
+["keydown", "keyup", "keypress"].forEach((ev) => document.addEventListener(ev, (e) => {
+  if ((e.key === "Enter" || e.key === " ") && e.target && e.target.tagName === "BUTTON") { e.preventDefault(); e.stopPropagation(); }
+}, true));
+/* 누르고 있는 버튼은 떼기 전에 갈아 끼우지 않는다(mousedown 과 mouseup 사이에 노드가 바뀌면 click 이 사라진다): 그동안 다시 그리기를 미룬다. 패드(길게 누름)는 예외 */
+document.addEventListener("pointerdown", (e) => {
+  const b = e.target.closest && e.target.closest("button, [data-act]");
+  if (b && !b.closest(".jogpad") && !b.closest("[data-act=\"estop\"]") && !b.closest("[data-act=\"stop\"]")) { UI.pressing = b; UI.pressT = performance.now(); }
+}, true);
+function releasePress() {
+  if (!UI.pressing) return;
+  UI.pressing = null;
+  setTimeout(() => { if (UI.rerender && !UI.pressing) { UI.rerender = false; render(); } }, 40);
+}
+window.addEventListener("pointerup", releasePress, true);
+window.addEventListener("pointercancel", releasePress, true);
+window.addEventListener("blur", releasePress);
 UI.acts.tab = (a) => { UI.tab = a.tab; $("#tip").classList.add("hidden"); if (typeof jogKbdOff === "function") jogKbdOff(); render(); };
 
 /* ---- 렌더 ---- */
 function render() {
   const s = UI.state;
   if (!s) return;
+  if (UI.pressing && performance.now() - UI.pressT < 5000) { UI.rerender = true; return; }           // 누르는 중인 버튼이 있는 동안은 다시 그리기를 미룬다
+  UI.pressing = null;
+  if (s.stop_note && s.stop_note.n !== UI.noteN) { if (UI.noteN != null) toast(s.stop_note.text); UI.noteN = s.stop_note.n; }
+  else if (UI.noteN == null) UI.noteN = s.stop_note ? s.stop_note.n : 0;
   renderHead(s);
   for (const t of ["measure", "results", "setup"]) $("#tab-" + t).classList.toggle("hidden", UI.tab !== t);
   $$("#tabs .tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === UI.tab));
   for (const fn of UI.renders) fn(s);
-  syncPreview(s);
-}
-/* 실시간 화면이 필요할 때만 서버가 미리보기를 만든다(측정 탭 실시간 · 장비 설정의 실시간 단계) */
-function syncPreview(s) {
-  let want = false;
-  try { want = (UI.tab === "measure" && typeof M !== "undefined" && M.mode === "live" && !isRunning(s)) || (UI.tab === "setup" && typeof viewFor === "function" && viewFor(s) === "live"); } catch (e) { want = false; }
-  if (want !== UI.previewOn && UI.ws && UI.ws.readyState === 1) { UI.previewOn = want; UI.ws.send(JSON.stringify({ cmd: "preview", on: want })); }
 }
 function renderLog() { for (const fn of UI.logRenders || []) fn(); }
 
@@ -188,12 +235,14 @@ function renderHead(s) {
   const sig = JSON.stringify(bds);
   if (bds.length) {
     if (band.dataset.sig !== sig) {
+      if (Number(band.dataset.n || 0) !== bds.length) settle();                    // 띠의 줄 수가 바뀌면 아래 화면이 밀린다 - 잠깐 누름을 무시
+      band.dataset.n = bds.length;
       band.dataset.sig = sig;
       band.className = "bandbox";
       band.replaceChildren(...bds.map((bd) => h("div", { class: "band " + (bd.err ? "err" : ""), "data-id": bd.id }, h("span", { text: bd.text }), h("span", { class: "next", text: bd.next ? "· " + bd.next : "" }), h("span", { class: "grow" }),
-        ...(bd.actions || []).map((a) => h("button", { class: "btn sm" + (a.busy ? " dis" : ""), text: a.label, "data-tip": a.busy ? "연결 중 · 잠시만" : (a.tip || null), onclick: () => { if (!a.busy) bandAct(a); } })))));
+        ...(bd.actions || []).map((a) => h("button", { tabindex: -1, class: "btn sm" + (a.busy ? " dis" : ""), text: a.label, "data-tip": a.busy ? "연결 중 · 잠시만" : (a.tip || null), onclick: () => { if (!a.busy) bandAct(a); } })))));
     }
-  } else { band.dataset.sig = ""; band.className = "bandbox hidden"; band.replaceChildren(); }
+  } else { if (band.dataset.sig) settle(); band.dataset.sig = ""; band.dataset.n = 0; band.className = "bandbox hidden"; band.replaceChildren(); }
 }
 /* 측정 시작을 막는 사유는 한 곳에 하나만: 가장 먼저 해결할 것 한 줄 + 바로 가기 버튼. opt = {camera, inst} 이 필요한지. 없으면 null. */
 function gateOf(why, s, opt) {
@@ -222,8 +271,21 @@ function bandAct(a) {
   if (a.act === "ui_setup") { gotoSetup((a.args || {}).step || 1); return; }
   const go = async () => { const r = await send(a.act, a.args || {}); if (r.ok && a.act === "origin") toast((a.args.axis || "").toUpperCase() + " 원점 잡기 완료"); };
   if (a.act === "capture" && UI.acts.capture) { UI.acts.capture(); return; }
+  if (a.act === "origin") { originConfirm((a.args || {}).axis, go); return; }
   if (a.confirm) dialog(a.label + " 할까요?", (a.tip || "") + " 끝단에 닿는 드르륵 소리는 정상입니다.", [{ label: "취소" }, { label: a.label, cls: "primary", fn: go }]);
   else go();
+}
+
+/* 원점 잡기 확인 창: Z 위치를 모르면 위 끝단까지 천천히 올린 뒤 잡는다고 알리고, X · Y 는 펌웨어 위치가 없으면 "끝단 10 mm 안까지 옮겼습니까?" 로 묻는다 */
+function originConfirm(axis, go) {
+  const sg = (UI.state && UI.state.stage) || {}, X = String(axis).toUpperCase(), hom = (sg.fw_homed || {})[axis];
+  if (axis === "z" && !(sg.z_ok && hom)) {
+    dialog("Z 원점을 잡을까요?", "Z 위치를 모릅니다. 위 끝단까지 천천히 올린 뒤 원점을 잡습니다(최대 약 7 초 · 끝단에서 나는 드르륵 소리는 정상).", [{ label: "취소" }, { label: "Z 원점 잡기", cls: "primary", fn: go }]);
+  } else if (axis !== "z" && !hom) {
+    dialog(X + " 를 끝단 10 mm 안까지 옮겼습니까?", "멀리 있으면 틀린 원점이 잡힙니다. 끝단에서 나는 드르륵 소리는 정상입니다.", [{ label: "취소" }, { label: "옮겼음 · 원점 잡기", cls: "primary", fn: go }]);
+  } else {
+    dialog(X + " 원점을 잡을까요?", X + " 를 끝단 쪽으로 최대 10 mm 밀어 2 mm 물러난 자리를 원점으로 잡고 저장합니다. 펌웨어 위치가 남아 있어 끝단 3 mm 앞까지 자동으로 다가간 뒤 잡습니다. 실제 위치가 그보다 7 mm 넘게 멀면 틀린 원점이 잡히니 끝단 가까이인지 눈으로 확인하십시오.", [{ label: "취소" }, { label: X + " 원점 잡기", cls: "primary", fn: go }]);
+  }
 }
 
 /* 종료 요청(창 X): 화면이 확인을 받는다 */

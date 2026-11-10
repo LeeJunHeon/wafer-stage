@@ -1,18 +1,21 @@
 /* jog.js - 조그 패드 하나(측정 화면 · 장비 설정 모두 이 컴포넌트).
    배치는 좌표 보정에서 계산한다: 스테이지 +X · +Y 가 사진에서 가리키는 방향을 위 · 아래 · 왼 · 오른쪽 중 가장 가까운 쪽에 둔다.
    좌표 보정이 없으면 기존 프로그램 배치(위 X+ · 왼 Y+ · 오른 Y− · 아래 X−). 키보드 화살표도 같은 매핑, PageUp/PageDown = Z.
-   동작은 기존 프로그램 jog.js 와 같다: 한 번 누름 = 한 스텝, 0.5 s 이상 누르고 있으면 ack 를 받은 뒤 다음 스텝(큐에 쌓지 않는다),
-   거절(끝단 · 이동 중 · 잠금)이면 멈춤, 키보드는 400 ms 데드맨, 창 포커스를 잃으면 멈춘다.
+   가운데 칸 = [정지](움직이는 모터를 즉시 멈추고 이어질 이동을 취소한다. 잠그지 않는다. 비상정지와 같은 빠른 길).
 
    안전(모터 사고 방지):
-   - 키보드 조그는 조그 카드가 '키보드 조그 켬' 상태일 때만: 카드 안을 누르면 켜지고, 카드 밖을 누르거나 탭이 바뀌거나 창이 열리거나 창 포커스를 잃으면 꺼진다.
-   - 창(#win)이 열려 있으면 키보드 · 패드 조그 모두 안 된다.
-   - 연속 조그는 스텝 jog.repeat_max_mm 이하만, Z↓ 는 한 번에 한 스텝(연속 없음). 큰 스텝 · Z↓ 는 키를 누르고 있어도 한 번만 나간다.
-   - Z 스텝은 따로(jog.z_steps). 패드 입력은 pointer 이벤트 + setPointerCapture, 떼는 · 취소 · 벗어남 · 포커스 잃음 · 탭 숨김에서 멈춘다.
-   - 비상정지를 누르는 순간 조그를 멈추고, 그때 눌려 있던 키 · 버튼은 뗄 때까지 다시 시작하지 않는다(자동 반복 keydown 포함). */
+   - 패드는 화면에 한 번 만들고 다시 만들지 않는다(키 = opt.key). 비활성 사유 · 방향 배치 · free 는 제자리에서 class · 속성 · 글자만 바꾼다.
+     이벤트는 늘 걸려 있고 누를 수 있는지는 누르는 순간 판단한다. "이동 중" 은 패드를 끄는 사유가 아니다(서버가 거절한다).
+   - 연속 조그(마우스): 서버 응답(ack)을 받으면 다음 스텝. 다음 스텝 직전에 그 버튼이 아직 화면에 있고 포인터를 잡고 있는지 본다.
+     떼기 · 벗어남 · pointercancel · lostpointercapture · 창 포커스 잃음 · 탭 바뀜 · 패드 꺼짐 · 정지 · 비상정지에서 끝나고 JOG.held 를 비운다.
+   - 키보드 조그는 패드(.jogpad 의 방향 · Z · 스텝 버튼)를 직접 눌렀을 때만 켜진다. 입력 칸 · 선택 칸 · 패드 밖 버튼을 누르거나 창 · 메뉴가 열리거나
+     패드가 꺼지면 꺼진다. 새로 누른 키(repeat 가 아닌 keydown)로만 시작하고, 자동 반복 keydown 은 이미 그 키로 시작한 연속 조그를 잇는 데만 쓴다.
+   - 패드를 누르는 순간 쓰는 스텝 = 화면에 보이는 값. "직접" 칸은 유효하면 입력 즉시 적용, 아니면 칸이 붉고 패드가 눌리지 않는다.
+   - 연속 조그는 스텝 jog.repeat_max_mm 이하만, Z↓ 는 한 번에 한 스텝. 키보드는 400 ms 데드맨.
+   - 비상정지 · 정지를 누르는 순간 조그를 멈추고, 그때 눌려 있던 키 · 버튼은 뗄 때까지 다시 시작하지 않는다. */
 "use strict";
 const JOG = { step: 1, zstep: 0.1, held: null, inFlight: false, lastKeyAt: 0, keySeq: 0, sentSeq: -1, heldSince: 0, timer: null, kbd: false,
-  down: new Set(), dead: new Set(), ptr: false };
+  down: new Set(), dead: new Set(), ptr: false, stepBad: "", pads: {} };
 const JOG_KEY_ALIVE_MS = 400, JOG_HOLD_REPEAT_MS = 500;
 const JOG_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown"];
 
@@ -38,54 +41,69 @@ function jogCfg() { return (UI.state && UI.state.settings && UI.state.settings.j
 function jogRepeatMax() { return Number(jogCfg().repeat_max_mm) || 1; }
 function jogWinOpen() { const w = document.getElementById("win"); return !!w && !w.classList.contains("hidden"); }
 function jogVisiblePad() { return Array.from(document.querySelectorAll(".jogpad")).find((p) => p.offsetParent !== null) || null; }
-/* 지금 보이는 패드가 켜져 있나(비활성 사유가 없고 창이 안 열렸다) */
-function jogEnabled() { const p = jogVisiblePad(); return !!p && !p.hasAttribute("data-off") && !jogWinOpen(); }
-function jogFree() { const p = jogVisiblePad(); return !!(p && p.hasAttribute("data-free")); }
+/* 이 패드가 지금 눌릴 수 있나(비활성 사유가 없고 창이 안 열렸다) */
+function jogPadOk(p) { return !!p && p.isConnected && !p.hasAttribute("data-off") && !jogWinOpen(); }
+function jogEnabled() { return jogPadOk(jogVisiblePad()); }
+function jogFree(p) { return !!(p && p.hasAttribute("data-free")); }
 /* 이 방향이 연속(누르고 있으면 계속)으로 갈 수 있나: Z↓ 는 아니고, 스텝이 연속 한도 이하일 때만 */
-function jogCanRepeat(axis, sign) { return !(axis === "z" && sign > 0) && (axis === "z" ? JOG.zstep : JOG.step) <= jogRepeatMax() + 1e-9; }
+function jogCanRepeat(axis, sign, mm) { return !(axis === "z" && sign > 0) && (mm != null ? mm : (axis === "z" ? JOG.zstep : JOG.step)) <= jogRepeatMax() + 1e-9; }
 
 function jogStop() {
   JOG.held = null;                                  // 이미 나간 한 스텝은 끝까지 간다(중간에 못 끊는다)
   if (JOG.timer) { clearTimeout(JOG.timer); JOG.timer = null; }
 }
-/* 서버 연결이 끊기면 ack 가 영영 오지 않는다 - 잠금을 풀어 두어야 다시 연결 뒤 패드가 산다 */
+/* 서버 연결이 끊기면 ack 가 영영 오지 않는다 - 잠금을 풀어 두어야 다시 연결 뒤 패드가 산다. 다시 붙었을 때 키보드 조그는 꺼진 상태 */
 function jogReset() {
   jogStop();
   JOG.inFlight = false;
   JOG.down.clear(); JOG.dead.clear(); JOG.ptr = false;
+  jogKbdOff();
 }
-/* 비상정지: 조그를 멈추고, 지금 눌려 있는 키는 뗄 때까지 다시 시작하지 않는다 */
-function jogOnEstop() {
-  jogStop();
-  JOG.dead = new Set(JOG.down);
-}
+/* 비상정지 · 정지: 조그를 멈추고, 지금 눌려 있는 키는 뗄 때까지 다시 시작하지 않는다 */
+function jogOnEstop() { jogStop(); JOG.dead = new Set(JOG.down); }
+function jogOnStop() { jogStop(); JOG.dead = new Set(JOG.down); jogKbdOff(); }
 function jogKbdOff() { if (JOG.kbd) { JOG.kbd = false; jogApplyKbd(); } jogStop(); }
 function jogKbdOn() { if (!JOG.kbd) { JOG.kbd = true; jogApplyKbd(); } }
 function jogApplyKbd() {
-  document.querySelectorAll(".card").forEach((c) => {
+  document.querySelectorAll(".card, .panel").forEach((c) => {
     const pad = c.querySelector(".jogpad");
     c.classList.toggle("kbd", !!(JOG.kbd && pad && pad.offsetParent !== null));
   });
+  document.querySelectorAll(".jogkbd").forEach((t) => { t.classList.toggle("on", JOG.kbd); });
+}
+/* 머리줄의 "키보드 조그" 표시(실제 상태와 늘 같다) */
+function jogKbdTag() { return h("span", { class: "kbdtag jogkbd" + (JOG.kbd ? " on" : ""), text: "키보드 조그 켬", "data-tip": "패드의 방향 · Z 버튼을 누르면 켜지고, 그 밖을 누르면 꺼집니다(화살표 · PageUp/PageDown)." }); }
+
+/* 스텝: 패드의 "직접" 칸이 유효하면 그 값이 곧 스텝. 유효하지 않으면 null(패드가 눌리지 않는다) */
+function jogStepNow(pad) {
+  const inp = pad && pad.querySelector(".jstep-in");
+  if (inp && inp.classList.contains("bad")) { JOG.stepBad = inp.dataset.why || "스텝 값 오류"; return null; }
+  if (inp) { const v = Number(inp.value); if (!(v > 0)) return null; if (v !== JOG.step) JOG.step = v; }
+  return JOG.step;
 }
 
 async function jogSend() {
   const h_ = JOG.held;
-  if (!h_ || JOG.inFlight || !jogEnabled()) return;
+  if (!h_ || JOG.inFlight) return;
+  if (!jogPadOk(h_.pad)) { jogStop(); return; }
+  if (h_.src === "pointer" && h_.pid != null && !(h_.el.isConnected && h_.el.hasPointerCapture && h_.el.hasPointerCapture(h_.pid))) { jogStop(); return; }   // 버튼이 사라졌거나 포인터를 놓쳤다
+  const mm = h_.axis === "z" ? JOG.zstep : jogStepNow(h_.pad);
+  if (mm == null) { jogStop(); return; }
   JOG.inFlight = true;
   JOG.sentSeq = JOG.keySeq;
-  const mm = h_.axis === "z" ? JOG.zstep : JOG.step;
   const rep = h_.n > 0;
   h_.n++;
   let r;
-  try { r = await send("jog", { axis: h_.axis, mm: h_.sign * mm, rep, free: jogFree() }); } catch (e) { r = { ok: false }; }
+  try { r = await send("jog", { axis: h_.axis, mm: h_.sign * mm, rep, free: jogFree(h_.pad) }); } catch (e) { r = { ok: false }; }
   JOG.inFlight = false;
   if (!r || r.ok === false) {                                              // 거절(끝단 · 이동 중 · 잠금)이면 이어 보내지 않는다. 키는 뗄 때까지 다시 시작하지 않는다
     if (h_.src === "key") JOG.dead.add(h_.code);
-    jogStop(); return;
+    if (JOG.held === h_) jogStop();
+    return;
   }
   const cur = JOG.held;
   if (!cur || cur !== h_) return;
-  if (!h_.cont) { jogStop(); return; }                                      // 큰 스텝 · Z↓ 는 한 번에 한 스텝
+  if (!cur.cont) { jogStop(); return; }                                    // 큰 스텝 · Z↓ 는 한 번에 한 스텝
   if (cur.src === "key" && (JOG.keySeq === JOG.sentSeq || Date.now() - JOG.lastKeyAt > JOG_KEY_ALIVE_MS)) { jogStop(); return; }   // 새 keydown 없이는 이어지지 않는다
   if (cur.src === "pointer") {
     const left = JOG_HOLD_REPEAT_MS - (Date.now() - JOG.heldSince);        // 클릭 한 번은 정확히 한 스텝, 0.5 s 이상 눌러야 연속
@@ -97,22 +115,29 @@ async function jogSend() {
   }
   jogSend();
 }
-function jogStart(axis, sign, src, code) {
-  if (!jogEnabled()) return;
+function jogStart(axis, sign, src, code, pad, el, pid) {
+  pad = pad || jogVisiblePad();
+  if (!pad) return;
+  if (!jogPadOk(pad)) { if (src === "pointer" && pad.dataset.why) toast(pad.dataset.why, true); return; }
+  if (settling() && src === "pointer") return;                             // 화면이 스스로 바뀐 직후 400 ms 는 누름을 무시한다
+  const mm = axis === "z" ? JOG.zstep : jogStepNow(pad);
+  if (mm == null) { toast(JOG.stepBad || "스텝 값 오류", true); return; }
   if (JOG.timer) { clearTimeout(JOG.timer); JOG.timer = null; }
-  JOG.held = { axis, sign, src, code: code || null, n: 0, cont: jogCanRepeat(axis, sign) };
+  JOG.held = { axis, sign, src, code: code || null, n: 0, cont: jogCanRepeat(axis, sign, mm), pad, el: el || null, pid: pid == null ? null : pid };
   JOG.heldSince = Date.now();
   jogSend();
 }
-/* 패드 버튼: pointer 이벤트 + 캡처. 떼면 · 취소되면 · 벗어나면 · 캡처를 잃으면 멈춘다 */
-function jogBindButton(el, axis, sign) {
+/* 패드 버튼: pointer 이벤트 + 캡처. 떼면 · 취소되면 · 벗어나면 · 캡처를 잃으면 멈춘다. 방향은 누르는 순간의 dataset 에서 읽는다(배치가 제자리에서 바뀔 수 있다) */
+function jogBindButton(el) {
   el.addEventListener("pointerdown", (e) => {
     if (e.button !== undefined && e.button !== 0) return;
     e.preventDefault();
     JOG.ptr = true;
+    const a = document.activeElement;
+    if (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) a.blur();           // 패드를 누르면 입력 칸의 포커스를 뺀다(그 뒤 화살표 키는 조그)
     jogKbdOn();
     try { el.setPointerCapture(e.pointerId); } catch (x) { /* 합성 이벤트 */ }
-    jogStart(axis, sign, "pointer");
+    jogStart(el.dataset.axis, Number(el.dataset.sign), "pointer", null, el.closest(".jogpad"), el, e.pointerId);
   });
   const up = () => { JOG.ptr = false; jogStop(); };
   ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach((ev) => el.addEventListener(ev, up));
@@ -122,22 +147,27 @@ function jogBindButton(el, axis, sign) {
     if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) up();
   });
 }
-window.addEventListener("pointerup", () => { JOG.ptr = false; jogStop(); });
-window.addEventListener("blur", () => { jogReset(); jogKbdOff(); });
-document.addEventListener("visibilitychange", () => { if (document.hidden) { jogReset(); jogKbdOff(); } });
+const jogUp = () => { JOG.ptr = false; if (JOG.held && JOG.held.src === "pointer") jogStop(); };
+window.addEventListener("pointerup", jogUp, true);
+window.addEventListener("pointercancel", jogUp, true);
+document.addEventListener("lostpointercapture", jogUp, true);               // document 수준에서도 듣는다(노드가 바뀌어도 잡히도록)
+window.addEventListener("blur", () => { jogReset(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) jogReset(); });
 
-/* 키보드 조그 켜기 · 끄기: 카드 안을 누르면 켜지고, 카드 밖을 누르면 꺼진다 */
+/* 키보드 조그 켜기 · 끄기: 패드의 방향 · Z · 스텝 버튼을 직접 눌렀을 때만 켜진다. 그 밖(입력 칸 · 선택 칸 · 패드 밖 버튼 · 메뉴 · 창 · [정지])을 누르면 꺼진다 */
 document.addEventListener("pointerdown", (e) => {
-  const card = e.target.closest && e.target.closest(".card");
-  if (card && card.querySelector(".jogpad") && !jogWinOpen()) jogKbdOn(); else jogKbdOff();
+  const t = e.target;
+  const onPad = t.closest && t.closest(".jogpad") && t.closest("button.jogb, button.jstep, button.jzstep") && !t.closest(".jstop");
+  if (onPad && !jogWinOpen()) jogKbdOn(); else jogKbdOff();
 }, true);
-document.addEventListener("focusin", (e) => {                                  // 카드 밖으로 포커스가 가면(Tab) 꺼진다
-  const card = e.target.closest && e.target.closest(".card");
-  if (!(card && card.querySelector(".jogpad"))) jogKbdOff();
+document.addEventListener("focusin", (e) => {                                  // 패드 밖으로 포커스가 가면(Tab · 클릭) 꺼진다
+  const t = e.target;
+  if (!(t.closest && t.closest(".jogpad") && !/^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName))) jogKbdOff();
 });
 
 document.addEventListener("keydown", (e) => {
   if (!JOG_KEYS.includes(e.key)) return;
+  JOG.down.add(e.key);                               // 켜져 있지 않아도 기록한다: 카드 밖에서 누른 채 카드 안을 눌러도 시작하지 않게
   if (!JOG.kbd || jogWinOpen() || !jogEnabled()) return;
   const t = e.target;
   if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;               // 입력 칸에 글자 치는 중
@@ -148,66 +178,120 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "PageDown") m = ["z", 1];
   if (!m) return;
   e.preventDefault();                                // 화살표 키가 스크롤이나 선택 칸을 바꾸지 않는다
-  JOG.down.add(e.key);
-  if (JOG.dead.has(e.key)) return;                   // 비상정지 · 거절 때 눌려 있던 키: 뗄 때까지 다시 시작하지 않는다
-  if (e.repeat && !jogCanRepeat(m[0], m[1])) return;  // 큰 스텝 · Z↓ 는 누르고 있어도 한 번만
+  if (JOG.dead.has(e.key)) return;                   // 비상정지 · 정지 · 거절 때 눌려 있던 키: 뗄 때까지 다시 시작하지 않는다
+  if (e.repeat) {                                    // 자동 반복은 이미 이 키로 시작한 연속 조그를 잇는 데만
+    const hd = JOG.held;
+    if (!hd || hd.src !== "key" || hd.code !== e.key || !hd.cont) return;
+    JOG.lastKeyAt = Date.now(); JOG.keySeq++;
+    if (!JOG.inFlight) jogSend();
+    return;
+  }
   JOG.lastKeyAt = Date.now(); JOG.keySeq++;
-  if (!JOG.held || JOG.held.axis !== m[0] || JOG.held.sign !== m[1]) jogStart(m[0], m[1], "key", e.key);
-  else if (!JOG.inFlight) jogSend();
+  jogStart(m[0], m[1], "key", e.key, jogVisiblePad());
 });
 document.addEventListener("keyup", (e) => {
   JOG.down.delete(e.key); JOG.dead.delete(e.key);
   if (JOG.held && JOG.held.src === "key" && JOG_KEYS.includes(e.key)) jogStop();
 });
 
-/* 스텝 고르기: 설정 jog.steps 전부 + 직접 입력(mm). 고르면 화면 안의 모든 스텝 버튼에 바로 반영한다 */
+/* 스텝 고르기: 설정 jog.steps 전부 + 직접 입력(mm). 고르면 화면 안의 모든 패드에 바로 반영한다 */
+function jogMarkStepBtns() {
+  document.querySelectorAll(".jstep").forEach((b) => b.classList.toggle("on", Number(b.dataset.v) === JOG.step));
+}
 function jogSetStep(v) {
   if (!(v > 0)) return;
-  JOG.step = v;
-  document.querySelectorAll(".jstep").forEach((b) => b.classList.toggle("on", Number(b.dataset.v) === v));
-  document.querySelectorAll(".jstep-in").forEach((i) => { if (document.activeElement !== i) i.value = v; });
+  JOG.step = v; JOG.stepBad = "";
+  jogMarkStepBtns();
+  document.querySelectorAll(".jstep-in").forEach((i) => { i.value = v; i.classList.remove("bad"); });
 }
 function jogSetZStep(v) {
   if (!(v > 0)) return;
   JOG.zstep = v;
   document.querySelectorAll(".jzstep").forEach((b) => b.classList.toggle("on", Number(b.dataset.v) === v));
 }
-/* 스텝 열(패드 오른쪽): X · Y 스텝(설정 jog.steps 전부 + 직접 입력) · Z 스텝(jog.z_steps, 따로). 고르면 화면 안의 모든 스텝 버튼에 바로 반영한다 */
-function jogSteps(s) {
+/* 칸에 친 값 검사: 유효하면 입력 즉시 스텝이 된다. 0 · 빈 칸 · 한도 초과는 붉게 + 패드 눌림 거절 */
+function jogCheckStepInput(inp, max) {
+  const raw = inp.value, v = Number(raw);
+  let why = "";
+  if (raw === "" || !isFinite(v)) why = "스텝을 입력";
+  else if (v < 0.01) why = "스텝은 0.01 mm 이상";
+  else if (v > max) why = "스텝은 " + max + " mm 이하(한도)";
+  inp.classList.toggle("bad", !!why);
+  inp.dataset.why = why;
+  if (why) { JOG.stepBad = why; inp.setAttribute("data-tip", why); if (JOG.held && JOG.held.src !== "key") jogStop(); return; }
+  inp.setAttribute("data-tip", "스텝을 직접 입력합니다(mm). 입력하는 즉시 적용됩니다.");
+  JOG.step = v; JOG.stepBad = "";
+  jogMarkStepBtns();
+  document.querySelectorAll(".jstep-in").forEach((i) => { if (i !== inp) { i.value = raw; i.classList.remove("bad"); } });
+}
+/* 스텝 열(패드 오른쪽): X · Y 스텝(설정 jog.steps 전부 + 직접 입력) · Z 스텝(jog.z_steps, 따로). 패드와 함께 한 번만 만들고 설정이 바뀌면 버튼만 다시 채운다 */
+function jogStepBtns(s, col) {
   const jc = s.settings.jog || {}, steps = jc.steps || [0.1, 1, 10, 50], max = jc.max_mm || 50, zs = jc.z_steps || [0.05, 0.1, 0.5, 1];
+  const sig = JSON.stringify([steps, zs, max, jogRepeatMax()]);
+  if (col.dataset.sig === sig) return;
+  col.dataset.sig = sig;
   if (!zs.includes(JOG.zstep)) JOG.zstep = zs.includes(0.1) ? 0.1 : zs[0];
-  const inp = h("input", { type: "number", class: "jstep-in", min: 0.01, max, step: "any", value: JOG.step, "data-tip": "스텝을 직접 입력합니다(mm).",
-    onchange: (e) => { const v = Number(e.target.value); if (v >= 0.01 && v <= max) jogSetStep(v); else { e.target.value = JOG.step; toast("스텝 0.01 ~ " + max + " mm", true); } } });
+  const inp = col.querySelector(".jstep-in");
+  inp.max = max;
+  inp._max = max;
+  col.querySelector(".jxy").replaceChildren(...steps.map((v) => h("button", { tabindex: -1, class: "btn sm jstep" + (JOG.step === v ? " on" : ""), "data-v": v, text: String(v), onclick: () => jogSetStep(v),
+    "data-tip": v > jogRepeatMax() ? "이 스텝은 누를 때마다 한 번만 움직입니다(누르고 있어도 연속으로 가지 않음)." : "0.5 초 이상 누르고 있으면 연속으로 움직입니다." })));
+  col.querySelector(".jz").replaceChildren(...zs.map((v) => h("button", { tabindex: -1, class: "btn sm jzstep" + (JOG.zstep === v ? " on" : ""), "data-v": v, text: String(v), onclick: () => jogSetZStep(v), "data-tip": "Z 버튼이 한 번에 움직이는 거리입니다." })));
+}
+function jogStepsCol() {
+  const inp = h("input", { type: "number", class: "jstep-in", min: 0.01, step: "any", value: JOG.step, "data-tip": "스텝을 직접 입력합니다(mm). 입력하는 즉시 적용됩니다." });
+  inp.addEventListener("input", () => jogCheckStepInput(inp, inp._max || 50));
   return h("div", { class: "col jsteps" },
-    h("span", { class: "sub3", text: "X · Y 스텝 (mm)" }),
-    h("div", { class: "jbtns" }, ...steps.map((v) => h("button", { class: "btn sm jstep" + (JOG.step === v ? " on" : ""), "data-v": v, text: String(v), onclick: () => jogSetStep(v),
-      "data-tip": v > jogRepeatMax() ? "이 스텝은 누를 때마다 한 번만 움직입니다(누르고 있어도 연속으로 가지 않음)." : "0.5 초 이상 누르고 있으면 연속으로 움직입니다." }))),
+    h("span", { class: "sub3", text: "X · Y 스텝 (mm)" }), h("div", { class: "jbtns jxy" }),
     h("div", { class: "row jin" }, inp, h("span", { class: "sub3", text: "직접" })),
-    h("span", { class: "sub3", text: "Z 스텝 (mm)" }),
-    h("div", { class: "jbtns" }, ...zs.map((v) => h("button", { class: "btn sm jzstep" + (JOG.zstep === v ? " on" : ""), "data-v": v, text: String(v), onclick: () => jogSetZStep(v), "data-tip": "Z 버튼이 한 번에 움직이는 거리입니다." }))));
+    h("span", { class: "sub3", text: "Z 스텝 (mm)" }), h("div", { class: "jbtns jz" }));
 }
 
-/* 패드: opt.why = 비활성 사유(없으면 활성), opt.free = 접촉 높이 화면(Z 아래 한도 없음) */
+/* 패드: 키(opt.key)마다 한 번만 만든다. opt.why = 비활성 사유(없으면 활성), opt.free = 접촉 높이 화면, opt.ztop = {act, why}.
+   다시 부르면 같은 노드를 제자리에서 고쳐 돌려준다. */
 function jogPad(s, opt) {
   opt = opt || {};
-  const dirs = jogLayout(s), why = opt.why || "";
-  const b = (slot) => {
-    const [axis, sign] = dirs[slot];
-    const lab = JOG_ARROW[slot] + " " + axis.toUpperCase() + (sign > 0 ? "+" : "−");
-    const el = h("button", { class: "btn jogb" + (why ? " dis" : ""), text: lab, "data-tip": why || (axis.toUpperCase() + (sign > 0 ? "+" : "−") + " 방향으로 스텝만큼 이동합니다. 스텝이 " + jogRepeatMax() + " mm 이하면 0.5 초 이상 눌러 연속으로 움직일 수 있습니다(키보드 " + JOG_ARROW[slot] + ").") });
-    if (!why) jogBindButton(el, axis, sign);
-    return el;
-  };
-  const z = (lab, sign, key) => {
-    const el = h("button", { class: "btn jogb" + (why ? " dis" : ""), text: lab, "data-tip": why || ("Z 를 " + (sign < 0 ? "위로" : "아래로 한 스텝만") + " 이동합니다(" + key + ")" + (sign > 0 ? ". 누르고 있어도 연속으로 내려가지 않습니다." : "")) });
-    if (!why) jogBindButton(el, "z", sign);
-    return el;
-  };
-  const pad = h("div", { class: "pad" }, h("span"), b("up"), h("span"), b("left"), h("span", { class: "padc" }, h("span", { class: "kbdtag", text: "키보드 조그" })), b("right"), h("span"), b("down"), h("span"));
-  const zt = opt.ztop ? btn("Z 맨 위", opt.ztop.act, null, "jogb", "Z 를 맨 위로 올립니다.", opt.ztop.why || "") : null;
-  const el = h("div", { class: "jogpad row", "data-tip": why ? null : "키보드 조그: 이 카드 안을 누르면 켜집니다(화살표 · PageUp/PageDown)." }, pad, h("div", { class: "col zpad" }, z("Z ↑", -1, "PageUp"), z("Z ↓", 1, "PageDown"), zt), jogSteps(s));
-  if (why) el.setAttribute("data-off", "1");
-  if (opt.free) el.setAttribute("data-free", "1");
+  const key = opt.key || "m";
+  let el = JOG.pads[key];
+  if (!el) {
+    const dirBtn = (slot) => { const b = h("button", { tabindex: -1, class: "btn jogb", "data-slot": slot }); jogBindButton(b); return b; };
+    const zBtn = (lab, sign) => { const b = h("button", { tabindex: -1, class: "btn jogb", text: lab, "data-axis": "z", "data-sign": sign }); jogBindButton(b); return b; };
+    const stop = h("button", { tabindex: -1, class: "btn jogb jstop", "data-act": "stop", text: "정지",
+      "data-tip": "움직이는 모터를 지금 멈추고 이어서 하려던 이동을 모두 취소합니다. 잠그지 않으며 히트건 · 원점은 그대로입니다. 완전히 끄려면 비상정지." });
+    const b = { up: dirBtn("up"), down: dirBtn("down"), left: dirBtn("left"), right: dirBtn("right") };
+    const pad = h("div", { class: "pad" }, h("span"), b.up, h("span"), b.left, h("span", { class: "padc" }, stop), b.right, h("span"), b.down, h("span"));
+    const zUp = zBtn("Z ↑", -1), zDn = zBtn("Z ↓", 1);
+    const zt = opt.ztop ? btn("Z 맨 위", opt.ztop.act, null, "jogb", "Z 를 맨 위로 올립니다.", opt.ztop.why || "") : null;
+    el = h("div", { class: "jogpad row" }, pad, h("div", { class: "col zpad" }, zUp, zDn, zt), jogStepsCol());
+    el._j = { b, zUp, zDn, zt, stop, ztopOpt: opt.ztop };
+    JOG.pads[key] = el;
+  }
+  jogPadUpdate(el, s, opt);
   return el;
+}
+function jogPadUpdate(el, s, opt) {
+  const j = el._j, why = opt.why || "", dirs = jogLayout(s);
+  for (const slot of ["up", "down", "left", "right"]) {
+    const [axis, sign] = dirs[slot], b = j.b[slot], sg = axis.toUpperCase() + (sign > 0 ? "+" : "−");
+    b.dataset.axis = axis; b.dataset.sign = sign;
+    const t = JOG_ARROW[slot] + " " + sg;
+    if (b.textContent !== t) b.textContent = t;
+    b.setAttribute("data-tip", why || (sg + " 방향으로 스텝만큼 이동합니다. 스텝이 " + jogRepeatMax() + " mm 이하면 0.5 초 이상 눌러 연속으로 움직일 수 있습니다(키보드 " + JOG_ARROW[slot] + ")."));
+    b.classList.toggle("dis", !!why);
+  }
+  j.zUp.setAttribute("data-tip", why || "Z 를 위로 한 스텝 이동합니다(PageUp).");
+  j.zDn.setAttribute("data-tip", why || "Z 를 아래로 한 스텝만 이동합니다(PageDown). 누르고 있어도 연속으로 내려가지 않습니다.");
+  j.zUp.classList.toggle("dis", !!why); j.zDn.classList.toggle("dis", !!why);
+  if (j.zt && opt.ztop) { const zw = opt.ztop.why || ""; j.zt.classList.toggle("dis", !!zw); if (zw) { j.zt.removeAttribute("data-act"); j.zt.setAttribute("data-tip", zw); } else { j.zt.setAttribute("data-act", opt.ztop.act); j.zt.setAttribute("data-tip", "Z 를 맨 위로 올립니다."); } }
+  const st = s.stage;
+  j.stop.classList.toggle("mv", !!(st && st.moving));                       // 모터가 움직이는 동안은 붉은 채움(색만 바꾼다)
+  j.stop.classList.toggle("dis", !st);                                      // 꺼지는 사유는 "스테이지 연결 안 됨" 하나뿐
+  if (!st) j.stop.setAttribute("data-tip", "스테이지 연결 안 됨");
+  const wasOff = el.hasAttribute("data-off");
+  if (why) { el.setAttribute("data-off", "1"); el.dataset.why = why; } else { el.removeAttribute("data-off"); delete el.dataset.why; }
+  el.setAttribute("data-tip", why ? why : "키보드 조그: 패드의 방향 · Z 버튼을 누르면 켜집니다(화살표 · PageUp/PageDown).");
+  if (opt.free) el.setAttribute("data-free", "1"); else el.removeAttribute("data-free");
+  if (why && !wasOff) { if (JOG.held && JOG.held.pad === el) jogStop(); if (JOG.kbd) jogKbdOff(); }       // 패드가 꺼지면 키보드 조그도 꺼진다
+  jogStepBtns(s, el.querySelector(".jsteps"));
 }
 UI.renders.push(() => jogApplyKbd());

@@ -154,6 +154,7 @@ def make_motion(move_s=0.0):
         sent.append(cmd)
     st._write = rec
     m = motion_mod.Motion(st)
+    m.sync_from_status()                       # 기본은 '못 믿음' - 연결 때처럼 ST 로 동기화
     st.write_guard = m._guard
     return m, st, sent
 
@@ -411,6 +412,7 @@ class PowerTest(unittest.TestCase):
 
     def test_heater_off_failure_blocks_xy(self):
         m = motion_mod.Motion(self.st)
+        m.sync_from_status()
         m.pre_xy = self.p.pre_xy
         self.p.heater_on()
         orig = self.st.relay_set

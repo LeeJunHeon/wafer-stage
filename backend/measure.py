@@ -171,13 +171,19 @@ class Run:
     def _cancelled(self):
         return self.cancel.is_set() or self.app.motion.gen != self.gen
 
+    in_pause = False                                   # 측정 스레드가 일시정지로 실제로 멈춰 기다리는 중(이때만 조그 허용)
+
     def _wait_if_paused(self):
-        while not self.pause_ev.is_set():
-            if self._cancelled():
-                raise StopRun()
-            if self.app.link_lost_count != self.link0:
-                raise FailLink()
-            time.sleep(0.05)
+        try:
+            while not self.pause_ev.is_set():
+                self.in_pause = True
+                if self._cancelled():
+                    raise StopRun()
+                if self.app.link_lost_count != self.link0:
+                    raise FailLink()
+                time.sleep(0.05)
+        finally:
+            self.in_pause = False
 
     def _sleep(self, s, label=None, view=None):
         """대기 s(시계 기준). 남은 시간을 단계 칸에 보여 준다."""
@@ -256,7 +262,7 @@ class Run:
                 logger.log("측정 뒤 복귀 실패 · " + logger.short(e), "warn")
         elif app.motion.gen != self.gen:
             self.state = "stopped"
-            self.message = "비상정지로 중단"
+            self.message = app.cancel_text(self.gen)         # 정지 | 비상정지 - 어느 쪽이든 모터를 다시 움직이지 않는다
         self._write_results(final=True)
         app.on_run_end(self)
 
@@ -288,12 +294,16 @@ class Run:
                 self._step(st, s, ctx, k)
                 self.steps_view[k]["state"] = "done"
                 self.steps_view[k]["value"] = self.steps_view[k]["value"] if self.steps_view[k]["value"].startswith("Z") else ""
-        except StopRun:
+        except (StopRun, motion_mod.MotionError) as e:
+            if isinstance(e, motion_mod.MotionError) and e.code not in ("stop", "estop"):
+                raise
             ctx["end"] = time.strftime("%H:%M:%S")
             self.results[s["no"]] = self._res(s, STOPPED, "중지됨", ctx)
             self._write_results()
             self.sample_times.append(time.time() - t_s)
-            raise
+            if isinstance(e, StopRun):
+                raise
+            raise StopRun() from e                           # 정지 · 비상정지로 끊긴 이동: 오류가 아니라 중지
         except FailStep as e:
             status, reason = ERROR, str(e)
             if 0 <= self.k < len(self.steps_view):

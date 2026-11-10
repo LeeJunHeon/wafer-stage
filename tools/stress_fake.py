@@ -26,6 +26,7 @@ def main(seconds):
     events = []
     st.on_event = lambda k, l: events.append((k, l))
     m = motion_mod.Motion(st)
+    m.sync_from_status()
     p = power_mod.Power(st, heater_n=10)
     m.pre_xy = p.pre_xy
     st.watchdog(5000)

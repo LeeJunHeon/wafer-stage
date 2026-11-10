@@ -40,7 +40,10 @@ from . import paths
 
 # --dry 이동을 실제처럼 오래 걸리게 만든다(초). 기본 0 = 즉시.
 # 비상정지가 '이동 중' 에 도착하는 상황은 이 시간이 없으면 재현되지 않는다.
-DRY_MOVE_S = float(os.environ.get("WAFER_STAGE_DRY_MOVE_S", "0") or 0)
+_DMS = os.environ.get("WAFER_STAGE_DRY_MOVE_S", "0") or "0"
+DRY_REAL = _DMS.lower() == "real"                  # "real" = 속도 · 가속으로 계산한 사다리꼴 시간(펌웨어와 같은 시간)
+DRY_MOVE_S = 0.0 if DRY_REAL else float(_DMS)
+DRY_TIME_SCALE = float(os.environ.get("WAFER_STAGE_DRY_TIME_SCALE", "1") or 1)
 DRY_TICK_S = 0.05                  # 자는 동안 이만큼마다 중단을 확인한다
 # --dry 가 흉내 낼 펌웨어 버전(검증용). 실제 연결에서는 배너에서 읽는다.
 DRY_FW = os.environ.get("WAFER_STAGE_DRY_FW", "V11").upper()
@@ -189,7 +192,19 @@ class StageWriteTimeout(StageError):
 
 
 class StageGuard(StageError):
-    """쓰기 직전 검사(write_guard)가 거절함 - 비상정지 세대가 바뀌었다."""
+    """쓰기 직전 검사(write_guard)가 거절함 - 비상정지 · 정지 세대가 바뀌었다."""
+
+
+class StageLate(StageGuard):
+    """사람이 보낸 이동 명령이 받은 지 한도(1 s) 안에 첫 줄을 못 썼다 - 늦게 움직이지 않는다."""
+
+
+class StageIOError(StageTimeout):
+    """읽기 · 쓰기의 입출력 예외(USB 뽑힘 등) - 시간 초과와 같이 다룬다(통신 끊김 · 위치 못 믿음)."""
+
+
+class StageStopped(StageError):
+    """[정지] 로 끊긴 이동(비상정지가 아니다 - 잠그지 않고 위치 카운터를 믿는다)."""
 
 
 # --------------------------------------------------------------------------
@@ -265,6 +280,11 @@ class Stage:
         # (.ino 395행) 다음 명령을 그냥 보내면 그대로 움직인다. 그래서 드라이버가
         # 잠가야 한다 - 원점을 다시 잡기 전까지 이동을 보내지 않는다.
         self._aborted = False
+        self.abort_seq = 0                          # 비상정지 횟수 - 거래가 시작할 때 기억해 두고 끊긴 보고를 받았을 때 비교한다
+        self.stop_seq = 0                           # 정지 횟수
+        self.stop_wall = []                         # 시험용: 정지 '!' 를 쓴 벽시계 시각
+        self._rbuf = b""                            # 줄바꿈으로 끝나지 않은 조각(다음 읽기에 이어 붙인다)
+        self.cut_info = {}                          # 마지막으로 끊긴 이동: {axis, cmd, out, wall}
         self.bang_wall = []                         # 시험용: 비상정지 "!" 를 쓴 벽시계 시각들
         # dry 모드의 가상 위치. 이동을 흉내만 내고 위치가 0 에 머물면 화면 검증이
         # 무의미해진다(포인터·맵이 안 움직인다). 보낸 명령대로 위치를 옮겨 둔다.
@@ -306,8 +326,9 @@ class Stage:
         try:
             os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
             with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write("%s %s %s\n" % (time.strftime("%H:%M:%S"), arrow,
-                                        text.rstrip("\r\n")))
+                now = time.time()
+                f.write("%s.%03d %s %s\n" % (time.strftime("%H:%M:%S", time.localtime(now)), int((now % 1) * 1000), arrow,
+                                             text.rstrip("\r\n")))
         except OSError:
             pass                       # 로그 실패로 동작을 막지는 않는다
 
@@ -399,7 +420,7 @@ class Stage:
                 self._drain()
             if self.dry:
                 if self.dry_unplugged:
-                    raise StageError("쓰기 실패: 포트 없음 (dry 뽑힘)")
+                    raise StageIOError("쓰기 실패: 포트 없음 (dry 뽑힘)")
                 self._log("->", cmd)
                 print("  (dry) %s" % cmd)
                 self._dry_rx()
@@ -407,16 +428,18 @@ class Stage:
             self._ser_write((cmd + chr(10)).encode("ascii"))
             self._log("->", cmd)
 
-    def _ser_write(self, data):
-        """쓰기 한 번. write_timeout 을 넘으면 StageWriteTimeout + 통신 끊김 사건(경보 · 링크 끊김 처리)."""
+    def _ser_write(self, data, flush=True):
+        """쓰기 한 번. write_timeout 을 넘으면 StageWriteTimeout + 통신 끊김 사건(경보 · 링크 끊김 처리).
+        flush=False: '!' 는 flush 로 기다리지 않는다(Windows pyserial 의 flush 는 상한 없이 돈다)."""
         try:
             self.ser.write(data)
-            self.ser.flush()
+            if flush:
+                self.ser.flush()
         except Exception as e:                              # noqa: BLE001
             if e.__class__.__name__ == "SerialTimeoutException":
                 self._event("write_timeout", "쓰기 시간 초과")
                 raise StageWriteTimeout("쓰기 시간 초과 · 통신 끊김") from e
-            raise StageError("쓰기 실패: %s" % e) from e
+            raise StageIOError("쓰기 실패 · 통신 끊김: %s" % e) from e
 
     def _drain(self):
         """보내기 전에 들어와 있던 줄을 비운다 - 이전 명령의 완료 보고 · RS 가 이번 명령의 응답으로 읽히지 않게(응답은 요청한 명령에 맞춘다)."""
@@ -458,8 +481,16 @@ class Stage:
             return None
         if timeout is not None and self.ser.timeout != timeout:
             self.ser.timeout = timeout
-        raw = self.ser.readline()
+        try:
+            raw = self.ser.readline()
+        except Exception as e:                              # noqa: BLE001  - SerialException 등: 통신 끊김
+            raise StageIOError("읽기 실패 · 통신 끊김: %s" % e) from e
         if not raw:
+            return None
+        raw = self._rbuf + raw
+        self._rbuf = b""
+        if not raw.endswith(b"\n"):                          # pyserial 은 시간 안에 줄바꿈이 없으면 줄 중간까지만 준다 - 이어 붙인다
+            self._rbuf = raw[-512:]
             return None
         ln = raw.decode("utf-8", errors="replace").rstrip("\r\n")
         self._log("<-", ln)
@@ -524,8 +555,12 @@ class Stage:
         return (self._dry_xy["x"] + self._dry_off["x"],
                 self._dry_xy["y"] + self._dry_off["y"])
 
-    def _collect(self, deadline_s, is_done, what):
-        """완료 줄이 올 때까지 읽는다. [거부] 면 예외, [!] 는 모아 둔다."""
+    def _tok(self):
+        """거래 시작 때 기억할 (비상정지 횟수, 정지 횟수)."""
+        return (self.abort_seq, self.stop_seq)
+
+    def _collect(self, deadline_s, is_done, what, tok=None):
+        """완료 줄이 올 때까지 읽는다. [거부] 면 예외, [!] 는 모아 둔다. tok: 거래 시작 때의 _tok() - 끊긴 보고가 정지인지 비상정지인지 가른다."""
         t0 = time.time()
         seen = []
         while time.time() - t0 < deadline_s:
@@ -538,6 +573,9 @@ class Stage:
             if "[!] 중단" in ln:
                 # '!' 로 끊긴 이동이다. 보고 줄 형식은 정상 완료와 같아서 그냥
                 # 두면 '완료' 로 읽히고, goto_mm 이 이어서 Y 를 보내 버린다.
+                self.cut_info = {"line": ln.strip(), "wall": time.time()}
+                if tok is not None and self.abort_seq == tok[0]:
+                    raise StageStopped("정지로 중단됨: %s" % ln.strip())      # 비상정지가 아니다 - 잠그지 않는다
                 self._aborted = True
                 raise StageError("비상정지로 중단됨: %s" % ln.strip())
             if WARN_MARK in ln and not is_done(ln):
@@ -556,7 +594,7 @@ class Stage:
         """'st' -> ST 줄을 dict 로. 펄스와 mm 를 함께 담는다."""
         if self.dry:
             if self.dry_unplugged:
-                raise StageError("읽기 실패: 포트 없음 (dry 뽑힘)")
+                raise StageIOError("읽기 실패: 포트 없음 (dry 뽑힘)")
             self._dry_rx()                                  # 진짜는 st 를 쓰므로 펌웨어가 줄을 받는다(통신 감시 갱신)
             x, y, z = self._dry_xy["x"], self._dry_xy["y"], self._dry_xy["z"]
             return {"x_pulse": int(x * PPMM), "y_pulse": int(y * PPMM),
@@ -565,7 +603,7 @@ class Stage:
                     "homed_z": self._dry_homed["z"],
                     "dirty": False, "x_mm": x, "y_mm": y, "z_mm": z, "raw": "(dry)"}
         self._write("st")
-        ln = self._collect(timeout or LINE_TIMEOUT_S, lambda s: s.startswith("ST "), "st")
+        ln = self._collect(timeout or LINE_TIMEOUT_S, lambda s: s.startswith("ST ") and "DIRTY=" in s, "st")
         d = {}
         for tok in ln.split():
             if "=" in tok:
@@ -592,28 +630,54 @@ class Stage:
             out["z_mm"] = None
         return out
 
-    def _dry_wait(self, what, deadline_s=None):
+    def _dry_duration(self, pulses):
+        """dry 이동 시간(초). real 이면 펌웨어와 같은 사다리꼴(가속 · 정속 · 감속), 아니면 고정 DRY_MOVE_S."""
+        if not DRY_REAL:
+            return DRY_MOVE_S
+        v = float(self.speed_pps or DEFAULT_SPEED_PPS)
+        a, b = (self.profile or (40000, 300))
+        a, b = float(a), min(float(b), v)
+        n = abs(float(pulses))
+        d_acc = (v * v - b * b) / (2.0 * a)
+        if n >= 2.0 * d_acc:
+            t = 2.0 * (v - b) / a + (n - 2.0 * d_acc) / v
+        else:
+            vp = (b * b + a * n) ** 0.5
+            t = 2.0 * (vp - b) / a
+        return t / max(1e-6, DRY_TIME_SCALE)
+
+    def _dry_wait(self, what, deadline_s=None, tok=None, pulses=None, on_cut=None, dur=None):
         """dry 이동이 걸리는 시간을 흉내 낸다. 자는 동안 중단을 확인한다.
 
-        조각으로 나눠 자면서 _aborted 를 보기 때문에, 이동 중에 들어온
-        비상정지가 실제 펌웨어처럼 이동을 끊는다.
+        조각으로 나눠 자면서 비상정지 · 정지 횟수를 보기 때문에, 이동 중에 들어온 '!' 가
+        실제 펌웨어처럼 이동을 끊는다(on_cut(진행 비율) 로 끊긴 자리를 남긴다).
+        tok 는 거래 시작 때의 _tok() - 이미 잠겨 있던 상태(비상정지 뒤 수동 이동)는 중단이 아니다.
         """
-        # 이미 잠겨 있던 상태(비상정지 뒤 수동 이동)는 중단이 아니다. 이 이동
-        # 중에 새로 들어온 '!' 만 중단으로 본다.
-        was = self._aborted
+        tok = tok or self._tok()
+        total = dur if dur is not None else self._dry_duration(pulses if pulses is not None else 0)
+        t0 = time.time()
         if self.dry_hang and deadline_s:
-            end = time.time() + deadline_s + 0.01              # 완료가 안 온다 → 한도에서 시간 초과
+            end = t0 + deadline_s + 0.01              # 완료가 안 온다 → 한도에서 시간 초과
             hang = True
         else:
-            end = time.time() + DRY_MOVE_S
+            end = t0 + total
             hang = False
-        if DRY_MOVE_S <= 0 and not hang:
+        if total <= 0 and not hang:
             return
         self._dry_busy = True
         try:
             while time.time() < end:
-                if self._aborted and not was:
-                    raise StageError("비상정지로 중단됨 · (dry) [!] 중단")
+                cut = None
+                if self.abort_seq != tok[0]:
+                    cut = StageError("비상정지로 중단됨 · (dry) [!] 중단")
+                elif self.stop_seq != tok[1]:
+                    cut = StageStopped("정지로 중단됨 · (dry) [!] 중단")
+                if cut is not None:
+                    frac = min(1.0, max(0.0, (time.time() - t0) / total)) if total > 0 else 1.0
+                    if on_cut:
+                        on_cut(frac)
+                    self.cut_info = {"frac": frac, "wall": time.time()}
+                    raise cut
                 time.sleep(min(DRY_TICK_S, max(0.0, end - time.time())))
             if hang:
                 raise StageTimeout("%s 응답이 %.0f초 안에 오지 않았습니다. 마지막 줄: (dry 멈춤)" % (what, deadline_s))
@@ -625,19 +689,28 @@ class Stage:
     def _move(self, cmd, what, deadline_s=None):
         if self._aborted:
             raise StageError("비상정지 상태 · 원점 등록 후 사용")
+        tok = self._tok()
         self._write(cmd)
         if self.dry:
-            self._dry_wait(what, deadline_s)
             try:
                 axis, val = cmd.split()
-                self._dry_xy[axis[1]] = float(val)
+                ax, tgt = axis[1], float(val)
+                a0 = self._dry_xy[ax]
             except (ValueError, KeyError):
-                pass
+                ax = tgt = a0 = None
+
+            def cut(frac):
+                if ax is not None:
+                    self._dry_xy[ax] = a0 + (tgt - a0) * frac
+            pulses = abs((tgt - a0) * _ppmm(ax)) if ax is not None else 0
+            self._dry_wait(what, deadline_s, tok, pulses=pulses, on_cut=cut)
+            if ax is not None:
+                self._dry_xy[ax] = tgt
             return "(dry) %s" % cmd
         # 완료는 이동 보고 줄, 또는 '이미 그 위치'(움직일 필요가 없던 경우).
         try:
             return self._collect(deadline_s or MOVE_TIMEOUT_S,
-                                 lambda s: (DONE_MARK in s) or (ALREADY_MARK in s), what)
+                                 lambda s: (DONE_MARK in s) or (ALREADY_MARK in s), what, tok)
         except StageTimeout as e:
             e.resynced = self.resync()                      # 같은 거래 안에서 '!' + 재동기(대기 스레드가 끼어들지 못한다)
             raise
@@ -678,7 +751,7 @@ class Stage:
             last = time.time()
         try:
             self._write("st")
-            self._collect(LINE_TIMEOUT_S, lambda t: t.startswith("ST "), "재동기")
+            self._collect(LINE_TIMEOUT_S, lambda t: t.startswith("ST ") and "DIRTY=" in t, "재동기")
             return True
         except StageError:
             return False
@@ -776,7 +849,7 @@ class Stage:
             self._collect(LINE_TIMEOUT_S, lambda t: "기록 삭제" in t, "원점 기록 삭제")
         return self.status()
 
-    def jog_rel(self, axis, mm):
+    def jog_rel(self, axis, mm, speed=None):
         """원점이 없어도 되는 상대 이동. 사람이 보면서 끝단까지 몰 때 쓴다.
 
         펌웨어는 jx/jy 를 한 번에 8000 펄스(50mm)까지만 받는다. 그보다 먼 거리는
@@ -793,32 +866,39 @@ class Stage:
             return "  이미 그 위치"
         # 비상정지 뒤에도 막지 않는다. 위치는 못 믿지만 상대 이동은 사람이 보면서
         # 끝단까지 몰아 원점을 다시 등록하는 복구 경로다(절대 이동은 그대로 잠긴다).
-        self._ensure_speed(JOG_SLOW_PPS)
+        self._ensure_speed(speed or JOG_SLOW_PPS)
         # 이미 잠겨 있던 상태(비상정지 뒤 복구)는 중단이 아니다. _aborted 는 원점을
         # 다시 등록할 때까지 유지되는 잠금이라, 그대로 보면 비상정지 뒤 끝단까지
         # 미는 복구 절차가 늘 첫 조각에서 멈춘다 - 이 명령 도중에 새로 들어온 '!'
         # 만 중단으로 본다(_dry_wait 와 같은 방식).
-        was = self._aborted
+        tok = self._tok()
         sign = 1 if total > 0 else -1
         left = abs(total)
         out = "  이미 그 위치"
         while left > 0:
-            if self._aborted and not was:
+            if self.abort_seq != tok[0]:
                 # 앞 조각 도중에 비상정지가 왔다. 남은 조각을 보내면 멈춘 줄 아는
                 # 사람 앞에서 스테이지가 다시 움직인다.
                 raise StageError("비상정지로 중단됨")
+            if self.stop_seq != tok[1]:
+                raise StageStopped("정지로 중단됨")
             chunk = min(left, JOG_MAX_PULSE) * sign
             left -= abs(chunk)
-            out = self._jog_chunk(ax, chunk)
+            out = self._jog_chunk(ax, chunk, tok)
         return out
 
     @_tx
-    def _jog_chunk(self, ax, pulse):
+    def _jog_chunk(self, ax, pulse, tok=None):
         """jx/jy 한 번(8000 펄스 이하). 보고 줄을 기다려 돌려준다."""
         cmd = "j%s %d" % (ax, pulse)
+        tok = tok or self._tok()
         self._write(cmd)
         if self.dry:
-            self._dry_wait("수동 이동(%s)" % ax)
+            a0 = self._dry_xy[ax]
+
+            def cut(frac):
+                self._dry_xy[ax] = a0 + frac * pulse / _ppmm(ax)
+            self._dry_wait("수동 이동(%s)" % ax, None, tok, pulses=pulse, on_cut=cut)
             nxt = self._dry_xy[ax] + pulse / _ppmm(ax)
             # 펌웨어 V8 과 같은 규칙: 원점이 있는 축이 가동범위를 벗어나면 그 축의
             # 원점을 해제한다. 원점이 없으면 음수 좌표도 말이 된다(기준이 없다).
@@ -830,7 +910,7 @@ class Stage:
         try:
             return self._collect(MOVE_TIMEOUT_S,
                                  lambda s: (DONE_MARK in s) or (ALREADY_MARK in s),
-                                 "수동 이동(%s)" % ax)
+                                 "수동 이동(%s)" % ax, tok)
         except StageTimeout as e:
             e.resynced = self.resync()
             raise
@@ -846,20 +926,29 @@ class Stage:
         if not 1 <= n <= FZ_SEARCH_PULSE:
             raise StageError("탐색은 1~%d 펄스" % FZ_SEARCH_PULSE)
         cmd = "fz %s %d" % (ax, n)
+        tok = self._tok()
         self._write(cmd)
         if self.dry:
-            self._dry_wait("원점 잡기", None)
+            prev = (self._dry_xy[ax], self._dry_homed[ax])
+
+            def cut(frac):                                  # 펌웨어: 끊기면 위치 카운터는 이미 바뀌었고(틀린 값) 원점 플래그는 fz 전 값
+                self._dry_xy[ax] = prev[0] - frac * n / _ppmm(ax)
+                self._dry_homed[ax] = prev[1]
+            self._dry_wait("원점 잡기", None, tok, dur=self._dry_duration(n) + 0.5 + self._dry_duration(320), on_cut=cut)
             self._dry_xy[ax] = 0.0
             self._dry_homed[ax] = True
             if ax in self._dry_off:
                 self._dry_off[ax] = 0.0                     # 끝단에 닿아 다시 잡았으니 실제 위치 = 보고 위치
             return "(dry) %s" % cmd
         try:
-            ln = self._collect(FZ_TIMEOUT_S, lambda t: ("원점 설정 완료" in t) or ("중단됨" in t), "원점 잡기")
+            ln = self._collect(FZ_TIMEOUT_S, lambda t: ("원점 설정 완료" in t) or ("중단됨" in t), "원점 잡기", tok)
         except StageTimeout as e:
             e.resynced = self.resync()
             raise
         if "중단됨" in ln:
+            self.cut_info = {"line": ln.strip(), "wall": time.time()}
+            if self.abort_seq == tok[0]:
+                raise StageStopped("정지로 중단됨 · 원점 설정 안 됨")
             self._aborted = True
             raise StageError("비상정지로 중단됨 · 원점 설정 안 됨")
         return ln
@@ -899,6 +988,7 @@ class Stage:
         (pyserial 의 write 는 스레드 안전하고, 진행 중이던 이동은 보고 줄에
         "[!] 중단" 이 붙어 돌아온다).
         """
+        self.abort_seq += 1
         self._aborted = True
         if self.dry:
             self.bang_wall.append(time.time())
@@ -917,7 +1007,7 @@ class Stage:
         data = "!" + chr(10) + "".join(c + chr(10) for c in cmds)
         got = self._wlock.acquire(timeout=1.5)              # 쓰기 잠금도 영원히 기다리지 않는다(다른 쓰기가 막혀 있어도 '!' 는 나간다)
         try:
-            self._ser_write(data.encode("ascii"))           # 거래 잠금은 기다리지 않는다 - '!' 와 릴레이 끄기가 한 번의 쓰기로 나간다
+            self._ser_write(data.encode("ascii"), flush=False)  # 거래 잠금은 기다리지 않는다 - '!' 와 릴레이 끄기가 한 번의 쓰기로 나간다
         except StageError as e:
             raise StageError("비상정지 전송 실패: %s" % e)
         finally:
@@ -926,6 +1016,30 @@ class Stage:
         self.bang_wall.append(time.time())                  # 시험용: '!' 를 쓴 벽시계 시각(비상정지 지연 측정)
         self._log("->", "! (abort)" + (" + " + " + ".join(cmds) if cmds else ""))     # 로그는 쓴 뒤에(파일 I/O 가 '!' 를 늦추지 않게)
         threading.Thread(target=self._after_abort, daemon=True, name="abort-drain").start()
+        return True
+
+    def stop(self):
+        """정지: 지금 움직이는 모터를 '!' 로 즉시 멈춘다. 비상정지와 달리 잠그지 않고(_aborted 불변) 릴레이도 건드리지 않는다.
+        멈춰 있어도 쓴다(펌웨어가 한 줄만 찍는다)."""
+        self.stop_seq += 1
+        if self.dry:
+            self.stop_wall.append(time.time())
+            self._log("->", "! (stop)")
+            self._dry_rx()
+            return True
+        if self.ser is None:
+            return True
+        got = self._wlock.acquire(timeout=1.5)
+        try:
+            self._ser_write(("!" + chr(10)).encode("ascii"), flush=False)
+        except StageError as e:
+            raise StageError("정지 전송 실패: %s" % e)
+        finally:
+            if got:
+                self._wlock.release()
+        self.stop_wall.append(time.time())
+        self._log("->", "! (stop)")
+        threading.Thread(target=self._after_abort, daemon=True, name="stop-drain").start()
         return True
 
     def _after_abort(self):

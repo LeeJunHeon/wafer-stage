@@ -100,7 +100,7 @@ LINT_JS = r"""
   }
   // (1) 주 동작은 스크롤 없이 보인다: 비상정지 · 조그 · Z · 스텝 · 촬영 · 측정 시작 · 중지 · 일시정지 · 다음 단계 · [다음]
   if (!inWin) {
-    const MAIN = ['#estop', '#tab-measure .jogpad .jogb', '#tab-measure .jstep', '#tab-measure .jzstep', '#tab-measure [data-act="capture"]', '#tab-measure [data-act="mstart"]', '#tab-measure [data-act="rt-start"]',
+    const MAIN = ['#estop', '#tab-measure .jstop', '#tab-measure .jogpad .jogb', '#tab-measure .jstep', '#tab-measure .jzstep', '#tab-measure [data-act="capture"]', '#tab-measure [data-act="mstart"]', '#tab-measure [data-act="rt-start"]',
       '#tab-measure [data-act="mstop"]', '#tab-measure [data-act="rt-stop"]', '#tab-measure [data-act="mpause"]', '#tab-measure [data-act="mresume"]', '#tab-measure [data-act="manswer"]',
       '#tab-setup .jogpad .jogb', '#tab-setup .jstep', '#tab-setup .jzstep', '#tab-setup [data-act="su-next"]'];
     MAIN.forEach((q) => Array.from(document.querySelectorAll(q)).filter(vis).forEach((e) => {

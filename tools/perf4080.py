@@ -28,11 +28,12 @@ def main():
         e2e.check(ok and len(c.state["samples"]) == len(t["chips"]), "4080×3060 촬영 · 인식 %d / %d · %.1f s" % (len(c.state["samples"]), len(t["chips"]), out["촬영→인식 s"]))
         e2e.check(e2e.chips_err(c, t) < 0.8, "좌표 오차 %.2f mm" % e2e.chips_err(c, t))
         # 실시간 프레임: 서버가 만든 미리보기 프레임 수(화면이 실시간을 켠 것처럼 preview 켬)
-        import json as _json
-        c.ws.send(_json.dumps({"cmd": "preview", "on": True}))
+        c.http("/preview.jpg")                                    # 이 요청이 미리보기를 켠다(최근 2 s 안에 요청이 있으면 켜짐)
         c.pump(1.0)
         n0, t0 = c.state["camera"]["preview_n"], time.time()
-        c.pump(6.0)
+        for _ in range(24):
+            c.http("/preview.jpg")
+            c.pump(0.25)
         n1 = c.state["camera"]["preview_n"]
         fps = (n1 - n0) / (time.time() - t0)
         out["실시간 프레임 fps"] = fps
