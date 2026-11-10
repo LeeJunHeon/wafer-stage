@@ -486,8 +486,9 @@ def run_dead(br):
 
 
 def run_pause(br):
-    """[일시정지] 를 120 ms 간격으로 두 번 → 일시정지 상태 그대로(같은 자리가 [다시 시작] 으로 바뀐 직후 400 ms 는 무시)."""
-    c = e2e.Client(patch=PATCH, env=REAL)
+    """[일시정지] 를 120 ms 간격으로 두 번 → 일시정지 상태 그대로(같은 자리가 [다시 시작] 으로 바뀐 직후 400 ms 는 무시).
+    시간 배율 10(측정이 누르기 전에 끝나지 않게)."""
+    c = e2e.Client(patch=dict(PATCH, sim={"time_scale": 10.0}), env=REAL)
     try:
         e2e.full_setup(c)
         c.send("capture")
@@ -557,8 +558,9 @@ def run_band(br):
 
 
 def run_press(br):
-    """mousedown 과 mouseup 사이에 측정 카드가 다시 그려져도 [중지] 클릭이 먹는다(확인 창이 뜬다)."""
-    c = e2e.Client(patch=PATCH, env=REAL)
+    """mousedown 과 mouseup 사이에 측정 상태가 바뀌어(카드를 다시 그릴 일이 생겨도) [중지] 클릭이 먹는다(확인 창이 뜬다).
+    시간 배율 10: '대기 30 s' 단계가 실제 3 s - 4 s 누르는 동안 다음 단계로 넘어간다. 누르는 동안의 다시 그리기는 떼는 순간까지 미뤄진다(B9)."""
+    c = e2e.Client(patch=dict(PATCH, sim={"time_scale": 10.0}), env=REAL)
     try:
         e2e.full_setup(c)
         c.send("capture")
@@ -567,18 +569,26 @@ def run_press(br):
         from e2e_cases import start_run, wait_run
         ok, r = start_run(c, "가열", nos=[1, 2])
         check(ok, "측정 시작 (%s)" % (r,))
-        c.wait(lambda s: s["relays"] and s["relays"]["heater_on"], 90, "가열")
-        pg.evaluate("""() => { window.__swaps = 0; const card = document.querySelector('#tab-measure [data-act="mstop"]').closest('.card');
-          new MutationObserver(() => { window.__swaps++; }).observe(card, {childList: true, subtree: true}); }""")
+        check(c.wait(lambda s: s["run"] and any(x["state"] == "active" and x["text"].startswith("대기") for x in (s["run"]["steps"] or [])), 120, "대기 단계"),
+              "측정의 대기 단계")
+        pg.wait_for_timeout(500)
+        pg.evaluate("""() => { window.__swaps = 0; const b = document.querySelector('#tab-measure [data-act="mstop"]');
+          const card = b && b.closest('.card'); if (card) new MutationObserver(() => { window.__swaps++; }).observe(card, {childList: true, subtree: true}); }""")
+        c.pump(0.2)
+        st0 = [x["state"] for x in c.state["run"]["steps"]]
         b = pg.locator('#tab-measure [data-act="mstop"]').first
         x, y = center(b)
         pg.mouse.move(x, y)
         pg.mouse.down()
-        pg.wait_for_timeout(2500)                                            # 그동안 측정 카드는 상태가 바뀌어 다시 그려지려 한다
+        pg.wait_for_timeout(4000)                                            # 그동안 측정이 다음 단계로 넘어간다(카드를 다시 그릴 일)
+        c.pump(0.2)
+        st1 = [x["state"] for x in c.state["run"]["steps"]]
         pg.mouse.up()
         pg.wait_for_timeout(500)
+        check(st0 != st1, "누르고 있는 동안 측정 단계가 바뀜 (%s → %s)" % (st0, st1))
         dlg = pg.evaluate("() => !document.getElementById('win').classList.contains('hidden') && document.getElementById('win').textContent")
-        check(dlg and "중지할까요" in dlg, "누른 채 2.5 s 뒤 떼도 [중지] 클릭이 먹음 (확인 창 %s)" % (dlg and dlg[:20]))
+        check(dlg and "중지할까요" in dlg, "누른 채 4 s 뒤 떼도 [중지] 클릭이 먹음 (확인 창 %s)" % (dlg and dlg[:20]))
+        check(pg.evaluate("() => window.__swaps") > 0, "뗀 뒤에는 미뤘던 다시 그리기가 됨 (%s)" % pg.evaluate("() => window.__swaps"))
         btns = pg.locator("#win button.danger").first
         if btns.count():
             pg.wait_for_timeout(450)
