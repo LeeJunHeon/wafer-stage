@@ -7,6 +7,8 @@
 이전 프로그램(`main` 브랜치)은 그대로 있다. 데이터는 `..\data_v2`.
 
 ## 실행
+VS Code 는 wafer_stage_v2 폴더 자체를 열면 된다(`pyrightconfig.json` 이 backend · tools 를 import 경로로 알려 준다).
+
 ```
 python run.py              # 창(pywebview)
 python run.py --no-window  # 서버만 - 브라우저로 http://127.0.0.1:8000/

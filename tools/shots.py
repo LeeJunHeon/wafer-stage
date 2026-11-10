@@ -35,6 +35,7 @@ def main(out):
             def tab(t):
                 pg.click('#tabs .tab[data-tab="%s"]' % t)
                 if t == "measure":
+                    pass                                        # 측정 화면은 하나(하위 탭 없음)
 
             shot("01_measure_empty")
             for i in range(1, 9):
