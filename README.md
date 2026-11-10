@@ -20,18 +20,19 @@ python run.py --cleanup    # 창 없이 남은 이전 실행 정리
 장치를 뺀 채 시작해 보려면(시험): `WAFER2_MISSING=stage,camera,visa python run.py --dry --no-window`.
 의존성은 `requirements.txt`. 이전 프로그램이 실행 중이면 "이전 프로그램 실행 중 · 종료 후 실행" 으로 거절한다(COM 포트 · 카메라 공유 불가).
 
-## 화면 (창 크기에 맞춰 늘고 줄어든다 · 1280×680 이상, 더 작으면 페이지 스크롤)
-- 머리줄: 이름 · 탭 [측정] [결과] [장비 설정] · 상태 필(동작 상태만: 대기 회색 · 이동/측정 중 파랑 · 일시정지/확인 대기 주황 · 비상정지/오류 빨강) · 상태칸(스테이지 · 카메라 · 좌표 보정 · 릴레이, 전체 문구는 툴팁) · [비상정지](어떤 크기에서도 보이고, 창이 열려 있어도 눌림). **정지와 비상정지의 차이**: [정지](조그 패드 가운데 · 스테이지가 연결돼 있으면 언제나 눌림) = 움직이는 모터를 지금 멈추고 이어서 하려던 이동을 취소할 뿐, 잠그지 않고 릴레이(히트건 · 쿨러) · 측정 출력 · 원점을 그대로 둔다(0.5 초 뒤부터 다시 조그 · 이동, 측정 중이면 "중지됨 · 정지로 중단"). [비상정지] = 모터 정지 + 이동 잠금 + 히트건 끄기 · 원점 버림 - 사진 호밍 또는 원점 잡기로 사람이 회복해야 다시 움직인다. 둘이 겹치면 비상정지가 이긴다. 글자는 줄이지 않고 배치만 늘고 준다.
+## 화면 (창 크기에 맞춰 늘고 줄어든다 · 1280×600 이상, 더 작으면 페이지 스크롤)
+장비 PC(1920×1200 · 배율 150 %)는 최대화 = 안쪽 1280×722, 창 모드 ≈ 1280×640. 높이가 800 px 이하면 여백 · 줄 간격 · 버튼 높이가 한 단계, 680 px 이하면 한 단계 더 줄어(글자는 그대로) 측정 화면 오른쪽(위치 + 측정)이 띠가 있어도 스크롤 없이 들어간다. 카메라 : 그래프 높이는 3 : 2.
+- 머리줄: 이름 · 탭 [측정] [결과] [장비 설정] [수동 측정] · 상태 필(동작 상태만: 대기 회색 · 이동/측정 중 파랑 · 일시정지/확인 대기 주황 · 비상정지/오류 빨강) · 상태칸(스테이지 · 카메라 · 좌표 보정 · 릴레이, 전체 문구는 툴팁) · [비상정지](어떤 크기에서도 보이고, 창이 열려 있어도 눌림). **정지와 비상정지의 차이**: [정지](조그 패드 가운데 · 스테이지가 연결돼 있으면 언제나 눌림) = 움직이는 모터를 지금 멈추고 이어서 하려던 이동을 취소할 뿐, 잠그지 않고 릴레이(히트건 · 쿨러) · 측정 출력 · 원점을 그대로 둔다(0.5 초 뒤부터 다시 조그 · 이동, 측정 중이면 "중지됨 · 정지로 중단"). [비상정지] = 모터 정지 + 이동 잠금 + 히트건 끄기 · 원점 버림 - 사진 호밍 또는 원점 잡기로 사람이 회복해야 다시 움직인다. 둘이 겹치면 비상정지가 이긴다. 글자는 줄이지 않고 배치만 늘고 준다.
 - 띠: 경보 · 원점 회복(빨강, 맨 위)과 장치마다 한 줄(주황). **띠의 모든 안내는 누를 수 있는 버튼이다**.
 - **측정 화면(하나)**: 왼쪽 위 카메라(머리줄: [실시간 | 촬영 사진] [촬영] '샘플 N · 확인 필요 · 측정 대상 ▾'(번호 칩 목록 팝업 · 체크로 측정 대상 켜고 끄기 · 선택한 샘플 [삭제] [확인 완료]) ⋯(샘플 추가 · 현재 위치를 샘플로 · 되돌리기) … [판 맞춤 | 전체] [지도](작은 지도는 기본 꺼짐, 켜면 사진 면적 10 % 이하 모서리) · 휠 확대 · 샘플 번호 · 측정 진행 색 · 좌표 보정이 있으면 지금 핀 위치 십자 · 빈 곳을 한 번 누르면 그 자리 좌표가 X · Y 칸에 채워지고 이동 목표 십자가 먼저 보임 · 실시간에도 샘플 번호 · 빈 상태 안내) + 왼쪽 아래 그래프 둘(저항–온도 세로 로그 · 가열 주황 / 냉각 파랑 · 25–90 → 20–100 °C × 1E+1–1E+6 Ω 로 시작해 값에 따라 넓힘, 온도–시간 + 목표 온도선 + 히트건 켜짐 띠, 칸 크기에 맞춰 다시 그림, 데이터가 없으면 칸 안에 "측정하면 여기에 그려집니다"). 오른쪽 카드 둘:
   - **위치**(줄어들지 않음): 머리줄 = 좌표 · 접촉 높이 · ⋯(대기 위치 · 촬영 위치 이동 · 저장) · 조그 패드 + Z 열(Z↑ Z↓ Z 맨 위) + 스텝 열(X · Y 스텝 `jog.steps` 전부 + 직접 입력 · Z 스텝 `jog.z_steps` 따로) · 좌표 이동 줄(X · Y mm [이동] [지금 좌표 넣기], Z 를 먼저 올림 · 가동범위 밖이면 비활성 + 사유) · 샘플 고르기 [샘플 위로] · [접촉 높이로 내리기].
-  - **측정**: 측정할 곳 [지금 위치 | 샘플 N개](샘플 쪽은 측정 단계 고르기 + [단계 보기] [편집]) · 파일 이름 · 저장 위치(최종 경로) · 조건 요약 한 줄 + [조건 편집] · 상태(온도 · 저항 · 전류, 단계 · 경과, 히트건 · 쿨러) · 시작 막는 사유 한 곳 한 줄 + 바로 가기 · 경고 한 줄 · [측정 시작]/[중지](샘플은 [일시정지]/[다시 시작], 확인 대기 [다음] 포함). 측정 카드는 가운데(파일 이름 · 저장 위치 · 조건 요약 · 단계 목록 · 진행 단계)만 안에서 스크롤하고 상태 숫자 · 시작/중지/일시정지는 늘 아래에 보인다.
+  - **측정**: 측정할 곳 [지금 위치 | 샘플 N개](샘플 쪽은 측정 단계 고르기 + [단계 보기] [편집]) · 파일 이름 · 저장 위치(최종 경로) · 조건 요약 한 줄 + [조건 편집] · 상태(온도 · 저항 · 전류, 단계 · 경과, 히트건 · 쿨러) · 시작 막는 사유 한 곳 한 줄 + 바로 가기 · 경고 한 줄 · [측정 시작]/[중지](샘플은 [일시정지]/[다시 시작], 확인 대기 [다음] 포함). 파일 이름 · 저장 위치([변경]) · 조건 요약 · 측정 단계 고르기는 고정 줄(잘리지 않음), 가운데는 단계 목록 · 진행 단계만 안에서 스크롤하고 상태 숫자 · 시작/중지/일시정지는 늘 아래에 보인다.
 - **조그 패드 하나**(`frontend/js/jog.js`, 측정 화면 · 장비 설정 공용): 배치를 좌표 보정에서 계산한다(스테이지 +X · +Y 가 사진에서 가리키는 방향을 위 · 아래 · 왼 · 오른쪽 중 가장 가까운 쪽에, 보정이 없으면 기존 프로그램 배치 위 X+ · 왼 Y+ · 오른 Y− · 아래 X−). 글자 "↑ X+", 키보드 화살표도 같은 매핑, PageUp/PageDown = Z. 한 번 누름 = 한 스텝, 0.5 s 이상 누르고 있으면 ack 를 받은 뒤 다음 스텝(큐에 쌓지 않음), 거절이면 멈춤, 키보드 400 ms 데드맨, 포커스를 잃으면 멈춤. **모터 안전**: 키보드 조그는 조그 카드가 '키보드 조그 켬' 일 때만(카드 안을 누르면 켜지고 카드 밖 · 탭 바뀜 · 창 열림 · 포커스 잃음에서 꺼짐), 창이 열려 있으면 안 됨, 연속은 스텝 1 mm 이하만 · Z↓ 는 한 번에 한 스텝, 비상정지를 누르는 순간 멈추고 눌러 둔 키 · 버튼은 뗄 때까지 다시 시작하지 않음.
 - **설정 창**(`frontend/js/settings.js`, [고급 설정] · [조건 편집] 공용): 왼쪽 세로 분류 목록 · 오른쪽 분류 제목 + 설명 + [이 분류 기본값으로] · 줄 = 이름 | 입력 | 단위 | 옅은 설명 · 저장 안 한 변경 표시 · 칸 옆 검증 오류(`settings_check`) · 닫을 때 확인 · 아래 줄 [내보내기] [가져오기] … [취소] [저장] 고정(본문만 스크롤). 창이 열리거나 화면이 바뀌면 설명 풍선은 사라진다.
 - 결과(측정 기록): 위쪽 [샘플 측정 기록 | R–T 측정 기록]. 샘플 측정 = 측정 목록 + 표(번호 · X · Y · 접촉 Z · 시작 · 끝 · 결과 · 사유) · [CSV 내보내기] [결과 폴더 열기]. 결과는 완료 / 오류 / 중지 …. R–T 측정 = 시각 · 파일 이름 · 회차 · 결과 · [그래프 보기] [폴더 열기].
 - 장비 설정 8단계: 1 스테이지 · 2 카메라([카메라 찾기]) · 3 판 영역 · 4 빈 판 사진 · 5 좌표 보정 · 6 헤드 위치 보정 · 7 접촉 높이 · 8 측정 장비 · 릴레이. 단계마다 [다음 단계](패널 안 오른쪽 아래), 조그는 같은 패드.
 - 기록 보기: [기록] [시리얼] 탭(보낸 줄 · 받은 줄 원문 - 실장비 첫 시험 확인용)
-- 간격 규칙(CSS 변수): 한 줄 안 컨트롤 사이 8 px · 줄 사이 10 px · 카드 안쪽 16 px · 카드 사이 12 px · 버튼 높이 34 px. `python tools/ui_lint.py` 가 4가지 창 크기에서 겹침 · 간격 · 글자 잘림 · 카드 밖 · 가로 스크롤을 검사한다.
+- 간격 규칙(CSS 변수): 한 줄 안 컨트롤 사이 8 px · 줄 사이 10 px · 카드 안쪽 16 px · 카드 사이 12 px · 버튼 높이 34 px(낮은 창은 위의 두 단계). `python tools/ui_lint.py` 가 6가지 창 크기(1920×1040 · 1536×800 · 1366×728 · 1280×722 · 1280×680 · 1280×640)에서 겹침 · 간격 · 글자 잘림 · 카드 밖 · 가로 스크롤 · 그래프가 상자의 90 % 미만을 채움 · 작은 스크롤 칸에서 일부만 보이는 버튼을 검사한다(`--sizes 1280x722,1280x640,1920x1040` 로 고를 수 있다).
 
 ## 장치 상태 · 자동 다시 연결 · 빈 상태
 - **상태는 실제 장치에서만 만든다**(설정값이 있다고 연결 · 완료로 보이지 않는다). 장치 넷 - 스테이지 · 카메라 · K2110 · K2450 - 마다 `state.dev.<장치>.state` = `ok`(연결됨) · `down`(연결 안 됨) · `retry`(다시 연결 중) · `unknown`(확인 안 됨).
@@ -57,10 +58,13 @@ python run.py --cleanup    # 창 없이 남은 이전 실행 정리
 단계 `R–T 측정` 은 여덟 번째 단계 종류다(기본 측정 조건에는 넣지 않았다 - [편집] 에서 "단계 추가"). 순회에서는 이동 → 접촉 높이 → R–T 측정 → Z 맨 위 순서이고 파일 이름은 `File name + 샘플 번호 + _`.
 
 ## R–T 측정 (저항–온도)
-**장비**: pyvisa + NI-VISA(`requirements.txt` 의 `pyvisa`). 드라이버가 없으면 "장비 통신 드라이버 없음 · NI-VISA 설치 필요" 로 안내하고 프로그램은 계속 돈다. 장비는 [장비 연결] 을 누를 때만 연다. K2450 은 연결 때 명령 세트가 SCPI 인지 확인한다(아니면 "K2450 명령 세트를 SCPI 로 · 장비 메뉴"). 주소 기본값: K2110 `USB0::0x05E6::0x2110::INSTR`(목록에서 고른다) · K2450 `GPIB0::18::INSTR`.
-**흐름**: 쿨러 켬 · 히트건 끔 → 예비 냉각(24.5 °C 미만 + 유지) → K2450 출력 켬 → #repeat 회 [가열(max temp 초과까지) → 냉각(temp to break 미만까지)] → 끝(히트건 끔 · 출력 끔 · 쿨러 끔 · Z 맨 위 - 뒤 둘은 설정). 시작 조건: 장비 두 대 연결 · 열전대 값 정상 · 핀이 접촉 높이(±0.5 mm).
+**장비**: pyvisa + NI-VISA(`requirements.txt` 의 `pyvisa`). 드라이버가 없으면 "장비 통신 드라이버 없음 · NI-VISA 설치 필요" 로 안내하고 프로그램은 계속 돈다. 장비는 [장비 연결] 을 누를 때만 연다. K2450 은 연결 때 명령 세트가 SCPI 인지 확인한다(아니면 "K2450 명령 세트를 SCPI 로 · 장비 메뉴"). 주소 기본값: K2110 `USB0::0x05E6::0x2110::INSTR`(목록에서 고른다) · K2450 `GPIB0::18::INSTR`. **주소 목록에서 시리얼(ASRL, 스테이지 COM5 · 예전 LabVIEW 보드 COM4)은 뺀다**(고르거나 자동으로 열면 그 보드가 리셋된다). [장비 연결]은 설정 주소가 일련번호 없는 USB 형식이거나 열리지 않거나 다른 모델(*IDN?)이면 목록에서 찾은 주소(K2110 = `0x2110` 이 든 주소, K2450 = `0x2450` 이 든 USB 주소, 없으면 `GPIB0::18::INSTR`)로 다시 열고 그 주소를 저장한다(로그 "주소 바꿈"). 오류 큐(`SYST:ERR?`)는 응답 앞 번호(쉼표 앞 정수)가 0 이면 오류 없음 - 2110 은 `+0, "No error"`, 2450 은 `0,"No error;0;0"`. **VISA 명령 로그**: `..\data_v2\logs\YYYYMMDD_visa.log` 에 한 줄씩(시각 · 장비 · 주소 · open/write/query/close · 명령 · 응답 · 걸린 ms · 예외), 하루 20 MB 넘으면 `.1.log` 로 옮기고 새로 쓴다.
+**흐름**: 쿨러 켬 · 히트건 끔 → 예비 냉각(목표 미만 + 유지, 기본 0 = 건너뜀) → K2450 출력 켬 → #repeat 회 [가열(max temp 초과까지) → 냉각(temp to break 미만까지 · 또는 냉각 멈춤)] → 끝(히트건 끔 · 출력 끔 · 쿨러 끔 · Z 맨 위 - 뒤 둘은 설정). 시작 조건: 장비 두 대 연결 · 열전대 값 정상 · 핀이 접촉 높이(±0.5 mm) · 최고 온도 < 비상 차단 온도. 기본값(2026-11 장비 PC 의 단독 스크립트와 같게): 1 V · 4단자 · 평균 10 · NPLC 1 · 뒷면 단자 · 최고 85 °C · 냉각 끝 30 °C · 1회 · 비상 차단 110 °C · 가열 최대.
+**냉각 멈춤**: 냉각 · 예비 냉각이 `rt.cool_stall_s`(180 s) 동안 `rt.cool_stall_c`(0.3 °C)만큼도 안 내려가면 "냉각 멈춤 · 방 온도에 닿음" - 그 회차를 정상으로 끝낸다(기록 유지, 예비 냉각은 측정으로 넘어감). 방 온도(26.5 °C)가 냉각 끝 온도보다 높아 끝나지 않던 것.
+**빠른 가열 경보**: 가열 중 5 °C/s 보다 빨리 오르면 한 번만 띠 · 로그 "온도가 너무 빨리 오름 · 열전대가 히트건 바람을 직접 맞는지 확인"(측정은 계속). 히트건을 끈 뒤 더 오른 온도(오버슈트)를 회차마다 로그와 `rt.json` 의 `overshoot` 에 남긴다.
+**릴레이 상태 비교**: R–T(자동 · 수동 · 속도 측정) 중 읽을 때마다 펌웨어 `rs` 를 읽어 "있어야 할 상태"(전원 계층이 켠 것 = 쿨러 · 단계대로의 히트건, 나머지 꺼짐)와 비교하고 다르면 "릴레이 상태 다름" 오류로 중단한다(통신 감시가 릴레이를 껐거나 보드 재부팅 · `rs` 응답 없음 = 통신 끊김). 정리에서 꺼짐을 확인하지 못하면 통신이 돌아올 때까지 1 s 마다 히트건 끄기 + `r all 0` 을 다시 보낸다.
 **온도 제어**: 가열 속도 · 냉각 속도(°C/분, 0 = 최대). 속도를 지정하면 목표 온도선을 따라 히트건을 켜고 끈다(띠 0.5 °C · 최소 켜짐/꺼짐 2 s · 연속 켜짐 상한 `heater.max_on_s`). 최대 속도: 가열은 계속 켜고 냉각은 계속 끈다. [최대 속도 재기] 로 실제 °C/분을 먼저 잰다.
-**안전**: 비상 차단 온도(기본 max temp + 10 °C) · 온도 값 없음/3 s 갱신 없음 · 단계 시간 한도(30 분) · 비상정지 · 중지 · 오류 · 종료 · 통신 끊김 → 히트건 끔 + K2450 출력 끔. 히트건은 기존 규칙(전용 릴레이 · 끄기 RS 확인 · Hub 독립 감시)을 그대로 쓴다.
+**안전**: 비상 차단 온도(기본 110 °C) · 온도 값 없음(3번 연속 · 3 s 갱신 없음) · 단계 시간 한도(30 분) · 비상정지 · 중지 · 오류 · 종료 · 통신 끊김 → 히트건 끔 + K2450 출력 끔. 히트건은 기존 규칙(전용 릴레이 · 끄기 RS 확인 · Hub 독립 감시)을 그대로 쓴다.
 **전류 범위 단계 변경**: 기존 프로그램 방식(전류가 범위의 1.05 배를 넘으면 10배 올리고 0.95 배 아래로 떨어지면 내림). "장비 자동"도 고를 수 있다. 전류 한도(`rt.ilim_a`, 기본 0.1 A - 기존 데이터에서 저항이 11 Ω 까지 내려가 0.1 V 에서 약 9 mA 라 10 mA 한도는 닿는다)는 기존 프로그램에 없던 값이다. 고정 범위에서는 한도 ≥ 측정 범위의 10.6 % 라 한도 0.1 A 면 1 A 범위는 쓰지 않고(`instruments.clamp_range`), 범위 넘음이면 한도를 덮는 범위(0.1 A)로 올린다. **단자 기본은 뒷면(REAR, 3축 FORCE/SENSE)** - `*RST` 뒤 `:ROUT:TERM` 을 먼저 설정하고 `:ROUT:TERM?` 로 확인한 다음 나머지를 설정, 출력 켬은 그 뒤. **R–T 그래프 기본 범위**(기존 LabVIEW 화면과 같게): 저항 1E+1–1E+6 Ω(세로 로그), 온도 20–100 °C - 값이 넘으면 넓힌다(`frontend/js/rtutil.js`). **장비 주소**: 목록(pyvisa `list_resources` 그대로 - GPIB · USB 모두)에서 고르거나 직접 입력하고, 연결 방식(GPIB · USB · LAN)을 연결 시험 · 상태에 표시한다(기존 PC 의 K2450 은 `GPIB0::18::INSTR`). **열린 회로 감지**: 전류 크기가 하한(`rt.open_a`, 기본 1 nA) 아래면 [연결 시험]이 "연결 없음 · 핀 접촉 · 앞/뒤 단자 설정 확인" 으로 안내하고, 측정 중 연속 5회면 경고 + control.csv 마지막 열 "열린 회로" 1(측정은 계속).
 **파일**: PC `..\data_v2\measure\<시각>_<File name>\` 에 `[File name][Set voltage 소수 2자리]V_[회차].dat` 와 `..._merged.dat`(예 `5-1-ncd(380)_0.10V_0.dat` - **회차 번호는 0 부터**, 화면의 "n회" 는 1 부터. 회차 파일 첫 줄은 정확히 `Temp   Resistance   `+CRLF(Temp 뒤 · Resistance 뒤 공백 3칸, 탭 없음), `_merged.dat` 는 **머리글 없이** 첫 줄부터 숫자. 숫자 줄은 `<온도><탭><저항>`+CRLF, 값은 LabVIEW `%.7E`(가수 7자리 · 지수는 부호 + 0 채우지 않음: `2.3691786E+1` · `1.6565295E+5` · `5.0000000E-1`, `rt.fmt_e`). 마지막 줄도 CRLF. 이어 쓰기) + `control.csv`(시각 · 경과 · 온도 · 목표 온도 · 저항 · 전류 · 한도 걸림 · 범위 · 히트건 · 쿨러 · 단계 - PC 에만) + `rt.json`. NAS 폴더 = 기본 폴더(`rt.file_path`) \ 연도 \ YYYYMMDD(측정 시작 날짜, `rt.date_folder` 기본 켬) \ 묶음 번호(`rt.batch_folder`, 비우면 생략) - 예 `\\VanaM_NAS\VanaM_Measurement\VO2\VO2 data (NAS)\data\2026\20261109\6`(`rt.nas_target`; 날짜 자동을 끄면 기본 폴더 그대로, 묶음이 있으면 그 아래). 화면에 최종 경로를 한 줄로 미리 보인다. PC 쪽 저장 규칙은 그대로. NAS 에는 같은 `.dat` 만 별도 스레드로 복사한다 - 못 쓰면 경고만 하고 측정은 계속, 끝난 뒤 다시 복사, [NAS 로 다시 복사]. NAS 에 같은 이름이 있으면 덮어쓰지 않고 `_1`.
 
@@ -72,6 +76,41 @@ Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_
 축마다 [Z 원점 잡기] [X 원점 잡기] [Y 원점 잡기]: 끝단 쪽으로 최대 10 mm 를 느리게 밀고 → 2 mm 물러나 0 → EEPROM 저장(응답 "--- 원점 설정 완료 (저장됨) ---" / "--- 중단됨 ---"). X · Y 는 Z 원점이 있고 Z 가 맨 위(ST 로 확인)일 때만.
 펌웨어 위치가 남아 있으면(비상정지 뒤 등) 끝단 3 mm 앞까지 자동으로 다가간 뒤 `fz`, 없으면 조그로 끝단 10 mm 안까지 옮긴 뒤 누른다. 대기 위치 도착 · 측정 끝 · 종료 때 `save` 를 보내 다음 부팅에 원점이 복원된다.
 연결 직후 원점이 복원됐고 헤드 위치 보정이 있으면 움직이지 않고 사진으로 위치를 한 번 확인한다(차이가 한도를 넘으면 경고만).
+
+## 수동 측정 탭 (모터를 움직이지 않는다)
+측정 · 결과 · 장비 설정 옆의 [수동 측정]. 이동 계층을 부르지 않으므로 원점 · Z 접촉 높이 · 샘플 선택이 없어도 되고, 끝나도 Z 를 올리지 않는다. 스테이지는 쿨러 · 히트건 릴레이에만 쓴다(연속 측정 · 온도 · 저항 1번은 스테이지 없이도 된다). 측정 조건은 측정 탭과 같은 R–T 측정 조건(`rt.*`, [변경]).
+- **순서**: (1) 열전대를 시료에 두고 히트건 바람을 직접 맞지 않게 놓는다 → (2) [온도 1번]으로 온도, [저항 1번]으로 저항을 확인(출력은 읽는 동안만 켜고 바로 끔) → (3) 쿨러 위치를 3×3 구역에서 누르거나 번호를 적는다(`manual.cooler_relays`, 기본 R2 · 처음에는 [2 초 켜 보기]로 어느 쿨러가 도는지 확인) → (4) [R–T 시작](확인 창) = 쿨러 켬 → 히트건 켜 최고 온도까지 → 끔 → 냉각 끝 온도 아래 또는 냉각 멈춤까지 × 반복. [연속 측정] = 가열 없이 온도 · 저항을 [정지]까지.
+- **정지**: [정지] · 비상정지 · 오류 · 종료 · 통신 끊김 모두 같은 정리 경로 - 히트건 끔(RS 확인) → K2450 출력 끔 → 쿨러 끔(`r all 0` 으로 전부 꺼짐 확인). 비상정지는 언제나 먹고 수동 측정도 멈춘다.
+- **안전**: 비상 차단 온도 · 온도 갱신 한도 · 독립 감시(측정 루프가 멈추면 히트건 강제 끔) · 단계 시간 한도 · 히트건을 켠 뒤 60 s 안에 1 °C 도 안 오르면 중단 · 온도를 3번 연속 못 읽으면 중단 · 릴레이 응답 짝 맞추기 · R–T 중 릴레이 상태 비교 · 냉각 멈춤 · 빠른 가열 경보. 히트건 릴레이가 쿨러 목록에 있으면 시작 거절, 비상정지 잠금 중에는 R–T 시작 거절(온도 · 저항 1번 · 연속은 됨).
+- **서로 막기**: 수동 측정 중에는 자동 측정 · 촬영 · 헤드 보정 · 모든 이동(조그 포함) · 장비 연결 · 릴레이 켜기 · 다시 연결 · 종료를 거절한다(사유 "수동 측정 중 · …"). 반대로 자동 측정 · 이동 · 촬영 등이 도는 동안은 수동 측정을 시작하지 않는다. 사람이 누르는 릴레이 끄기는 언제나 받는다(측정은 상태 비교로 알아채고 멈춘다).
+- **저장**: `..\data_v2\manual\YYYYMMDD_HHMMSS_<파일 이름>\` - R–T 는 자동과 같은 LabVIEW 형식(회차 `.dat` + `_merged.dat` · 같은 머리줄 · `%.7E` · CRLF) + `control.csv`(시각 · 경과 · 회차 · 단계 · 온도 · 전류 · 저항 · 한도 걸림 · 히트건 · 쿨러 · 전압) + `rt.json`, NAS 복사 규칙도 같다. 연속 측정은 `control.csv` 만. 결과 탭 "R–T 측정 기록" 에 종류 "수동" 으로 나온다.
+- **명령 직접 보내기**(조건 카드 아래, 접힘): K2110 · K2450 에 SCPI 한 줄. `?` 로 끝나면 응답을 읽고, 보낸 뒤 오류 큐를 보여 준다. K2450 출력 켜기(`:OUTP ON` · `OUTP:STAT 1` 등 · `*RCL`)는 보내지 않는다. 측정 중에는 못 하고, 전부 `visa.log` 에 남는다.
+
+## 원점 없이 이동 허용 (조그 패드의 체크 칸)
+원점이 없거나 비상정지 잠금일 때만 조그 패드 오른쪽 아래에 보인다. 켤 때 확인 창(Z 높이 모름 · 핀이 내려가 있으면 X · Y 이동이 샘플을 긁을 수 있음 · 끝단 범위 모름 · 비상정지는 그대로). 저장하지 않고 시작 · 스테이지 다시 연결 · 세 축 원점 정상이면 저절로 꺼진다. 켜진 동안 머리줄 아래 맨 위에 붉은 띠 "원점 없이 이동 중 · Z 높이 모름 [끄기]".
+- 켜지면 **사람의 수동 이동(패드 · 키보드 · 스텝 · 직접 거리)만** 원점 · 위치 신뢰 · 비상정지 잠금(회복 순서) · 회복 중 5 mm 한도 · 핀 내려감 판정을 건너뛰고 펌웨어 상대 이동(`jx` · `jy` · `jz`)으로 보낸다. 긴 거리는 8000 펄스 이하 조각, 조각마다 비상정지 · 정지 확인. 로그에 "[원점 무시]".
+- 그대로 지키는 것: 비상정지 즉시('!' 가 가장 먼저 · 남은 조각 안 나감) · 정지 · 비상정지 직후 1 s 거절 · 이동 중 새 이동 즉시 거절 · 이동 시간 한도 · 통신 끊김 처리 · X · Y 전 히트건 꺼짐 확인(못 하면 거절) · Z 한 번 한도 · Z↓ 연속 없음 · 수동 측정 중 이동 거절 · 원점이 있는 축의 가동범위.
+- 절대 좌표 이동(샘플로 이동 · 좌표 이동 · 대기/촬영 위치 · 자동 측정 · 헤드 보정 · 접촉 높이로 내리기)은 그대로 원점을 요구한다.
+- 쓰는 곳: 원점이 없는데 Z 가 내려가 있을 때 Z↑ 로 올리고, 끝단 근처까지 X · Y 를 옮긴 뒤 [Z 원점 잡기] → [X 원점 잡기] [Y 원점 잡기]. Z 를 올리는 것은 [Z 원점 잡기] 하나로도 된다(위 끝단까지 천천히 민 뒤 잡는다).
+
+## 릴레이 기본값 (2026-11 장비 PC 배선)
+히트건 = **R1**, 샘플 쿨러 = **R2~R10**(쿨러 구역 3×3 칸에 R2~R10 을 행 우선으로, 위에서 아래 · 왼쪽에서 오른쪽). 실제 배치는 장비 설정 8 의 [2 s 켜 보기](또는 수동 측정 탭의 [2 초 켜 보기])로 하나씩 켜 보고 확인한 뒤 칸의 릴레이 번호를 고친다. 히트건 릴레이와 쿨러 구역은 장비 설정 8 한 화면에서 같이 고쳐 [저장] 한 번에 "최종 상태" 로 검증한다(히트건이 어느 구역에도 없고 구역끼리 안 겹치면 통과). 고급 설정에서 히트건만 바꾸면 그 릴레이를 쓰던 구역과 맞바꿀지 묻는다.
+**설정 이전(한 번, `settings_rev` 2)**: 설정 파일의 값이 **예전 기본값과 정확히 같을 때만** 새 기본값으로 바꾼다 - `rt.volt` 0.1 → 1.0 · `rt.break_temp` 25 → 30 · `rt.emergency_c` 비움 → 110 · `rt.precool_c` 24.5 → 0 · 히트건 R10 + 구역 R1~R9 + 릴레이 이름(셋 다 예전 그대로일 때만 함께) → R1 + R2~R10. 사람이 바꾼 값은 그대로이고, 구역을 바꿔 둔 경우 릴레이는 옮기지 않는다(로그 "릴레이 기본값 이전 안 함"). 이전 직전 파일은 `settings_backup` 에 남고, 바꾼 목록은 시작 로그에 남는다.
+
+## LabVIEW 파라미터 대응 (K2110 and K2450 for VO2_20250703.vi)
+| LabVIEW | v2 | 비고 |
+|---|---|---|
+| Set voltage | `rt.volt` 1.0 V | 단독 스크립트 measure_test.py 와 같게(기존 VI 화면 0.1 V) |
+| Number of Filter Readings | `rt.filter_n` 10 | 반복 평균 |
+| 4P | `rt.four_wire` 켬 · `rt.terminal` 뒷면 | 3축 FORCE/SENSE |
+| max temp | `rt.max_temp` 85 °C | |
+| temp to break | `rt.break_temp` 30 °C | 방 온도 26.5 °C - 25 °C 는 못 닿음(냉각 멈춤도 있음) |
+| #repeat | `rt.repeat` 1 | 회차 파일 번호는 0 부터 |
+| File path · File name | `rt.file_path` · `rt.file_name` "1-1_" | 날짜 폴더 · 묶음 폴더는 v2 에서 더함 |
+| 전류 범위 단계(하위 VI) | `rt.range_mode` 단계 · `rt.start_range` 1 mA | 1.05 · 0.95 배 |
+| max volt 14 | 옮기지 않음 | v2 는 전압 소스 하나(`rt.volt`)만 쓰고 전류 한도 `rt.ilim_a` 로 지킨다 |
+| ramp up 25 · ramp down 20 | 옮기지 않음 | 히트건은 켜기/끄기뿐이라 V/s 램프가 없다. 온도 속도는 `rt.heat_rate` · `rt.cool_rate`(°C/분, 0 = 최대) |
+| Cooler temp 35 | 옮기지 않음 | 쿨러는 켜기/끄기 릴레이(온도 설정 없음). 냉각 끝은 `rt.break_temp` · 냉각 멈춤 |
 
 ## 설정 표 (운용 기본값은 `backend/settings_schema.py` 에만 있다)
 | 키 | 기본값 | 단위 | 이름 |
@@ -144,14 +183,15 @@ Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_
 | `tool.items` | [{"name": "기준 포인터", "dx_mm": 0.0, "dy_mm… |  | 공구 |
 | `tool.fit_margin_mm` | 0.3 | mm | 끝 모양 맞음 여유 |
 | `tool.active` | 기준 포인터 |  | 활성 공구 |
-| `relay.items` | [{"enabled": true, "name": "쿨러 1", "max_… |  | 릴레이 |
+| `relay.items` | R1 "히트건" · R2~R10 "쿨러 1"~"쿨러 9" (모두 사용) |  | 릴레이 |
 | `relay.on_estop` | off |  | 비상정지 시 |
 | `relay.on_stop` | off |  | 정지 · 측정 종료 시 |
 | `relay.on_error` | off |  | 오류 시 |
 | `relay.on_exit` | off |  | 종료 · 연결 해제 시 |
 | `relay.watchdog_ms` | 5000 | ms | 통신 감시 시간 |
-| `cooler.zones` | {"rows": 3, "cols": 3, "row_edges": null… |  | 쿨러 구역 |
-| `heater.relay` | 10 |  | 히트건 릴레이 |
+| `cooler.zones` | 3×3 · R2~R10 행 우선 (실제 배치는 [2 s 켜 보기]로 확인) |  | 쿨러 구역 |
+| `heater.relay` | 1 |  | 히트건 릴레이 |
+| `manual.cooler_relays` | 2 |  | 수동 측정 쿨러 릴레이(쉼표로 여럿) |
 | `heater.max_on_s` | 120.0 | s | 히트건 최대 시간 |
 | `contact_z_mm` | None | mm | 접촉 높이 |
 | `approach_mm` | 2.0 | mm | 느린 구간 |
@@ -195,19 +235,20 @@ Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_
 | `fixed.work_long_px` | 60 | px | 작업 칩 길이 |
 | `rt.k2110_addr` | USB0::0x05E6::0x2110::INSTR |  | K2110 주소 |
 | `rt.k2450_addr` | GPIB0::18::INSTR |  | K2450 주소 |
-| `rt.precool_c` | 24.5 | °C | 예비 냉각 목표 |
+| `rt.precool_c` | 0 (= 건너뜀) | °C | 예비 냉각 목표 |
 | `rt.hold_s` | 0 | s | 도달 뒤 유지 |
 | `rt.max_temp` | 85 | °C | 최고 온도 |
-| `rt.break_temp` | 25 | °C | 냉각 끝 온도 |
+| `rt.break_temp` | 30 | °C | 냉각 끝 온도 |
+| `rt.cool_stall_s` · `rt.cool_stall_c` | 180 · 0.3 | s · °C | 냉각 멈춤(이 시간 동안 이만큼도 안 내려가면 그 회차 정상 종료) |
 | `rt.repeat` | 1 |  | 반복 횟수 (#repeat) |
 | `rt.heat_rate` · `rt.cool_rate` | 0 · 0 | °C/분 | 가열 · 냉각 속도(0 = 최대) |
 | `rt.band_c` | 0.5 | °C | 띠 |
 | `rt.min_on_s` · `rt.min_off_s` | 2 · 2 | s | 최소 켜짐 · 꺼짐 |
-| `rt.emergency_c` | (비움 = max+10) | °C | 비상 차단 온도 |
+| `rt.emergency_c` | 110 (최고 온도보다 높아야 함) | °C | 비상 차단 온도 |
 | `rt.phase_limit_s` | 1800 | s | 단계 시간 한도 |
 | `rt.min_interval_s` | 0 | s | 최소 기록 간격 |
 | `rt.stale_s` | 3 | s | 온도 갱신 한도 |
-| `rt.volt` | 0.1 | V | 전압 (Set voltage) |
+| `rt.volt` | 1.0 | V | 전압 (Set voltage) |
 | `rt.ilim_a` | 0.1 | A | 전류 한도 |
 | `rt.open_a` | 1e-9 | A | 열린 회로 전류 하한 |
 | `rt.four_wire` · `rt.terminal` | True · REAR |  | 4단자 (4P) · 단자 |
@@ -229,7 +270,9 @@ Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_
 - WebSocket `/ws`: 서버 → 화면 `{"type":"state","state":{...},"log":[...]}`(변할 때마다, 최소 1초) · `{"type":"log","e":{...}}` · `{"type":"ack","id","ok","msg"|"res"}`
 - 화면 → 서버 `{"id":n,"cmd":"이름","args":{...}}`. **비상정지는 줄 세우지 않고** `{"cmd":"estop"}`(WS) 와 `POST /estop`(HTTP) 둘 다. 명령은 수신 순간의 비상정지 세대(gen)를 잡아 잠금 뒤 비교한다.
 - HTTP: `/preview.jpg` `/shot.jpg` `/ref.jpg` `/snap.jpg` `/refhist/<id>.jpg` `/run/<측정>/<파일>` `/serial.json`(시리얼 탭) `/rt.json?since=n&id=`(R–T 그래프 점) `/rt_data/<측정 폴더>`(결과 탭 그래프 보기) `/schema` `/health`
-- R–T 명령: `inst_list` · `inst_connect` · `inst_disconnect` · `inst_test` · `rt_start` · `rt_stop` · `rt_speed` · `rt_defaults` · `rt_nas_retry`(+ `contact_try {free:true}` = 이 위치에서 접촉 높이로 내리기). `state.rt{inst{k2110,k2450,msg,test}, run{state,status,phase,cycle,repeat,T,R,I,target,heater,cooler,warns,nas,speed}, block, block_speed, results[]}`
+- R–T 명령: `inst_list` · `inst_connect` · `inst_disconnect` · `inst_test` · `rt_start` · `rt_stop` · `rt_speed` · `rt_defaults` · `rt_nas_retry{manual?}`(+ `contact_try {free:true}` = 이 위치에서 접촉 높이로 내리기).
+- 수동 측정 명령: `man_temp` · `man_res` · `man_cont` · `man_rt` · `man_stop` · `man_scpi{dev: k2110|k2450, line}`. `state.manual{run, block_rt, block_cont, block_quick, coolers[], heater, last{T,R,I}, relays_on[]}`. 그래프 점 `/rt.json?kind=manual`, 결과 그래프 `/rt_data/<폴더>?root=manual`.
+- 원점 없이 이동 허용: `free_move{on}` · `state.stage.free_move` · 띠 id `free`. `state.rt{inst{k2110,k2450,msg,test}, run{state,status,phase,cycle,repeat,T,R,I,target,heater,cooler,warns,nas,speed}, block, block_speed, results[]}`
 - 조그 명령 `jog{axis, mm, rep?, free?}`: 이동 · 작업 중이면 줄 세우지 않고 즉시 거절 · rep = 누르고 있는 연속 · free = 접촉 높이 화면. 비상정지 직후 1 s 는 모든 이동 명령 거절. 정지 `{"cmd":"stop"}`(WS) · `POST /stop` 도 줄 세우지 않는다(정지 직후 0.5 s 거절). 새 명령 `save_here{name: park|capture}`(서버가 그 순간 ST 로 읽은 위치를 저장), `stop_verify` · `stop_band_close`. `GET /preview.json`(프레임 번호 · 몇 초 전 그림 · 장/초). 새 명령 `ports`(포트 목록) · `port_connect{port}`. `GET /camthumb/<번호>.jpg`(카메라 찾기 작은 사진).
 - 명령: `alarm_clear` · `apply_position` · `area_set` · `calib_apply` · `calib_click` · `calib_delete` · `calib_record` · `cam_reconnect` · `cam_scan` · `capture` · `contact_clear` · `contact_save` · `contact_try` · `dry` · `exclude_set` · `focus_refind` · `goto_named` · `goto_sample` · `head_apply` · `head_calib` · `heater_off_retry` · `jog` · `link_check` · `port_connect` · `ports` · `measure_answer` · `measure_pause` · `measure_redo_sample` · `measure_resume` · `measure_start` · `measure_stop` · `move_xy` · `open_folder` · `origin`(축 x|y|z) · `reconnect` · `ref_capture` · `ref_restore` · `relay` · `relay_test` · `results_open` · `sample_add` · `sample_confirm` · `sample_delete` · `sample_exclude` · `sample_here` · `sample_move` · `sample_select` · `settings_import_old` · `settings_save` · `shutdown_check` · `snap` · `undo_edit` · `verify_position` · `z_top`
 - `state` 주요 키: `phase` · `alarm` · `band{text,next,err,actions[]}` · `dev{stage,camera,k2110,k2450}{state,text,why}` · `bands[]{id,text,next,err,actions[]}` · `cam_scan{running,items[]}` · `stage{x,y,z,locked,z_ok,xy_ok,done,fw_homed,recovery[]}`(스테이지 없으면 null) · `eeprom` · `port` · `fw` · `contact{z,approach}` · `camera` · `calib{status,text,points,area,head}` · `ref` · `shot` · `samples[]` · `sel` · `run{state,steps,results,cur_sample,waiting}` · `relays` · `settings` · `conditions` · `start_block`
@@ -241,4 +284,4 @@ Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_
 `..\data_v2\runs\<YYYYMMDD_HHMMSS>_<측정 조건>\` — `run.json`(측정 조건 · 설정 사본 · 보정 식별자 · 촬영 폴더 · 시작/끝 · 결과) · `samples.csv`(번호 · X · Y · 쿨러 · 접촉 Z · 시작 · 끝 · 결과 · 사유) · `plate_fit.jpg`. CSV 는 UTF-8 BOM.
 
 ## 검증
-`python tools/unit_tests.py` · `python tools/unit_rt.py`(R–T 단위 시험, 목표 온도선 추종 오차 보고) · `python tools/e2e.py 31 …`(R–T e2e 31~47) · `python tools/e2e.py 48 49 50 51 52 53 54 55`(장치 연결 상태 · 자동 다시 연결 · 뽑힘/꽂음 · 연결 겹침 · 깜빡임 없음) · `python tools/e2e.py 56 … 64`(모터 안전) · `python tools/e2e.py 65 … 79`(정지 · 원점 · 연결 · 설정, 실제 속도) · `python tools/safety_ui2.py`(패드 · [정지] · 키보드 범위 · 입력 칸 · 일시정지 더블클릭 · 띠 400 ms · 누른 채 다시 그리기 · 서버 끊김, playwright) · `python tools/live_check.py`(실시간: 장면 → 그림 0.6 s 이내, 합성 카메라 큐 4 · 8 장) · `python tools/mem_check.py [--quick] [--size 4080]`(서버 메모리 · 실시간 CPU) · `python tools/safety_ui.py`(비상정지 지연 · 키보드 조그 범위 · 패드 · Z, playwright) · `python tools/jog_check.py`(조그 방향: ↑ 버튼 · 키보드 ↑ → 사진에서 헤드가 위로) · `python tools/ui_lint.py`(4가지 창 크기 배치 검사 → `..\shots_v2\ui\`) · `python tools/shots_conn.py`(연결 상태별 화면 점검 + 스크린샷 → `..\shots_v2\conn\`) · `python tools/shots_rt.py`(R–T 화면 흐름 · 스크린샷) · `E2E_MODE=fake python tools/e2e.py`(fake-serial) · `python tools/stress_fake.py 300`(동시성 부하) · `python tools/clicks.py`(클릭 수) · `python tools/fixed_regress.py [--loo]` · `python tools/align_measure.py` · `python tools/e2e.py [이름일부]` · `python tools/shots.py OUT` · `python tools/exit_test.py` · `python tools/flows.py`(화면 흐름: 첫 실행 · 비상정지 회복 · 막다른 상태 점검, playwright) · `python tools/perf4080.py`(4080×3060 성능).
+`python tools/unit_tests.py` · `python tools/unit_rt.py`(R–T 단위 시험, 목표 온도선 추종 오차 · 감시 지연 · 설정 이전 보고) · `python tools/e2e.py 80 81 82 83 84`(장비 주소 · 수동 측정, 가짜 장비) · `E2E_MODE=fake python tools/e2e.py 85`(원점 없이 이동 허용, 가짜 펌웨어) · `python tools/e2e.py 31 …`(R–T e2e 31~47) · `python tools/e2e.py 48 49 50 51 52 53 54 55`(장치 연결 상태 · 자동 다시 연결 · 뽑힘/꽂음 · 연결 겹침 · 깜빡임 없음) · `python tools/e2e.py 56 … 64`(모터 안전) · `python tools/e2e.py 65 … 79`(정지 · 원점 · 연결 · 설정, 실제 속도) · `python tools/safety_ui2.py`(패드 · [정지] · 키보드 범위 · 입력 칸 · 일시정지 더블클릭 · 띠 400 ms · 누른 채 다시 그리기 · 서버 끊김, playwright) · `python tools/live_check.py`(실시간: 장면 → 그림 0.6 s 이내, 합성 카메라 큐 4 · 8 장) · `python tools/mem_check.py [--quick] [--size 4080]`(서버 메모리 · 실시간 CPU) · `python tools/safety_ui.py`(비상정지 지연 · 키보드 조그 범위 · 패드 · Z, playwright) · `python tools/jog_check.py`(조그 방향: ↑ 버튼 · 키보드 ↑ → 사진에서 헤드가 위로) · `python tools/ui_lint.py`(6가지 창 크기 배치 검사 → `..\shots_v2\ui\`) · `python tools/shots_conn.py`(연결 상태별 화면 점검 + 스크린샷 → `..\shots_v2\conn\`) · `python tools/shots_rt.py`(R–T 화면 흐름 · 스크린샷) · `E2E_MODE=fake python tools/e2e.py`(fake-serial) · `python tools/stress_fake.py 300`(동시성 부하) · `python tools/clicks.py`(클릭 수) · `python tools/fixed_regress.py [--loo]` · `python tools/align_measure.py` · `python tools/e2e.py [이름일부]` · `python tools/shots.py OUT` · `python tools/exit_test.py` · `python tools/flows.py`(화면 흐름: 첫 실행 · 비상정지 회복 · 막다른 상태 점검, playwright) · `python tools/perf4080.py`(4080×3060 성능).

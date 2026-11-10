@@ -87,7 +87,7 @@ function cardMan(s) {
   const mn = s.manual, run = mn.run, live = manLive(s), ik = (s.rt && s.rt.inst) || {};
   const dchip = (k, d) => h("span", { class: d && d.ok ? "chip ok" : "chip no", "data-tip": d ? (d.ok ? (d.idn || "") + " · " + (d.addr || "") : d.err || "") : "장비 연결을 누르거나 측정 버튼을 누르면 연결합니다.", text: k + (d && d.ok ? " 연결" : " 안 됨") });
   const connected = ik.k2110 && ik.k2110.ok && ik.k2450 && ik.k2450.ok;
-  const head = h("div", { class: "chead" }, h("h3", { text: "수동 측정" }), h("span", { class: "sub nowrap", text: "모터는 움직이지 않음" }), h("span", { class: "grow" }),
+  const head = h("div", { class: "chead" }, h("h3", { text: "수동 측정", "data-tip": "모터는 움직이지 않습니다. 원점 · 접촉 높이 · 샘플이 없어도 됩니다. 끝나도 Z 를 올리지 않습니다." }), h("span", { class: "grow" }),
     dchip("K2110", ik.k2110), dchip("K2450", ik.k2450),
     connected ? null : btn("장비 연결", "rt-connect", null, "sm", "K2110 · K2450 을 엽니다(시리얼 포트는 열지 않습니다).", mn.block_quick));
   const big = h("div", { class: "rtbig" }, h("div", {}, h("div", { class: "k", text: "온도" }), h("div", { class: "v", id: "mn-T", text: "—" })), h("div", {}, h("div", { class: "k", text: "저항" }), h("div", { class: "v", id: "mn-R", text: "—" })),
@@ -131,8 +131,9 @@ function cardManCfg(s) {
     h("div", { class: "row" }, h("span", { class: "sub fl", text: "켜 보기" }),
       h("select", { id: "mn-rln", class: "grow", disabled: !!lock, onchange: (e) => { MN.relayN = Number(e.target.value); } }, relayOpts.map((n) => h("option", { value: n, text: "R" + n + (n === hn ? " · 히트건" : on.has(n) ? " · 쿨러" : ""), selected: n === MN.relayN }))),
       btn("2 초 켜 보기", "mn-rltest", null, "sm", "고른 릴레이를 2 초만 켰다 끕니다. 쿨러 위치를 확인할 때 씁니다.", lock || (s.stage ? "" : "스테이지 연결 안 됨"))));
-  /* 명령 직접 보내기(접힘) */
-  const sc = h("div", { class: "card", id: "c-manscpi" }, h("div", { class: "chead" }, h("h3", { text: "명령 직접 보내기" }), h("span", { class: "grow" }), btn(MN.scpi ? "접기 ▴" : "펼치기 ▾", "mn-scpi-toggle", null, "sm")));
+  /* 명령 직접 보내기(접힘): 조건 카드 아래 줄 */
+  const sc = cfg;
+  sc.append(h("div", { class: "row" }, h("b", { class: "grow", text: "명령 직접 보내기" }), btn(MN.scpi ? "접기 ▴" : "펼치기 ▾", "mn-scpi-toggle", null, "sm", "K2110 · K2450 에 SCPI 한 줄을 보냅니다(기록 · 점검용).")));
   if (MN.scpi) {
     const qwhy = live ? "측정 중" : mn.block_quick;
     sc.append(h("div", { class: "row" }, h("select", { id: "mn-dev", disabled: !!qwhy, onchange: (e) => { MN.dev = e.target.value; } }, [["k2110", "K2110"], ["k2450", "K2450"]].map(([v, l]) => h("option", { value: v, text: l, selected: v === MN.dev }))),
@@ -140,7 +141,7 @@ function cardManCfg(s) {
       btn("보내기", "mn-send", null, "sm", "한 줄을 보냅니다. ? 로 끝나면 응답을 읽고, 보낸 뒤 오류 큐를 보여 줍니다. K2450 출력 켜기는 보내지 않습니다.", qwhy)),
       h("pre", { class: "mnout mono", id: "mn-out", text: MN.out.slice(-6).join("\n") || "응답이 여기에 보입니다." }));
   }
-  return [cfg, cool, sc];
+  return [cfg, cool];
 }
 function updateManDynamic(s) {
   const set = (id, t) => { const e = document.getElementById(id); if (e && e.textContent !== t) e.textContent = t; };

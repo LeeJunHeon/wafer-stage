@@ -199,3 +199,84 @@ def c84(c):
     check(not ok2 and "수동 측정 중" in str(r2), "측정 중 명령 직접 거절 (%s)" % (r2,))
     c.send("man_stop")
     _wait_end(c, 30)
+
+
+NOHOME = {"WAFER_STAGE_DRY_NO_HOME": "1", "WAFER2_FAKE_EEPROM": "none", "WAFER_STAGE_DRY_MOVE_S": "real", "WAFER2_FAKE_SCALE": "1.0"}
+
+
+def _cmds_after(c, n0):
+    from e2e_cases import serial_cmds
+    return serial_cmds(c)[n0:]
+
+
+@case("85 원점 없이 이동 허용 · 조그만 · 8000 펄스 조각 · 비상정지 · 다시 연결 · 원점 뒤 꺼짐")
+@with_patch({"jog": {"max_mm": 100.0, "steps": [0.1, 1, 10, 50]}})
+def c85(c):
+    from e2e_cases import serial_cmds
+    st = c.state["stage"]
+    check(st and not st["z_ok"], "원점 없음으로 시작 (z_ok=%s)" % (st and st["z_ok"]))
+    check(not st["free_move"], "체크 꺼짐으로 시작")
+    ok, r = c.send("jog", axis="x", mm=1.0)
+    check(not ok and "원점" in str(r), "체크 끔 · X 조그 거절 (%s)" % (r,))
+    ok, r = c.send("free_move", on=True)
+    check(ok and c.state["stage"]["free_move"], "체크 켬 (%s)" % (r,))
+    bands = c.state.get("bands") or []
+    check(bands and bands[0]["id"] == "free" and bands[0]["err"] and "Z 높이 모름" in bands[0]["text"], "맨 위 붉은 띠 '원점 없이 이동 중 · Z 높이 모름'")
+    for ax, mm, fw in (("z", -0.5, "jz"), ("x", 2.0, "jx"), ("y", -2.0, "jy")):
+        n0 = len(serial_cmds(c))
+        ok, r = c.send("jog", axis=ax, mm=mm)
+        new = _cmds_after(c, n0)
+        check(ok and any(x.startswith(fw + " ") for x in new), "%s 조그 → %s (%s · %s)" % (ax.upper(), fw, r, [x for x in new if x.startswith("j")]))
+        time.sleep(0.6)
+    # 60 mm = 9600 펄스 → 8000 + 1600 두 조각
+    n0 = len(serial_cmds(c))
+    ok, r = c.send("jog", axis="x", mm=60.0, timeout=60)
+    js = [x for x in _cmds_after(c, n0) if x.startswith("jx ")]
+    check(ok and js == ["jx 8000", "jx 1600"], "60 mm → 8000 펄스 이하 조각 (%s · %s)" % (js, r))
+    time.sleep(0.6)
+    # 이동 중 비상정지: '!' 가 가장 먼저 · 남은 조각 안 나감
+    n0 = len(serial_cmds(c))
+    i = c.send_nowait("jog", axis="x", mm=-60.0)
+    time.sleep(0.5)
+    c.http("/estop", "POST")
+    ok, r = c.wait_ack(i, 30)
+    new = _cmds_after(c, n0)
+    js = [x for x in new if x.startswith("jx ")]
+    bang = [k for k, x in enumerate(new) if x.startswith("!")]
+    check(not ok and js == ["jx -8000"] and bang, "이동 중 비상정지 → 남은 조각 안 나감 (%s · %s)" % (new[:6], r))
+    check(c.state["stage"]["locked"], "비상정지 잠금")
+    time.sleep(1.2)
+    ok, r = c.send("jog", axis="z", mm=-0.5)
+    check(ok, "비상정지 잠금이어도 체크가 켜져 있으면 조그 (%s)" % (r,))
+    time.sleep(0.6)
+    ok, r = c.send("move_xy", x=50.0, y=50.0)
+    check(not ok, "체크 켬 · 좌표 이동은 원점 요구 (%s)" % (r,))
+    ok, r = c.send("goto_named", name="park")
+    check(not ok, "체크 켬 · 대기 위치 이동 거절 (%s)" % (r,))
+    ok, r = c.send("rt_start")
+    check(not ok, "체크 켬 · 측정 시작 거절 (%s)" % (r,))
+    # 다시 연결 → 꺼짐
+    ok, r = c.send("reconnect", timeout=60)
+    c.wait(lambda s: s["stage"] and s["stage"]["connected"], 30, "다시 연결")
+    check(not c.state["stage"]["free_move"], "다시 연결 → 체크 꺼짐 (%s)" % (r,))
+    # 세 축 원점 → 꺼짐
+    c.send("free_move", on=True)
+    check(c.state["stage"]["free_move"], "다시 켬")
+    for ax in ("z", "x", "y"):
+        if MODE_FAKE():
+            c.dry("set_real", axis=ax, mm=1.0) if ax != "z" else None
+        ok, r = c.send("origin", axis=ax, timeout=90)
+        check(ok, "%s 원점 잡기 (%s)" % (ax.upper(), r))
+        time.sleep(0.6)
+    c.pump(1.0)
+    st = c.state["stage"]
+    check(st["z_ok"] and st["xy_ok"] and not st["free_move"], "세 축 원점 정상 → 체크 저절로 꺼짐 (%s)" % st["free_move"])
+    ok, r = c.send("free_move", on=True)
+    check(not ok, "원점 정상이면 켜지 않음 (%s)" % (r,))
+
+
+def MODE_FAKE():
+    return e2e.MODE == "fake"
+
+
+c85.env = NOHOME

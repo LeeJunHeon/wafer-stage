@@ -154,7 +154,8 @@ setInterval(() => {
 function redrawGraphs() { if (T.svgRT) drawRT(T.svgRT, UI.state); if (T.svgTt) drawTt(T.svgTt, UI.state); }
 
 /* ---- 화면 만들기: 그래프 둘(카메라 아래) ---- */
-function boxSize(svg, dw, dh) { const p = svg.parentNode, w = p && p.clientWidth, hh = p && p.clientHeight; return w > 200 && hh > 120 ? [w, hh] : [dw, dh]; }
+/* 그래프는 언제나 상자 크기 그대로 그린다(상자가 작아도 기본 크기로 그려 작게 쪼그라들지 않게). 숨은 상자(0)는 기본 크기 - 보이는 순간 ResizeObserver 가 다시 그린다. */
+function boxSize(svg, dw, dh) { const p = svg.parentNode, w = p && p.clientWidth, hh = p && p.clientHeight; return w > 0 && hh > 0 ? [Math.max(w, 160), Math.max(hh, 100)] : [dw, dh]; }
 function buildHere() {
   if (T.built) return;
   T.svgRT = svgEl("svg", { class: "gsvg", id: "g-rt", preserveAspectRatio: "xMidYMid meet" });

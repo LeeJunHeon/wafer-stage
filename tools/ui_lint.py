@@ -1,10 +1,13 @@
-"""ui_lint.py - 화면 배치 검사기(playwright). 모든 화면 · 상태를 4가지 창 크기(1920×1040 · 1536×800 · 1366×728 · 1280×680)에서 열어
+"""ui_lint.py - 화면 배치 검사기(playwright). 모든 화면 · 상태를 6가지 창 크기(1920×1040 · 1536×800 · 1366×728 · 1280×722 · 1280×680 · 1280×640)에서 열어
 컨트롤 겹침 · 같은 줄 가로 간격(< 6 px) · 위아래 간격(< 4 px) · 글자 잘림(줄임표도 툴팁이 없으면 실패) · 카드/패널 밖으로 나감 ·
-스크롤 없이 잘린 컨트롤 · 가로 스크롤을 찾는다. 결과 0 건이어야 한다. 스크린샷은 ..\\shots_v2\\ui\\ 에(첫 크기 + 위반이 있는 화면).
+스크롤 없이 잘린 컨트롤 · 가로 스크롤 · 그래프(SVG · 캔버스)가 상자의 90 % 미만을 채움 · 작은 스크롤 칸에서 일부만 보이는 버튼 · 입력 칸을 찾는다.
+결과 0 건이어야 한다. 스크린샷은 ..\\shots_v2\\ui\\ 에(첫 크기 + 위반이 있는 화면).
+1280×722 = 장비 PC(1920×1200 · 배율 150 %) 최대화, 1280×640 = 그 창 모드.
 
   python tools/ui_lint.py [--quick] [--out 폴더]
-    --quick  크기 둘(1920×1040 · 1280×680)만
+    --quick  크기 둘(1920×1040 · 1280×640)만
     --size WxH  그 크기 하나만(예: --size 1366x728) - 크기별로 나눠 돌 때
+    --sizes WxH,WxH,...  고른 크기들(예: --sizes 1280x722,1280x640,1920x1040)
 
 서버는 --dry + 합성 카메라 + 가짜 장비, 임시 데이터 폴더. 실제 포트 · 카메라 · VISA 는 열지 않는다.
 """
@@ -20,7 +23,7 @@ import e2e_rt  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 OUT = os.path.join(ROOT, "..", "shots_v2", "ui")
-SIZES = [(1920, 1040), (1536, 800), (1366, 728), (1280, 680)]
+SIZES = [(1920, 1040), (1536, 800), (1366, 728), (1280, 722), (1280, 680), (1280, 640)]
 
 LINT_JS = r"""
 () => {
@@ -102,7 +105,7 @@ LINT_JS = r"""
   if (!inWin) {
     const MAIN = ['#estop', '#tab-measure .jstop', '#tab-measure .jogpad .jogb', '#tab-measure .jstep', '#tab-measure .jzstep', '#tab-measure [data-act="capture"]', '#tab-measure [data-act="mstart"]', '#tab-measure [data-act="rt-start"]',
       '#tab-measure [data-act="mstop"]', '#tab-measure [data-act="rt-stop"]', '#tab-measure [data-act="mpause"]', '#tab-measure [data-act="mresume"]', '#tab-measure [data-act="manswer"]',
-      '#tab-setup .jogpad .jogb', '#tab-setup .jstep', '#tab-setup .jzstep', '#tab-setup [data-act="su-next"]'];
+      '#tab-setup .jogpad .jogb', '#tab-setup .jstep', '#tab-setup .jzstep', '#tab-setup [data-act="su-next"]', '#tab-measure #c-run .rfoot .btn.lg', '#tab-manual #c-man .btn'];
     MAIN.forEach((q) => Array.from(document.querySelectorAll(q)).filter(vis).forEach((e) => {
       const r = e.getBoundingClientRect(), v = visRect(e);
       if (r.right > innerWidth + 1 || r.bottom > innerHeight + 1 || r.left < -1 || r.top < -1 || v.width < r.width - 1 || v.height < r.height - 1) out.push('주 동작이 안 보임 ' + key(e) + ' (보이는 ' + Math.round(v.width) + 'x' + Math.round(v.height) + ' / ' + Math.round(r.width) + 'x' + Math.round(r.height) + ')');
@@ -127,6 +130,27 @@ LINT_JS = r"""
       cov += Math.max(0, Math.min(r.right, vr.right) - Math.max(r.left, vr.left)) * Math.max(0, Math.min(r.bottom, vr.bottom) - Math.max(r.top, vr.top));
     });
     if (area > 0 && cov / area > 0.10) out.push('사진을 덮는 요소 ' + Math.round(100 * cov / area) + ' % (한도 10 %)');
+  });
+  // (5) 그래프 · 캔버스는 상자를 가로 · 세로 90 % 이상 채운다(viewBox 비율이 상자와 달라 작게 그려지거나 기본 크기로 그려진 것)
+  Array.from(document.querySelectorAll('.gbox svg, .gbox canvas, .graph svg, .graph canvas')).filter(vis).forEach((g) => {
+    const box = g.parentElement, br = box.getBoundingClientRect(), gr = g.getBoundingClientRect();
+    const bw = box.clientWidth, bh = box.clientHeight;
+    if (bw < 20 || bh < 20) return;
+    let dw = gr.width, dh = gr.height;
+    if (g.tagName.toLowerCase() === 'svg' && g.viewBox && g.viewBox.baseVal && g.viewBox.baseVal.width) {
+      const vb = g.viewBox.baseVal, k = Math.min(gr.width / vb.width, gr.height / vb.height);         // meet: 그려진 크기
+      dw = vb.width * k; dh = vb.height * k;
+    }
+    if (dw < 0.9 * bw || dh < 0.9 * bh) out.push('그래프가 상자를 덜 채움 ' + (box.id || g.id || 'graph') + ' ' + Math.round(dw) + 'x' + Math.round(dh) + ' / ' + bw + 'x' + bh);
+  });
+  // (6) 버튼 · 입력 칸이 부모 밖으로 잘려 일부만 보임: 작은 스크롤 칸(높이 < 컨트롤 3개)이 컨트롤을 가르면 잘린 것으로 본다(긴 목록의 아래 끝은 스크롤 대상)
+  ctl.forEach((e) => {
+    const r = e.getBoundingClientRect(), v = visRect(e);
+    if (v.height <= 1 || v.width <= 1) return;
+    if (v.height >= r.height - 1 && v.width >= r.width - 1) return;
+    let sc = null;
+    for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) { const cs = getComputedStyle(a); if (/(auto|scroll|hidden|clip)/.test(cs.overflowX + cs.overflowY)) { sc = a; break; } }
+    if (sc && sc.clientHeight < 3 * r.height) out.push('부모 밖으로 잘림 ' + key(e) + ' (보이는 ' + Math.round(v.width) + 'x' + Math.round(v.height) + ' / ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' · ' + name(sc) + ')');
   });
   // (4) 내용이 있는데 높이가 60 px 미만인 카드
   Array.from(scope.querySelectorAll('.card, .viewbox, .gbox, .panel')).filter(vis).forEach((e) => {
@@ -168,7 +192,9 @@ def main():
     out = OUT
     if "--out" in args:
         out = args[args.index("--out") + 1]
-    sizes = [SIZES[0], SIZES[3]] if "--quick" in args else SIZES
+    sizes = [SIZES[0], SIZES[-1]] if "--quick" in args else SIZES
+    if "--sizes" in args:
+        sizes = [tuple(int(v) for v in x.split("x")) for x in args[args.index("--sizes") + 1].split(",")]
     if "--size" in args:                                  # 한 크기만(메모리가 모자랄 때 크기별로 나눠 돈다): --size 1366x728
         w_, h_ = args[args.index("--size") + 1].split("x")
         sizes = [(int(w_), int(h_))]
@@ -197,6 +223,7 @@ def main():
             pg.wait_for_timeout(1200)
             tab(pg, "measure"); lint.run(pg, "a_measure")
             tab(pg, "results"); lint.run(pg, "a_results")
+            tab(pg, "manual"); lint.run(pg, "a_manual")
             tab(pg, "setup")
             for i in range(1, 9):
                 pg.click(".sitem >> nth=%d" % (i - 1)); pg.wait_for_timeout(500); lint.run(pg, "a_setup%d" % i, first_shot=(i in (1, 2, 3, 8)))
@@ -249,6 +276,12 @@ def main():
             tab(pg, "setup")
             for i in range(1, 9):
                 pg.click(".sitem >> nth=%d" % (i - 1)); pg.wait_for_timeout(600); lint.run(pg, "b_setup%d" % i, first_shot=True)
+            # 수동 측정 탭: 대기 · 명령 직접 펼침 · 연속 측정 중
+            tab(pg, "manual"); lint.run(pg, "b_manual")
+            pg.click('[data-act="mn-scpi-toggle"]'); pg.wait_for_timeout(400); lint.run(pg, "b_manual_scpi")
+            pg.click('[data-act="mn-scpi-toggle"]'); pg.wait_for_timeout(450)
+            c.send("man_cont"); c.pump(3.0); pg.wait_for_timeout(900); lint.run(pg, "b_manual_cont")
+            c.send("man_stop"); c.wait(lambda s: s["manual"]["run"] and s["manual"]["run"]["state"] in ("stopped", "done", "error"), 40, "정지"); pg.wait_for_timeout(600)
             pg.close()
         finally:
             c.close()
@@ -266,6 +299,7 @@ def main():
             for i in (1, 2, 7):
                 pg.click(".sitem >> nth=%d" % (i - 1)); pg.wait_for_timeout(500); lint.run(pg, "c_setup%d_band4" % i)
             tab(pg, "results"); lint.run(pg, "c_results_band4")
+            tab(pg, "manual"); lint.run(pg, "c_manual_band4")
             pg.close()
         finally:
             c.close()

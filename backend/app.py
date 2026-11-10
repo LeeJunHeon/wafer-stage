@@ -120,6 +120,7 @@ class App:
         self.inst_info = {"k2110": None, "k2450": None, "msg": "", "test": None}
         self.rt = None                               # R–T 측정(지금 또는 마지막 - 자동 · 순회 · 수동 하나). 도는 동안 모든 이동 · 릴레이 · 촬영을 막는다
         self.rt_last = {"auto": None, "manual": None}    # 화면별 마지막 측정(측정 탭 · 수동 측정 탭)
+        self.free_move = False                        # '원점 없이 이동 허용'(저장 안 함 · 시작 · 다시 연결 · 세 축 원점 정상이면 꺼짐)
         self.manual_last = {}                         # 수동 측정 [온도 1번] · [저항 1번] 마지막 값
         self._rt_cache = {}
         self.pos = {"x": None, "y": None, "z": None}
@@ -258,6 +259,9 @@ class App:
                 mo._xy_lost()
                 st._aborted = True
             self.stage, self.motion, self.power, self.hub = st, mo, pw, hub          # 여기서 한꺼번에 공개
+            if self.free_move:
+                logger.log("[원점 무시] 스테이지 다시 연결 · 원점 없이 이동 허용 끔", "warn")
+            self.free_move = False                                               # 새 연결은 늘 꺼진 채로 시작
             self.bang_fail = None                                                # 새로 연결했다(보드가 재시작돼 모터가 멈춘 상태) - 전달 못 한 '!' 는 끝
             self._port_gone = False                                              # 사람이 다시 연결했어도 "포트 사라짐" 이 남으면 자동 연결이 한 번 더 연다(보드 리셋 한 번 더)
             self.eeprom = eeprom
@@ -1229,7 +1233,10 @@ class App:
             raise AppError("거리 값 오류")
         if abs(mm) > float(self.cfg.get("jog.max_mm")):
             raise AppError("한 번 최대 %g mm" % self.cfg.get("jog.max_mm"))
-        self.motion.jog(ax, mm, gen=gen, nowait=True, opts={"rep": bool(a.get("rep")), "free": bool(a.get("free"))})
+        nohome = self.free_active()
+        if nohome:
+            logger.log("[원점 무시] 조그 %s %+g mm" % (ax.upper(), mm), "warn")
+        self.motion.jog(ax, mm, gen=gen, nowait=True, opts={"rep": bool(a.get("rep")), "free": bool(a.get("free")), "nohome": nohome}, nohome=nohome)
         st = self.motion.status()
         self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
 
@@ -1238,22 +1245,47 @@ class App:
         c = self.cfg
         cz = c.get("contact_z_mm")
         z = None if st is None else st.get("z_mm")
+        nohome = bool(opts.get("nohome"))                   # 원점 없이 이동 허용: Z 높이를 모른다 - 접촉 높이 · 핀 내려감 판정은 하지 않는다(확인 창에서 사람이 받아들임)
         if ax == "z":
             zmax = float(c.get("jog.z_max_mm"))
             if abs(mm) > zmax + 1e-9:
                 raise MotionError("Z 는 한 번 최대 %g mm" % zmax, "z_step")
             if opts.get("rep") and mm > 0:
                 raise MotionError("Z↓ 는 한 번에 한 스텝", "z_repeat")
-            if mm > 0 and cz is not None and z_ok and not opts.get("free"):
+            if mm > 0 and cz is not None and z_ok and not opts.get("free") and not nohome:
                 lim = float(cz) + float(c.get("jog.z_over_contact_mm"))
                 if z is None or z + mm > lim + 1e-9:
                     raise MotionError("접촉 높이 %.2f + %.1f mm 아래로 못 내림" % (float(cz), float(c.get("jog.z_over_contact_mm"))), "z_deep")
         else:
             if opts.get("rep") and abs(mm) > float(c.get("jog.repeat_max_mm")) + 1e-9:
                 raise MotionError("연속 조그는 스텝 %g mm 이하만" % float(c.get("jog.repeat_max_mm")), "repeat")
-            if cz is not None and z_ok:
+            if cz is not None and z_ok and not nohome:
                 if z is None or z > float(cz) - float(c.get("jog.xy_clear_mm")) + 1e-9:
                     raise MotionError("핀이 내려가 있음 · Z 를 올린 뒤", "pin_down")
+
+    def free_active(self):
+        """'원점 없이 이동 허용' 이 켜져 있는가. 세 축 원점이 정상이 되면(또는 스테이지가 없으면) 저절로 끈다."""
+        if not self.free_move:
+            return False
+        m = self.motion
+        if m is None or (m.z_ok and m.xy_ok and not m.estop_locked):
+            self.free_move = False
+            logger.log("[원점 무시] %s · 원점 없이 이동 허용 끔" % ("스테이지 연결 없음" if m is None else "세 축 원점 정상"), "warn")
+            return False
+        return True
+
+    def c_free_move(self, a, gen):
+        """'원점 없이 이동 허용' 체크(저장 안 함). 켜면 사람의 수동 이동(조그 · 키보드 · 스텝 · 직접 거리)만 원점 · 위치 신뢰 ·
+        비상정지 잠금(회복 순서) · 회복 중 5 mm 한도 · 핀 내려감 판정을 건너뛴다(Motion.jog nohome). 절대 좌표 이동은 그대로 원점을 요구한다."""
+        on = bool(a.get("on"))
+        if on:
+            self._need_stage()
+            m = self.motion
+            if m.z_ok and m.xy_ok and not m.estop_locked:
+                raise AppError("세 축 원점 정상 · 필요 없음")
+        if on != self.free_move:
+            self.free_move = on
+            logger.log("[원점 무시] 원점 없이 이동 허용 %s" % ("켬 · Z 높이 모름 · 비상정지는 그대로" if on else "끔"), "warn")
 
     def c_move_xy(self, a, gen):
         self._need_move("이동")
@@ -1801,6 +1833,9 @@ class App:
     def bands(self, dev=None):
         """머리줄 아래 띠 목록. 맨 위 = 비상정지 · 통신 끊김 · 원점 회복(경보, 빨강), 그 아래 장치마다 한 줄(스테이지 · 카메라 · K2110 · K2450, 주황)."""
         out = []
+        if self.free_active():                                # 원점 없이 이동 허용: 머리줄 바로 아래 붉은 띠(맨 위)
+            out.append({"id": "free", "text": "원점 없이 이동 중 · Z 높이 모름", "next": "핀이 내려가 있으면 X · Y 이동이 샘플을 긁을 수 있음", "err": True,
+                        "actions": [{"act": "free_move", "args": {"on": False}, "label": "끄기", "tip": "원점 없이 이동 허용을 끕니다(원점이 있어야 조그 · 이동)."}]})
         b = self.band()
         if b:
             out.append(dict(b, id="alarm"))
@@ -3347,7 +3382,7 @@ class App:
                 "z_ok": m.z_ok, "xy_ok": m.xy_ok, "recovery": m.recovery_steps(), "gen": m.gen,
                 "jog_block": self.move_block("이동", jog=True, ignore_moving=True, ignore_recent=True), "move_block": self.move_block("이동", ignore_recent=True),
                 "done": dict(m.xy_done), "limits": stage_mod.limits_mm(), "fw_homed": dict(self.fw_homed),
-                "origin_text": "원점 정상" if (m.z_ok and m.xy_ok and not m.estop_locked) else "원점 없음"},
+                "origin_text": "원점 정상" if (m.z_ok and m.xy_ok and not m.estop_locked) else "원점 없음", "free_move": self.free_active()},
             "camera": {"open": cam_ok, "state": dev["camera"]["state"], "size": self.vision.size if cam_ok else None,
                 "text": ("%s×%s · 노출 %s · %s K" % (*(self.vision.size or (cfg.get("width"), cfg.get("height"))), cfg.get("exposure"), cfg.get("wb_temperature"))) if cam_ok else "—",
                 "cap_text": self.cap_text, "cap_error": self.cap_error, "busy": self.busy, "preview_n": self.vision.preview_n},

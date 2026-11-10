@@ -62,8 +62,10 @@ function setChanged() {
   const c = $("#set-cnt"); if (c) c.textContent = n ? "변경 " + n + "개 · 저장 전" : "";
   $$(".setrow").forEach((r) => r.classList.toggle("chg", SET.edits[r.dataset.key] !== undefined));
   $$(".setnav .ni").forEach((b) => { const t = b.dataset.tab; b.classList.toggle("chg", setItems(t).some((it) => SET.edits[it.key] !== undefined)); });
-  const sv = $("#set-save"); if (sv) sv.classList.toggle("dis", !n || Object.keys(SET.errs).length > 0 || !!setLocked());
+  const errs = Object.keys(SET.errs).filter((k) => !(k === "cooler.zones" && setSwapOk()));      // 히트건 · 구역 겹침은 저장 때 맞바꾸기를 묻는다
+  const sv = $("#set-save"); if (sv) sv.classList.toggle("dis", !n || errs.length > 0 || !!setLocked());
 }
+function setSwapOk() { return SET.edits["heater.relay"] != null && !("cooler.zones" in SET.edits); }
 function setCheckSoon() {
   clearTimeout(SET.timer);
   SET.timer = setTimeout(async () => {
@@ -93,7 +95,21 @@ UI.acts["set-cancel"] = () => {
   dialog("저장하지 않고 닫을까요?", "고친 " + n + "개가 사라집니다.", [{ label: "계속 고치기", cls: "primary", fn: () => openSettings(SET.cur, null, true) }, { label: "닫기", cls: "danger", fn: () => { SET.edits = {}; SET.open = false; } }]);
 };
 UI.acts["set-save"] = async () => {
-  if (!Object.keys(SET.edits).length || Object.keys(SET.errs).length || setLocked()) return;
+  if (!Object.keys(SET.edits).length || setLocked()) return;
+  /* 히트건만 바꿨는데 그 릴레이를 쓰는 쿨러 구역이 있으면(구역 검증 오류만 남음) 맞바꿀지 묻는다 - 둘이 서로를 막아 저장 못 하던 것 */
+  const hr = SET.edits["heater.relay"], errKeys = Object.keys(SET.errs);
+  if (setSwapOk() && errKeys.length && errKeys.every((k) => k === "cooler.zones")) {
+    const z = setGet(SET.vals, "cooler.zones") || { cells: [] }, old = setGet(SET.vals, "heater.relay");
+    const ci = (z.cells || []).findIndex((c) => Number(c.relay) === Number(hr));
+    if (ci >= 0) {
+      const edits = Object.assign({}, SET.edits);
+      dialog("히트건을 R" + hr + " 로 바꿀까요?", "쿨러 구역 칸 " + (ci + 1) + " 이 R" + hr + " 를 씁니다. 그 칸을 R" + old + " 로 맞바꿉니다. 실제 배치는 장비 설정 8 의 [2 s 켜 보기]로 확인하십시오.",
+        [{ label: "계속 고치기", fn: () => { openSettings(SET.cur, null, true); } },
+          { label: "맞바꿔 저장", cls: "primary", fn: async () => { const r = await send("settings_save", { patch: edits, swap_heater: true }); if (r.ok) { SET.edits = {}; SET.open = false; toast("저장 · 히트건 R" + hr + " · 칸 " + (ci + 1) + " 은 R" + old); } else openSettings(SET.cur, null, true); } }]);
+      return;
+    }
+  }
+  if (errKeys.length) return;
   const r = await send("settings_save", { patch: SET.edits });
   if (r.ok) { SET.edits = {}; SET.open = false; closeWin(); toast("저장"); }
 };

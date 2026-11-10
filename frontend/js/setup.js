@@ -285,7 +285,7 @@ function renderPanel(s) {
     kids.push(foot());
   } else if (S.step === 8) {
     const zr = st.cooler.zones, hn = st.heater.relay;
-    const relayOpts = Array.from({ length: 10 }, (_, i) => i + 1).filter((n) => n !== hn);
+    const relayOpts = Array.from({ length: 10 }, (_, i) => i + 1);           /* 히트건 · 구역을 한 화면에서 같이 고친다 - 저장할 때 최종 상태 하나로 검증(히트건이 어느 구역에도 없고 구역끼리 안 겹침) */
     const zcells = zr.cells.map((cl, i) => h("div", {}, h("div", { class: "sub3", text: "칸 " + (i + 1) }), selInput("m-z" + i, cl.relay, relayOpts.map((n) => [n, "R" + n]))));
     const rows = st.relay.items.map((r, i) => h("div", { class: "rlrow" }, h("label", { class: "chk" }, h("input", { type: "checkbox", id: "rl-" + i, checked: r.enabled, disabled: !!lock }), "R" + (i + 1)),
       h("span", { class: "grow", text: i + 1 === hn ? "히트건" : "쿨러" }),
@@ -305,7 +305,11 @@ function renderPanel(s) {
         btn("연결 끊기", "su-inst-off", null, "sm", "두 장비 연결을 닫습니다.", lock || (ik.k2110 || ik.k2450 ? "" : "연결 안 됨"))),
       devLine("K2110", ik.k2110), devLine("K2450", ik.k2450),
       tst ? h("div", { class: "sub", text: "시험 " + tst.t + " · 온도 " + (tst.temp == null ? "값 없음" : f1(tst.temp, 1) + " °C") + " · 저항 " + (tst.R == null ? "—" : Number(tst.R).toExponential(3) + " Ω") + " · 전류 " + (tst.I == null ? "—" : Number(tst.I).toExponential(3) + " A") + (tst.k2450_kind ? " · K2450 " + tst.k2450_kind : "") + (tst.k2110_kind ? " · K2110 " + tst.k2110_kind : "") + (tst.terminal ? " · 단자 " + (tst.terminal === "REAR" ? "뒷면" : "앞면") : "") + (tst.open ? " · 연결 없음 · 핀 접촉 · 앞/뒤 단자 설정 확인" : "") + (tst.err ? " · " + tst.err : "") }) : null));
-    kids.push(card("릴레이", h("div", { class: "sub", text: "히트건 R" + hn + " · 쿨러 R1–R9. 쓰는 릴레이만 켜 둡니다." }), ...rows,
+    const zrel = zr.cells.map((c) => Number(c.relay)).sort((a, b) => a - b);
+    kids.push(card("릴레이", h("div", { class: "sub", text: "히트건 R" + hn + " · 쿨러 R" + zrel.join(",R") + ". 쓰는 릴레이만 켜 두고 실제 배치는 [2 s 켜 보기]로 확인합니다." }),
+      h("div", { class: "row" }, h("span", { class: "sub fl", text: "히트건" }), selInput("m-hr", hn, relayOpts.map((n) => [n, "R" + n])),
+        h("span", { class: "sub grow", text: "구역과 함께 바꾼 뒤 [저장] (한 번에 검증)" })),
+      ...rows,
       h("h3", { text: "쿨러 구역 " + zr.rows + "×" + zr.cols }), h("div", { class: "zgrid" }, ...zcells),
       h("div", { class: "row" }, btn("저장", "su-save-dev", null, "primary", "", lock))));
   }
@@ -386,8 +390,9 @@ UI.acts["su-save-dev"] = async () => {
   const z = JSON.parse(JSON.stringify(st.cooler.zones));
   z.cells.forEach((c, i) => { const e = $("#m-z" + i); if (e) c.relay = Number(e.value); });
   const items = st.relay.items.map((r, i) => Object.assign({}, r, { enabled: $("#rl-" + i) ? $("#rl-" + i).checked : r.enabled }));
-  const r = await send("settings_save", { patch: { "cooler.zones": z, "relay.items": items } });
-  if (r.ok) toast("저장");
+  const hr = $("#m-hr") ? Number($("#m-hr").value) : st.heater.relay;
+  const r = await send("settings_save", { patch: { "heater.relay": hr, "cooler.zones": z, "relay.items": items } });
+  if (r.ok) toast("저장 · 히트건 R" + hr);
 };
 UI.acts["su-import"] = () => dialog("이전 프로그램 설정을 가져올까요?", "포트 · 카메라 · 가동범위 · 속도 · 위치 · 릴레이 · 쿨러 설정을 읽어 오고 스테이지를 다시 연결합니다. 보정 파일은 가져오지 않으니 다시 보정하십시오.", [{ label: "취소" }, { label: "가져오기", cls: "primary", fn: async () => { const r = await send("settings_import_old"); if (r.ok) toast("가져옴 · " + r.res.imported.length + "개 항목"); } }]);
 

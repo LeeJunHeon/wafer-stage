@@ -10,6 +10,7 @@ function cardHead(title, ...right) { return h("div", { class: "chead" }, h("h3",
 function padWhy(s) {
   const st = s.stage, rl = typeof rtLock === "function" ? rtLock(s) : "";
   if (!st) return "스테이지 연결 안 됨";
+  if (st.free_move) return rl || st.jog_block;                                // 원점 없이 이동 허용: 원점 · 잠금은 사유가 아니다(조그만)
   return rl || st.jog_block || (st.locked ? "비상정지 잠금" : "") || (!(st.z_ok && st.xy_ok) ? "원점 필요 · 스테이지 설정" : "");
 }
 /* 이동 명령(이동 · 샘플 위로 · Z 맨 위 …)이 안 되는 이유(없으면 "") */
@@ -146,18 +147,19 @@ function cardRun(s) {
     btn("샘플 " + s.samples.length + "개", "m-target", { t: "samples" }, tgt === "samples" ? "on" : "", "촬영한 샘플을 차례로 돌며 측정 단계대로 측정합니다.", locked ? "측정 중" : (s.samples.length ? "" : "촬영한 샘플 없음")));
   const top = [h("div", { class: "chead" }, h("h3", { text: "측정" }), seg, h("span", { class: "grow" }), btn("조건 편집", "m-cond", null, "sm", "전압 · 온도 · 속도 · 저장 위치 등 측정 조건을 고칩니다.", locked ? "측정 중 · 변경 잠김" : ""))];
   const mid = [], foot = [];
-  /* 파일 이름 · 저장 위치(위 고정 줄) */
+  /* 파일 이름 · 저장 위치(위 고정 줄 - 낮은 창에서도 잘리지 않는다. 가운데 스크롤은 조건 요약 · 단계만) */
   const r = s.settings.rt;
   const path = UI.nasPath(r.file_path, r.date_folder, r.batch_folder);
-  mid.push(h("div", { class: "row" }, h("span", { class: "sub fl", text: "파일 이름" }),
-    h("input", { type: "text", class: "grow", value: r.file_name, disabled: locked, "data-tip": "파일 이름의 앞부분입니다. 뒤에 전압과 회차 번호가 붙습니다" + (tgt === "samples" ? "(샘플 쪽은 샘플 번호도 붙습니다)." : "."),
-      onchange: async (e) => { const rr = await send("settings_save", { patch: { "rt.file_name": e.target.value } }); if (!rr.ok) e.target.value = r.file_name; } })),
-  h("div", { class: "row" }, h("span", { class: "sub fl", text: "저장 위치" }), h("span", { class: "grow sub mono nasprev", id: "m-path", "data-tip": path || "PC 에만 저장", text: path || "PC 에만 저장" }), btn("변경", "m-cond", { cat: "save" }, "sm", "저장 위치를 바꿉니다.", locked ? "측정 중 · 변경 잠김" : "")));
-  /* 가운데(안에서 스크롤): 조건 요약 · 단계 · 진행 단계 */
-  mid.push(h("div", { class: "sub", id: "m-sum", text: rtSummary(s) }));
+  top.push(h("div", { class: "row fnrow" }, h("span", { class: "sub nowrap", text: "파일" }),             /* 파일 이름 · 저장 위치 한 줄(낮은 창에서도 잘리지 않게) */
+    h("input", { type: "text", class: "fnin", value: r.file_name, disabled: locked, "data-tip": "파일 이름의 앞부분입니다. 뒤에 전압과 회차 번호가 붙습니다" + (tgt === "samples" ? "(샘플 쪽은 샘플 번호도 붙습니다)." : "."),
+      onchange: async (e) => { const rr = await send("settings_save", { patch: { "rt.file_name": e.target.value } }); if (!rr.ok) e.target.value = r.file_name; } }),
+    h("span", { class: "sub nowrap", text: "저장" }), h("span", { class: "grow sub mono nasprev", id: "m-path", "data-tip": "저장 위치 · " + (path || "PC 에만 저장"), text: path || "PC 에만 저장" }),
+    btn("변경", "m-cond", { cat: "save" }, "sm", "저장 위치를 바꿉니다.", locked ? "측정 중 · 변경 잠김" : "")));
+  /* 조건 요약 · 측정 단계 고르기도 고정 줄. 가운데(안에서 스크롤)는 단계 목록 · 진행 단계만 */
+  top.push(h("div", { class: "sub", id: "m-sum", text: rtSummary(s) }));
   if (tgt === "samples") {
     const sel_ = h("select", { class: "msel", disabled: locked, onchange: (e) => { M.cond = e.target.value; send("settings_save", { patch: { "condition.active": M.cond } }); } }, conds.map((c) => h("option", { value: c.name, text: c.name, selected: c.name === act })));
-    mid.push(h("div", { class: "row wrap" }, h("span", { class: "sub", text: "측정 단계" }), sel_, btn(MC.showSteps ? "단계 접기 ▴" : "단계 보기 ▾", "steps-toggle", null, "sm"), btn("편집", "cond-edit", null, "sm", "측정 단계를 고칩니다.", locked ? "측정 중" : "")),
+    top.push(h("div", { class: "row wrap" }, h("span", { class: "sub", text: "측정 단계" }), sel_, btn(MC.showSteps ? "단계 접기 ▴" : "단계 보기 ▾", "steps-toggle", null, "sm"), btn("편집", "cond-edit", null, "sm", "측정 단계를 고칩니다.", locked ? "측정 중" : "")),
       h("div", { class: "sub", text: cv ? estText(cv) : "" }));
     if (MC.showSteps && !running) mid.push(h("ol", { class: "steps" }, (cv ? cv.steps : []).map((st) => h("li", {}, h("span", { text: (st.i + 1) + ". " + st.text })))));
   }

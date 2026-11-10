@@ -398,7 +398,7 @@ def c44(c):
     check(ok and c.state["settings"]["rt"]["max_temp"] == 70.0, "마지막 값 기억")
     ok, r = c.send("rt_defaults")
     s = c.state["settings"]["rt"]
-    check(ok and s["max_temp"] == 85.0 and s["volt"] == 0.1 and s["ilim_a"] == 0.1 and s["terminal"] == "REAR" and s["heat_rate"] == 0.0 and s["precool_c"] == 24.5 and s["repeat"] == 1, "기본값으로 (%s)" % s["max_temp"])
+    check(ok and s["max_temp"] == 85.0 and s["volt"] == 1.0 and s["ilim_a"] == 0.1 and s["terminal"] == "REAR" and s["heat_rate"] == 0.0 and s["precool_c"] == 0.0 and s["break_temp"] == 30.0 and s["emergency_c"] == 110.0 and s["repeat"] == 1, "기본값으로(1 V · 냉각 끝 30 · 비상 차단 110 · 예비 냉각 0) (%s)" % s["max_temp"])
     check(s["k2450_addr"] == "GPIB0::18::INSTR", "장비 주소는 그대로")
 
 
@@ -422,7 +422,7 @@ def c45(c):
     safe_off(c, "추종")
 
 
-@case("46 새 기본값(0.1 V · 한도 0.1 A · 뒷면 단자) · 파일 형식 · 열린 회로 감지")
+@case("46 0.1 V · 한도 0.1 A · 뒷면 단자 · 파일 형식(기존 파일 이름 5-1-ncd(380)_0.10V) · 열린 회로 감지")
 def c46(c):
     c.send("settings_save", patch={"rt.volt": 0.1, "rt.ilim_a": 0.1, "rt.repeat": 1, "rt.terminal": "REAR", "rt.file_name": "5-1-ncd(380)_"})
     at_contact(c)

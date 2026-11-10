@@ -242,6 +242,14 @@ function jogStepBtns(s, col) {
     "data-tip": v > jogRepeatMax() ? "이 스텝은 누를 때마다 한 번만 움직입니다(누르고 있어도 연속으로 가지 않음)." : "0.5 초 이상 누르고 있으면 연속으로 움직입니다." })));
   col.querySelector(".jz").replaceChildren(...zs.map((v) => h("button", { tabindex: -1, class: "btn sm jzstep" + (JOG.zstep === v ? " on" : ""), "data-v": v, text: String(v), onclick: () => jogSetZStep(v), "data-tip": "Z 버튼이 한 번에 움직이는 거리입니다." })));
 }
+/* 원점 없이 이동 허용: 켤 때는 확인 창(위험 설명), 끌 때는 바로 */
+function jogFreeToggle() {
+  const st = UI.state && UI.state.stage;
+  if (!st) { toast("스테이지 연결 안 됨", true); return; }
+  if (st.free_move) { send("free_move", { on: false }); return; }
+  dialog("원점 없이 이동을 허용할까요?", "Z 높이를 모릅니다. 핀이 내려가 있으면 X · Y 이동이 샘플을 긁을 수 있습니다. 끝단 범위를 모르므로 끝단에 부딪힐 수 있습니다. 먼저 Z↑ 로 핀을 올리고 보면서 조금씩 움직이십시오. 조그(패드 · 키보드 · 스텝 · 직접 거리)만 되고 좌표 이동 · 측정은 원점이 있어야 합니다. 비상정지 · 정지는 그대로입니다.",
+    [{ label: "취소" }, { label: "허용", cls: "danger", fn: () => send("free_move", { on: true }) }]);
+}
 function jogStepsCol() {
   const inp = h("input", { type: "number", class: "jstep-in", min: 0.01, step: "any", value: JOG.step, "data-tip": "스텝을 직접 입력합니다(mm). 입력하는 즉시 적용됩니다." });
   inp.addEventListener("input", () => jogCheckStepInput(inp, inp._max || 50));
@@ -266,8 +274,14 @@ function jogPad(s, opt) {
     const pad = h("div", { class: "pad" }, h("span"), b.up, h("span"), b.left, h("span", { class: "padc" }, stop), b.right, h("span"), b.down, h("span"));
     const zUp = zBtn("Z ↑", -1), zDn = zBtn("Z ↓", 1);
     const zt = opt.ztop ? btn("Z 맨 위", opt.ztop.act, null, "jogb", "Z 를 맨 위로 올립니다.", opt.ztop.why || "") : null;
-    el = h("div", { class: "jogpad row" }, pad, h("div", { class: "col zpad" }, zUp, zDn, zt), jogStepsCol());
-    el._j = { b, zUp, zDn, zt, stop, ztopOpt: opt.ztop };
+    /* 원점 없이 이동 허용(원점이 없거나 비상정지 잠금일 때만 보임): 상태는 서버 것을 그대로 - 체크 칸은 누름만 받는다 */
+    const fm = h("input", { type: "checkbox", tabindex: -1 });
+    const fml = h("label", { class: "chk freemv hidden", "data-tip": "원점이 없거나 비상정지 잠금일 때 사람이 보면서 하는 조그만 허용합니다(켤 때 확인 창). 좌표 이동 · 측정은 원점이 있어야 합니다." }, fm, "원점 없이 이동 허용");
+    fm.addEventListener("click", (e) => { e.preventDefault(); jogFreeToggle(); });
+    const sc = jogStepsCol();
+    sc.append(fml);
+    el = h("div", { class: "jogpad row" }, pad, h("div", { class: "col zpad" }, zUp, zDn, zt), sc);
+    el._j = { b, zUp, zDn, zt, stop, ztopOpt: opt.ztop, fm, fml };
     JOG.pads[key] = el;
   }
   jogPadUpdate(el, s, opt);
@@ -288,6 +302,12 @@ function jogPadUpdate(el, s, opt) {
   j.zUp.classList.toggle("dis", !!why); j.zDn.classList.toggle("dis", !!why);
   if (j.zt && opt.ztop) { const zw = opt.ztop.why || ""; j.zt.classList.toggle("dis", !!zw); if (zw) { j.zt.removeAttribute("data-act"); j.zt.setAttribute("data-tip", zw); } else { j.zt.setAttribute("data-act", opt.ztop.act); j.zt.setAttribute("data-tip", "Z 를 맨 위로 올립니다."); } }
   const st = s.stage;
+  if (j.fml) {
+    const need = !!(st && (st.free_move || !(st.z_ok && st.xy_ok) || st.locked));
+    j.fml.classList.toggle("hidden", !need);
+    j.fm.checked = !!(st && st.free_move);
+    j.fml.classList.toggle("on", !!(st && st.free_move));
+  }
   j.stop.classList.toggle("mv", !!(st && st.moving));                       // 모터가 움직이는 동안은 붉은 채움(색만 바꾼다)
   j.stop.classList.toggle("dis", !st);                                      // 꺼지는 사유는 "스테이지 연결 안 됨" 하나뿐
   if (!st) j.stop.setAttribute("data-tip", "스테이지 연결 안 됨");

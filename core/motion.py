@@ -314,14 +314,19 @@ class Motion:
             return self.stage.status()
 
     # ---- 조그 · 원점 (회복 동작은 잠금 상태에서도 허용) ----------------
-    def jog(self, axis, mm, gen=None, nowait=False, opts=None, internal=False, speed=None):
+    def jog(self, axis, mm, gen=None, nowait=False, opts=None, internal=False, speed=None, nohome=False):
+        """조그 한 번(펌웨어 jx/jy/jz, 8000 펄스 조각 · 조각마다 비상정지 · 정지 확인 · 쓰기 직전 세대 확인).
+
+        nohome = 사람이 켠 '원점 없이 이동 허용'(App.free_move): 원점 · 위치 신뢰 · 비상정지 잠금(회복 순서) · 회복 중 5 mm 한도 ·
+        핀 내려감 판정(jog_guard)을 건너뛴다. 지키는 것: 이동 잠금(이동 중 즉시 거절 · 비상정지 직후 1 s · 정지 직후 0.5 s · 늦은 이동) ·
+        세대(비상정지 즉시) · 이동 시간 한도 + 재동기 · 통신 끊김 · X · Y 전 히트건 꺼짐 확인 · 원점이 있는 축의 가동범위."""
         g = self.gen if gen is None else gen
         ax = str(axis).lower()
         with self._locked(nowait):
             self._enter(g)
-            if not self.z_ok and not (ax == "z" and mm < 0):
+            if not nohome and not self.z_ok and not (ax == "z" and mm < 0):
                 raise MotionError("Z 원점 잡기 먼저 · 지금은 Z 위쪽 조그만", "no_z")
-            if not internal and (self.estop_locked or not self.z_ok or not self.xy_ok) and abs(float(mm)) > RECOVERY_JOG_MAX_MM + 1e-9:
+            if not internal and not nohome and (self.estop_locked or not self.z_ok or not self.xy_ok) and abs(float(mm)) > RECOVERY_JOG_MAX_MM + 1e-9:
                 raise MotionError("회복 중 조그는 한 번 최대 %g mm" % RECOVERY_JOG_MAX_MM, "recovery_step")
             with self.op(g):
                 st = None
