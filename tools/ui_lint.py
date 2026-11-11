@@ -68,7 +68,7 @@ LINT_JS = r"""
   }
   // 글자 잘림
   const tipped = (e) => { for (let x = e, n = 0; x && n < 4; x = x.parentElement, n++) if (x.getAttribute && (x.getAttribute('data-tip') || x.getAttribute('title'))) return true; return false; };
-  const textEls = Array.from(scope.querySelectorAll('button, label, .snm, .cell .v, .cell .k, .sitem .s, .sitem .s2, .sitem .t, .chip, .why, .nasprev, h2, h3, .sub, .band span, .gate span')).filter(vis).filter((e) => !e.closest('#tip') && !e.closest('.pop'));
+  const textEls = Array.from(scope.querySelectorAll('button, label, .snm, .schip, .bt, .sitem .s, .sitem .s2, .sitem .t, .chip, .why, .nasprev, h2, h3, .sub, .band span, .gate span')).filter(vis).filter((e) => !e.closest('#tip') && !e.closest('.pop'));
   textEls.forEach((e) => {
     const cs = getComputedStyle(e);
     if (e.scrollWidth > e.clientWidth + 1 && (cs.overflowX !== 'visible' || cs.textOverflow === 'ellipsis') && !tipped(e)) out.push('글자 잘림 ' + key(e) + ' (' + e.scrollWidth + '>' + e.clientWidth + ')');

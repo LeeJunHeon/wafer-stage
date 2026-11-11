@@ -66,10 +66,12 @@ function buildSetup() {
 function renderSetup(s) {
   if (!S.built) buildSetup();
   if (UI.tab !== "setup") return;
+  $("#tab-setup").classList.toggle("st8", S.step === 8);
   const items = [1, 2, 3, 4, 5, 6, 7, 8].map((i) => {
     const [cls, st, sum, sum2, bads] = stepInfo(s, i);
+    const bad = !!(bads && (bads[0] || bads[1])) || cls === "down";
     return h("div", { class: "sitem " + cls + (S.step === i ? " sel" : ""), "data-act": "su-step", "data-args": JSON.stringify({ i }) }, h("div", { class: "no", text: i }),
-      h("div", { class: "grow" }, h("div", { class: "t", text: STEPS[i - 1] }), h("div", { class: "s" + (bads && bads[0] ? " bad" : ""), text: sum }), sum2 ? h("div", { class: "s2" + (bads && bads[1] ? " bad" : ""), text: sum2 }) : null), h("div", { class: "st", text: st }));
+      h("div", { class: "grow" }, h("div", { class: "t", text: STEPS[i - 1] }), h("div", { class: "s" + (bad ? " bad" : ""), "data-tip": sum + (sum2 ? " · " + sum2 : "") }, h("i", { class: "dot" }), h("span", { text: sum + (sum2 ? " · " + sum2 : "") }))));
   });
   const lsig = JSON.stringify(items.map((e) => e.outerHTML)) + S.step;
   if (lsig !== S.leftSig) {
@@ -93,13 +95,13 @@ UI.acts["su-step"] = (a) => { S.step = a.i; S.leftSig = ""; S.rightSig = ""; S.a
 UI.acts["su-next"] = () => { if (S.step < 8) UI.acts["su-step"]({ i: S.step + 1 }); };
 
 function renderSetupView(s) {
-  const v = S.viewer, kind = viewFor(s), sz = s.camera.size || [1280, 960];
+  const v = S.viewer, kind = viewFor(s), sz = picSize(s, kind);
   const key = kind + ":" + (kind === "ref" ? s.ref && s.ref.id : kind === "snap" ? S.snapV : "");
   if (key !== S.viewKey) { S.viewKey = key; v.W = 0; v.key = null; }
   const title = { live: "실시간", ref: "빈 판 사진", snap: "정지 화면" }[kind];
   S.vhead.replaceChildren(h("b", { class: kind === "live" ? "livetitle" : "", text: title + " · " + STEPS[S.step - 1] }), h("span", { class: "grow" }),
     h("div", { class: "seg" }, btn("판 맞춤", "su-fit", { m: "plate" }, S.zoom === "plate" ? "on" : ""), btn("전체", "su-fit", { m: "all" }, S.zoom === "all" ? "on" : "")));
-  S.vfoot.replaceChildren(h("span", { text: S.step === 5 ? "점선 = 판 영역 · 번호 = 기준점" : S.step === 8 ? "점선 격자 = 쿨러 구역" : S.step === 6 && kind === "snap" ? "주황 상자 = 헤드 마커(정렬에서 뺀 영역)" : "점선 = 판 영역" }), h("span", { class: "grow" }), h("span", { class: "mono", text: s.camera.text }));
+  S.vfoot.replaceChildren(h("span", { text: S.step === 5 ? "점선 = 판 영역 · 번호 = 기준점" : S.step === 8 ? (s.calib.status === "done" ? "점선 격자 = 쿨러 구역" : "점선 = 판 영역 · 좌표 보정 뒤 쿨러 구역이 보입니다") : S.step === 6 && kind === "snap" ? "주황 상자 = 헤드 마커(정렬에서 뺀 영역)" : "점선 = 판 영역" }), h("span", { class: "grow" }), h("span", { class: "mono", text: s.camera.text }));
   v.mode = S.zoom;
   v.area = s.calib.area;
   const noPhoto = kind === "live" && !s.camera.open;               // 사진이 없으면 사진 자리에 안내 · 꼭짓점 편집기는 사진이 있을 때만
@@ -112,6 +114,12 @@ function renderSetupView(s) {
   $$(".hint", v.el).forEach((e) => e.remove());
   if (S.freeze && S.step === 5) v.el.append(h("div", { class: "hint", text: "핀 가운데와 같은 점을 클릭" }));
   redrawSetup();
+}
+/* 그리는 사진의 크기: 빈 판 사진 = ref.size · 정지 화면 = snap_size · 실시간만 camera.size (카메라가 끊겨도 사진은 자기 크기로 그린다) */
+function picSize(s, kind) {
+  const k = kind || viewFor(s);
+  const z = k === "ref" ? s.ref && s.ref.size : k === "snap" ? s.snap_size : s.camera.size;
+  return z && z[0] > 0 && z[1] > 0 ? z : (s.camera.size || (s.ref && s.ref.size) || [1280, 960]);
 }
 function defaultArea(sz) { const w = sz[0], h_ = sz[1]; return [[w * 0.25, h_ * 0.2], [w * 0.75, h_ * 0.2], [w * 0.75, h_ * 0.8], [w * 0.25, h_ * 0.8]]; }
 function frameOfView() { const k = viewFor(UI.state); return k === "ref" ? "ref" : k === "snap" ? "snap" : null; }
@@ -287,9 +295,10 @@ function renderPanel(s) {
     const zr = st.cooler.zones, hn = st.heater.relay;
     const relayOpts = Array.from({ length: 10 }, (_, i) => i + 1);           /* 히트건 · 구역을 한 화면에서 같이 고친다 - 저장할 때 최종 상태 하나로 검증(히트건이 어느 구역에도 없고 구역끼리 안 겹침) */
     const zcells = zr.cells.map((cl, i) => h("div", {}, h("div", { class: "sub3", text: "칸 " + (i + 1) }), selInput("m-z" + i, cl.relay, relayOpts.map((n) => [n, "R" + n]))));
-    const rows = st.relay.items.map((r, i) => h("div", { class: "rlrow" }, h("label", { class: "chk" }, h("input", { type: "checkbox", id: "rl-" + i, checked: r.enabled, disabled: !!lock }), "R" + (i + 1)),
-      h("span", { class: "grow", text: i + 1 === hn ? "히트건" : "쿨러" }),
-      btn("2 s 켜 보기", "su-rl-test", { n: i + 1 }, "sm", "이 릴레이를 2 초만 켰다 끕니다.", lock || (nostage ? "스테이지 연결 안 됨" : "") || (r.enabled ? "" : "사용 안 함") || (s.stage && s.stage.locked ? "비상정지 잠금" : ""))));
+    const useOf = (n) => (n === hn ? "히트건" : zr.cells.map((cl, i) => (Number(cl.relay) === n ? i + 1 : null)).filter(Boolean).map((i) => "쿨러 구역 " + i).join(", ") || "—");
+    const rows = st.relay.items.map((r, i) => h("tr", {}, h("td", {}, h("label", { class: "chk" }, h("input", { type: "checkbox", id: "rl-" + i, checked: r.enabled, disabled: !!lock }), "R" + (i + 1))),
+      h("td", { class: "nm", text: r.name || "" }), h("td", { class: i + 1 === hn ? "heatuse" : "", text: useOf(i + 1) }),
+      h("td", { class: "ra" }, btn("켜 보기", "su-rl-test", { n: i + 1 }, "sm", "이 릴레이를 2 초만 켰다 끕니다.", lock || (nostage ? "스테이지 연결 안 됨" : "") || (r.enabled ? "" : "사용 안 함") || (s.stage && s.stage.locked ? "비상정지 잠금" : "")))));
     const ik = (s.rt && s.rt.inst) || {}, rts = st.rt;
     /* 주소: 목록(pyvisa 가 찾은 GPIB · USB 전부)에서 고르거나 직접 입력 */
     const addrSel = (key, val) => h("span", { class: "row grow" }, h("input", { type: "text", class: "grow mono", id: "ia-" + key, list: "ia-list", value: val || "", spellcheck: "false", disabled: !!lock,
@@ -309,8 +318,8 @@ function renderPanel(s) {
     kids.push(card("릴레이", h("div", { class: "sub", text: "히트건 R" + hn + " · 쿨러 R" + zrel.join(",R") + ". 쓰는 릴레이만 켜 두고 실제 배치는 [2 s 켜 보기]로 확인합니다." }),
       h("div", { class: "row" }, h("span", { class: "sub fl", text: "히트건" }), selInput("m-hr", hn, relayOpts.map((n) => [n, "R" + n])),
         h("span", { class: "sub grow", text: "구역과 함께 바꾼 뒤 [저장] (한 번에 검증)" })),
-      ...rows,
-      h("h3", { text: "쿨러 구역 " + zr.rows + "×" + zr.cols }), h("div", { class: "zgrid" }, ...zcells),
+      h("table", { class: "tb rltab" }, h("thead", {}, h("tr", {}, h("th", { text: "사용 · 번호" }), h("th", { text: "이름" }), h("th", { text: "용도" }), h("th", { text: "" }))), h("tbody", {}, ...rows)),
+      h("div", { class: "sub", text: "쿨러 구역 " + zr.rows + "×" + zr.cols + " · 칸마다 릴레이" }), h("div", { class: "zgrid" }, ...zcells),
       h("div", { class: "row" }, btn("저장", "su-save-dev", null, "primary", "", lock))));
   }
   let live = kids.filter(Boolean);
@@ -345,10 +354,10 @@ UI.acts["su-focus"] = async () => { const r = await send("focus_refind"); if (r.
 UI.acts["su-area"] = async () => {
   let fr = frameOfView();
   if (fr === null) { const r = await takeSnap(); if (!r.ok) return; fr = "snap"; }
-  const r = await send("area_set", { points: S.area, frame: fr, size: UI.state.camera.size });
+  const r = await send("area_set", { points: S.area, frame: fr, size: picSize(UI.state) });
   if (r.ok) { toast("판 영역 적용"); S.area = null; S.freeze = false; S.viewKey = ""; }
 };
-UI.acts["su-area-reset"] = () => { S.area = defaultArea(UI.state.camera.size || [1280, 960]); S.viewer.handles = S.area; redrawSetup(); };
+UI.acts["su-area-reset"] = () => { S.area = defaultArea(picSize(UI.state)); S.viewer.handles = S.area; redrawSetup(); };
 UI.acts["su-ref"] = async () => { const r = await send("ref_capture"); if (r.ok) { S.refRes = r.res; S.showRef = true; S.viewKey = ""; S.rightSig = ""; render(); } };
 UI.acts["su-ref-restore"] = (a) => dialog("이 빈 판 사진으로 되돌릴까요?", "좌표 보정은 새 사진 기준으로 옮겨집니다. 정렬이 안 되면 거절됩니다.", [{ label: "취소" }, { label: "되돌리기", cls: "primary", fn: async () => { const r = await send("ref_restore", a); if (r.ok) { S.refRes = r.res; S.showRef = true; S.rightSig = ""; render(); } } }]);
 UI.acts["su-record"] = async () => { const r = await send("calib_record"); if (r.ok) await takeSnap(); };

@@ -42,7 +42,7 @@ function connect() {
   };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.type === "state") { UI.state = m.state; if (m.log) UI.logTail = m.log; render(); }
+    if (m.type === "state") { UI.state = m.state; if (m.log) UI.logTail = m.log; const zs = String((m.state.settings || {}).ui_zoom || "auto"); if (zs !== UI.zoomSel) zoomSet(zs, true); render(); }
     else if (m.type === "log") { UI.log.push(m.e); if (UI.log.length > 600) UI.log.shift(); UI.logTail = UI.log.slice(-3); renderLog(); }
     else if (m.type === "ack") {
       const p = UI.pend[m.id]; delete UI.pend[m.id];
@@ -119,7 +119,7 @@ document.addEventListener("mousemove", (e) => {
   t.textContent = el.getAttribute("data-tip");
   t.classList.remove("hidden");
   const sc = UI.scale || 1;
-  t.style.left = Math.max(4, Math.min(window.innerWidth - t.offsetWidth - 8, e.clientX + 14)) + "px"; t.style.top = Math.max(4, Math.min(window.innerHeight - t.offsetHeight - 8, e.clientY + 18)) + "px";
+  t.style.left = Math.max(4, Math.min(window.innerWidth / sc - t.offsetWidth - 8, e.clientX / sc + 14)) + "px"; t.style.top = Math.max(4, Math.min(window.innerHeight / sc - t.offsetHeight - 8, e.clientY / sc + 18)) + "px";
 });
 
 /* 창은 showModal 을 쓰지 않는다: 막(#dimmer) + 창(#win) 을 보이고, 비상정지 버튼(#head z-index)은 막 위에 남는다. */
@@ -144,16 +144,53 @@ function popMenu(anchor, items) {
   const r = anchor.getBoundingClientRect(), sc = UI.scale || 1;
   const m = h("div", { class: "pop", id: "pop" }, items.map((it) => h("button", { tabindex: -1, class: "btn sm block" + (it.why ? " dis" : ""), text: it.label, "data-tip": it.why || null,
     onclick: () => { if (it.why) return; closePop(); it.fn(); } })));
-  m.style.left = Math.min(window.innerWidth - 240, r.left) + "px"; m.style.top = r.bottom + 4 + "px";
+  m.style.left = Math.min(window.innerWidth / sc - 240, r.left / sc) + "px"; m.style.top = r.bottom / sc + 4 + "px";
   $("#stage").append(m);
   setTimeout(() => document.addEventListener("click", closePop, { once: true }), 0);
 }
 function closePop() { const p = $("#pop"); if (p) { const r = p.getBoundingClientRect(); p.remove(); settle(400, r); } }
 function moreBtn(items) { const b = h("button", { tabindex: -1, class: "btn sm", text: "⋯", "data-tip": "더 보기" }); b.addEventListener("click", (e) => { e.stopPropagation(); if (settling(b)) return; popMenu(b, typeof items === "function" ? items() : items); }); return b; }
 
-/* ---- 스케일 ---- */
-function fit() { UI.scale = 1; }                  /* 창 크기에 맞춰 배치가 늘고 줄며 글자는 줄이지 않는다(좌표 변환용 UI.scale 은 항상 1) */
-window.addEventListener("resize", fit);
+/* ---- 화면 배율 ----
+   배치는 창 크기에 맞춰 늘고 줄고(캔버스 변환 없음), 배율은 html 의 CSS zoom 으로 건다(WebView2 · 브라우저 모두 같다).
+   자동: CSS 폭이 1536 이상이면 1, 아니면 CSS 폭이 min(1920, 창 안쪽 물리 폭)이 되게 줄인다(장비 PC 배율 150 % 최대화 → CSS 약 1920).
+   UI.scale = 배율. 좌표 변환은 (clientX - rect.left) / UI.scale (zoom 안의 getBoundingClientRect 는 화면 화소 · 요소 크기는 CSS 화소). */
+const ZOOM_OPTS = [67, 75, 80, 90, 100, 110, 125];
+function zoomOf(sel) {
+  if (sel && sel !== "auto" && +sel > 0) return +sel / 100;
+  const iw = window.innerWidth, dpr = window.devicePixelRatio || 1;
+  if (iw >= 1536) return 1;
+  return Math.max(0.5, Math.min(1, iw / Math.min(1920, iw * dpr)));
+}
+function fit() {
+  let sel = "auto";
+  try { sel = (UI.state && UI.state.settings && UI.state.settings.ui_zoom) || localStorage.getItem("ui_zoom") || "auto"; } catch (e) { /* 저장소 없음 */ }
+  UI.zoomSel = String(sel);
+  const z = zoomOf(UI.zoomSel);
+  UI.scale = z;
+  document.documentElement.style.zoom = z === 1 ? "" : String(z);
+}
+window.addEventListener("resize", fit);                                  /* 창 크기 · 모니터(devicePixelRatio)가 바뀌면 자동 배율을 다시 계산 */
+function zoomSet(sel, quiet) {
+  UI.zoomSel = String(sel);
+  try { localStorage.setItem("ui_zoom", UI.zoomSel); } catch (e) { /* 무시 */ }
+  const z = zoomOf(UI.zoomSel);
+  UI.scale = z;
+  document.documentElement.style.zoom = z === 1 ? "" : String(z);
+  if (!quiet) toast("화면 배율 " + Math.round(z * 100) + " %" + (UI.zoomSel === "auto" ? " (자동)" : ""));
+  if (UI.state && String((UI.state.settings || {}).ui_zoom) !== UI.zoomSel) send("settings_save", { patch: { ui_zoom: UI.zoomSel } });
+}
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+  const k = e.key;
+  if (k !== "=" && k !== "+" && k !== "-" && k !== "_" && k !== "0") return;
+  e.preventDefault();
+  if (e.repeat) return;
+  if (k === "0") { zoomSet("auto"); return; }
+  const cur = Math.round(UI.scale * 100);
+  const nx = (k === "=" || k === "+") ? ZOOM_OPTS.find((v) => v > cur) : [...ZOOM_OPTS].reverse().find((v) => v < cur);
+  zoomSet(nx === undefined ? (k === "-" || k === "_" ? ZOOM_OPTS[0] : ZOOM_OPTS[ZOOM_OPTS.length - 1]) : nx);
+}, true);
 
 /* ---- 화면이 스스로 바뀐 직후 400 ms 는 그 자리의 누름을 무시한다(비상정지 · 정지는 예외) ----
    settle(): 띠의 줄 수가 바뀜(화면 전체) · 메뉴 · 창이 닫힘(그것이 덮던 자리). slotScan(): 그릴 때마다 보이는 버튼의 자리 · 동작을 기억해 두고,
@@ -267,24 +304,27 @@ function renderHead(s) {
   p.className = "pill " + (ph.startsWith("측정 중") ? "busy" : (PILL[ph] || "idle"));
   const st = s.stage, c = s.calib, running = s.run && ["running", "paused", "stopping"].includes(s.run.state);
   const cells = [];
-  const mk = (k, v, cls) => h("div", { class: "cell " + (cls || ""), "data-tip": k + " · " + v }, h("div", { class: "k", text: k }), h("div", { class: "v", text: v }));
+  /* 상태 칩: 점 색 = 상태(녹색 정상 · 주황 확인 필요 · 빨강 오류 · 주홍 히트건). 누르면 해당 설정으로 */
+  const mk = (v, cls, step, tip) => h("button", { tabindex: -1, class: "schip " + (cls || "") + (step ? " go" : ""), "data-tip": tip || v, onclick: step ? () => gotoSetup(step) : null }, h("i", { class: "dot" }), h("span", { text: v }));
   const rt = relayText(s);
   if (!running) {
     const dv = s.dev || {};
     const stOk = dv.stage && dv.stage.state === "ok" && st;
-    cells.push(mk("스테이지", stOk ? (s.dry ? "가상 · " : "연결 · ") + st.origin_text : devText(dv.stage), stOk ? (st.z_ok && st.xy_ok && !st.locked ? "ok" : "warn") : (dv.stage && dv.stage.text === "통신 끊김") ? "err" : DEV_CLS[(dv.stage || {}).state] || ""));
-    cells.push(mk("카메라", s.camera.open ? "연결 · " + (s.camera.size ? s.camera.size.join("×") : "") : devText(dv.camera), DEV_CLS[(dv.camera || {}).state] || ""));
-    cells.push(mk("좌표 보정", c.status === "done" ? "완료" : c.status === "invalid" ? c.text : "필요", c.status === "done" ? "ok" : c.status === "invalid" ? "err" : "warn"));
-    cells.push(mk("릴레이", stOk ? "쿨러 " + (rt.co ? rt.co + "개 켜짐" : "꺼짐") + " · 히트건 " + (rt.heat ? "켜짐" : "꺼짐") : "알 수 없음", (stOk ? (rt.heat ? "heat" : rt.co ? "ok" : "") : "") + " relay"));
+    cells.push(mk("스테이지 " + (stOk ? (s.dry ? "가상 · " : "") + st.origin_text : devText(dv.stage)), stOk ? (st.z_ok && st.xy_ok && !st.locked ? "ok" : "warn") : (dv.stage && dv.stage.text === "통신 끊김") ? "err" : DEV_CLS[(dv.stage || {}).state] || "", 1, "스테이지 설정을 엽니다."));
+    cells.push(mk("카메라 " + (s.camera.open ? (s.camera.size ? s.camera.size.join("×") : "연결") : devText(dv.camera)), DEV_CLS[(dv.camera || {}).state] || "", 2, "카메라 설정을 엽니다."));
+    cells.push(mk("좌표 보정 " + (c.status === "done" ? "완료" : c.status === "invalid" ? c.text : "필요"), c.status === "done" ? "ok" : c.status === "invalid" ? "err" : "warn", 5, "좌표 보정 단계를 엽니다."));
+    const relTxt = !stOk ? "알 수 없음" : rt.heat ? "히트건 켜짐" + (rt.co ? " · 쿨러 " + rt.co + "개" : "") : rt.co ? "쿨러 " + rt.co + "개 켜짐" : "전부 꺼짐";
+    cells.push(mk("릴레이 " + relTxt, stOk ? (rt.heat ? "heat" : rt.co ? "ok" : "") : "", 8, "릴레이 설정을 엽니다."));
   } else {
-    cells.push(mk("위치", st ? xy(st.x, st.y) + " · Z " + f1(st.z) : "—", "ok"));
-    cells.push(mk("쿨러", rt.co ? "켜짐 " + rt.co + "개" : "꺼짐", rt.co ? "ok" : ""));
-    cells.push(mk("히트건", rt.heat ? "켜짐" : "꺼짐", rt.heat ? "heat" : "ok"));
+    cells.push(mk("위치 " + (st ? xy(st.x, st.y) + " · Z " + f1(st.z) : "—"), "ok"));
+    cells.push(mk("쿨러 " + (rt.co ? rt.co + "개 켜짐" : "꺼짐"), rt.co ? "ok" : ""));
+    cells.push(mk("히트건 " + (rt.heat ? "켜짐" : "꺼짐"), rt.heat ? "heat" : "ok"));
   }
   const box = $("#cells");
-  box.replaceChildren(...cells);
-  /* 띠: 경보 · 원점 회복(맨 위)과 장치마다 한 줄. 띠의 모든 안내는 누를 수 있는 버튼이다(막다른 상태 없음) */
-  const band = $("#band"), bds = s.bands || [];
+  const csig = JSON.stringify(cells.map((e) => e.outerHTML));
+  if (box.dataset.sig !== csig) { box.dataset.sig = csig; box.replaceChildren(...cells); }
+  /* 띠: 같은 종류(스테이지 · 카메라 연결 안 됨)는 한 줄로 합친다. 경보 · 원점 회복은 맨 위. 띠의 모든 안내는 누를 수 있는 버튼이다(막다른 상태 없음) */
+  const band = $("#band"), bds = mergeBands(s.bands || []);
   const sig = JSON.stringify(bds);
   if (bds.length) {
     if (band.dataset.sig !== sig) {
@@ -292,12 +332,24 @@ function renderHead(s) {
       band.dataset.n = bds.length;
       band.dataset.sig = sig;
       band.className = "bandbox";
-      band.replaceChildren(...bds.map((bd) => h("div", { class: "band " + (bd.err ? "err" : ""), "data-id": bd.id }, h("span", { text: bd.text }), h("span", { class: "next", text: bd.next ? "· " + bd.next : "" }), h("span", { class: "grow" }),
+      band.replaceChildren(...bds.map((bd) => h("div", { class: "band " + (bd.err ? "err" : ""), "data-id": bd.id }, h("span", { class: "bt", text: bd.text }), h("span", { class: "next", text: bd.next ? "· " + bd.next : "" }), h("span", { class: "grow" }),
         ...(bd.actions || []).map((a) => a.act === "estop"
           ? h("button", { tabindex: -1, class: "btn sm danger", "data-act": "estop", text: a.label, "data-tip": a.tip || null })      // 머리줄 비상정지와 같은 길(누르는 순간 · 400 ms 무시 예외)
           : h("button", { tabindex: -1, class: "btn sm" + (a.busy ? " dis" : ""), text: a.label, "data-tip": a.busy ? "연결 중 · 잠시만" : (a.tip || null), onclick: () => { if (!a.busy) bandAct(a); } })))));
     }
   } else { if (band.dataset.sig) settle(); band.dataset.sig = ""; band.dataset.n = 0; band.className = "bandbox hidden"; band.replaceChildren(); }
+}
+/* 서버의 스테이지 띠 + 카메라 띠 → 한 줄("스테이지 · 카메라 연결 안 됨" [다시 연결] 하나가 둘 다 시도) */
+function mergeBands(bds) {
+  const a = bds.find((b) => b.id === "stage"), b = bds.find((x) => x.id === "camera");
+  if (!a || !b) return bds;
+  const busy = a.actions.some((x) => x.busy) || b.actions.some((x) => x.busy);
+  const m = { id: "devs", err: false, text: "스테이지 · 카메라 " + (busy ? "연결 중" : "연결 안 됨"), next: busy ? "" : "포트 · 카메라 번호 확인",
+    actions: [{ act: "reconnect_both", args: {}, label: busy ? "연결 중…" : "다시 연결", busy, tip: "스테이지 포트와 카메라를 다시 열어 봅니다." },
+      { act: "ui_setup", args: { step: 1 }, label: "장비 설정", tip: "장비 설정의 해당 단계를 엽니다." }] };
+  const out = []; let put = false;
+  for (const x of bds) { if (x.id === "stage" || x.id === "camera") { if (!put) { out.push(m); put = true; } } else out.push(x); }
+  return out;
 }
 /* 측정 시작을 막는 사유는 한 곳에 하나만: 가장 먼저 해결할 것 한 줄 + 바로 가기 버튼. opt = {camera, inst} 이 필요한지. 없으면 null. */
 function gateOf(why, s, opt) {
@@ -324,6 +376,7 @@ UI.acts.ui_setup = (a) => gotoSetup(a.step || 1);
 function gotoSetup(step) { UI.tab = "setup"; if (typeof S !== "undefined") { S.step = step; S.leftSig = ""; S.rightSig = ""; S.area = null; S.freeze = false; S.showRef = false; } render(); }
 function bandAct(a) {
   if (a.act === "ui_setup") { gotoSetup((a.args || {}).step || 1); return; }
+  if (a.act === "reconnect_both") { send("reconnect"); send("cam_reconnect"); return; }
   if (a.act === "estop") { estop(); return; }                               // 띠의 [비상정지](정지 전송 실패 때)도 머리줄 비상정지와 같은 길(WS + HTTP · 응답 확인)
   const go = async () => { const r = await send(a.act, a.args || {}); if (r.ok && a.act === "origin") toast((a.args.axis || "").toUpperCase() + " 원점 잡기 완료"); };
   if (a.act === "capture" && UI.acts.capture) { UI.acts.capture(); return; }

@@ -124,7 +124,7 @@ UI.acts["sam-pop"] = (a, el) => {
   if (document.getElementById("sampop")) { closeSamPop(); return; }
   closePop();
   const r = el.getBoundingClientRect(), pop = h("div", { class: "pop sampop", id: "sampop" });
-  pop.style.left = Math.max(8, Math.min(window.innerWidth - 400, r.left)) + "px"; pop.style.top = r.bottom + 4 + "px";
+  const sc = UI.scale || 1; pop.style.left = Math.max(8, Math.min(window.innerWidth / sc - 400, r.left / sc)) + "px"; pop.style.top = r.bottom / sc + 4 + "px";
   $("#stage").append(pop); MC.samOpen = true;
   drawSamPop(UI.state);
 };

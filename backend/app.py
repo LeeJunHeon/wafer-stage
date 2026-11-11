@@ -89,6 +89,11 @@ class App:
         self.alarm = None
         self.ref_meta = store.read_json(paths.REF_META_PATH)
         self._ref_img = None
+        if self.ref_meta and not self.ref_meta.get("size"):
+            try:
+                self.ref_img()                                    # 예전 파일: 크기를 사진에서 채운다
+            except Exception:
+                pass
         self.snap = None                             # 단발 촬영: {img, A, id, t}
         self.shot = None                             # 촬영 결과
         self.samples = []
@@ -186,6 +191,8 @@ class App:
     def ref_img(self):
         if self._ref_img is None and self.ref_meta and os.path.exists(paths.REF_PATH):
             self._ref_img = imgio.imread_u(paths.REF_PATH)
+        if self._ref_img is not None and self.ref_meta and not self.ref_meta.get("size"):
+            self.ref_meta["size"] = [int(self._ref_img.shape[1]), int(self._ref_img.shape[0])]     # 크기 없는 예전 파일: 사진을 읽어 채운다
         return self._ref_img
 
     # ------------------------------------------------------------------
@@ -3390,6 +3397,7 @@ class App:
                 "cap_text": self.cap_text, "cap_error": self.cap_error, "busy": self.busy, "preview_n": self.vision.preview_n},
             "calib": self.calib_view(),
             "ref": None if not self.ref_meta else dict(self.ref_meta, history=self.ref_history()),
+            "snap_size": None if not self.snap else [int(self.snap["img"].shape[1]), int(self.snap["img"].shape[0])],
             "shot": None if not shot else {"id": shot["id"], "time": shot["time"], "size": shot["size"], "coords_ok": shot["coords_ok"],
                                            "warnings": shot["warnings"], "path": shot["path"], "cam": shot["cam"], "area": shot.get("area_cur"),
                                            "ref_id": shot.get("ref_id"), "fail": shot.get("fail")},
