@@ -162,21 +162,31 @@ function zoomOf(sel) {
   if (iw >= 1536) return 1;
   return Math.max(0.5, Math.min(1, iw / Math.min(1920, iw * dpr)));
 }
+/* 배율을 건다 + 배율로 본 CSS 크기를 CSS 에 알린다. html 의 CSS zoom 아래에서 vh · vw · @media (max-height …) 는 배율을 모른다
+   (100vh = 창 안쪽 높이 CSS 값 그대로 → 125 % 에서 창이 화면보다 커지고, 67 % 에서는 1032 CSS 높이인데도 낮은 창 규칙이 걸렸다).
+   그래서 --vw · --vh(= 창 안쪽 / 배율)와 html 클래스 lowh(≤ 800) · lowh2(≤ 680) · narrow(≤ 1500)로 대신한다(style.css). */
+function zoomApply(z) {
+  const de = document.documentElement, w = window.innerWidth / z, hh = window.innerHeight / z;
+  UI.scale = z;
+  de.style.zoom = z === 1 ? "" : String(z);
+  de.style.setProperty("--vw", w + "px");
+  de.style.setProperty("--vh", hh + "px");
+  de.classList.toggle("lowh", hh <= 800);
+  de.classList.toggle("lowh2", hh <= 680);
+  de.classList.toggle("narrow", w <= 1500);
+}
 function fit() {
   let sel = "auto";
   try { sel = (UI.state && UI.state.settings && UI.state.settings.ui_zoom) || localStorage.getItem("ui_zoom") || "auto"; } catch (e) { /* 저장소 없음 */ }
   UI.zoomSel = String(sel);
-  const z = zoomOf(UI.zoomSel);
-  UI.scale = z;
-  document.documentElement.style.zoom = z === 1 ? "" : String(z);
+  zoomApply(zoomOf(UI.zoomSel));
 }
 window.addEventListener("resize", fit);                                  /* 창 크기 · 모니터(devicePixelRatio)가 바뀌면 자동 배율을 다시 계산 */
 function zoomSet(sel, quiet) {
   UI.zoomSel = String(sel);
   try { localStorage.setItem("ui_zoom", UI.zoomSel); } catch (e) { /* 무시 */ }
   const z = zoomOf(UI.zoomSel);
-  UI.scale = z;
-  document.documentElement.style.zoom = z === 1 ? "" : String(z);
+  zoomApply(z);
   if (!quiet) toast("화면 배율 " + Math.round(z * 100) + " %" + (UI.zoomSel === "auto" ? " (자동)" : ""));
   if (UI.state && String((UI.state.settings || {}).ui_zoom) !== UI.zoomSel) send("settings_save", { patch: { ui_zoom: UI.zoomSel } });
 }
@@ -405,4 +415,5 @@ window.requestExit = function () {
   ]);
   return true;
 };
+fit();                                                                    /* 첫 그리기 전에 배율 · CSS 크기 클래스 */
 window.addEventListener("load", () => { fit(); connect(); });

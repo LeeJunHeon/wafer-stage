@@ -80,7 +80,7 @@ class Viewer {
     this.world.style.width = w + "px"; this.world.style.height = h_ + "px";
     this.svg.setAttribute("viewBox", "0 0 " + w + " " + h_);
     if (this.key !== key) { this.broken = false; this.img.src = url + (url.includes("?") ? "&" : "?") + "v=" + encodeURIComponent(version); this.key = key; }
-    if (first || !this.userMoved) this.fit(this.mode, this.area);
+    if ((first || !this.userMoved) && this.hd < 0 && !this.drag) this.fit(this.mode, this.area);      // 꼭짓점 · 화면을 끄는 중에는 다시 맞추지 않는다(좌표가 끄는 도중 바뀌지 않게)
   }
   fit(mode, area) {
     this.mode = mode; this.area = area || this.area;

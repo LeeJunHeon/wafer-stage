@@ -162,10 +162,10 @@ table.tb tr { cursor: pointer; }
 
 /* ---- 창 · 막 · 툴팁 ---- */
 #dimmer { position: fixed; inset: 0; background: rgba(15,18,22,.55); z-index: 500; }
-.win { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); z-index: 600; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; min-width: 420px; max-width: 1100px; max-height: 900px; overflow: auto; box-shadow: 0 8px 40px rgba(0,0,0,.4); }
+.win { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: calc(var(--vw, 100vw) - 32px); max-height: calc(var(--vh, 100vh) - 32px); z-index: 600; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; min-width: 420px; max-width: 1100px; max-height: 900px; overflow: auto; box-shadow: 0 8px 40px rgba(0,0,0,.4); }
 .win h2 { margin: 0 0 10px; font-size: 18px; }
 .win .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
-.win.big { width: min(1200px, calc(100vw - 48px)); height: min(800px, calc(100vh - 48px)); }
+.win.big { width: min(1200px, calc(var(--vw, 100vw) - 48px)); height: min(800px, calc(var(--vh, 100vh) - 48px)); }
 .tip { position: fixed; z-index: 2000; background: #1d2126; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 13px; max-width: 380px; pointer-events: none; }
 .toast { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 1500; background: #1d2126; color: #fff; padding: 8px 18px; border-radius: 4px; font-size: 14px; }
 .toast.err { background: var(--err); }
@@ -254,7 +254,7 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 .padc { display: block; }
 .btn.estop.dock { right: 16px; top: 9px; }
 /* 설정 창 */
-.win.setwin { width: min(1180px, calc(100vw - 48px)); height: min(900px, calc(100vh - 48px)); padding: 0; }
+.win.setwin { width: min(1180px, calc(var(--vw, 100vw) - 48px)); height: min(900px, calc(var(--vh, 100vh) - 48px)); padding: 0; }
 .setwrap { display: flex; flex-direction: column; width: 100%; height: 100%; }
 .seth { padding: 14px 20px 10px; } .seth h2 { margin: 0; }
 .setbody { flex: 1; min-height: 0; display: flex; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
@@ -274,13 +274,13 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 .setrow .chk1 { padding-top: 6px; }
 .setfoot { display: flex; align-items: center; gap: var(--gap-in); padding: 12px 20px; }
 
-@media (max-width: 1500px) {
-  .brand { display: none; }
-  #head { gap: 10px; }
-  .tab { padding: 0 16px; }
-  .pill { min-width: 110px; padding: 0 10px; }
-  .cell { padding: 5px 8px; } .cell .v { font-size: 13px; }
-}
+/* (max-width: 1500px) → html.narrow (화면 배율 반영: core.js zoomVars) */
+  :where(html.narrow) .brand { display: none; }
+  :where(html.narrow) #head { gap: 10px; }
+  :where(html.narrow) .tab { padding: 0 16px; }
+  :where(html.narrow) .pill { min-width: 110px; padding: 0 10px; }
+  :where(html.narrow) .cell { padding: 5px 8px; } :where(html.narrow) .cell .v { font-size: 13px; }
+
 
 .nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -294,7 +294,7 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 /* ---- 측정 화면 배치(노트북 크기): 오른쪽 = 위치 카드(줄어들지 않음) + 측정 카드(가운데만 스크롤) ---- */
 .mleft > #m-view { flex: 1 1 0; min-height: 340px; }
 .mgraphs { flex: 0 1 34%; min-height: 150px; }
-.mright { width: clamp(440px, 34vw, 520px); }
+.mright { width: clamp(440px, calc(var(--vw, 100vw) * 0.34), 520px); }
 .mright #c-pos { flex: none; }
 .mright #c-run { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 #c-run > .rtop, #c-run > .rfoot { flex: none; display: flex; flex-direction: column; gap: var(--gap-row); }
@@ -304,7 +304,7 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 #c-run .msteps { max-height: none; overflow: visible; }
 .samchip { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
 .samchip.warn { border-color: var(--warn); background: var(--warn-bg); }
-.pop.sampop { width: 380px; max-height: 70vh; overflow: auto; padding: var(--gap-row); display: flex; flex-direction: column; gap: var(--gap-row); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; box-shadow: 0 4px 14px rgba(0,0,0,.2); z-index: 1100; }
+.pop.sampop { width: 380px; max-height: calc(var(--vh, 100vh) * 0.7); overflow: auto; padding: var(--gap-row); display: flex; flex-direction: column; gap: var(--gap-row); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; box-shadow: 0 4px 14px rgba(0,0,0,.2); z-index: 1100; }
 .sampop .pophead { display: flex; flex-direction: column; gap: 2px; }
 .sampop .sc { cursor: default; } .sampop .scl { display: flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer; } .sampop .scx { cursor: pointer; }
 .sampop .sc.exc { opacity: .6; }
@@ -356,7 +356,7 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 .btn.stopbtn { padding: 0 14px; }
 .kbdtag.jogkbd { display: none; } .kbdtag.jogkbd.on { display: inline-block; align-self: center; }
 .jin .jstep-in.bad { border: 2px solid var(--err); background: var(--err-bg); }
-.nodeliver { position: fixed; left: 50%; top: 40%; transform: translate(-50%, -50%); z-index: 4000; background: var(--err); color: #fff; font-size: 34px; font-weight: 800; padding: 28px 44px; border-radius: 10px; border: 4px solid #fff; box-shadow: 0 8px 40px rgba(0,0,0,.5); pointer-events: none; text-align: center; max-width: 90vw; }
+.nodeliver { position: fixed; left: 50%; top: 40%; transform: translate(-50%, -50%); z-index: 4000; background: var(--err); color: #fff; font-size: 34px; font-weight: 800; padding: 28px 44px; border-radius: 10px; border: 4px solid #fff; box-shadow: 0 8px 40px rgba(0,0,0,.5); pointer-events: none; text-align: center; max-width: calc(var(--vw, 100vw) * 0.9); }
 .nodeliver.hidden { display: none; }
 
 .livestale { color: var(--warn) !important; border-color: var(--warn) !important; font-weight: 800; }
@@ -371,7 +371,7 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 .mnleft { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: var(--gap-card); }
 .mnleft .gbox { flex: 1 1 0; min-width: 0; min-height: 120px; position: relative; padding: 0; overflow: hidden; }
 .mnleft .gsvg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.mnright { width: clamp(420px, 34vw, 520px); flex: none; display: flex; flex-direction: column; gap: var(--gap-card); min-height: 0; }
+.mnright { width: clamp(420px, calc(var(--vw, 100vw) * 0.34), 520px); flex: none; display: flex; flex-direction: column; gap: var(--gap-card); min-height: 0; }
 .mnright #c-man { flex: none; }
 .mnright .mntop { flex: 1 1 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: var(--gap-card); }
 .mnright .mntop > .card { flex: none; }
@@ -384,45 +384,46 @@ ol.steps { list-style: none; padding: 0; margin: 6px 0; }
 
 /* ---- 낮은 창(장비 PC 1920×1200 · 배율 150 % = 안쪽 1280×722 · 창 모드 약 1280×640, 띠가 있으면 더 낮다) ----
    여백 · 줄 간격 · 버튼 높이만 줄여 측정 탭 오른쪽(위치 + 측정)이 스크롤 없이 들어가게 한다. 측정 카드 가운데(파일 이름 · 저장 위치 · 조건)는 자르지 않는다. */
-@media (max-height: 800px) {
-  :root { --gap-row: 8px; --pad-card: 12px; --gap-card: 8px; --btn-h: 28px; }
-  .tabpane, #tab-measure.tabpane, #tab-manual.tabpane { padding: 8px; gap: 8px; }
-  .btn { height: var(--h-sm); }
-  .btn.lg { height: var(--h-md); }
-  .card h3 { margin-bottom: 4px; }
-  #c-run > .rmid { min-height: 0; }
-  #c-run > .rmid, #c-run > .rfoot { margin-top: var(--gap-row); }
-  .mleft > #m-view { flex: 3 1 0; min-height: 200px; }               /* 카메라가 높이를 다 먹지 않게: 카메라 3 : 그래프 2 */
-  .mgraphs { flex: 2 1 0; min-height: 150px; }
-  .rtbig .v { font-size: 15px; }
-  .jstep-in, .jin .jstep-in { height: 26px; }
-}
-@media (max-height: 680px) {                                         /* 창 모드(약 1280×640) + 띠: 한 단계 더 줄인다 */
-  :root { --gap-row: 4px; --btn-h: 28px; }
-  .btn { height: var(--h-sm); }
-  .btn.lg { height: var(--h-md); }
-  .card h3 { font-size: 15px; margin-bottom: 2px; }
-  .bandbox .btn { height: 26px; }
-  .btn.sm { height: 26px; }
-  .chip { height: 22px; }
-  .jstep-in, .jin .jstep-in { height: 24px; }
-}
+/* (max-height: 800px) → html.lowh (화면 배율 반영: core.js zoomVars) */
+  :root.lowh { --gap-row: 8px; --pad-card: 12px; --gap-card: 8px; --btn-h: 28px; }
+  :where(html.lowh) .tabpane, :where(html.lowh) #tab-measure.tabpane, :where(html.lowh) #tab-manual.tabpane { padding: 8px; gap: 8px; }
+  :where(html.lowh) .btn { height: var(--h-sm); }
+  :where(html.lowh) .btn.lg { height: var(--h-md); }
+  :where(html.lowh) .card h3 { margin-bottom: 4px; }
+  :where(html.lowh) #c-run > .rmid { min-height: 0; }
+  :where(html.lowh) #c-run > .rmid, :where(html.lowh) #c-run > .rfoot { margin-top: var(--gap-row); }
+  :where(html.lowh) .mleft > #m-view { flex: 3 1 0; min-height: 200px; }               /* 카메라가 높이를 다 먹지 않게: 카메라 3 : 그래프 2 */
+  :where(html.lowh) .mgraphs { flex: 2 1 0; min-height: 150px; }
+  :where(html.lowh) .rtbig .v { font-size: 15px; }
+  :where(html.lowh) .jstep-in, :where(html.lowh) .jin .jstep-in { height: 26px; }
+
+/* (max-height: 680px) → html.lowh2 (화면 배율 반영: core.js zoomVars) */                                         /* 창 모드(약 1280×640) + 띠: 한 단계 더 줄인다 */
+  :root.lowh2 { --gap-row: 4px; --btn-h: 28px; }
+  :where(html.lowh2) .btn { height: var(--h-sm); }
+  :where(html.lowh2) .btn.lg { height: var(--h-md); }
+  :where(html.lowh2) .card h3 { font-size: 15px; margin-bottom: 2px; }
+  :where(html.lowh2) .bandbox .btn { height: 26px; }
+  :where(html.lowh2) .btn.sm { height: 26px; }
+  :where(html.lowh2) .chip { height: 22px; }
+  :where(html.lowh2) .jstep-in, :where(html.lowh2) .jin .jstep-in { height: 24px; }
+
 #c-run > .rmid:empty { display: none; }
 .chk.freemv { display: inline-flex; align-items: center; font-size: 12px; color: var(--ink2); white-space: nowrap; gap: 4px; }
 .chk.freemv.on { color: var(--err); font-weight: 700; }
 .fnrow .fnin { width: 120px; flex: 0 1 140px; min-width: 70px; }
-@media (max-height: 800px) { .bandbox .band { height: 30px; } .bandbox .band .btn { height: 24px; } }
-@media (max-height: 680px) {
-  .bandbox .band { height: 24px; font-size: 14px; }
-  .bandbox .band .btn { height: 20px; }
-  #head { height: 60px; }                                            /* 비상정지 버튼 크기(200×54)는 줄이지 않고 위 여백만 */
-  .tab { height: 38px; }
-  .cell { height: 46px; padding: 3px 8px; }
-  .btn.estop, .btn.estop.dock { top: 3px; }
-  .card { padding: 8px 10px; }
-  .pad .btn.jogb, .padc, .zpad .btn { height: 26px; }
-  .jbtns .btn { height: 24px; }
-}
+/* (max-height: 800px) → html.lowh (화면 배율 반영: core.js zoomVars) */ :where(html.lowh) .bandbox .band { height: 30px; } :where(html.lowh) .bandbox .band .btn { height: 24px; }
+
+/* (max-height: 680px) → html.lowh2 (화면 배율 반영: core.js zoomVars) */
+  :where(html.lowh2) .bandbox .band { height: 24px; font-size: 14px; }
+  :where(html.lowh2) .bandbox .band .btn { height: 20px; }
+  :where(html.lowh2) #head { height: 60px; }                                            /* 비상정지 버튼 크기(200×54)는 줄이지 않고 위 여백만 */
+  :where(html.lowh2) .tab { height: 38px; }
+  :where(html.lowh2) .cell { height: 46px; padding: 3px 8px; }
+  :where(html.lowh2) .btn.estop, :where(html.lowh2) .btn.estop.dock { top: 3px; }
+  :where(html.lowh2) .card { padding: 8px 10px; }
+  :where(html.lowh2) .pad .btn.jogb, :where(html.lowh2) .padc, :where(html.lowh2) .zpad .btn { height: 26px; }
+  :where(html.lowh2) .jbtns .btn { height: 24px; }
+
 
 /* =====================================================================
    디자인 기준 적용(2026-11): 차분한 계측 화면 - 정보는 한 번만 · 상태색은 상태에만 · 크기 · 간격은 변수대로.
@@ -462,7 +463,8 @@ select, input[type=text], input[type=number] { border-radius: var(--r-ctl); }
 .schip.ok .dot { background: var(--ok); } .schip.warn .dot { background: var(--warn); } .schip.err .dot { background: var(--err); } .schip.heat .dot { background: var(--heat); }
 .schip.heat { border-color: var(--heat); background: #fff1ea; color: #a33a10; }
 .btn.estop { top: 5px; }
-@media (max-width: 1500px) { .brand { display: none; } .schip { padding: 0 var(--sp-2); } }
+/* (max-width: 1500px) → html.narrow (화면 배율 반영: core.js zoomVars) */ :where(html.narrow) .brand { display: none; } :where(html.narrow) .schip { padding: 0 var(--sp-2); }
+
 
 /* ---- 띠: 옅은 바탕 · 왼쪽 상태색 띠 · 작은 버튼. 경보(빨강)는 눈에 띄게 ---- */
 .bandbox .band { height: 36px; padding: 0 var(--sp-4) 0 var(--sp-3); gap: var(--sp-3); font-size: var(--fs-m); font-weight: var(--fw-m); color: var(--ink); background: var(--warn-bg); border-left: 6px solid var(--warn); border-bottom: 1px solid var(--line); }
@@ -470,8 +472,10 @@ select, input[type=text], input[type=number] { border-radius: var(--r-ctl); }
 .bandbox .band .next { font-weight: var(--fw-n); color: var(--ink2); } .bandbox .band.err .next { color: #fff; opacity: .95; }
 .bandbox .band .btn { height: var(--h-sm); font-size: var(--fs-s); background: #fff; color: var(--ink); border-color: var(--line); }
 .bandbox .band .btn.danger { background: var(--err); color: #fff; border-color: #fff; }
-@media (max-height: 800px) { .bandbox .band { height: 32px; } .bandbox .band .btn { height: 24px; } }
-@media (max-height: 680px) { .bandbox .band { height: 28px; font-size: var(--fs-s); } .bandbox .band .btn { height: 22px; } #head { height: 60px; } .btn.estop, .btn.estop.dock { top: 3px; } }
+/* (max-height: 800px) → html.lowh (화면 배율 반영: core.js zoomVars) */ :where(html.lowh) .bandbox .band { height: 32px; } :where(html.lowh) .bandbox .band .btn { height: 24px; }
+
+/* (max-height: 680px) → html.lowh2 (화면 배율 반영: core.js zoomVars) */ :where(html.lowh2) .bandbox .band { height: 28px; font-size: var(--fs-s); } :where(html.lowh2) .bandbox .band .btn { height: 22px; } :where(html.lowh2) #head { height: 60px; } :where(html.lowh2) .btn.estop, :where(html.lowh2) .btn.estop.dock { top: 3px; }
+
 
 /* ---- 장비 설정: 단계 목록(번호 · 제목 · 한 줄 상태) ---- */
 .slist { width: 300px; }
