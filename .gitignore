@@ -1,8 +1,6 @@
 __pycache__/
 *.pyc
 .venv/
-*.jpg
-*.png
-*.jsonl
-calib_matrix.json
+.pytest_cache/
 settings.json
+*.log

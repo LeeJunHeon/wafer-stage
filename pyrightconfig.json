@@ -1,5 +1,0 @@
-{
-  "extraPaths": ["backend", "tools"],
-  "typeCheckingMode": "off",
-  "exclude": ["**/__pycache__", "**/.venv", "**/venv", "**/node_modules", "**/.git"]
-}
