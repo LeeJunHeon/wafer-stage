@@ -17,6 +17,7 @@ from app.devices.camera import Camera, CameraError
 from app.devices import stage as stage_mod
 from app.devices.stage import PPMM, Stage, StageError
 from app.logs import Logs
+from app.jobs.run import Runner
 from app.prep import Prep
 from app.safety import Rejected, Safety
 from app.state import ALARM, NOTICE, State
@@ -61,9 +62,10 @@ class Controller:
         self.fake_fw = None
         self.lab = None
         self.world = None                                           # 가짜 세계(sim/world.py) - 가짜 장비일 때만
-        self.runner = None                                          # 측정(app/jobs/run.py)
         self.calib = Calib(self.cfg.data_path())
         self.prep = Prep(self)
+        self.runner = Runner(self)                                  # 측정(app/jobs/run.py)
+        self.heater_trip = ""                                       # 안전 규칙이 히트건을 마지막으로 끈 이유
         self._motion = threading.Lock()
         self._plock = threading.Lock()                              # 조그 대기 칸 · 현재 이동 종류
         self._cur_kind = None
@@ -82,6 +84,7 @@ class Controller:
             self._setup_fake()
         self.publish_cfg()
         self.prep.publish()
+        self.runner.publish()
         self._start_threads()
 
     # ------------------------------------------------------------------
@@ -258,6 +261,7 @@ class Controller:
         """어떤 일 중이든 기다리지 않는다: 세대 올리기 → '!' → (이동이 멈추면) r all 0 → K2450 출력 끄기."""
         t0 = time.monotonic()
         self.safety.begin_estop()
+        self.runner.on_estop()                                      # 측정도 멈춘다(정리는 측정 스레드가: 히트건 · 출력 · 쿨러 끔, 핀은 그대로)
         with self._plock:
             self._jog_pending = None                                # 대기 중이던 조그를 지운다
         self._monitor_on = False
@@ -551,7 +555,8 @@ class Controller:
 
     def _heater_off(self, reason: str):
         self.logs.app("히트건 끔 · %s" % reason, "error")
-        self.state.alarm("heater", reason, ALARM)
+        self.heater_trip = reason
+        self.state.alarm("heater", reason, ALARM, dismiss=True)
         heater = int(self.cfg["heater_relay"])
         try:
             if self.stage.connected:
@@ -862,6 +867,7 @@ class Controller:
             t0 = time.monotonic()
             try:
                 self.prep.publish()                                 # 장비 연결 · 원점이 바뀌면 준비 단계 한 줄도 바뀐다(같으면 아무 일도 없다)
+                self.runner.publish()
             except Exception as e:                                  # noqa: BLE001 - 화면용 요약이 감시 루프를 죽이지 않는다
                 self.logs.app("준비 상태 요약 오류 · %s: %s" % (type(e).__name__, e), "error")
             if self._monitor_on:
@@ -897,7 +903,7 @@ class Controller:
     def _temp_loop(self):
         while self._alive:
             dev = self.k2110
-            if dev is not None and dev.is_open:
+            if dev is not None and dev.is_open and not self.runner.feeding:      # 측정이 읽는 동안에는 따로 읽지 않는다(측정이 그 값을 넘겨 준다)
                 try:
                     self.feed_temperature(dev.read_temp())
                     if self.state.get("devices", "k2110", "state") == "오류":
@@ -933,6 +939,9 @@ class Controller:
             if self._shut:
                 return
             self._shut = True
+        if self.runner.active:                                      # 측정 중에 닫으면 측정부터 멈춘다(정리: 히트건 · 출력 · 쿨러 끔 → 핀 맨 위 · 파일 닫기)
+            self.runner._stop = True
+            self.runner.join(timeout=20)
         self._alive = False
         try:
             if self.stage.connected:
@@ -962,6 +971,10 @@ COMMANDS = {
     "samples_find": "prep.samples_find", "sample_use": "prep.sample_use",
     "cooler_only": "prep.cooler_only", "cooler_save": "prep.cooler_save",
     "fake_fill": "prep.fake_fill", "fake_samples": "prep.fake_samples",
+    "sample_rename": "prep.sample_rename", "batch_set": "prep.batch_set",
+    # 측정(app/jobs/run.py)
+    "run_start": "runner.start", "run_resume": "runner.resume", "run_stop": "runner.stop", "run_skip": "runner.skip",
+    "run_pause_after": "runner.set_pause_after", "run_requeue": "runner.requeue",
 }
 
 

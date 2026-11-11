@@ -18,8 +18,9 @@ app/geometry.py         좌표 변환(호모그래피) · 보정 사진 · 헤�
 app/calib.py            준비 단계의 보정 값(calib/calib.json)
 app/prep.py             준비 2~7단계 · 사진 · 위치 확인 · 샘플 찾기 명령
 app/contact.py          전기로 접촉 찾기(v2 방식)
+app/jobs/               측정: run.py(순서 · 한계 · 정리) · files.py(LabVIEW 형식 · NAS) · analysis.py(전이 온도) · heater.py(가열 장치)
 app/vision/             샘플 찾기(v2 fixed_detect · refdiff 그대로 + find.py)
-ui/                     화면(빌드 없는 HTML · CSS · JS, Pretendard 글꼴은 ui/fonts): core.js(공통) · jog.js(이동 부품) · prep.js · manual.js · app.js(시작)
+ui/                     화면(빌드 없는 HTML · CSS · JS, Pretendard 글꼴은 ui/fonts): core.js(공통) · jog.js(이동 부품) · graph.js(그래프 부품) · prep.js · manual.js · measure.js · results.js · settings.js · app.js(시작)
 app/server.py           FastAPI + WebSocket (127.0.0.1:8000)
 sim/                    가짜 장비: world.py(가짜 세계 하나) · fake_v11.py(스테이지) · fake_visa.py(K2110 · K2450 + 열 모델) · fake_camera.py(판 · 샘플 · 헤드 마커)
 tests/                  pytest 빠른 시험 (전체 1 분 안)
@@ -96,6 +97,20 @@ firmware/stage_v11/     펌웨어 (고치지 않는다)
 - **K2450 측정 설정**은 v2 순서 + 범위 단계 방식(자동 범위 끔 · 시작 1 mA · 읽을 때마다 `step_range`). 수동 탭 저항 한 번 읽기도 같다.
 - **가짜 세계**(`sim/world.py`): 판 자리 · 기울기(1°) · 샘플(자리 · 크기 · 두께 · 저항 전이) · 판 높이 · 샘플을 올렸는지. 가짜 카메라(사다리꼴 사진 · 헤드 · 시차 있는 ArUco 마커) · 가짜 K2450(접촉 · 단락 · 4단자) · 열 모델(샘플마다 온도)이 모두 이것과 가짜 스테이지의 실제 X · Y · Z 를 본다.
 - 측정 중에는 손으로 하는 명령을 `run_command` 에서 거절한다(`RUN_ALLOWED` 만 통과, 직접 명령은 st · rs · p 만).
+
+## 3단계 C: 측정 (app/jobs/)
+- `app/jobs/run.py` Runner: 고른 샘플을 순서대로 **이동 → 접촉 → 냉각(시작 전) → 가열 → 냉각 → 저장**. 명령 `run_start` · `run_resume` · `run_stop` · `run_skip` · `run_pause_after(on)` · `run_requeue(id)` · `sample_rename(id, name)` · `batch_set(name)`.
+  - 가열: K2450 출력 켜고 기록 시작 → 히트건을 **한 번** 켜고 히트건 끄는 온도(85 °C)에서 **한 번** 끈다(그 사이에 다시 켜거나 끄지 않는다). 끈 뒤 더 오르는 구간도 기록.
+  - 읽기: 읽는 간격마다 K2110 한 번 · K2450 한 번(`read_step` 범위 단계). 그 온도를 `feed_temperature` 로 안전 감시에 넘긴다(측정 중에는 `_temp_loop` 가 따로 읽지 않는다 - `runner.feeding`).
+  - 쿨러: "샘플 아래 구역만"(판을 3×3 으로 나눈 칸의 `cooler_grid` 릴레이) / "전부" / "안 씀". 가열 장치는 `app/jobs/heater.py RelayHeater`(on · off · is_on) - 하드웨어가 바뀌면 여기만.
+  - 한계(전부 settings `run_*`, v2 값): 히트건 45 s 켰는데 0.5 °C 도 안 오르면 그 샘플 실패 · 1 초에 5 °C 넘게 오르면 주의 한 번 · 식힘 중 180 s 동안 0.3 °C 도 안 내려가면 그 단계를 정상으로 끝냄 · 한 단계 1800 s 넘으면 그 샘플 실패 · 전류 1e-9 A 아래 5번 연속이면 주의 "핀이 떨어진 것 같음" · 안전 규칙이 히트건을 먼저 끄면(최대 켜짐 시간) 냉각으로 넘어가고 "최고 온도 못 미침".
+  - 접촉 실패 · 샘플 실패는 그 샘플만 "실패 · 이유"로 두고 다음 샘플로. 측정 장비 오류(연결 끊김 · 온도 3번 연속 못 읽음)는 측정 전체를 멈추고 경보.
+  - 어떤 끝(끝남 · 실패 · 건너뛰기 · 중지 · 비상정지 · 오류)에서도 `_cleanup`: 히트건 끔 → K2450 출력 끔 → 쿨러 끔 → (비상정지가 아니면) 핀 맨 위. 받은 데이터는 파일로 남는다.
+  - 앞 샘플을 건너뛰거나 멈춘 직후에는 히트건을 다시 켤 수 있을 때까지(`heater_min_off_s`) 기다렸다가 켠다.
+  - 상태: `state.run`(state · rows[샘플별 순서 · 진행] · cur · stage 0~5 · frac · line · gate[빠진 준비] · summary). **점 데이터는 state 에 없다** → `GET /api/run/points?sample=<id>&from=<n>`.
+- **저장**(`app/jobs/files.py`, v2 함수 그대로): PC `<data>/<YYYY-MM-DD>/<HHMMSS>_<묶음>/` 에 회차 파일 `<이름>_<전압 2자리>V_<회차−1>.dat`(첫 줄 `Temp   Resistance   ` · 값 `%.7E` 지수 0 안 채움 · 탭 · CRLF) · `<이름>_<전압>V_merged.dat`(머리글 없음) · `run.json` · `plate.jpg` · `summary.csv`. File name = 샘플 이름 + `_`. 다시 재면 덮어쓰지 않고 `_1` 을 붙인다.
+  NAS = 기본 폴더 / 연도 / YYYYMMDD / 묶음 에 .dat 만, 별도 스레드(`NasCopier`). 못 쓰면 주의만 띄우고 측정은 계속.
+- 가짜 장비 시간 배율: `python run.py --fake --fake-speed 10`(기본 10, 열 모델 · 측정 · 안전 시계가 같이 빨라진다. 실장비에서는 항상 1).
 
 ## 작업 규칙
 - 확인은 `--fake` / 가짜 장비 + 임시 폴더로만. **실제 포트 · 카메라 · VISA 를 열지 않는다.** Windows 에서 그대로 돌아야 하므로 Linux 전용 코드 금지.

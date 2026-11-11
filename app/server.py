@@ -3,6 +3,7 @@
   GET  /                     화면(ui/index.html) · /ui/ 아래 정적 파일
   GET  /api/camera/preview.jpg  카메라 미리보기(가로 preview_width 로 줄인 JPEG, 1 초에 한 장 갱신. 없으면 204)
   GET  /api/img/{raw|crop|plate|empty|live}.jpg  찍은 사진 · 원본 조각 · 보정한 판 사진 · 빈 판 사진 · 지금 카메라의 보정 사진(없으면 204)
+  GET  /api/run/points?sample=<id>&from=<n>   측정 점(새 점만)
   GET  /api/state            상태 한 덩어리
   WS   /ws                   상태를 보내고(바뀔 때마다 + 1 초마다) 명령을 받는다: {"id", "cmd", "args"} → {"id", "ok", "msg" | "result"}
   POST /api/estop            비상정지(WS 의 {"cmd":"estop"} 과 같은 길 - 검사 없이 바로)
@@ -18,7 +19,7 @@ from contextlib import asynccontextmanager
 
 from pathlib import Path
 
-from fastapi import Body, FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Query, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -75,6 +76,11 @@ def create_app(ctrl: Controller) -> FastAPI:
         if jpg is None:
             return Response(status_code=204)
         return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/run/points")
+    async def run_points(sample: int, frm: int = Query(0, alias="from")):
+        """측정 중인(또는 이번 측정에서 잰) 샘플의 점 [온도, 저항, 단계] 중 from 번째부터. 점 데이터는 state 에 넣지 않는다."""
+        return ctrl.runner.points(sample, frm)
 
     @app.get("/api/state")
     async def get_state():

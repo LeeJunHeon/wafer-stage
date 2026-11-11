@@ -459,6 +459,7 @@ class Prep:
             self.samples.append({"id": i, "name": "%s-%d" % (batch, i), "plate": s["plate"], "outline": s["outline"], "w": s["w"], "h": s["h"], "area": s["area"],
                                  "source": s["source"], "weak": s["weak"], "small": False, "xy": None, "use": True})
         self._refresh_samples(reset_use=True)
+        self.c.runner.reset()                                        # 새 사진 · 새 샘플: 지난 측정 진행 표시는 비운다(파일은 그대로)
         self.find_info = {"t": self.photo["t"], "n": len(self.samples), "notes": res["notes"], "path": res["path"], "ms": int((time.monotonic() - t0) * 1000)}
         if res["notes"]:
             self.c.state.alarm("find", " · ".join(res["notes"]), NOTICE, dismiss=True)
@@ -498,6 +499,52 @@ class Prep:
         """설정이 바뀌었다(핀 크기 · 판 한 변 등): 샘플의 자리 · "핀보다 작음"을 다시 계산한다(사람이 고른 넣기/빼기는 그대로)."""
         self._refresh_samples()
         self.publish()
+
+    def sample_rename(self, id, name):
+        """샘플 이름 고치기. 파일 이름에 못 쓰는 글자는 거절한다. 이미 잰(또는 재는 중인) 샘플은 못 고친다."""
+        from app.jobs import files
+        name = str(name)
+        why = files.name_problem(name)
+        if why:
+            raise Rejected(why)
+        if any(s["name"] == name and s["id"] != int(id) for s in self.samples):
+            raise Rejected("같은 이름의 샘플이 있습니다")
+        it = self.c.runner.items.get(int(id))
+        if it is not None and it["status"] != "할 차례":
+            raise Rejected("이미 잰 샘플의 이름은 고칠 수 없습니다")
+        for s in self.samples:
+            if s["id"] == int(id):
+                s["name"] = name
+                if it is not None:
+                    it["name"] = name
+                self.publish()
+                self.c.runner.publish()
+                return {"id": s["id"], "name": name}
+        raise Rejected("그런 샘플이 없습니다")
+
+    def batch_set(self, name):
+        """묶음 이름. 샘플 이름 "<묶음 이름>-<번호>" 도 같이 바뀐다(사람이 고친 이름은 그대로)."""
+        from app import config as config_mod
+        from app.jobs import files
+        name = str(name)
+        why = files.name_problem(name)
+        if why:
+            raise Rejected(why)
+        if self.c.run_active():
+            raise Rejected("측정 중에는 묶음 이름을 바꿀 수 없습니다")
+        old = str(self.cfg["batch_name"])
+        try:
+            self.cfg.update({"batch_name": name})
+            self.cfg.save()
+        except (config_mod.ConfigError, OSError) as e:
+            raise Rejected(str(e))
+        for s in self.samples:
+            if s["name"] == "%s-%d" % (old, s["id"]) and s["id"] not in self.c.runner.items:
+                s["name"] = "%s-%d" % (name, s["id"])
+        self.c.publish_cfg()
+        self.publish()
+        self.c.runner.publish()
+        return {"batch_name": name}
 
     def sample_use(self, id, use):
         self.c._no_run("샘플 고르기")

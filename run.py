@@ -16,6 +16,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="샘플 자동 측정 v3")
     ap.add_argument("--fake", action="store_true", help="가짜 장비(스테이지 · K2110 · K2450 · 카메라)로 실행 - 실제 포트 · VISA · 카메라를 열지 않는다")
     ap.add_argument("--fake-scale", type=float, default=0.2, help="가짜 이동 시간 배율(1 = 실제 속도, 작을수록 빠름)")
+    ap.add_argument("--fake-speed", type=float, default=10.0, help="가짜 장비의 시간 배율(10 = 온도 · 측정이 10배 빠르게 간다. 1 = 실제 속도)")
     ap.add_argument("--no-window", action="store_true", help="창 없이 서버만 띄운다(브라우저로 http://127.0.0.1:8000 접속)")
     ap.add_argument("--port", type=int, default=8000)
     a = ap.parse_args(argv)
@@ -25,7 +26,7 @@ def main(argv=None):
     from app.control import Controller
     from app.server import HOST, create_app
 
-    ctrl = Controller(Config(fake=a.fake).load(), fake=a.fake, fake_scale=a.fake_scale)   # --fake 는 settings_fake.json · ../data_v3_fake
+    ctrl = Controller(Config(fake=a.fake).load(), fake=a.fake, fake_scale=a.fake_scale, time_scale=a.fake_speed)   # --fake 는 settings_fake.json · ../data_v3_fake
     server = uvicorn.Server(uvicorn.Config(create_app(ctrl), host=HOST, port=a.port, log_level="warning"))
     url = "http://%s:%d/" % (HOST, a.port)
     th = threading.Thread(target=server.run, daemon=True, name="uvicorn")
