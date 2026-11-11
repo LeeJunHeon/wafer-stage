@@ -57,7 +57,10 @@ class Controller:
         self._jog_pending = None                                    # 대기 칸 하나: {"axis", "mm"}
         self._monitor_on = False
         self._alive = True
+        self._shut = False                                          # 종료 처리는 한 번만(창 닫기 · 서버 종료가 둘 다 부른다)
+        self._shut_lock = threading.Lock()
         self._threads = []
+        self.state.set("fake", bool(fake))
         meters.LOG = self.logs.visa
         for n in self.cfg.loaded_notes:
             self.logs.app(n, "warn")
@@ -724,7 +727,11 @@ class Controller:
             raise Rejected("명령 값이 맞지 않습니다 · %s" % str(e)[:60])
 
     def shutdown(self):
-        """닫을 때: 히트건 · 쿨러 끄기 → K2450 출력 끄기 → 연결 닫기."""
+        """닫을 때: 히트건 · 쿨러 끄기 → K2450 출력 끄기 → 연결 닫기. 여러 번 불러도 한 번만 한다."""
+        with self._shut_lock:
+            if self._shut:
+                return
+            self._shut = True
         self._alive = False
         try:
             if self.stage.connected:

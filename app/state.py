@@ -31,6 +31,7 @@ class State:
             "move": None,                                            # 이동 중 정보 {what, target{x,y,z mm}, pending{axis,mm}} - 끝나면 None
             "monitor": False,                                        # 1 초마다 계속 읽기
             "cfg": {},                                               # 화면이 쓰는 설정 일부
+            "fake": False,                                           # 가짜 장비로 도는 중
         }
 
     # ---- 읽기 ----

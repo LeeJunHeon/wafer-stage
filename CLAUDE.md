@@ -14,13 +14,14 @@ app/control.py          명령 → 안전 규칙 → 장비 (서버 · 시험 �
 app/devices/stage.py    아두이노 V11 드라이버
 app/devices/meters.py   K2110 · K2450
 app/devices/camera.py   카메라(OpenCV): 열기 · 1 초마다 미리보기 JPEG · 마지막 원본 한 장
-ui/                     화면(빌드 없는 HTML · CSS · JS, Pretendard 글꼴은 ui/fonts)
+ui/                     화면(빌드 없는 HTML · CSS · JS, Pretendard 글꼴은 ui/fonts): core.js(공통) · jog.js(이동 부품) · prep.js · manual.js · app.js(시작)
 app/server.py           FastAPI + WebSocket (127.0.0.1:8000)
 sim/                    가짜 장비: fake_v11.py(스테이지) · fake_visa.py(K2110 · K2450 + 열 모델) · fake_camera.py(판 · 샘플 · 헤드 마커)
 tests/                  pytest 빠른 시험 (전체 1 분 안)
 firmware/stage_v11/     펌웨어 (고치지 않는다)
 ```
 데이터 폴더 기본값은 `..\data_v3`. 경로는 pathlib. 측정 PC 는 Windows 11 + Python 3.12.
+`--fake` 는 실제 값과 섞이지 않게 `settings_fake.json` · `..\data_v3_fake` 를 쓴다(둘 다 git 제외).
 
 ## 하드웨어 값 (확정)
 - 아두이노 Mega + 펌웨어 V11, 115200, 줄끝 `\n`. 포트는 settings `stage_port`(측정 PC 는 COM5).
@@ -64,6 +65,17 @@ firmware/stage_v11/     펌웨어 (고치지 않는다)
 - **장비 상태는 아래 상태줄 한 곳**(준비 탭의 장비 줄은 연결 조작용). 경보는 경보 띠에만. 거절 문구는 3 초짜리 작은 알림 하나(쌓이지 않음).
 - 색: 상태 표시에만 정상(점 #1F9D5C) · 주의(#FFF1CC) · 경보(#B42318 / #FDECEA). 버튼에는 쓰지 않는다. 장식(그림자 · 그라데이션 · 아이콘) 없음. 글꼴 Pretendard(오프라인), 13px · 숫자 tabular-nums.
 - 서버 연결이 끊기면 전체 위에 "서버와 연결이 끊겼습니다 · 다시 잇는 중"을 보이고 자동으로 다시 잇는다.
+
+## 화면 배치 규칙 (3단계 A 에서 정함 - ui/app.css 맨 위 주석과 같다)
+- 간격은 4 · 8 · 12 · 16px 만. 패널 안쪽 12px · 패널 사이 12px. 패널 제목 14px 굵게 · 본문 13px · 설명 12px.
+- 버튼 · 입력 · 숫자 칸은 창이 커져도 늘어나지 않는다(고정 폭). 늘어나는 것은 사진 · 그래프 · 기록 목록 · 표뿐(`.fill`).
+- 패널은 내용 높이만큼만(위에서부터 채움). 세로로 늘려 빈 회색 영역을 만들지 않는다.
+- 사진은 `photoBox`(core.js)가 비율을 지켜 칸에 맞춘다(크기는 JS 가 정함, 남는 자리는 패널 바탕색). 덧그림은 같은 크기의 svg.
+- 수동 탭 3칸: 왼쪽(카메라 · 이동) 440~640px / 가운데(수동 측정 · 릴레이 시험) 400px 고정 / 오른쪽(직접 명령) 나머지(340px 이상). 릴레이 버튼 96×40px.
+- 준비 탭: 왼쪽 단계 목록 260px 고정 · 오른쪽 내용은 최대 960px · 주소 입력 칸 360px. 사진이 있는 단계는 "사진(440px 부터 커짐) + 조작(400px)".
+- 이동(조그) 부품은 `jogPart()`(jog.js) 하나를 수동 탭과 준비 단계가 같이 쓴다.
+- 종료 처리(`Controller.shutdown`)는 여러 번 불러도 한 번만 한다(창 닫기 · 서버 종료가 둘 다 부른다).
+- 확인 창을 띄우지 않는다. 같은 상태를 두 곳에 보여 주지 않는다. 화면 확인(브라우저 · 스크린샷)은 따로 한다 - 이 저장소의 시험은 pytest 빠른 시험만.
 
 ## 작업 규칙
 - 확인은 `--fake` / 가짜 장비 + 임시 폴더로만. **실제 포트 · 카메라 · VISA 를 열지 않는다.** Windows 에서 그대로 돌아야 하므로 Linux 전용 코드 금지.

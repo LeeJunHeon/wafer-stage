@@ -257,3 +257,11 @@ def test_ui_files_are_served(make_ctrl):
         assert page.status_code == 200 and "VO₂ 온도–저항 측정" in page.text
         for url in ("/ui/app.js", "/ui/app.css", "/ui/fonts/PretendardVariable.woff2"):
             assert c.get(url).status_code == 200, url
+
+
+def test_shutdown_runs_once(make_ctrl):
+    """창 닫기와 서버 종료가 둘 다 종료 처리를 불러도 한 번만 한다(로그에 '종료' 한 줄)."""
+    ctrl = make_ctrl()
+    ctrl.shutdown()
+    ctrl.shutdown()
+    assert sum(1 for ln in ctrl.logs.recent if ln.endswith("종료")) == 1

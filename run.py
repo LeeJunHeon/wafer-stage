@@ -25,7 +25,7 @@ def main(argv=None):
     from app.control import Controller
     from app.server import HOST, create_app
 
-    ctrl = Controller(Config().load(), fake=a.fake, fake_scale=a.fake_scale)
+    ctrl = Controller(Config(fake=a.fake).load(), fake=a.fake, fake_scale=a.fake_scale)   # --fake 는 settings_fake.json · ../data_v3_fake
     server = uvicorn.Server(uvicorn.Config(create_app(ctrl), host=HOST, port=a.port, log_level="warning"))
     url = "http://%s:%d/" % (HOST, a.port)
     th = threading.Thread(target=server.run, daemon=True, name="uvicorn")

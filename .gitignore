@@ -3,4 +3,5 @@ __pycache__/
 .venv/
 .pytest_cache/
 settings.json
+settings_fake.json
 *.log
