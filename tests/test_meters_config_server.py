@@ -123,7 +123,7 @@ def test_server_state_estop_and_rejections(make_ctrl):
         assert r["ok"] is False and "연결" in r["msg"]
         assert c.post("/api/estop").json()["ok"] is True
         assert wait_for(lambda: c.get("/api/state").json()["estop_locked"], 3)
-        assert "준비 중" in c.get("/").text
+        assert "<title>" in c.get("/").text
         with c.websocket_connect("/ws") as ws:
             assert ws.receive_json()["type"] == "state"
             ws.send_json({"id": 7, "cmd": "relay_on", "args": {"n": 2}})

@@ -34,9 +34,9 @@ def wait_for(fn, timeout=5.0, step=0.02):
 def make_ctrl(tmp_path):
     made = []
 
-    def make(clock=None, scale=0.05, connect=True, meters=True, **cfg_over):
+    def make(clock=None, scale=0.05, connect=True, meters=True, camera=False, **cfg_over):
         cfg = Config(tmp_path / "settings.json").load()
-        cfg.update({"data_dir": str(tmp_path / "data"), **cfg_over})
+        cfg.update({"data_dir": str(tmp_path / "data"), "camera_width": 320, "camera_height": 240, **cfg_over})
         kw = {"clock": clock} if clock else {}
         ctrl = Controller(cfg, fake=True, fake_scale=scale, **kw)
         made.append(ctrl)
@@ -45,6 +45,8 @@ def make_ctrl(tmp_path):
         if connect and meters:
             ctrl.connect_meter("k2110")
             ctrl.connect_meter("k2450")
+        if camera:
+            ctrl.connect_camera()
         return ctrl
 
     yield make

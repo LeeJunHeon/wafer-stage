@@ -1,5 +1,7 @@
 """server.py - FastAPI + WebSocket (127.0.0.1:8000). 화면 파일은 2단계에서 만든다.
 
+  GET  /                     화면(ui/index.html) · /ui/ 아래 정적 파일
+  GET  /api/camera/preview.jpg  카메라 미리보기(가로 preview_width 로 줄인 JPEG, 1 초에 한 장 갱신. 없으면 204)
   GET  /api/state            상태 한 덩어리
   WS   /ws                   상태를 보내고(바뀔 때마다 + 1 초마다) 명령을 받는다: {"id", "cmd", "args"} → {"id", "ok", "msg" | "result"}
   POST /api/estop            비상정지(WS 의 {"cmd":"estop"} 과 같은 길 - 검사 없이 바로)
@@ -13,15 +15,18 @@ import asyncio
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from pathlib import Path
+
+from fastapi import Body, FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import ConfigError
 from app.control import Controller
 from app.safety import Rejected
 
 HOST, PORT = "127.0.0.1", 8000
-PAGE = "<!doctype html><meta charset='utf-8'><title>샘플 자동 측정</title><p>준비 중</p>"
+UI_DIR = Path(__file__).resolve().parent.parent / "ui"
 
 
 def _estop_thread(ctrl: Controller, source: str):
@@ -51,9 +56,16 @@ def create_app(ctrl: Controller) -> FastAPI:
             ctrl.logs.app("명령 오류 %s · %s: %s" % (cmd, type(e).__name__, e), "error")
             return {"ok": False, "msg": "명령을 처리하지 못했습니다 · %s" % str(e)[:60]}
 
-    @app.get("/", response_class=HTMLResponse)
+    @app.get("/")
     async def index():
-        return PAGE
+        return FileResponse(UI_DIR / "index.html", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/camera/preview.jpg")
+    async def camera_preview():
+        jpg = ctrl.camera.preview_jpeg()
+        if jpg is None:
+            return Response(status_code=204)
+        return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/state")
     async def get_state():
@@ -86,6 +98,7 @@ def create_app(ctrl: Controller) -> FastAPI:
             ctrl.cfg.save()
         except ConfigError as e:
             return JSONResponse({"ok": False, "msg": str(e)}, status_code=400)
+        ctrl.publish_cfg()
         return {"ok": True}
 
     @app.websocket("/ws")
@@ -132,4 +145,6 @@ def create_app(ctrl: Controller) -> FastAPI:
             send_task.cancel()
             ctrl.state.unsubscribe(notify)
 
+    if UI_DIR.is_dir():
+        app.mount("/ui", StaticFiles(directory=str(UI_DIR)), name="ui")
     return app

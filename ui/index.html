@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>VO₂ 온도–저항 측정</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <div class="brand">VO₂ 온도–저항 측정</div>
+    <nav id="tabs">
+      <button class="tab on" data-tab="prep">준비</button>
+      <button class="tab" data-tab="measure">측정</button>
+      <button class="tab" data-tab="results">결과</button>
+      <button class="tab" data-tab="manual">수동</button>
+    </nav>
+    <button id="estop" type="button">비상정지<small>Esc</small></button>
+  </header>
+
+  <main id="main">
+    <section id="tab-prep" class="pane"></section>
+    <section id="tab-measure" class="pane hidden"><div class="later">다음 단계에서 만듭니다</div></section>
+    <section id="tab-results" class="pane hidden"><div class="later">다음 단계에서 만듭니다</div></section>
+    <section id="tab-manual" class="pane hidden"></section>
+  </main>
+
+  <div id="alarms"></div>
+  <footer id="status"></footer>
+  <div id="toast" class="hidden"></div>
+  <div id="offline" class="hidden">서버와 연결이 끊겼습니다 · 다시 잇는 중</div>
+  <div id="dlg" class="hidden"></div>
+</div>
+<script src="/ui/app.js"></script>
+</body>
+</html>

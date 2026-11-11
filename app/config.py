@@ -21,7 +21,7 @@ DEFAULT_PATH = ROOT / "settings.json"
 class Item:
     key: str
     default: Any
-    kind: str                       # str | int | float | bool | grid
+    kind: str                       # str | int | float | bool | grid | xy(비어 있을 수 있는 [x, y] mm)
     label: str                      # 화면에 보일 한국어 이름
     unit: str = ""
     min: Optional[float] = None
@@ -34,6 +34,17 @@ ITEMS = [
     Item("k2110_addr", "USB0::0x05E6::0x2110::8017862::INSTR", "str", "K2110 주소"),
     Item("k2450_addr", "GPIB0::18::INSTR", "str", "K2450 주소"),
     Item("data_dir", "../data_v3", "str", "데이터 폴더"),
+    Item("auto_connect", True, "bool", "시작할 때 자동 연결"),                          # 저장된 포트 · 주소 하나씩만 연다(찾아다니지 않는다)
+    # --- 카메라(실장비 기본값: 장치 1 · 4080×3060 · MJPG · 초점 고정) ---
+    Item("camera_index", 1, "int", "카메라 장치 번호", "번", 0, 9),                      # 0 번은 노트북 내장 카메라
+    Item("camera_width", 4080, "int", "카메라 가로", "px", 160, 10000),
+    Item("camera_height", 3060, "int", "카메라 세로", "px", 120, 10000),
+    Item("camera_fourcc", "MJPG", "str", "카메라 영상 포맷"),
+    Item("camera_focus_fixed", True, "bool", "초점 고정"),
+    Item("camera_focus_value", -1, "int", "고정 초점 값(-1 = 카메라에 맡김)", "", -1, 1000),    # 실장비 확인 필요
+    Item("preview_width", 1280, "int", "미리보기 가로", "px", 160, 4096),
+    # 사진 찍을 때 헤드가 서는 자리. 준비 3단계에서 정한다(비어 있으면 None)
+    Item("photo_head_xy", None, "xy", "사진 찍을 때 헤드 자리", "mm"),
     # --- 이동 범위(0 = 모터 쪽 끝) ---
     Item("x_max_mm", 247.6, "float", "X 가동 범위", "mm", 1, 400),
     Item("y_max_mm", 247.8, "float", "Y 가동 범위", "mm", 1, 400),
@@ -84,6 +95,12 @@ def check(item: Item, value: Any) -> Any:
         if not ok or not all(isinstance(n, int) and not isinstance(n, bool) and 2 <= n <= 10 for n in nums) or len(set(nums)) != 9:
             raise ConfigError("%s: 3×3 칸에 릴레이 번호 2~10 을 겹치지 않게 넣어야 합니다" % name)
         return [list(r) for r in value]
+    if item.kind == "xy":
+        if value is None:
+            return None
+        if not (isinstance(value, list) and len(value) == 2 and all(isinstance(n, (int, float)) and not isinstance(n, bool) for n in value)):
+            raise ConfigError("%s: [X, Y] 두 숫자이거나 비워 두어야 합니다" % name)
+        return [float(value[0]), float(value[1])]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError("%s: 숫자여야 합니다" % name)
     v = float(value)

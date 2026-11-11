@@ -1,0 +1,107 @@
+/* 샘플 자동 측정 v3 화면. 기준 크기 1280×740(페이지 스크롤 없음). 글꼴은 Pretendard(오프라인 - ui/fonts). 장식 없음. */
+@font-face { font-family: "Pretendard"; src: url("/ui/fonts/PretendardVariable.woff2") format("woff2-variations"); font-weight: 100 900; font-display: swap; }
+:root {
+  --bg: #EEF0F2; --panel: #FFFFFF; --line: #D5D9DE; --ink: #1A1D21; --ink2: #5B636D; --btn-line: #C4CAD1; --dark: #1F2A37;
+  --ok-dot: #1F9D5C; --ok-ink: #146C43; --warn-bg: #FFF1CC; --warn-ink: #7A4F00; --warn-dot: #D99A00; --err-ink: #B42318; --err-bg: #FDECEA; --off-dot: #9AA1A9;
+  --estop: #C62828; --estop-line: #8E1B16;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink);
+  font-family: "Pretendard", "맑은 고딕", "Malgun Gothic", sans-serif; font-size: 13px; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.hidden { display: none !important; }
+button, input, select { font: inherit; color: inherit; }
+.small { font-size: 12px; color: var(--ink2); }
+.mono { font-family: Consolas, "맑은 고딕", monospace; }
+
+#app { display: grid; grid-template-rows: 52px minmax(0, 1fr) auto 34px; height: 100vh; min-width: 1280px; position: relative; }
+
+/* ---- 위 띠 ---- */
+#top { display: flex; align-items: center; gap: 24px; padding: 0 12px 0 16px; background: #fff; border-bottom: 1px solid var(--line); }
+.brand { font-size: 15px; font-weight: 700; white-space: nowrap; }
+#tabs { display: flex; gap: 4px; align-self: stretch; }
+.tab { border: 0; background: none; padding: 0 16px; font-size: 14px; color: var(--ink2); cursor: pointer; border-bottom: 2px solid transparent; margin-top: 2px; }
+.tab.on { font-weight: 700; color: var(--ink); border-bottom-color: var(--dark); }
+#estop { margin-left: auto; width: 200px; height: 40px; background: var(--estop); border: 2px solid var(--estop-line); color: #fff; font-size: 17px; font-weight: 700;
+  border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; flex: none; }
+#estop small { font-size: 11px; font-weight: 400; opacity: .85; }
+
+/* ---- 본문 ---- */
+#main { position: relative; min-height: 0; }
+.pane { position: absolute; inset: 0; padding: 12px; display: flex; gap: 12px; min-height: 0; }
+.later { margin: auto; color: var(--ink2); font-size: 14px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
+.panel > h3 { margin: 0; font-size: 14px; font-weight: 700; flex: none; }
+.col { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
+.row { display: flex; align-items: center; gap: 8px; flex: none; }
+.grow { flex: 1; min-width: 0; }
+
+/* ---- 버튼 · 입력 ---- */
+.btn { height: 32px; padding: 0 12px; background: #fff; border: 1px solid var(--btn-line); border-radius: 4px; cursor: pointer; white-space: nowrap; }
+.btn:hover:not(:disabled) { border-color: var(--dark); }
+.btn.on { background: var(--dark); border-color: var(--dark); color: #fff; }
+.btn:disabled, .btn.dis { color: #9AA1A9; background: #F5F6F7; cursor: not-allowed; }
+input[type=text], input[type=number], select { height: 32px; padding: 0 8px; border: 1px solid var(--btn-line); border-radius: 4px; background: #fff; min-width: 0; }
+input:disabled { background: #F5F6F7; color: #9AA1A9; }
+input.num { width: 64px; text-align: right; }
+label.chk { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ---- 상태 표시(점 + 글자) ---- */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 4px; background: var(--off-dot); flex: none; }
+.dot.ok { background: var(--ok-dot); } .dot.warn { background: var(--warn-dot); } .dot.err { background: var(--err-ink); } .dot.off { background: var(--off-dot); }
+.st-ok { color: var(--ok-ink); } .st-warn { color: var(--warn-ink); background: var(--warn-bg); padding: 0 6px; border-radius: 3px; } .st-err { color: var(--err-ink); }
+
+/* ---- 아래 상태줄 · 경보 띠 ---- */
+#status { display: flex; align-items: center; gap: 16px; padding: 0 12px; background: #fff; border-top: 1px solid var(--line); font-size: 12px; white-space: nowrap; overflow: hidden; }
+#status .item { display: inline-flex; align-items: center; gap: 6px; }
+#status .safety { margin-left: auto; color: var(--ink2); }
+#alarms { display: flex; flex-direction: column; }
+.alarm { display: flex; align-items: center; gap: 12px; min-height: 30px; padding: 3px 12px; border-top: 1px solid var(--line); }
+.alarm.경보 { background: var(--err-bg); color: var(--err-ink); font-weight: 600; }
+.alarm.주의 { background: var(--warn-bg); color: var(--warn-ink); }
+.alarm .btn { height: 24px; font-size: 12px; }
+
+/* ---- 알림 · 연결 끊김 · 창 ---- */
+#toast { position: absolute; left: 50%; bottom: 76px; transform: translateX(-50%); background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 4px 12px; font-size: 12px; color: var(--ink); z-index: 20; max-width: 760px; }
+#offline { position: absolute; inset: 0; background: rgba(238, 240, 242, .92); display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 600; z-index: 100; }
+#dlg { position: absolute; inset: 0; background: rgba(26, 29, 33, .35); display: flex; align-items: center; justify-content: center; z-index: 50; }
+#dlg .box { background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 16px; width: 380px; display: flex; flex-direction: column; gap: 10px; }
+#dlg h3 { margin: 0; font-size: 14px; }
+.form { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center; }
+.form .row { justify-content: flex-end; grid-column: 1 / -1; }
+
+/* ---- 준비 탭 ---- */
+#prep-list { width: 260px; flex: none; }
+#prep-list h3 { font-size: 14px; margin: 0 0 4px; }
+.step { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 4px; cursor: pointer; border: 1px solid transparent; }
+.step:hover { background: #F5F6F7; }
+.step.on { border-color: var(--dark); font-weight: 700; }
+.step .no { width: 20px; height: 20px; border-radius: 10px; background: #E6E9EC; text-align: center; line-height: 20px; font-size: 12px; flex: none; }
+.step.on .no { background: var(--dark); color: #fff; }
+#prep-main { flex: 1; }
+.devrow { display: grid; grid-template-columns: 96px 230px 64px 1fr; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.devrow:first-of-type { border-top: 0; }
+.devrow .name { font-weight: 600; }
+.devrow input { width: 100%; }
+.devrow .resp { font-size: 12px; color: var(--ink2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.devrow .stt { display: flex; align-items: center; gap: 6px; }
+
+/* ---- 수동 탭 ---- */
+#man-left { width: 440px; flex: none; }
+#man-mid { flex: 1; }
+#man-right { width: 380px; flex: none; }
+#preview-box { flex: 1; min-height: 100px; background: #E6E9EC; border-radius: 3px; display: flex; align-items: center; justify-content: center; overflow: hidden; color: var(--ink2); }
+#preview-box img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.steps { display: flex; gap: 4px; align-items: center; }
+.steps .btn { padding: 0 10px; min-width: 44px; }
+.pad { display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 36px); gap: 4px; justify-content: center; }
+.pad .btn { width: 56px; height: 36px; padding: 0; }
+.pad .u { grid-column: 2; grid-row: 1; } .pad .l { grid-column: 1; grid-row: 2; } .pad .r { grid-column: 3; grid-row: 2; } .pad .d { grid-column: 2; grid-row: 3; }
+.big { font-size: 22px; font-weight: 700; min-width: 150px; }
+.reading { display: flex; align-items: center; gap: 12px; }
+.reading .lbl { width: 90px; color: var(--ink2); font-size: 12px; }
+.relays { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.relays .btn { height: 36px; }
+#cmd-log { flex: 1; min-height: 0; overflow-y: auto; background: #F7F8F9; border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px; font-family: Consolas, "맑은 고딕", monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+#cmd-log .tx { color: var(--ink2); } #cmd-log .rx { color: var(--ink); } #cmd-log .er { color: var(--err-ink); }
+.quick { display: flex; flex-wrap: wrap; gap: 4px; }
+.quick .btn { height: 28px; font-size: 12px; padding: 0 8px; }

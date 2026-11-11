@@ -7,8 +7,8 @@ import threading
 import time
 
 NOTICE, ALARM = "주의", "경보"
-DEVICES = ("stage", "k2110", "k2450")
-DEV_NAMES = {"stage": "스테이지", "k2110": "K2110(온도)", "k2450": "K2450(저항)"}
+DEVICES = ("stage", "k2110", "k2450", "camera")
+DEV_NAMES = {"stage": "스테이지", "k2110": "온도계 K2110", "k2450": "저항계 K2450", "camera": "카메라"}
 
 
 class State:
@@ -17,7 +17,7 @@ class State:
         self._subs = []
         self.version = 0
         self.d = {
-            "devices": {k: {"name": DEV_NAMES[k], "state": "끊김", "why": "", "target": ""} for k in DEVICES},
+            "devices": {k: {"name": DEV_NAMES[k], "state": "끊김", "why": "", "target": "", "info": ""} for k in DEVICES},
             "pos": {"x": None, "y": None, "z": None},               # mm. 모르면 None
             "homed": {"x": False, "y": False, "z": False},
             "dirty": None,
@@ -28,6 +28,9 @@ class State:
             "heater_on_since": None,                                 # 히트건을 켠 시각(epoch) · 꺼져 있으면 None
             "alarms": [],
             "busy": "",                                              # 지금 하는 일(이동 중 등)
+            "move": None,                                            # 이동 중 정보 {what, target{x,y,z mm}, pending{axis,mm}} - 끝나면 None
+            "monitor": False,                                        # 1 초마다 계속 읽기
+            "cfg": {},                                               # 화면이 쓰는 설정 일부
         }
 
     # ---- 읽기 ----
@@ -70,11 +73,11 @@ class State:
             if changed:
                 self._bump()
 
-    def set_device(self, key: str, state: str, why: str = "", target: str = ""):
+    def set_device(self, key: str, state: str, why: str = "", target: str = "", info: str = ""):
         with self._lock:
             dev = self.d["devices"][key]
-            if (dev["state"], dev["why"], dev["target"]) != (state, why, target):
-                dev.update(state=state, why=why, target=target)
+            if (dev["state"], dev["why"], dev["target"], dev["info"]) != (state, why, target, info):
+                dev.update(state=state, why=why, target=target, info=info)
                 self._bump()
 
     # ---- 경보 ----
