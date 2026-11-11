@@ -35,6 +35,7 @@ python run.py --cleanup    # 창 없이 남은 이전 실행 정리
 - 간격 규칙(CSS 변수): 한 줄 안 컨트롤 사이 8 px · 줄 사이 10 px · 카드 안쪽 16 px · 카드 사이 12 px · 버튼 높이 34 px(낮은 창은 위의 두 단계). `python tools/ui_lint.py` 가 6가지 창 크기(1920×1040 · 1536×800 · 1366×728 · 1280×722 · 1280×680 · 1280×640)에서 겹침 · 간격 · 글자 잘림 · 카드 밖 · 가로 스크롤 · 그래프가 상자의 90 % 미만을 채움 · 작은 스크롤 칸에서 일부만 보이는 버튼을 검사한다(`--sizes 1280x722,1280x640,1920x1040` 로 고를 수 있다).
 
 ## 화면 배율 · 디자인 기준 (2026-11)
+- **배율과 CSS 크기**: html CSS `zoom` 아래에서는 `vh` · `vw` · `@media (max-height …)` 가 배율을 모른다. 그래서 `core.js zoomApply` 가 `--vw` · `--vh`(창 안쪽 ÷ 배율)와 html 클래스 `lowh`(≤ 800) · `lowh2`(≤ 680) · `narrow`(≤ 1500)를 정하고 `style.css` 가 그것을 쓴다(125 % 에서 창이 화면보다 커지던 것 · 장비 PC 자동 배율에서 1032 CSS 높이인데도 낮은 창 규칙이 걸리던 것). `python tools/scale_ui.py zoom` 이 67 · 80 · 100 · 125 % 마다 사진 좌표 · 꼭짓점 끌기 · 패드 · 키보드 · 툴팁 · 메뉴 · 창 · 비상정지를 본다.
 - **화면 배율**: 기본 "자동" - CSS 폭이 1536 이상이면 그대로, 아니면 CSS 폭이 min(1920, 창 안쪽 물리 폭)이 되게 줄인다(Windows 배율 150 % 최대화 1280×688 → CSS 약 1920×1032, 높이가 600 보다 작아지지 않는다). 창 크기 · 모니터가 바뀌면 다시 계산한다.
   바꾸기: **Ctrl + =** 키우기 · **Ctrl + -** 줄이기 · **Ctrl + 0** 자동, 또는 고급 설정 → 화면 → 화면 배율(자동 · 67 · 75 · 80 · 90 · 100 · 110 · 125 %). 서버 설정 `ui_zoom` 에 저장되고 바꿀 때 아래에 "화면 배율 80 %" 가 잠깐 뜬다.
   구현: html 의 CSS `zoom`(WebView2 · 브라우저 같다). 마우스 좌표는 `UI.scale` 로 나눠 변환한다(사진 클릭 · 꼭짓점 끌기 · 팝업 위치).
@@ -79,6 +80,29 @@ python run.py --cleanup    # 창 없이 남은 이전 실행 정리
 ## 접촉 높이 (고정 절대값)
 Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_z_mm`, 기본은 비어 있음) 측정 때는 그 절대 높이로 내린다. **접촉 판정은 하지 않는다.** `approach_mm`(기본 2) 앞까지는 보통 속도, 남은 거리는 느린 속도(`motion.jog_slow_pps`).
 비어 있으면 접촉 높이 단계가 있는 측정 조건은 시작을 거절한다("접촉 높이 필요 · 장비 설정 7"). 내리기는 X · Y 가 샘플 위일 때만(허용 0.5 mm).
+
+## 전기로 접촉 확인하며 핀 내리기 (접촉 찾기 · `backend/contact.py`)
+저장한 접촉 높이(`contact_z_mm`)는 "대략 여기쯤" 이다. 판이 기울었거나 샘플 두께가 다르면 안 닿거나 너무 눌린다. 접촉 확인을 켜면(기본 켬) 핀을 조금씩 내리며
+K2450 으로 아주 약하게 재고, 전류가 흐르기 시작하는 높이를 "접촉" 으로 보고 멈춘다. 측정 단계 '접촉 높이로 내리기' · 측정 탭 [접촉 높이로 내리기] · 장비 설정 7 이 모두 같은 함수다.
+1. 저장 높이 − `contact.start_above_mm`(0.3) 까지는 지금처럼 내린다(보통 속도 → 마지막 `approach_mm` 느리게).
+2. K2450 을 접촉 확인용으로 설정하고 출력을 켠다: 2단자 · `contact.volt` 0.1 V · 과전압 보호 가장 낮은 단계(2 V, `:SOUR:VOLT:PROT PROT2`) · 전류 한도 `contact.ilim_a` 0.1 mA · 자동 범위 · `contact.nplc` 0.1 · 평균 끔. 출력은 이 설정이 다 끝난 뒤에만 켠다.
+3. `contact.step_mm`(0.025 mm = 4 펄스)씩 느리게 내리고 멈출 때마다 한 번 잰다. 열린 회로(전류 < `rt.open_a` 1 nA)도 단락도 아닌 값이 `contact.confirm_n`(2) 번 연속이면 접촉 - 첫 접촉 Z = 그 연속의 첫 자리.
+4. 첫 접촉 + `contact.overdrive_mm`(0.05) 까지 누르고(출력을 끈 채) 4단자로 바꿔 한 번 더 잰다. 과전압 보호가 안 걸렸고 4단자 값이 양수 · 2단자보다 작고 2단자의 1/10 보다 크면 네 핀 모두 닿음. 아니면 0.025 mm 씩 더 내리며 4단자를 다시 잰다(한도 안에서만).
+5. 단락(전류 한도 걸림 · 2단자 < `contact.short_ohm` 1 kΩ)이면 바로 멈추고 Z 맨 위 · 실패. 저장 높이 + `contact.max_below_mm`(0.5) 까지 내려도 접촉이 없으면 더 내리지 않고 Z 맨 위 · 실패.
+6. 어떤 끝(성공 · 실패 · 정지 · 비상정지 · 장비 오류)에서도 K2450 출력을 끈다. 측정 단계(R–T)는 `*RST` 부터 자기 설정을 다시 한다.
+7. 성공하면 샘플마다 첫 접촉 Z · 최종 Z · 2단자 · 4단자 저항을 결과(run.json · samples.csv · 결과 탭 "기울기 Δ" = 첫 접촉 Z − 가운데값)와 로그, R–T 의 `rt.json` `contact` 에 남긴다.
+- **장비 설정 7 [전기로 접촉 찾기]**: 고른 샘플 위에서. 접촉 높이가 없으면 지금 Z 부터 0.05 mm 간격으로 최대 `contact.search_mm`(5 mm)까지 찾고(먼저 조그로 표면 5 mm 안까지 내려 둔다), 닿으면 0.3 mm 올렸다가 0.025 mm 간격으로 다시 찾는다. 접촉 높이가 있으면 위와 같은 범위로 찾는다. 찾은 첫 접촉 Z 는 확인 창에서 [저장] 해야 접촉 높이가 된다(핀은 최종 Z 에 남는다).
+- **접촉 확인 끔**(`contact.sense`): 저장한 높이까지만 내린다(예전 그대로) - 측정 탭 위치 카드 · 장비 설정 7 · 측정 시작 안내에 "접촉 확인 꺼짐".
+- 설정 뜻(장비 설정 7 [설정] · 고급 설정 '릴레이 · 접촉 높이 → 접촉 확인'): 전기로 접촉 확인 · 확인 전압 · 확인 전류 한도 · 확인 적분 · 내리는 간격(펄스 배수) · 찾기 시작 높이 · 더 내리는 한도 · 연속 확인 횟수 · 닿은 뒤 더 누름 · 단락 저항 · 처음 찾기 거리.
+
+| 실패 메시지 | 뜻 | 할 일 |
+|---|---|---|
+| K2450 연결 필요(접촉 확인) | 접촉 확인이 켜져 있는데 K2450 이 없다(내리지 않음) | 측정 탭 [장비 연결] 또는 장비 설정 8 · 급하면 접촉 확인을 끈다 |
+| 접촉 못 함 · Z … 까지 내려도 전류 없음 | 한도까지 내려도 전류가 안 흐름(Z 맨 위로 올림) | 샘플이 있는지 · 핀 · 케이블(뒷면 단자) 확인 · 판이 많이 기울었으면 장비 설정 7 에서 다시 찾기 · 한도(`contact.max_below_mm`) |
+| 핀이 샘플 밖 금속에 닿음 · 단락 | 전류 한도에 걸림 · 저항 < 1 kΩ(Z 맨 위로 올림) | 샘플 위치(좌표 보정 · 샘플 위로) 확인 · 핀이 샘플 가장자리에 걸치지 않게 |
+| 네 핀이 다 닿지 않음 · 4단자 확인 실패 | FORCE 두 핀만 닿고 SENSE 가 떠 있음(Z 맨 위로 올림) | 핀 높이 맞춤 · 샘플이 기울었는지 · 한도 조금 늘리기 |
+| K2450 읽기 오류 · … / 값 이상 | 통신 오류 · 시간 초과 · 범위 넘음(Z 맨 위로 올림) | 장비 연결 · `logs/YYYYMMDD_visa.log` 확인 |
+| 정지로 중단 · 비상정지로 중단 | 사람이 멈춤 - Z 는 움직이지 않고 출력만 끔 | 상황 확인 뒤 다시(비상정지면 회복 순서) |
 
 ## 원점 (펌웨어 `fz`)
 축마다 [Z 원점 잡기] [X 원점 잡기] [Y 원점 잡기]: 끝단 쪽으로 최대 10 mm 를 느리게 밀고 → 2 mm 물러나 0 → EEPROM 저장(응답 "--- 원점 설정 완료 (저장됨) ---" / "--- 중단됨 ---"). X · Y 는 Z 원점이 있고 Z 가 맨 위(ST 로 확인)일 때만.
@@ -200,6 +224,11 @@ Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_
 | `cooler.zones` | 3×3 · R2~R10 행 우선 (실제 배치는 [2 s 켜 보기]로 확인) |  | 쿨러 구역 |
 | `heater.relay` | 1 |  | 히트건 릴레이 |
 | `manual.cooler_relays` | 2 |  | 수동 측정 쿨러 릴레이(쉼표로 여럿) |
+| `contact.sense` | True |  | 전기로 접촉 확인(끄면 저장 높이까지만) |
+| `contact.volt` · `contact.ilim_a` · `contact.nplc` | 0.1 · 1e-4 · 0.1 | V · A · NPLC | 확인 전압 · 전류 한도 · 적분(과전압 보호 2 V · 평균 끔) |
+| `contact.step_mm` · `contact.start_above_mm` · `contact.max_below_mm` | 0.025 · 0.3 · 0.5 | mm | 내리는 간격(펄스 배수) · 저장 높이 위 시작 · 저장 높이 아래 한도 |
+| `contact.confirm_n` · `contact.overdrive_mm` · `contact.short_ohm` | 2 · 0.05 · 1000 | · mm · Ω | 연속 확인 · 닿은 뒤 더 누름 · 단락 저항 |
+| `contact.search_mm` | 5 | mm | 장비 설정 7 처음 찾기 거리(0.05 mm 간격) |
 | `heater.max_on_s` | 120.0 | s | 히트건 최대 시간 |
 | `contact_z_mm` | None | mm | 접촉 높이 |
 | `approach_mm` | 2.0 | mm | 느린 구간 |
@@ -292,4 +321,4 @@ Z 원점에서 핀이 샘플에 닿는 높이를 한 번 정해 두고(`contact_
 `..\data_v2\runs\<YYYYMMDD_HHMMSS>_<측정 조건>\` — `run.json`(측정 조건 · 설정 사본 · 보정 식별자 · 촬영 폴더 · 시작/끝 · 결과) · `samples.csv`(번호 · X · Y · 쿨러 · 접촉 Z · 시작 · 끝 · 결과 · 사유) · `plate_fit.jpg`. CSV 는 UTF-8 BOM.
 
 ## 검증
-`python tools/unit_tests.py` · `python tools/unit_rt.py`(R–T 단위 시험, 목표 온도선 추종 오차 · 감시 지연 · 설정 이전 보고) · `python tools/e2e.py 80 81 82 83 84`(장비 주소 · 수동 측정, 가짜 장비) · `E2E_MODE=fake python tools/e2e.py 85`(원점 없이 이동 허용, 가짜 펌웨어) · `python tools/e2e.py 31 …`(R–T e2e 31~47) · `python tools/e2e.py 48 49 50 51 52 53 54 55`(장치 연결 상태 · 자동 다시 연결 · 뽑힘/꽂음 · 연결 겹침 · 깜빡임 없음) · `python tools/e2e.py 56 … 64`(모터 안전) · `python tools/e2e.py 65 … 79`(정지 · 원점 · 연결 · 설정, 실제 속도) · `python tools/safety_ui2.py`(패드 · [정지] · 키보드 범위 · 입력 칸 · 일시정지 더블클릭 · 띠 400 ms · 누른 채 다시 그리기 · 서버 끊김, playwright) · `python tools/live_check.py`(실시간: 장면 → 그림 0.6 s 이내, 합성 카메라 큐 4 · 8 장) · `python tools/mem_check.py [--quick] [--size 4080]`(서버 메모리 · 실시간 CPU) · `python tools/safety_ui.py`(비상정지 지연 · 키보드 조그 범위 · 패드 · Z, playwright) · `python tools/jog_check.py`(조그 방향: ↑ 버튼 · 키보드 ↑ → 사진에서 헤드가 위로) · `python tools/ui_lint.py`(6가지 창 크기 배치 검사 → `..\shots_v2\ui\`) · `python tools/shots_conn.py`(연결 상태별 화면 점검 + 스크린샷 → `..\shots_v2\conn\`) · `python tools/shots_rt.py`(R–T 화면 흐름 · 스크린샷) · `E2E_MODE=fake python tools/e2e.py`(fake-serial) · `python tools/stress_fake.py 300`(동시성 부하) · `python tools/clicks.py`(클릭 수) · `python tools/fixed_regress.py [--loo]` · `python tools/align_measure.py` · `python tools/e2e.py [이름일부]` · `python tools/shots.py OUT` · `python tools/exit_test.py` · `python tools/flows.py`(화면 흐름: 첫 실행 · 비상정지 회복 · 막다른 상태 점검, playwright) · `python tools/perf4080.py`(4080×3060 성능).
+`python tools/unit_tests.py` · `python tools/unit_rt.py`(R–T 단위 시험, 목표 온도선 추종 오차 · 감시 지연 · 설정 이전 보고) · `python tools/e2e.py 80 81 82 83 84`(장비 주소 · 수동 측정, 가짜 장비) · `python tools/e2e.py 86 … 93` · `E2E_MODE=fake python tools/e2e.py 86 … 93`(전기로 접촉 확인, 실제 속도) · `python tools/scale_ui.py [photo scale zoom]`(화면 배율) · `E2E_MODE=fake python tools/e2e.py 85`(원점 없이 이동 허용, 가짜 펌웨어) · `python tools/e2e.py 31 …`(R–T e2e 31~47) · `python tools/e2e.py 48 49 50 51 52 53 54 55`(장치 연결 상태 · 자동 다시 연결 · 뽑힘/꽂음 · 연결 겹침 · 깜빡임 없음) · `python tools/e2e.py 56 … 64`(모터 안전) · `python tools/e2e.py 65 … 79`(정지 · 원점 · 연결 · 설정, 실제 속도) · `python tools/safety_ui2.py`(패드 · [정지] · 키보드 범위 · 입력 칸 · 일시정지 더블클릭 · 띠 400 ms · 누른 채 다시 그리기 · 서버 끊김, playwright) · `python tools/live_check.py`(실시간: 장면 → 그림 0.6 s 이내, 합성 카메라 큐 4 · 8 장) · `python tools/mem_check.py [--quick] [--size 4080]`(서버 메모리 · 실시간 CPU) · `python tools/safety_ui.py`(비상정지 지연 · 키보드 조그 범위 · 패드 · Z, playwright) · `python tools/jog_check.py`(조그 방향: ↑ 버튼 · 키보드 ↑ → 사진에서 헤드가 위로) · `python tools/ui_lint.py`(6가지 창 크기 배치 검사 → `..\shots_v2\ui\`) · `python tools/shots_conn.py`(연결 상태별 화면 점검 + 스크린샷 → `..\shots_v2\conn\`) · `python tools/shots_rt.py`(R–T 화면 흐름 · 스크린샷) · `E2E_MODE=fake python tools/e2e.py`(fake-serial) · `python tools/stress_fake.py 300`(동시성 부하) · `python tools/clicks.py`(클릭 수) · `python tools/fixed_regress.py [--loo]` · `python tools/align_measure.py` · `python tools/e2e.py [이름일부]` · `python tools/shots.py OUT` · `python tools/exit_test.py` · `python tools/flows.py`(화면 흐름: 첫 실행 · 비상정지 회복 · 막다른 상태 점검, playwright) · `python tools/perf4080.py`(4080×3060 성능).

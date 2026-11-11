@@ -411,6 +411,50 @@ class K2450(_Dev):
         if errs:
             raise VisaError("K2450 설정 오류 · " + errs[0][:40])
 
+    # ---- 접촉 확인(backend/contact.py): 아주 약한 전압 · 낮은 전류 한도 · 2단자 → (닿은 뒤) 4단자 ----
+    OVP_MIN = "PROT2"                                   # 과전압 보호의 가장 낮은 단계(2 V, 사양서: 사용자 선택 · ±5 % · 공장값 없음)
+
+    def configure_contact(self, p):
+        """접촉 확인 설정. 출력을 켜기 **전에** 단자 → 전압 소스 → 과전압 보호(가장 낮은 2 V) → 전류 한도 → 전압 → 전류 측정
+        (2단자 · 자동 범위 · 적분 · 평균 끔). 4단자로 바꾸면 감지 핀이 아직 떠 있을 수 있다 - 전압 소스는 감지 단자 전압을 맞추려고
+        출력을 올릴 수 있으므로(열린 감지선) 과전압 보호를 걸어 시료에 큰 전압이 걸리지 않게 한다. 측정 단계는 *RST 부터 자기 설정을 다시 한다."""
+        if self.out_state:
+            self.output(False)
+        self.write("*RST")
+        want = "REAR" if str(p.get("terminal", "REAR")).upper().startswith("R") else "FRON"
+        self.write(":ROUT:TERM %s" % want)
+        got = self.terminal()
+        if got != want:
+            raise VisaError("K2450 단자 설정 실패 · %s 로 읽힘" % (got or "?"))
+        self.write(":SOUR:FUNC VOLT")
+        self.write(":SOUR:VOLT:PROT %s" % self.OVP_MIN)
+        self.write(":SOUR:VOLT:ILIM %.6g" % float(p["ilim_a"]))
+        self.write(":SOUR:VOLT %.6g" % float(p["volt"]))
+        self.write(":SENS:FUNC \"CURR\"")
+        self.write(":SENS:CURR:RSEN OFF")
+        self.write(":SENS:CURR:RANG:AUTO ON")
+        self.write(":SENS:CURR:NPLC %.6g" % float(p["nplc"]))
+        self.write(":SENS:CURR:AVER OFF")
+        errs = _drain_errors(self)
+        if errs:
+            raise VisaError("K2450 접촉 확인 설정 오류 · " + errs[0][:40])
+
+    def set_four_wire(self, on):
+        """2단자 ↔ 4단자. 출력을 끈 채 바꾸고 켠다(켠 채로 바꾸는 것은 매뉴얼에서 확인하지 못했다 - 끄고 바꾸는 쪽이 안전)."""
+        was = self.out_state
+        if was:
+            self.output(False)
+        self.write(":SENS:CURR:RSEN %s" % ("ON" if on else "OFF"))
+        if was:
+            self.output(True)
+
+    def ovp_tripped(self):
+        """과전압 보호가 걸렸는가(:SOUR:VOLT:PROT:TRIP?). 읽지 못하면 False."""
+        try:
+            return self.query(":SOUR:VOLT:PROT:TRIP?").strip() in ("1", "+1")
+        except VisaError:
+            return False
+
     def terminal(self):
         """:ROUT:TERM? 로 지금 단자. "REAR" | "FRON" | "" (읽지 못함)."""
         try:
@@ -425,6 +469,12 @@ class K2450(_Dev):
     def output(self, on):
         self.write(":OUTP %s" % ("ON" if on else "OFF"))
         self.out_state = bool(on)
+
+    def read_strict(self):
+        """접촉 확인용 읽기: 전류와 한도 걸림을 **둘 다** 읽어야 한다(한도 걸림을 못 읽으면 단락을 놓칠 수 있다 - 예외)."""
+        cur = parse_float(self.query(":READ?"))
+        trip = self.query(":SOUR:VOLT:ILIM:TRIP?").strip() in ("1", "+1")
+        return cur, trip
 
     def read(self):
         """(전류 A | None, 전류 한도 걸림 bool)."""

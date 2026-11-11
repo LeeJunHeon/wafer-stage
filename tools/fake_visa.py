@@ -5,6 +5,9 @@
   - VO2 저항 모델: 가열 약 66 °C · 냉각 약 58 °C 에서 3e5 ↔ 2e2 Ω 로 바뀌는 고리(히스테리시스).
   - 오류 조작(lab.fault): tc_open(열전대 끊김) · disconnect(연결 끊김) · ilim(전류 한도 걸림) · slow(느린 응답 s)
   - 핀이 접촉 높이에 있지 않으면 열전대가 공기 온도를 잰다(lab.pin_down() 이 False).
+  - 접촉 찾기 흉내(lab.probe · pos_fn): K2450 이 스테이지의 실제 X · Y · Z 를 보고 답한다. 샘플마다 표면 높이 · 크기 · 저항,
+    샘플 밖은 알루미늄 판(lab.probe["plate_z"] 아래로 내려가면 단락), 핀 4개 중 FORCE 두 개가 먼저(표면), SENSE 두 개는 lag4 만큼 더 내려가야 닿는다.
+    2단자 = 시료 + 접촉 저항(rc) · 4단자 = 시료(네 핀 모두 닿음) / 감지 핀이 떠 있으면 전압 소스가 출력을 올려 과전압 보호(PROT)에 걸린다.
 
 사용: install(lab) 로 instruments.RM_FACTORY 에 꽂는다. 시험은 Lab 을 직접 만들어 쓴다.
 """
@@ -52,6 +55,10 @@ class Lab:
         self.term = "FRON"             # K2450 현재 단자 설정(*RST 뒤 앞면)
         self.addrs = None              # VISA 목록(None = ADDRS) - 주소 찾기 시험이 바꾼다
         self.opened = []               # 연 주소 순서(시험)
+        self.probe = None              # 접촉 찾기 흉내: {"plate_z", "rc", "samples": [{"x", "y", "half", "z", "lag4", "ohm"}]} (None = 위치와 무관)
+        self.pos_fn = lambda: None     # 실제 스테이지 (x, y, z) mm - 앱이 꽂는다
+        self.ovp_tripped = False
+        self.prot_v = None             # :SOUR:VOLT:PROT 단계(V) - None = 걸지 않음(공장값 없음)
 
     # ---- 물리 ------------------------------------------------------
     def _step(self):
@@ -92,8 +99,29 @@ class Lab:
             lg -= 0.004 * max(0.0, self.T - 25.0) * (1.0 - self.m)
             return 10.0 ** lg
 
-    def read_current(self, rng, auto):
+    def probe_touch(self):
+        """접촉 찾기 흉내: (닿은 핀 수 0 · 2 · 4, 시료 저항 Ω, 단락). 실제 스테이지 위치로 판단한다."""
+        pr = self.probe
+        pos = self.pos_fn()
+        if not pr or pos is None:
+            return None
+        x, y, z = pos
+        for sm in pr.get("samples") or []:
+            if abs(x - sm["x"]) <= sm.get("half", 2.5) and abs(y - sm["y"]) <= sm.get("half", 2.5):
+                if z < sm["z"] - 1e-9:
+                    return 0, sm.get("ohm", 1e6), False
+                if z < sm["z"] + sm.get("lag4", 0.0) - 1e-9:
+                    return 2, sm.get("ohm", 1e6), False
+                return 4, sm.get("ohm", 1e6), False
+        if z >= pr.get("plate_z", 99.0) - 1e-9:
+            return 4, 0.5, True                                # 샘플 밖 · 알루미늄 판
+        return 0, None, False
+
+    def read_current(self, rng, auto, rsen=False):
         """(전류 문자열, 한도 걸림). 범위 넘으면(수동 범위) 9.91E37 · 한도 걸리면 한도 전류."""
+        pt = self.probe_touch()
+        if pt is not None:
+            return self._read_probe(pt, rng, auto, rsen)
         r = self.resistance()
         i = self.volt / r if self.out_on else 0.0
         if self.term != self.cable[:4]:
@@ -103,6 +131,33 @@ class Lab:
             self.tripped = True
             return "%+.8E" % self.ilim
         if i > self.ilim:
+            self.tripped = True
+            i = self.ilim
+        if not auto and abs(i) > rng * 1.05:
+            return OVER
+        return "%+.8E" % i
+
+
+    def _read_probe(self, pt, rng, auto, rsen):
+        n, ohm, short = pt
+        rc = float((self.probe or {}).get("rc", 2.0e3))
+        self.tripped = False
+        self.ovp_tripped = False
+        if not self.out_on:
+            return "%+.8E" % 0.0, False
+        if short:
+            i = self.volt / ohm
+        elif n == 0:
+            i = 2.0e-12
+        elif not rsen:
+            i = self.volt / (ohm + rc)                        # 2단자: FORCE 두 핀(시료 + 접촉 저항)
+        elif n == 4:
+            i = self.volt / ohm                               # 4단자 · 네 핀 모두: 시료 전압을 맞춤
+        else:                                                 # 4단자 · 감지 핀이 떠 있음: 출력이 올라 과전압 보호에 걸린다(없으면 20 V 까지)
+            vmax = self.prot_v if self.prot_v else 20.0
+            self.ovp_tripped = True
+            i = vmax / (ohm + rc)
+        if abs(i) > self.ilim:
             self.tripped = True
             i = self.ilim
         if not auto and abs(i) > rng * 1.05:
@@ -138,6 +193,10 @@ class _Res:
             raise TimeoutError("VI_ERROR_TMO (시뮬레이션: 연결 끊김)")
         slow = float(lab.fault.get("slow") or 0.0)
         if slow > 0:
+            lim = float(self.timeout or 5000) / 1000.0
+            if slow > lim:                                    # pyvisa 처럼: 응답이 시간 한도보다 늦으면 VI_ERROR_TMO
+                time.sleep(lim)
+                raise TimeoutError("VI_ERROR_TMO (시뮬레이션: 응답 %.1f s > 한도 %.1f s)" % (slow, lim))
             time.sleep(slow)
 
     def close(self):
@@ -161,6 +220,8 @@ class _Res:
             lab.out_on = False
             lab.ilim, lab.volt = 0.1, 0.0
             lab.term = "FRON"
+            lab.prot_v = None                                 # 공장값: 과전압 보호 없음
+            lab.ovp_tripped = False
         elif u.startswith(":ROUT:TERM"):
             arg = u.split("TERM", 1)[1]
             if arg.startswith(("FRON", "REAR")):
@@ -174,6 +235,14 @@ class _Res:
             s["rsen"] = u.endswith("ON")
         elif u == ":SOUR:FUNC VOLT" or u == ":SOUR:FUNCVOLT" or u.startswith(":SOUR:FUNC"):
             pass
+        elif u.startswith(":SOUR:VOLT:PROT") and not u.endswith("?"):
+            arg = u.split(":SOUR:VOLT:PROT", 1)[1].lstrip(":LEV")
+            if arg == "NONE":
+                lab.prot_v = None
+            elif arg.startswith("PROT") and arg[4:].isdigit() and int(arg[4:]) in (2, 5, 10, 20, 40, 60, 80, 100, 120, 140, 160, 180):
+                lab.prot_v = float(arg[4:])
+            else:
+                self.err.append("bad protection: " + c)
         elif u.startswith(":SOUR:VOLT:ILIM"):
             lab.ilim = float(u.split("ILIM", 1)[1])
         elif u.startswith(":SOUR:VOLT") and not u.endswith("?"):
@@ -234,9 +303,11 @@ class _Res:
             return "%+.8E" % lab.temp()
         if self.kind == "2450" and u == ":READ?":
             lab.sleep(lab.read_dt)
-            return lab.read_current(s["range"], s["auto"])
+            return lab.read_current(s["range"], s["auto"], rsen=s["rsen"])
         if self.kind == "2450" and u == ":SOUR:VOLT:ILIM:TRIP?":
             return "1" if lab.tripped else "0"
+        if self.kind == "2450" and u == ":SOUR:VOLT:PROT:TRIP?":
+            return "1" if lab.ovp_tripped else "0"
         if self.kind == "2450" and u == ":ROUT:TERM?":
             return s["terminal"] + chr(10)
         if self.kind == "2450" and u == ":OUTP?":

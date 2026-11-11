@@ -339,6 +339,29 @@ ITEMS = [
     I("approach_mm", 2.0, "float", "measure", "접촉 높이", "느린 구간",
       "접촉 높이 이만큼 앞까지는 보통 속도로, 남은 거리는 느린 속도로 내립니다.",
       min=0.2, max=10, step=0.1, unit="mm", apply="즉시"),
+    # ---------------- 접촉 확인(전기로 접촉을 확인하며 핀 내리기 · backend/contact.py) ----------------
+    I("contact.sense", True, "bool", "measure", "접촉 확인", "전기로 접촉 확인",
+      "켜면 저장한 접촉 높이 조금 위부터 아주 약하게 전류를 재며 조금씩 내려 전류가 흐르는 높이에서 멈춥니다. 끄면 저장한 높이까지만 내립니다.", apply="다음 측정"),
+    I("contact.volt", 0.1, "float", "measure", "접촉 확인", "확인 전압",
+      "접촉을 확인할 때 거는 전압입니다(2단자). 과전압 보호는 가장 낮은 2 V 로 겁니다.", min=0.001, max=1.0, step=0.01, unit="V", apply="다음 측정"),
+    I("contact.ilim_a", 1e-4, "float", "measure", "접촉 확인", "확인 전류 한도",
+      "접촉을 확인할 때의 전류 한도입니다. 이 한도에 걸리면 금속 판 · 단락으로 보고 멈춥니다.", min=1e-7, max=1e-2, step=1e-5, unit="A", apply="다음 측정"),
+    I("contact.nplc", 0.1, "float", "measure", "접촉 확인", "확인 적분",
+      "접촉을 확인할 때 한 번 재는 적분 시간(전원 주기 수)입니다. 평균은 끕니다.", min=0.01, max=10, step=0.01, unit="NPLC", apply="다음 측정"),
+    I("contact.step_mm", 0.025, "float", "measure", "접촉 확인", "내리는 간격",
+      "접촉을 찾을 때 한 번에 내리는 거리입니다(0.025 mm = 4 펄스).", min=0.00625, max=0.2, step=0.00625, unit="mm", apply="다음 측정", validate="contact"),
+    I("contact.start_above_mm", 0.3, "float", "measure", "접촉 확인", "찾기 시작 높이",
+      "저장한 접촉 높이보다 이만큼 위부터 재며 내립니다.", min=0.05, max=5, step=0.05, unit="mm", apply="다음 측정"),
+    I("contact.max_below_mm", 0.5, "float", "measure", "접촉 확인", "더 내리는 한도",
+      "저장한 접촉 높이보다 이만큼 더 내려가도 접촉이 없으면 멈추고 Z 를 올립니다. 이 아래로는 내리지 않습니다.", min=0.05, max=3, step=0.05, unit="mm", apply="다음 측정"),
+    I("contact.confirm_n", 2, "int", "measure", "접촉 확인", "연속 확인 횟수",
+      "전류가 이만큼 연속으로 흐르면 접촉으로 봅니다.", min=1, max=10, step=1, apply="다음 측정"),
+    I("contact.overdrive_mm", 0.05, "float", "measure", "접촉 확인", "닿은 뒤 더 누름",
+      "접촉을 찾은 뒤 확실히 닿게 이만큼 더 내립니다(더 내리는 한도 안에서).", min=0, max=0.5, step=0.00625, unit="mm", apply="다음 측정"),
+    I("contact.short_ohm", 1000.0, "float", "measure", "접촉 확인", "단락 저항",
+      "2단자 저항이 이보다 작거나 전류 한도에 걸리면 핀이 샘플 밖 금속 판에 닿은 것으로 보고 멈춥니다.", min=1, max=1e6, step=100, unit="Ω", apply="다음 측정"),
+    I("contact.search_mm", 5.0, "float", "measure", "접촉 확인", "처음 찾기 거리",
+      "장비 설정 7 에서 접촉 높이가 아직 없을 때 지금 Z 부터 이만큼까지 0.05 mm 간격으로 찾습니다.", min=0.1, max=20, step=0.5, unit="mm", apply="다음 측정"),
     I("sim.time_scale", 1.0, "float", "measure", "시뮬레이터(테스트용)", "시간 배율",
       "대기 · 히트건 단계의 시간을 이 배율로 빠르게 합니다(시뮬레이션에서만, 검증용. 실장비에서는 1).",
       min=0.1, max=1000, step=0.5, apply="즉시", advanced=True),
@@ -1059,6 +1082,13 @@ def _v_rt(key, v, values, errs, warns):
             errs[key] = "파일 이름에 쓸 수 없는 글자 · 빈 값"
 
 
+def _v_contact(key, v, values, errs, warns):
+    """접촉 찾기 간격은 펄스의 정수배(160 펄스 = 1 mm) - 끝단 · 한도 계산이 펄스 단위로 맞게."""
+    p = _num(v)
+    if p is not None and abs(p * 160.0 - round(p * 160.0)) > 1e-6:
+        errs[key] = "0.00625 mm(1 펄스)의 배수"
+
+
 def _v_manual(key, v, values, errs, warns):
     txt = (v or "").replace(" ", "")
     if not txt:
@@ -1074,6 +1104,7 @@ def _v_manual(key, v, values, errs, warns):
 
 
 VALIDATORS = {
+    "contact": _v_contact,
     "manual": _v_manual,
     "rt": _v_rt, "contact_z": _v_contact_z, "xy_in_limits": _v_xy_in_limits, "seed_grow": _v_seed_grow, "tol_warn": _v_tol_warn,
     "head_id": _v_head_id, "start_pps": _v_start_pps, "jog_steps": _v_jog_steps, "jog_zsteps": _v_jog_zsteps, "touch_max": _v_touch_max,

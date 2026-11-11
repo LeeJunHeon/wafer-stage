@@ -65,7 +65,8 @@ class Client:
                 "settings_rev": 2, "cooler": {"zones": {"rows": 3, "cols": 3, "row_edges": None, "col_edges": None,
                                                        "cells": [{"cooler": i + 1, "relay": i + 1, "name": "쿨러 %d" % (i + 1)} for i in range(9)]}},
                 "jog": {"z_max_mm": 45.0},                       # 예전 시험은 Z 를 크게 조그한다 - 모터 안전 시험(56~)은 이 값을 기본(1 mm)으로 되돌린다
-                "rt": {"file_path": ""}}                         # 시험은 실제 NAS(기본 폴더)에 쓰지 않는다 - NAS 시험은 임시 폴더를 준다
+                "rt": {"file_path": ""},                         # 시험은 실제 NAS(기본 폴더)에 쓰지 않는다 - NAS 시험은 임시 폴더를 준다
+                "contact": {"sense": False}}                     # 예전 시험은 저장 높이까지만 내리는 길을 본다(전기 접촉 확인은 e2e 86~93 이 켜고 본다)
         base = _merge(base, patch or {})
         with open(self.settings, "w", encoding="utf-8") as f:
             json.dump(base, f, ensure_ascii=False)
@@ -289,6 +290,7 @@ def run_cases(names):
     import e2e_safety  # noqa: F401  (모터 안전 시나리오 56~ 등록)
     import e2e_stop  # noqa: F401  (정지 · 원점 · 연결 · 설정 시나리오 65~ 등록)
     import e2e_manual  # noqa: F401  (측정 장비 주소 · 수동 측정 시나리오 80~ 등록)
+    import e2e_contact  # noqa: F401  (전기로 접촉 확인하며 핀 내리기 86~ 등록)
     def hit(k, n):                                       # "65" · "09b" 처럼 번호만 주면 그 번호의 케이스만(이름 안의 숫자와 섞이지 않게), 아니면 이름 일부
         return n.split()[0] == k if k.replace("-", "").isalnum() and k[:2].isdigit() and " " not in k else k in n
     sel = [n for n in CASES if not names or any(hit(k, n) for k in names)]

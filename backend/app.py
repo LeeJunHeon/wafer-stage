@@ -21,6 +21,7 @@ import numpy as np
 
 import calibstore
 import conditions
+import contact as contact_mod
 import logger
 import measure
 import store
@@ -40,6 +41,13 @@ STATUS_TAGS = ("done", "need", "invalid")
 AUTO_LINK_S = float(os.environ.get("WAFER2_AUTO_LINK_S", "3"))    # 자동 확인 간격(s): 스테이지는 포트 목록만 본다
 STAGE_RETRY_S = float(os.environ.get("WAFER2_STAGE_RETRY_S", "30"))   # 포트가 있는데 열기가 실패하면 이만큼에 한 번만 다시
 CAM_BASE_S = float(os.environ.get("WAFER2_AUTO_CAM_S", "10"))     # 카메라 자동 시도 간격: 10 s → 20 s → 30 s
+
+
+def _contact_view(r):
+    """접촉 결과의 화면 · 상태용 요약(측정 점 목록은 빼고 짧게)."""
+    if not r:
+        return None
+    return {k: r.get(k) for k in ("sense", "mode", "first_z", "final_z", "r2", "r4", "start_z", "floor_z", "s", "no", "x", "y", "t")}
 
 
 class AppError(Exception):
@@ -163,6 +171,19 @@ class App:
         if self.stage.dry:
             return self.stage.dry_true_xy()
         return self.stage.ser.true_xy() if hasattr(self.stage.ser, "true_xy") else (self.pos["x"] or 0.0, self.pos["y"] or 0.0)
+
+    def _true_xyz(self):
+        """시뮬레이션의 실제(물리) X · Y · Z mm - 가짜 K2450 의 접촉 흉내용. 스테이지가 없으면 None."""
+        st = self.stage
+        if st is None:
+            return None
+        x, y = self._true_xy()
+        if st.dry:
+            z = st._dry_xy["z"]
+        else:
+            ser = st.ser
+            z = ser.real["z"] / stage_mod.Z_PPMM if hasattr(ser, "real") else (self.pos["z"] or 0.0)
+        return (x, y, z)
 
     def ids(self):
         return {"ref": (self.ref_meta or {}).get("id"), "calib": self.calib.d.get("created"), "calib_ref": self.calib.d.get("ref_id"),
@@ -2227,23 +2248,32 @@ class App:
         return chk
 
     def c_contact_save(self, a, gen):
-        """지금 Z 높이를 접촉 높이로 저장한다(샘플 위에서 핀이 닿는 자리까지 Z 조그로 내린 뒤)."""
+        """지금 Z 높이를 접촉 높이로 저장한다(샘플 위에서 핀이 닿는 자리까지 Z 조그로 내린 뒤).
+        z 를 주면 그 값([전기로 접촉 찾기]의 첫 접촉 Z - 마지막 찾기 결과와 같아야 한다)."""
         self._need_stage()
         self._no_run("접촉 높이 저장")
         if not self.motion.z_ok or self.motion.estop_locked:
             raise AppError("원점 필요 · 장비 설정 1")
         st = self.motion.status()
         z = st.get("z_mm")
+        if a.get("z") is not None:
+            last = self.contact_last or {}
+            if last.get("first_z") is None or abs(float(a["z"]) - float(last["first_z"])) > 1e-6:
+                raise AppError("전기로 찾은 높이가 아님 · 다시 찾기")
+            z = float(a["z"])
         zmax = float(stage_mod.limits_mm()["z_max_mm"])
         if z is None or not (0.1 <= z <= zmax):
             raise AppError("Z %s mm · 저장 못 함 (0.1~%g)" % ("?" if z is None else "%.2f" % z, zmax))
         if a.get("no") is not None:
             self._over_sample_check(a["no"])(st)            # 샘플을 골랐으면 그 위에서만 저장
-        ok, errs, _w = self.cfg.save({"contact_z_mm": round(float(z), 2), "contact_tool": conditions.active_tool(self.cfg.values).get("name")})
+        zr = round(float(z), 4) if a.get("z") is not None else round(float(z), 2)      # 전기로 찾은 높이는 펄스 자리 그대로(0.025 mm 간격이 반올림으로 흔들리지 않게)
+        ok, errs, _w = self.cfg.save({"contact_z_mm": zr, "contact_tool": conditions.active_tool(self.cfg.values).get("name")})
         if not ok:
             raise AppError("접촉 높이 저장 실패 · " + next(iter(errs.values())))
-        logger.log("접촉 높이 저장 · Z %.2f mm" % z)
-        return {"z": round(float(z), 2)}
+        logger.log("접촉 높이 저장 · Z %s mm%s" % (zr, " (전기로 찾음)" if a.get("z") is not None else ""))
+        return {"z": zr}
+
+    contact_last = None                              # 마지막 접촉 내리기 · 찾기 결과(첫 접촉 Z · 최종 Z · 2 · 4단자 저항)
 
     def _contact_tool_ok(self):
         ct = self.cfg.get("contact_tool")
@@ -2254,22 +2284,75 @@ class App:
         self._no_run("접촉 높이 지우기")
         self.cfg.save({"contact_z_mm": None, "contact_tool": None})
 
-    def c_contact_try(self, a, gen):
-        """저장한 접촉 높이로 내려 보기 - X · Y 가 고른 샘플 위일 때만."""
-        self._need_move("접촉 높이 내려 보기")
+    def contact_descend(self, gen, check_xy=None, nowait=False):
+        """접촉 높이로 내리기(측정 단계 · 측정 탭 · 장비 설정 7 공용). 접촉 확인이 켜져 있으면 전기로 확인하며 내리고(contact.find),
+        꺼져 있으면 저장한 높이까지만(descend_contact). 반환 {sense, first_z, final_z, r2, r4 …}. 실패는 contact.ContactFail · MotionError."""
         z = self.cfg.get("contact_z_mm")
         if z is None:
+            raise AppError("접촉 높이 필요 · 장비 설정 7")
+        if not contact_mod.sense_on(self.cfg):
+            st = self.motion.descend_contact(float(z), float(self.cfg.get("approach_mm")), gen=gen, check_xy=check_xy, nowait=nowait)
+            res = {"sense": False, "first_z": None, "final_z": st.get("z_mm"), "r2": None, "r4": None, "x": st.get("x_mm"), "y": st.get("y_mm")}
+        else:
+            why = contact_mod.block(self)
+            if why:
+                raise AppError(why)
+            res = dict(contact_mod.find(self, gen, mode="height", z_ref=float(z), check_xy=check_xy, nowait=nowait), sense=True)
+        self.contact_last = dict(res, t=time.time())
+        return res
+
+    def _contact_cmd(self, fn, what):
+        """사람이 누른 접촉 명령의 공통 틀: 바쁨 표시 · 위치 갱신 · 실패 사유 한 줄."""
+        self._begin(what)
+        try:
+            try:
+                res = fn()
+            except contact_mod.ContactFail as e:
+                raise AppError(str(e))
+            finally:
+                try:
+                    st = self.motion.status()
+                    self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
+                except Exception:                          # noqa: BLE001
+                    pass
+            return res
+        finally:
+            self._end()
+
+    def c_contact_try(self, a, gen):
+        """저장한 접촉 높이로 내리기 - X · Y 가 고른 샘플 위일 때만(측정 탭 '지금 위치' 는 free). 접촉 확인이 켜져 있으면 전기로 확인하며."""
+        self._need_move("접촉 높이 내려 보기")
+        if self.cfg.get("contact_z_mm") is None:
             raise AppError("접촉 높이 필요 · 먼저 저장")
         self._contact_tool_ok()
         chk = self._over_sample_check(a["no"]) if a.get("no") is not None else None
         if chk is None and not a.get("free"):
             raise AppError("샘플을 고른 뒤")                  # free: 측정 탭 '이 위치 측정' - 사람이 조그로 핀을 맞춘 자리에서 내림
-        self._begin("접촉 높이로 내리기")
-        try:
-            st = self.motion.descend_contact(float(z), float(self.cfg.get("approach_mm")), gen=gen, check_xy=chk, nowait=True)
-            self.pos.update(x=st["x_mm"], y=st["y_mm"], z=st.get("z_mm"))
-        finally:
-            self._end()
+        res = self._contact_cmd(lambda: self.contact_descend(gen, check_xy=chk, nowait=True), "접촉 높이로 내리기")
+        return _contact_view(res)
+
+    def c_contact_find(self, a, gen):
+        """장비 설정 7 [전기로 접촉 찾기]: 고른 샘플 위에서. 접촉 높이가 있으면 측정과 같은 범위, 없으면 지금 Z 부터 0.05 mm 간격으로
+        contact.search_mm 까지 → 닿으면 0.3 mm 올렸다가 step_mm 간격으로 다시. 저장은 하지 않는다(화면이 확인 창 뒤 contact_save {z})."""
+        self._need_move("접촉 찾기")
+        if self.k2450 is None or not self.k2450.is_open:
+            raise AppError(contact_mod.NO_SENSE)
+        if a.get("no") is None:
+            raise AppError("샘플을 고른 뒤 · [샘플 위로]")
+        self._contact_tool_ok()
+        chk = self._over_sample_check(a["no"])
+        z = self.cfg.get("contact_z_mm")
+
+        def go():
+            if z is not None:
+                r = contact_mod.find(self, gen, mode="height", z_ref=float(z), check_xy=chk, nowait=True)
+            else:
+                zc = float(self.motion.status().get("z_mm") or 0.0)
+                r = contact_mod.find(self, gen, mode="search", z_ref=zc, check_xy=chk, nowait=True)
+            self.contact_last = dict(r, sense=True, t=time.time(), no=int(a["no"]))
+            return self.contact_last
+        res = self._contact_cmd(go, "접촉 찾기")
+        return _contact_view(res)
 
     # ------------------------------------------------------------------
     # 릴레이 (수동)
@@ -2383,6 +2466,11 @@ class App:
                 self._contact_tool_ok()
             except AppError as e:
                 return str(e), []
+            why = contact_mod.block(self)                     # 접촉 확인이 켜져 있으면 K2450 이 있어야 내린다
+            if why:
+                return why, []
+            if not contact_mod.sense_on(self.cfg):
+                notes.append("접촉 확인 꺼짐 · 저장한 높이까지만 내림")
         if conditions.uses_heat(cond) and not self.cfg.get("relay.items")[int(self.cfg.get("heater.relay")) - 1].get("enabled"):
             return "히트건 릴레이 사용 안 함 · 장비 설정 8", []
         errs, _w = conditions.validate_condition(cond, self.cfg.values, stage_mod.limits_mm()["z_max_mm"], prefix="c")
@@ -2515,6 +2603,7 @@ class App:
             z = self.pos.get("z")
             return cz is not None and z is not None and abs(float(z) - float(cz)) <= 0.5
         self.lab = fake_visa.Lab(clock=clk.now, sleep=lambda s: time.sleep(s / clk.scale), heater_fn=heater, cooler_fn=cooler, pin_down_fn=pin)
+        self.lab.pos_fn = self._true_xyz                      # 접촉 찾기 흉내: 가짜 K2450 이 스테이지의 실제 X · Y · Z 를 본다
         fake_visa.install(self.lab)
 
     def _inst_close(self, off=True):
@@ -2747,6 +2836,12 @@ class App:
         self._begin("R–T 측정" if mode == "rt" else "속도 측정")
         name = p["file_name"] if mode == "rt" else "speed_"
         rr = rt_mod.RTRun(self, p, name, cancel_fn=lambda: self.link_lost_count != n0, relays=relays, mode=mode, speed_s=speed_s, gen=gen)
+        try:
+            zn = self.motion.status().get("z_mm")
+        except Exception:                                   # noqa: BLE001
+            zn = None
+        if zn is not None and rt_mod.RTRun._contact_here(self, zn):
+            rr.contact = dict(_contact_view(self.contact_last), points=self.contact_last.get("points"))   # rt.json 에 이 자리의 접촉 찾기 결과
         self.rt = rr
         self.rt_last["auto"] = rr
         rr.thread = threading.Thread(target=rr.run, name="rt-run", daemon=True)
@@ -3406,7 +3501,8 @@ class App:
             "eeprom": self.eeprom,
             "fw": None if self.stage is None else self.stage.fw_version,
             "port": None if self.stage is None else (self.stage.port_name or ("가상" if self.sim else None)),
-            "contact": {"z": cfg.get("contact_z_mm"), "approach": cfg.get("approach_mm")},
+            "contact": {"z": cfg.get("contact_z_mm"), "approach": cfg.get("approach_mm"), "sense": bool(cfg.get("contact.sense")),
+                        "block": contact_mod.block(self), "last": None if not self.contact_last else _contact_view(self.contact_last)},
             "band": self.band(), "stop_note": self.stop_note,
             "relays": None if self.power is None else {"owners": dict(self.power.owners), "heater": cfg.get("heater.relay"),
                                                        "heater_on": bool(self.power.owners.get(int(cfg.get("heater.relay"))))},

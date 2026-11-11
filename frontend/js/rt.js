@@ -173,7 +173,7 @@ function phaseLabel(run) {
   if (ph === "가열" || ph === "냉각") return ph + " " + run.cycle + " / " + run.repeat + "회";
   return ph || "시작 중";
 }
-UI.acts["rt-down"] = async () => { const r = await send("contact_try", { free: true }); if (r.ok) toast("접촉 높이까지 내림"); };
+UI.acts["rt-down"] = async () => { const r = await send("contact_try", { free: true }); if (r.ok) toast(r.res && r.res.sense ? "접촉 · 첫 접촉 Z " + f1(r.res.first_z, 3) + " · 최종 Z " + f1(r.res.final_z, 3) : "접촉 높이까지 내림 · 접촉 확인 꺼짐"); };
 UI.acts["rt-ztop"] = () => send("z_top");
 UI.acts["rt-goto"] = () => { if (T.sampleNo != null) send("goto_sample", { no: T.sampleNo }); };
 UI.acts["rt-defaults"] = async () => { const r = await send("rt_defaults"); if (r.ok) toast("기본값으로"); };

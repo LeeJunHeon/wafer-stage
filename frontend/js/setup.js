@@ -276,7 +276,7 @@ function renderPanel(s) {
         v.d != null && v.verdict !== "정상" ? btn("적용 (sp)", "su-apply-pos", null, "primary sm", "위치 확인 결과를 스테이지 위치로 적용합니다. 비상정지 회복의 마지막 단계입니다.") : null,
         S.freeze ? btn("실시간으로", "su-rec-cancel", null, "sm") : null) : null), foot());
   } else if (S.step === 7) {
-    const ctr = s.contact, withX = s.samples.filter((p) => p.X != null);
+    const ctr = s.contact, withX = s.samples.filter((p) => p.X != null), ik7 = ((s.rt && s.rt.inst) || {}).k2450;
     if (S.ctNo == null || !withX.some((p) => p.no === S.ctNo)) S.ctNo = (withX.find((p) => p.no === s.sel) || withX[0] || {}).no;
     const sg = s.stage;
     const base = lock || (nostage ? "스테이지 연결 안 됨" : sg && !(sg.z_ok && sg.xy_ok && !sg.locked) ? "원점 필요 · 단계 1" : "");
@@ -286,7 +286,14 @@ function renderPanel(s) {
       h("div", { class: "row" }, sel, btn("샘플 위로", "su-ct-goto", null, "", "고른 샘플 위로 공구를 옮깁니다(Z 를 먼저 올립니다).", base || noS)),
       h("div", { class: "row" }, btn("지금 높이를 접촉 높이로", "su-ct-save", null, "primary", "지금 Z 높이(절대값)를 접촉 높이로 저장합니다. 고른 샘플 위일 때만 저장됩니다.", base || noS || (sg && sg.z < 0.1 ? "Z 를 먼저 내리기" : ""))),
       h("div", { class: "kv" }, h("span", { text: "현재 값" }), h("b", { text: ctr.z == null ? "비어 있음 · 측정 시작 불가" : "Z " + f1(ctr.z, 2) + " mm" })),
-      h("div", { class: "row" }, btn("접촉 높이로 내려 보기", "su-ct-try", null, "", "저장한 높이까지 내립니다. 마지막 " + ctr.approach + " mm 는 느리게 내립니다.", base || noS || (ctr.z == null ? "접촉 높이 필요" : "")),
+      h("div", { class: "row" }, btn("전기로 접촉 찾기", "su-ct-find", null, "primary", ctr.z == null
+        ? "고른 샘플 위에서 지금 Z 부터 0.05 mm 씩 내리며 아주 약한 전류로 접촉을 찾고, 닿으면 0.3 mm 올렸다가 촘촘히 다시 찾습니다. 찾은 높이는 확인 창에서 저장합니다."
+        : "저장한 접촉 높이 조금 위부터 아주 약한 전류로 재며 내려 실제로 닿는 높이를 찾습니다(측정과 같은 범위). 찾은 높이는 확인 창에서 저장합니다.",
+        base || noS || (ik7 && ik7.ok ? "" : "K2450 연결 필요(접촉 확인) · 단계 8")),
+        h("span", { class: "sub grow", id: "ct-sense", text: ctr.sense ? "접촉 확인 켜짐 · 측정 때도 전기로 확인" : "접촉 확인 꺼짐 · 측정 때 저장한 높이까지만" }),
+        btn("설정", "su-ct-cfg", null, "sm", "접촉 확인 설정(전압 · 전류 한도 · 간격 · 한도)을 엽니다.", lock)),
+      ctr.last && ctr.last.first_z != null ? h("div", { class: "sub", id: "ct-last", text: "마지막 찾기 · 첫 접촉 Z " + f1(ctr.last.first_z, 3) + " · 최종 Z " + f1(ctr.last.final_z, 3) + " · 2단자 " + ohm(ctr.last.r2) + " · 4단자 " + ohm(ctr.last.r4) }) : null,
+      h("div", { class: "row" }, btn("접촉 높이로 내려 보기", "su-ct-try", null, "", ctr.sense ? "저장한 높이 조금 위부터 전기로 접촉을 확인하며 내립니다." : "저장한 높이까지 내립니다. 마지막 " + ctr.approach + " mm 는 느리게 내립니다.", base || noS || (ctr.z == null ? "접촉 높이 필요" : "") || (ctr.sense ? ctr.block : "")),
         btn("Z 맨 위", "su-ztop", null, "", "Z 를 맨 위로 올립니다.", base),
         moreBtn([{ label: "접촉 높이 지우기", fn: () => send("contact_clear"), why: lock || (ctr.z == null ? "저장한 값 없음" : "") }]))));
     kids.push(jogCard());
@@ -388,7 +395,16 @@ UI.acts["su-park"] = async () => { const r = await send("goto_named", { name: "p
 UI.acts["su-ztop"] = () => send("z_top");
 UI.acts["su-ct-goto"] = () => send("goto_sample", { no: S.ctNo });
 UI.acts["su-ct-save"] = async () => { const r = await send("contact_save", { no: S.ctNo }); if (r.ok) toast("접촉 높이 저장 · Z " + r.res.z + " mm"); };
-UI.acts["su-ct-try"] = async () => { const r = await send("contact_try", { no: S.ctNo }); if (r.ok) toast("접촉 높이까지 내림"); };
+UI.acts["su-ct-try"] = async () => { const r = await send("contact_try", { no: S.ctNo }); if (r.ok) toast(r.res && r.res.sense ? "접촉 · 첫 접촉 Z " + f1(r.res.first_z, 3) + " · 최종 Z " + f1(r.res.final_z, 3) : "접촉 높이까지 내림"); };
+const ohm = (r) => (r == null ? "—" : Number(r).toExponential(2).replace("e+", "E+").replace("e-", "E-") + " Ω");
+UI.acts["su-ct-cfg"] = () => openSettings("measure", "접촉 확인");
+UI.acts["su-ct-find"] = async () => {
+  const r = await send("contact_find", { no: S.ctNo });
+  if (!r.ok) return;
+  const c = r.res, z = c.first_z;
+  dialog("첫 접촉 Z " + f1(z, 3) + " mm 를 접촉 높이로 저장할까요?", "샘플 " + S.ctNo + "번 · 첫 접촉 Z " + f1(z, 3) + " · 최종 Z " + f1(c.final_z, 3) + " · 2단자 " + ohm(c.r2) + " · 4단자 " + ohm(c.r4) + ". 핀은 지금 최종 Z 에 있습니다.",
+    [{ label: "저장 안 함" }, { label: "저장", cls: "primary", fn: async () => { const q = await send("contact_save", { z, no: S.ctNo }); if (q.ok) toast("접촉 높이 저장 · Z " + q.res.z + " mm"); } }]);
+};
 const addrKind = (a) => { a = String(a || "").toUpperCase(); return a.startsWith("GPIB") ? "GPIB" : a.startsWith("USB") ? "USB" : a.startsWith("TCPIP") ? "LAN" : a.startsWith("ASRL") ? "시리얼" : ""; };
 UI.acts["su-inst-list"] = async () => { const r = await send("inst_list"); if (r.ok) { S.instItems = r.res.items || []; S.instMsg = r.res.msg || ""; S.rightSig = ""; render(); } };
 UI.acts["su-inst-test"] = async () => { const r = await send("inst_test"); if (r.ok) toast("연결 시험 · " + (r.res.temp != null ? f1(r.res.temp, 1) + " °C" : "") + " · " + (r.res.R != null ? Number(r.res.R).toExponential(2) + " Ω" : "")); };

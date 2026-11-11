@@ -359,9 +359,16 @@ class RTRun:
                 z = app.motion.status().get("z_mm") if z is None else z
             except Exception:                                   # noqa: BLE001
                 z = None
-            if z is None or abs(float(z) - float(cz)) > Z_TOL_MM:
+            if z is None or (abs(float(z) - float(cz)) > Z_TOL_MM and not RTRun._contact_here(app, z)):
                 return "핀이 접촉 높이가 아님 · 접촉 높이로 내리기"
         return ""
+
+    @staticmethod
+    def _contact_here(app, z):
+        """전기로 접촉을 확인한 자리에 그대로 있는가(최종 Z 가 같음 - 저장 높이와 0.5 mm 넘게 달라도 실제로 닿은 자리)."""
+        last = getattr(app, "contact_last", None) or {}
+        fz = last.get("final_z")
+        return bool(last.get("sense")) and fz is not None and abs(float(z) - float(fz)) <= 0.01
 
     # ---- 실행 ---------------------------------------------------------
     def run(self):
@@ -904,6 +911,8 @@ class RTRun:
         v = self.view()
         v["params"] = {k: self.p[k] for k in self.p}
         v["files"] = list(self.files) + ([os.path.basename(self._mrg_path)] if getattr(self, "_mrg_path", None) else [])
+        if getattr(self, "contact", None):
+            v["contact"] = self.contact                              # 이 자리의 접촉 찾기 결과(첫 접촉 Z · 최종 Z · 2 · 4단자 저항 · 잰 점)
         try:
             with open(os.path.join(self.run_dir, "rt.json"), "w", encoding="utf-8") as f:
                 json.dump(v, f, ensure_ascii=False, indent=1, default=str)

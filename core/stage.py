@@ -735,6 +735,13 @@ class Stage:
         self._ensure_speed(speed or DEFAULT_SPEED_PPS)
         return self._move("my %.1f" % float(mm), "Y 이동", deadline_s)
 
+    def move_z_pulse(self, pulse, speed=None, deadline_s=None):
+        """Z 절대 이동(펄스 정수 자리). 펌웨어 mz 는 (mm × 160 + 0.5) 를 펄스로 쓰므로 mm 를 펄스 / 160 그대로(소수 5자리) 보낸다 -
+        접촉 찾기의 4 펄스 간격이 반올림으로 흔들리지 않게."""
+        self._need_fw(9, "Z 이동")
+        self._ensure_speed(speed or DEFAULT_SPEED_PPS)
+        return self._move("mz %.5f" % (int(pulse) / Z_PPMM), "Z 이동", deadline_s)
+
     def move_z_mm(self, mm, speed=None, deadline_s=None):
         """Z 절대 이동. 0 이 맨 위이고 값이 커질수록 내려간다."""
         self._need_fw(9, "Z 이동")

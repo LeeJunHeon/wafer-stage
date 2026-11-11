@@ -15,6 +15,7 @@
 """
 
 import contextlib
+import math
 import threading
 import time
 
@@ -452,6 +453,74 @@ class Motion:
                     self.moving = False
                     self.last_move_end = time.monotonic()
             return self.stage.status()
+
+    def probe_down(self, z_start, z_floor, sense, gen=None, check_xy=None, nowait=False, approach_mm=2.0, speed=None):
+        """전기로 접촉을 확인하며 내리기(backend/contact.py)의 Z 이동. 이동 잠금 하나 안에서 끝까지 한다(그 사이 다른 이동이 끼지 않는다).
+
+        1) z_start 까지 내린다(approach_mm 앞까지 보통 속도 · 남은 거리 느린 속도 - descend_contact 와 같은 규칙).
+        2) 멈출 때마다 sense(z_mm) 를 부른다. 돌려준 값 dz(mm): 양수 = 그만큼 더 내림 · 음수 = 그만큼 올림(찾기 모드의 되돌림) · None = 끝.
+        3) **어떤 경우에도 z_floor 아래로, Z 가동범위 밖으로 내리지 않는다**: 넘는 요청은 움직이기 전에 MotionError("floor").
+           한 번 거리는 jog_guard 의 Z 한 번 한도를 지난다. 스텝마다 쓰기 직전 세대 확인(op) · 시간 한도 + 재동기(_run) ·
+           정지 · 비상정지는 끊긴 이동이 MotionError(stop · estop) 로 올라오고, sense 가 돌아온 직후에도 세대를 다시 본다(남은 스텝 안 나감).
+        움직임은 펄스 정수 자리(mz 펄스/160)로만 한다. 반환 (마지막 status, 지나간 Z 목록)."""
+        g = self.gen if gen is None else gen
+        zmax = float(stage_mod.limits_mm()["z_max_mm"])
+        ppmm = stage_mod.Z_PPMM
+        floor_p = int(math.floor(min(float(z_floor), zmax) * ppmm + 1e-6))
+        start_p = int(round(float(z_start) * ppmm))
+        if not (0 < start_p <= floor_p):
+            raise MotionError("접촉 찾기 범위 오류 · 시작 Z %.3f · 한도 Z %.3f" % (float(z_start), float(z_floor)), "range")
+        slow = max(300, int(speed or self.slow_pps))
+
+        def t_of(d_mm):
+            return (abs(d_mm) * ppmm / slow + 2.0 * slow / max(1.0, float(self.accel))) * DEADLINE_MARGIN + DEADLINE_EXTRA_S
+        zs = []
+        with self._locked(nowait):
+            self._enter(g)
+            self._need_origin(xy=True)
+            with self.op(g):
+                st = self.stage.status()
+                if check_xy is not None:
+                    check_xy(st)
+                cur = float(st.get("z_mm") or 0.0)
+                cur_p = int(round(cur * ppmm))
+                if cur_p > start_p:
+                    raise MotionError("핀이 찾기 시작 높이보다 아래 · Z 를 올린 뒤", "below")
+                self.moving = True
+                try:
+                    pre = max(0.0, start_p / ppmm - max(0.0, float(approach_mm)))
+                    if cur < pre - 0.01:
+                        self._run("Z 접근", lambda: self.stage.move_z_mm(pre, deadline_s=self.deadline_s(abs(pre - cur), ppmm)))
+                        cur = pre
+                    if cur_p != start_p:
+                        d0 = start_p / ppmm - cur
+                        self._run("Z 접촉 찾기", lambda: self.stage.move_z_pulse(start_p, speed=slow, deadline_s=t_of(d0)))
+                    zp = start_p
+                    zs.append(zp / ppmm)
+                    while True:
+                        self.moving = False                       # 재는 동안(장비 읽기)은 모터가 멈춰 있다 - [정지] 강조 · 상태 표시용
+                        dz = sense(zp / ppmm)
+                        self._enter(g)                            # 재는 동안 비상정지 · 정지가 왔으면 다음 스텝을 보내지 않는다
+                        if dz is None:
+                            break
+                        dp = int(round(float(dz) * ppmm))
+                        if dp == 0:
+                            continue
+                        if self.jog_guard and abs(dp) / ppmm > 0:
+                            self.jog_guard("z", dp / ppmm, st, {"free": True, "probe": True}, self.z_ok)
+                        np_ = zp + dp
+                        if np_ > floor_p:
+                            raise MotionError("접촉 찾기 한도 Z %.3f 아래로는 내리지 않음" % (floor_p / ppmm), "floor")
+                        if np_ < 0:
+                            np_ = 0
+                        self.moving = True
+                        self._run("Z 접촉 찾기", lambda: self.stage.move_z_pulse(np_, speed=slow, deadline_s=t_of(dp / ppmm)))
+                        zp = np_
+                        zs.append(zp / ppmm)
+                finally:
+                    self.moving = False
+                    self.last_move_end = time.monotonic()
+            return self.stage.status(), zs
 
     def apply_position(self, x, y, expect_gen=None, expect_xy=None, tol_mm=0.5, gen=None):
         """위치 확인 결과 적용(sp). 회복 3~4단계.

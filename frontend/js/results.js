@@ -69,9 +69,14 @@ function renderResults(s) {
   const title = h("div", { class: "card ttlcard" }, h("div", { class: "row" }, h("b", { class: "grow", text: new Date(d.start * 1000).toLocaleString("ko-KR") + " · " + (d.condition ? d.condition.name : "") + " · 소요 " + mmss(dur) }),
     h("span", { class: "chip ok", text: "완료 " + (sum["완료"] || 0) }), h("span", { class: "chip err", text: "오류 " + (sum["오류"] || 0) }),
     h("span", { class: "chip warn", text: "중지됨 " + (sum["중지됨"] || 0) }), h("span", { class: "chip no", text: "측정 제외 " + (sum["측정 제외"] || 0) })));
-  const th = ["번호", "X", "Y", "접촉 Z", "시작", "끝", "결과", "사유"];
+  /* 전기로 접촉을 확인했으면 샘플마다 첫 접촉 Z · 최종 Z · 판 기울기(첫 접촉 Z - 가운데값) · 2단자 · 4단자 저항 */
+  const fz = res.map((r) => r.first_z).filter((v) => v != null).sort((a, b) => a - b), mid = fz.length ? fz[Math.floor((fz.length - 1) / 2)] : null;
+  const sensed = fz.length > 0;
+  const ohmE = (v) => (v == null ? "—" : Number(v).toExponential(2).replace("e+", "E+").replace("e-", "E-"));
+  const th = sensed ? ["번호", "X", "Y", "첫 접촉 Z", "최종 Z", "기울기 Δ", "2단자 Ω", "4단자 Ω", "시작", "끝", "결과", "사유"] : ["번호", "X", "Y", "접촉 Z", "시작", "끝", "결과", "사유"];
   const trs = res.map((r) => h("tr", { class: r.status === "오류" ? "fail" : r.status === "중지됨" ? "check" : "" },
-    [r.no, f1(r.X), f1(r.Y), f1(r.contact_z, 2), r.start || "—", r.end || "—", r.status, r.reason || ""].map((t) => h("td", { text: String(t) }))));
+    (sensed ? [r.no, f1(r.X), f1(r.Y), f1(r.first_z, 3), f1(r.final_z, 3), r.first_z != null && mid != null ? (r.first_z - mid >= 0 ? "+" : "") + f1(r.first_z - mid, 3) : "—", ohmE(r.r2), ohmE(r.r4), r.start || "—", r.end || "—", r.status, r.reason || ""]
+      : [r.no, f1(r.X), f1(r.Y), f1(r.contact_z, 2), r.start || "—", r.end || "—", r.status, r.reason || ""]).map((t) => h("td", { text: String(t) }))));
   const tbl = h("table", { class: "tb", id: "res-table" }, h("tr", {}, th.map((t) => h("th", { text: t }))), ...trs);
   const left = h("div", { class: "col grow", id: "res-left" }, kindBar(s, "tour"), title, h("div", { class: "card grow scroll" }, tbl),
     h("div", { class: "row" }, btn("CSV 내보내기", "r-csv", null, "primary", "결과 표를 CSV 파일로 저장합니다."), btn("결과 폴더 열기", "r-open", null, "", "이 측정의 결과 폴더를 엽니다."), btn("다른 측정 보기", "r-other")));

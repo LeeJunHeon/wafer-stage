@@ -1180,6 +1180,204 @@ class ManualModeTest(unittest.TestCase):
         self.assertTrue(all(pt["R"] is not None for pt in rr.points[2:]))
 
 
+def contact_env(samples, plate_z=21.0, cfg=None, lag_hook=None):
+    """접촉 찾기 시험 환경: dry 스테이지 + 진짜 Motion + 가짜 K2450(스테이지 실제 X · Y · Z 를 보고 답함)."""
+    from core import motion as motion_mod
+    from core import stage as stage_mod
+    stage_mod.DRY_MOVE_S = 0.0
+    st = stage_mod.Stage(dry=True)
+    st.open()
+    sent = []
+    orig = st._write
+
+    def rec(cmd):
+        orig(cmd)
+        sent.append(cmd)
+    st._write = rec
+    m = motion_mod.Motion(st)
+    m.sync_from_status()
+    st.write_guard = m._guard
+    over = {"contact.sense": True, "contact_z_mm": 20.0}
+    over.update(cfg or {})
+    app = StubApp(over=over)
+    app.motion, app.stage = m, st
+    app.lab.probe = {"plate_z": plate_z, "rc": 2.0e3, "samples": samples}
+
+    def pos():
+        p_ = (st._dry_xy["x"], st._dry_xy["y"], st._dry_xy["z"])
+        if lag_hook:
+            lag_hook(p_)
+        return p_
+    app.lab.pos_fn = pos
+    app._inst_off_retry = lambda *a, **k: None
+    return app, m, st, sent
+
+
+def mz_values(sent):
+    return [float(c.split()[1]) for c in sent if c.startswith("mz ")]
+
+
+class ContactFindTest(unittest.TestCase):
+    """2부: 전기로 접촉 확인하며 핀 내리기(contact.find · Motion.probe_down · 가짜 K2450 접촉 흉내)."""
+
+    S3 = [{"x": 60.0, "y": 60.0, "half": 2.5, "z": 20.0, "ohm": 1.0e6}, {"x": 100.0, "y": 60.0, "half": 2.5, "z": 20.2, "ohm": 3.0e6},
+          {"x": 140.0, "y": 60.0, "half": 2.5, "z": 19.8, "ohm": 8.0e5}]
+
+    def find_at(self, app, m, x, y, **kw):
+        import contact as contact_mod
+        m.move_xy(x, y)
+        return contact_mod.find(app, m.gen, mode=kw.pop("mode", "height"), z_ref=kw.pop("z_ref", 20.0), **kw)
+
+    def test_three_surfaces(self):
+        """표면 높이가 서로 다른 샘플 셋(±0.2 mm): 첫 접촉 Z = 표면 ±1 스텝, 최종 Z = 첫 접촉 + 더 누름."""
+        app, m, st, sent = contact_env(self.S3)
+        out = []
+        for sm in self.S3:
+            r = self.find_at(app, m, sm["x"], sm["y"])
+            self.assertLessEqual(abs(r["first_z"] - sm["z"]), 0.025 + 1e-9, r)
+            self.assertGreaterEqual(r["first_z"], sm["z"] - 1e-9)
+            self.assertAlmostEqual(r["final_z"], r["first_z"] + 0.05, places=6)
+            self.assertTrue(r["r4"] < r["r2"])
+            self.assertAlmostEqual(r["r4"], sm["ohm"], delta=sm["ohm"] * 0.01)
+            out.append("%.3f/%.3f" % (sm["z"], r["first_z"]))
+        REPORT["접촉 찾기 · 표면/첫 접촉"] = " · ".join(out)
+        self.assertFalse(app.lab.out_on, "끝나면 K2450 출력 꺼짐")
+
+    def test_two_pins_first_then_four(self):
+        """FORCE 두 핀만 먼저 닿음(SENSE 는 0.1 mm 더 내려가야): 4단자 확인에서 과전압 보호 · 이상값 → 더 내려 네 핀이 닿은 뒤 성공."""
+        sm = [dict(self.S3[0], lag4=0.1)]
+        app, m, st, sent = contact_env(sm)
+        r = self.find_at(app, m, 60.0, 60.0)
+        self.assertLessEqual(abs(r["first_z"] - 20.0), 0.025 + 1e-9)
+        self.assertGreaterEqual(r["final_z"], 20.1 - 1e-9)
+        self.assertTrue(any(":ovp" in str(p_[1]) for p_ in r["points"]), "감지 핀이 떠 있을 때 과전압 보호가 걸렸음")
+        self.assertTrue(r["r4"] < r["r2"])
+
+    def test_no_contact_stops_at_limit(self):
+        """표면이 한도(저장 + 0.5)보다 아래: 한도에서 멈춤 · Z 맨 위 · 실패 · 한도 아래로 내려간 펄스 0."""
+        import contact as contact_mod
+        app, m, st, sent = contact_env([dict(self.S3[0], z=20.7)])
+        with self.assertRaises(contact_mod.ContactFail) as c:
+            self.find_at(app, m, 60.0, 60.0)
+        self.assertEqual(c.exception.code, "none")
+        self.assertLessEqual(max(mz_values(sent)), 20.5 + 1e-9)
+        self.assertEqual(st._dry_xy["z"], 0.0)
+        self.assertFalse(app.lab.out_on)
+
+    def test_metal_plate_short(self):
+        """샘플 밖(알루미늄 판): 단락으로 멈춤 · Z 맨 위 · 실패."""
+        import contact as contact_mod
+        app, m, st, sent = contact_env(self.S3, plate_z=20.05)
+        with self.assertRaises(contact_mod.ContactFail) as c:
+            self.find_at(app, m, 30.0, 30.0)
+        self.assertEqual(c.exception.code, "short")
+        self.assertIn("금속", str(c.exception))
+        self.assertEqual(st._dry_xy["z"], 0.0)
+        self.assertLessEqual(max(mz_values(sent)), 20.05 + 0.025 + 1e-9)
+        self.assertFalse(app.lab.out_on)
+
+    def test_k2450_lost_mid_search(self):
+        """찾는 중 K2450 끊김: 더 내리지 않고 Z 맨 위 · 실패."""
+        import contact as contact_mod
+        box = {}
+
+        def hook(p_):
+            if p_[2] >= 19.85 and "z" not in box:
+                box["z"] = p_[2]
+                app.lab.fault["disconnect"] = True
+        app, m, st, sent = contact_env(self.S3, lag_hook=hook)
+        with self.assertRaises(contact_mod.ContactFail) as c:
+            self.find_at(app, m, 60.0, 60.0)
+        self.assertEqual(c.exception.code, "inst")
+        deep = [z for z in mz_values(sent) if z > box["z"] + 1e-9]
+        self.assertEqual(deep, [], "끊긴 뒤 더 내리지 않음")
+        self.assertEqual(st._dry_xy["z"], 0.0)
+
+    def test_estop_mid_search_no_more_steps(self):
+        """찾는 중 비상정지(세대 바뀜): 남은 스텝 안 나감 · Z 를 움직이지 않음 · 출력 끔."""
+        from core.motion import MotionError
+        app, m, st, sent = contact_env(self.S3)
+        orig = app.k2450.read
+        box = {}
+
+        def read():
+            r = orig()
+            if st._dry_xy["z"] >= 19.8 and "n" not in box:
+                box["n"] = len(sent)
+                box["z"] = st._dry_xy["z"]
+                m.estop()                                            # 비상정지: 세대 + '!' (App.estop 과 같은 Motion 길)
+            return r
+        app.k2450.read_strict = read
+        with self.assertRaises(MotionError) as c:
+            self.find_at(app, m, 60.0, 60.0)
+        self.assertEqual(c.exception.code, "estop")
+        self.assertFalse([x for x in sent[box["n"]:] if x.startswith(("mz", "mx", "my", "jz"))], "비상정지 뒤 이동 줄 0")
+        self.assertEqual(st._dry_xy["z"], box["z"])
+        self.assertFalse(app.lab.out_on)
+
+    def test_stop_mid_search_no_more_steps(self):
+        """찾는 중 [정지]: 남은 스텝 안 나감 · Z 를 움직이지 않음(정지는 그것만) · 출력 끔."""
+        from core.motion import MotionError
+        app, m, st, sent = contact_env(self.S3)
+        orig = app.k2450.read_strict
+        box = {}
+
+        def read():
+            r = orig()
+            if st._dry_xy["z"] >= 19.8 and "n" not in box:
+                box["n"], box["z"] = len(sent), st._dry_xy["z"]
+                m.stop()
+            return r
+        app.k2450.read_strict = read
+        with self.assertRaises(MotionError) as c:
+            self.find_at(app, m, 60.0, 60.0)
+        self.assertEqual(c.exception.code, "stop")
+        self.assertFalse([x for x in sent[box["n"]:] if x.startswith(("mz", "mx", "my", "jz"))])
+        self.assertEqual(st._dry_xy["z"], box["z"])
+        self.assertFalse(app.lab.out_on)
+
+    def test_k2450_command_order(self):
+        """K2450 명령 순서: 출력 켜기 전에 전압 소스 · 과전압 보호(가장 낮은 2 V) · 전류 한도 · 전압 · 2단자 · 자동 범위 · 평균 끔, 끝나면 출력 끔."""
+        app, m, st, sent = contact_env(self.S3)
+        self.find_at(app, m, 60.0, 60.0)
+        cmds = app.k2450.cmds
+        i_on = cmds.index(":OUTP ON")
+        pre = cmds[:i_on]
+        for c_ in ("*RST", ":ROUT:TERM REAR", ":SOUR:FUNC VOLT", ":SOUR:VOLT:PROT PROT2", ":SOUR:VOLT:ILIM 0.0001", ":SOUR:VOLT 0.1",
+                   ":SENS:CURR:RSEN OFF", ":SENS:CURR:RANG:AUTO ON", ":SENS:CURR:NPLC 0.1", ":SENS:CURR:AVER OFF"):
+            self.assertIn(c_, pre)
+        self.assertLess(pre.index(":SOUR:VOLT:PROT PROT2"), pre.index(":SOUR:VOLT 0.1"))
+        self.assertLess(pre.index(":SOUR:VOLT:ILIM 0.0001"), pre.index(":SOUR:VOLT 0.1"))
+        outs = [c_ for c_ in cmds if c_.startswith(":OUTP")]
+        self.assertEqual(outs[-1], ":OUTP OFF")
+        i4 = cmds.index(":SENS:CURR:RSEN ON")                         # 4단자로 바꿀 때는 출력을 끈 채
+        self.assertEqual(cmds[i4 - 1], ":OUTP OFF")
+        self.assertEqual(app.lab.dev["2450"].err, [])
+
+    def test_search_mode_from_current_z(self):
+        """장비 설정 7(접촉 높이 없음): 지금 Z 부터 0.05 mm 간격 → 닿으면 0.3 mm 올렸다가 0.025 mm 간격으로 다시 · 첫 접촉 = 표면 ±1 스텝."""
+        app, m, st, sent = contact_env([dict(self.S3[1], z=12.34)], cfg={"contact_z_mm": None})
+        m.move_xy(100.0, 60.0)
+        m.move_z(8.0)
+        import contact as contact_mod
+        r = contact_mod.find(app, m.gen, mode="search", z_ref=8.0)
+        self.assertLessEqual(abs(r["first_z"] - 12.34), 0.025 + 1e-9, r)
+        zs = mz_values(sent)
+        self.assertTrue(any(b < a for a, b in zip(zs, zs[1:])), "닿은 뒤 한 번 올렸다가 다시 찾음")
+        self.assertLessEqual(max(zs), 8.0 + 5.0 + 1e-9)
+
+    def test_probe_down_floor_guard(self):
+        """Motion.probe_down: 한도를 넘는 요청은 움직이기 전에 거절(한도 아래로 내려간 펄스 0) · Z 한 번 한도(jog_guard)도 지난다."""
+        from core.motion import MotionError
+        app, m, st, sent = contact_env(self.S3)
+        m.move_xy(60.0, 60.0)
+        n0 = len(sent)
+        with self.assertRaises(MotionError) as c:
+            m.probe_down(19.7, 20.5, lambda z: 0.9)
+        self.assertEqual(c.exception.code, "floor")
+        self.assertLessEqual(max(mz_values(sent[n0:])), 20.5 + 1e-9)
+
+
 if __name__ == "__main__":
     prog = unittest.main(argv=[sys.argv[0]] + [a for a in sys.argv[1:]], verbosity=2, exit=False)
     for k, v in REPORT.items():

@@ -272,7 +272,9 @@ class Run:
 
     def _res(self, s, status, reason="", ctx=None):
         c = ctx or {}
+        ct = c.get("contact") or {}
         return {"no": s["no"], "X": s["X"], "Y": s["Y"], "cooler": s.get("cooler"), "contact_z": c.get("contact_z"),
+                "first_z": ct.get("first_z"), "final_z": ct.get("final_z"), "r2": ct.get("r2"), "r4": ct.get("r4"), "contact_sense": ct.get("sense"),
                 "start": c.get("start"), "end": c.get("end") or (time.strftime("%H:%M:%S") if c.get("start") else None),
                 "status": status, "reason": reason}
 
@@ -294,7 +296,7 @@ class Run:
                 self.steps_view[k]["state"] = "active"
                 self._step(st, s, ctx, k)
                 self.steps_view[k]["state"] = "done"
-                self.steps_view[k]["value"] = self.steps_view[k]["value"] if self.steps_view[k]["value"].startswith("Z") else ""
+                self.steps_view[k]["value"] = self.steps_view[k]["value"] if self.steps_view[k]["value"].startswith(("Z", "첫 접촉")) else ""
         except (StopRun, motion_mod.MotionError) as e:
             if isinstance(e, motion_mod.MotionError) and e.code not in ("stop", "estop"):
                 raise
@@ -340,14 +342,24 @@ class Run:
             def over_sample(stt):
                 if abs(stt["x_mm"] - px) > XY_TOL_MM or abs(stt["y_mm"] - py) > XY_TOL_MM:
                     raise motion_mod.MotionError("샘플 위가 아님 · 내리지 않음", "not_over")
+            import contact as contact_mod
             try:
-                r = app.motion.descend_contact(float(z), float(cfg.get("approach_mm")), gen=self.gen, check_xy=over_sample)
+                r = app.contact_descend(self.gen, check_xy=over_sample)       # 접촉 확인이 켜져 있으면 전기로 확인하며(첫 접촉 · 4단자)
+            except contact_mod.ContactFail as e:
+                ctx["contact"] = {"fail": str(e), "code": e.code}
+                raise FailStep(str(e))                              # 그 샘플만 오류(Z 는 이미 맨 위) - 다음 샘플로
             except motion_mod.MotionError as e:
                 if e.code == "not_over":
                     raise FailStep(str(e))
                 raise
-            ctx["contact_z"] = round(float(r.get("z_mm") if r.get("z_mm") is not None else z), 2)
-            view["value"] = "Z %.2f mm" % ctx["contact_z"]
+            except Exception as e:                                   # noqa: BLE001 - AppError(K2450 연결 필요 등)
+                if e.__class__.__name__ == "AppError":
+                    raise FailStep(str(e))
+                raise
+            ctx["contact_z"] = round(float(r["final_z"] if r.get("final_z") is not None else z), 3)
+            ctx["contact"] = {k: r.get(k) for k in ("sense", "first_z", "final_z", "r2", "r4")}
+            s["contact"] = dict(ctx["contact"], points=r.get("points"))
+            view["value"] = ("첫 접촉 Z %.3f · 최종 Z %.3f" % (r["first_z"], r["final_z"])) if r.get("sense") else "Z %.2f mm · 접촉 확인 꺼짐" % ctx["contact_z"]
         elif t == "z_top":
             app.motion.move_z(0.0, gen=self.gen)
         elif t == "wait":
@@ -385,6 +397,7 @@ class Run:
         p = rt_mod.params(app.cfg)
         rr = rt_mod.RTRun(app, p, "%s%s_" % (p["file_name"], s["no"]), run_dir=self._rt_dir(int(s["no"])),
                           cancel_fn=self._cancelled, relays=[int(s["cooler_relay"])], z_top_end=False, gen=self.gen)
+        rr.contact = s.get("contact")                                 # rt.json 에 이 샘플의 접촉 찾기 결과
         app.rt = rr
         app.rt_last["auto"] = rr
         th = threading.Thread(target=rr.run, name="rt-run", daemon=True)
@@ -473,11 +486,13 @@ class Run:
         return c
 
     def _write_results(self, final=False):
-        hdr = ["번호", "X", "Y", "쿨러", "접촉 Z", "시작", "끝", "결과", "사유"]
+        hdr = ["번호", "X", "Y", "쿨러", "접촉 Z", "첫 접촉 Z", "최종 Z", "2단자 Ω", "4단자 Ω", "시작", "끝", "결과", "사유"]
         rows = []
         for no in sorted(self.results):
             r = self.results[no]
-            rows.append([no, r["X"], r["Y"], r["cooler"], r["contact_z"], r["start"], r["end"], r["status"], r["reason"]])
+            rows.append([no, r["X"], r["Y"], r["cooler"], r["contact_z"], r.get("first_z"), r.get("final_z"),
+                         "" if r.get("r2") is None else "%.4E" % r["r2"], "" if r.get("r4") is None else "%.4E" % r["r4"],
+                         r["start"], r["end"], r["status"], r["reason"]])
         try:
             path, warn = csv_write(os.path.join(self.run_dir, "samples.csv"), hdr, rows)
             if warn and warn not in self.warns:
