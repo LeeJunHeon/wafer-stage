@@ -153,9 +153,9 @@ def find(app, gen, mode="height", z_ref=None, check_xy=None, nowait=False):
             st["four"] = True
         I, trip = read()
         try:
-            ovp = k.ovp_tripped()
-        except inst.VisaError:
-            ovp = True
+            ovp = k.ovp_tripped(strict=True)
+        except inst.VisaError as e:
+            raise ContactFail("K2450 읽기 오류(과전압 보호) · " + logger.short(e, 40), "inst")
         kind, R4 = classify(I, trip, volt, p)
         st["points"].append([round(z, 4), "4w:" + kind + (":ovp" if ovp else ""), R4])
         if kind == "short":

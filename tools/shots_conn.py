@@ -109,11 +109,11 @@ def run_scenario(name, cfg, out, pw):
         check(s["phase"] in ("대기", "촬영 중", "이동 중", "측정 중", "일시정지", "비상정지", "오류"), "[%s] 상태 필은 동작 상태만 (%s)" % (title, s["phase"]))
         # 연결되지 않은 장치가 연결 · 완료로 보이지 않는다
         if not stg:
-            cell = pg.inner_text("#cells")
-            check("스테이지\n연결 안 됨" in cell and "릴레이\n알 수 없음" in cell, "[%s] 머리줄 스테이지 연결 안 됨 · 릴레이 알 수 없음 (%s)" % (title, cell.replace("\n", " ")))
+            cell = " ".join(pg.inner_text("#cells").split())          # 머리줄 상태 칩 = 한 줄 "스테이지 연결 안 됨"(4e828d4 부터 이름 · 값을 한 칩에)
+            check("스테이지 연결 안 됨" in cell and "릴레이 알 수 없음" in cell, "[%s] 머리줄 스테이지 연결 안 됨 · 릴레이 알 수 없음 (%s)" % (title, cell.replace("\n", " ")))
             check("스테이지" in bands and "다시 연결" in bands, "[%s] 스테이지 띠 + [다시 연결]" % title)
         if not cam:
-            check("카메라\n연결 안 됨" in pg.inner_text("#cells") and "카메라 연결 안 됨" in bands, "[%s] 카메라 띠 · 머리줄" % title)
+            check("카메라 연결 안 됨" in " ".join(pg.inner_text("#cells").split()) and "카메라 연결 안 됨" in bands, "[%s] 카메라 띠 · 머리줄" % title)
         if stg and cam and name == "d_all":
             check(not bands.strip(), "[%s] 연결 문제 띠 없음 (%s)" % (title, bands))
         if name == "e_inst_fail":

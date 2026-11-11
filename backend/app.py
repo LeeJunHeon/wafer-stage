@@ -3370,7 +3370,8 @@ class App:
                 setattr(self.lab, k, v)
             if a.get("addrs") is not None:                  # 가짜 VISA 목록을 바꾼다(주소 찾기 시험)
                 self.lab.addrs = list(a["addrs"])
-            return {"T": self.lab.T, "Ts": self.lab.Ts, "R": self.lab.resistance(), "out": self.lab.out_on, "cmds": list((self.k2450.cmds if self.k2450 else [])[-60:]),
+            nc = max(1, int(a.get("cmds_n") or 60))           # 보낸 명령 기록: 기본 최근 60 줄(접촉 찾기 순서 시험은 전부)
+            return {"T": self.lab.T, "Ts": self.lab.Ts, "R": self.lab.resistance(), "out": self.lab.out_on, "cmds": list((self.k2450.cmds if self.k2450 else [])[-nc:]),
                     "cmds2110": list((self.k2110.cmds if self.k2110 else [])[-20:]), "err": [d.err for d in self.lab.dev.values()],
                     "opened": list(getattr(self.lab, "opened", [])[-20:])}
         return {}

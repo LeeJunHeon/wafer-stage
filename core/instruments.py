@@ -448,11 +448,13 @@ class K2450(_Dev):
         if was:
             self.output(True)
 
-    def ovp_tripped(self):
-        """과전압 보호가 걸렸는가(:SOUR:VOLT:PROT:TRIP?). 읽지 못하면 False."""
+    def ovp_tripped(self, strict=False):
+        """과전압 보호가 걸렸는가(:SOUR:VOLT:PROT:TRIP?). 읽지 못하면 False - strict 면 VisaError(접촉 확인: 모르는 것을 '안 걸림' 으로 보지 않는다)."""
         try:
             return self.query(":SOUR:VOLT:PROT:TRIP?").strip() in ("1", "+1")
         except VisaError:
+            if strict:
+                raise
             return False
 
     def terminal(self):

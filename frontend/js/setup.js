@@ -278,18 +278,18 @@ function renderPanel(s) {
   } else if (S.step === 7) {
     const ctr = s.contact, withX = s.samples.filter((p) => p.X != null), ik7 = ((s.rt && s.rt.inst) || {}).k2450;
     if (S.ctNo == null || !withX.some((p) => p.no === S.ctNo)) S.ctNo = (withX.find((p) => p.no === s.sel) || withX[0] || {}).no;
-    const sg = s.stage;
+    const sg = s.stage, ctOk = !!(ik7 && ik7.ok);              /* 주 동작은 하나: K2450 이 연결돼 있으면 [전기로 접촉 찾기], 아니면 [지금 높이를 접촉 높이로] */
     const base = lock || (nostage ? "스테이지 연결 안 됨" : sg && !(sg.z_ok && sg.xy_ok && !sg.locked) ? "원점 필요 · 단계 1" : "");
     const noS = withX.length ? "" : "샘플 필요 · 측정 탭에서 촬영";
     const sel = h("select", { id: "ct-no", onchange: (e) => { S.ctNo = Number(e.target.value); S.rightSig = ""; } }, withX.map((p) => h("option", { value: p.no, text: p.no + "번 · " + xy(p.X, p.Y), selected: p.no === S.ctNo })));
     kids.push(card("접촉 높이", h("div", { class: "sub", text: "1 샘플 선택 · [샘플 위로] / 2 Z 조그(0.1 mm)로 핀이 닿을 때까지 / 3 [지금 높이를 접촉 높이로]" }),
       h("div", { class: "row" }, sel, btn("샘플 위로", "su-ct-goto", null, "", "고른 샘플 위로 공구를 옮깁니다(Z 를 먼저 올립니다).", base || noS)),
-      h("div", { class: "row" }, btn("지금 높이를 접촉 높이로", "su-ct-save", null, "primary", "지금 Z 높이(절대값)를 접촉 높이로 저장합니다. 고른 샘플 위일 때만 저장됩니다.", base || noS || (sg && sg.z < 0.1 ? "Z 를 먼저 내리기" : ""))),
+      h("div", { class: "row" }, btn("지금 높이를 접촉 높이로", "su-ct-save", null, ctOk ? "" : "primary", "지금 Z 높이(절대값)를 접촉 높이로 저장합니다. 고른 샘플 위일 때만 저장됩니다.", base || noS || (sg && sg.z < 0.1 ? "Z 를 먼저 내리기" : ""))),
       h("div", { class: "kv" }, h("span", { text: "현재 값" }), h("b", { text: ctr.z == null ? "비어 있음 · 측정 시작 불가" : "Z " + f1(ctr.z, 2) + " mm" })),
-      h("div", { class: "row" }, btn("전기로 접촉 찾기", "su-ct-find", null, "primary", ctr.z == null
+      h("div", { class: "row" }, btn("전기로 접촉 찾기", "su-ct-find", null, ctOk ? "primary" : "", ctr.z == null
         ? "고른 샘플 위에서 지금 Z 부터 0.05 mm 씩 내리며 아주 약한 전류로 접촉을 찾고, 닿으면 0.3 mm 올렸다가 촘촘히 다시 찾습니다. 찾은 높이는 확인 창에서 저장합니다."
         : "저장한 접촉 높이 조금 위부터 아주 약한 전류로 재며 내려 실제로 닿는 높이를 찾습니다(측정과 같은 범위). 찾은 높이는 확인 창에서 저장합니다.",
-        base || noS || (ik7 && ik7.ok ? "" : "K2450 연결 필요(접촉 확인) · 단계 8")),
+        base || noS || (ctOk ? "" : "K2450 연결 필요(접촉 확인) · 단계 8")),
         h("span", { class: "sub grow", id: "ct-sense", text: ctr.sense ? "접촉 확인 켜짐 · 측정 때도 전기로 확인" : "접촉 확인 꺼짐 · 측정 때 저장한 높이까지만" }),
         btn("설정", "su-ct-cfg", null, "sm", "접촉 확인 설정(전압 · 전류 한도 · 간격 · 한도)을 엽니다.", lock)),
       ctr.last && ctr.last.first_z != null ? h("div", { class: "sub", id: "ct-last", text: "마지막 찾기 · 첫 접촉 Z " + f1(ctr.last.first_z, 3) + " · 최종 Z " + f1(ctr.last.final_z, 3) + " · 2단자 " + ohm(ctr.last.r2) + " · 4단자 " + ohm(ctr.last.r4) }) : null,

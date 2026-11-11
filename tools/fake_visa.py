@@ -59,6 +59,7 @@ class Lab:
         self.pos_fn = lambda: None     # 실제 스테이지 (x, y, z) mm - 앱이 꽂는다
         self.ovp_tripped = False
         self.prot_v = None             # :SOUR:VOLT:PROT 단계(V) - None = 걸지 않음(공장값 없음)
+        self.lead_ohm = 20.0           # 2단자로 잴 때 함께 재지는 리드 · 접촉 저항(4단자는 빠진다) - 위치와 무관한 흉내에서도 2단자 > 4단자
 
     # ---- 물리 ------------------------------------------------------
     def _step(self):
@@ -122,7 +123,7 @@ class Lab:
         pt = self.probe_touch()
         if pt is not None:
             return self._read_probe(pt, rng, auto, rsen)
-        r = self.resistance()
+        r = self.resistance() + (0.0 if rsen else self.lead_ohm)
         i = self.volt / r if self.out_on else 0.0
         if self.term != self.cable[:4]:
             i = 2.0e-12 if self.out_on else 0.0           # 열린 회로: 누설 전류만

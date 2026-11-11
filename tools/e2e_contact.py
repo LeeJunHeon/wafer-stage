@@ -98,11 +98,18 @@ def c86(c):
               "샘플 %d · 2단자 %s > 4단자 %s ≈ 시료 %.2E" % (no, r.get("r2"), r.get("r4"), sm[no]["ohm"]))
     zs = mz_cmds(serial_cmds(c)[n0:])
     check(zs and max(zs) <= max(surf.values()) + OD + 1e-6 and max(zs) <= FLOOR + 1e-6, "한도 아래로 내려간 펄스 0 (가장 깊은 Z %.4f)" % (max(zs) if zs else -1))
-    cmds = lab(c).get("cmds", [])
-    if ":OUTP ON" in cmds:
-        pre = cmds[:cmds.index(":OUTP ON")]
-        check(":SOUR:VOLT:PROT PROT2" in pre and ":SOUR:VOLT:ILIM 0.0001" in pre and ":SOUR:VOLT 0.1" in pre and ":SENS:CURR:RSEN OFF" in pre,
-              "출력 켜기 전에 과전압 보호 2 V · 한도 0.1 mA · 0.1 V · 2단자 (%s)" % pre[-12:])
+    cmds = lab(c, cmds_n=20000).get("cmds", [])
+    rst = [i for i, x in enumerate(cmds) if x == "*RST"]
+    segs = []                                                # 찾기마다: *RST 부터 그 뒤 첫 출력 켜기 앞까지 = 출력 켜기 전 설정
+    for i in rst:
+        on = next((j for j in range(i + 1, len(cmds)) if cmds[j] == ":OUTP ON"), None)
+        if on is not None:
+            segs.append(cmds[i:on])
+    need = (":SOUR:VOLT:PROT PROT2", ":SOUR:VOLT:ILIM 0.0001", ":SOUR:VOLT 0.1", ":SENS:CURR:RSEN OFF")
+    bad = [sg for sg in segs if not all(x in sg for x in need) or sg.index(":SOUR:VOLT:PROT PROT2") > sg.index(":SOUR:VOLT 0.1")]
+    check(len(segs) == len(use) and not bad, "찾기 %d 번 모두 출력 켜기 전에 과전압 보호 2 V(전압보다 먼저) · 한도 0.1 mA · 0.1 V · 2단자 (%s)" % (len(segs), (bad or segs or [[]])[0][:12]))
+    four = [i for i, x in enumerate(cmds) if x == ":SENS:CURR:RSEN ON"]
+    check(four and all(cmds[i - 1] == ":OUTP OFF" for i in four), "4단자로 바꿀 때는 출력을 끈 채 (%s)" % [cmds[i - 1] for i in four][:3])
     outs = [x for x in cmds if x.startswith(":OUTP")]
     check(outs and outs[-1] == ":OUTP OFF" and not lab(c).get("out"), "끝나면 K2450 출력 꺼짐")
     csv = open(c.state["run"]["dir"] + "/samples.csv", encoding="utf-8-sig").read().splitlines()[0]

@@ -8,6 +8,7 @@
     --quick  크기 둘(1920×1040 · 1280×640)만
     --size WxH  그 크기 하나만(예: --size 1366x728) - 크기별로 나눠 돌 때
     --sizes WxH,WxH,...  고른 크기들(예: --sizes 1280x722,1280x640,1920x1040)
+    --dsf 1.5  장치 배율(장비 PC 1920×1200 · Windows 150 % = --dsf 1.5 --sizes 1280x688,1280x640 → 자동 화면 배율 · CSS 약 1920×1032 · 1920×960)
 
 서버는 --dry + 합성 카메라 + 가짜 장비, 임시 데이터 폴더. 실제 포트 · 카메라 · VISA 는 열지 않는다.
 """
@@ -28,6 +29,7 @@ SIZES = [(1920, 1040), (1536, 800), (1366, 728), (1280, 722), (1280, 680), (1280
 LINT_JS = r"""
 () => {
   const out = [];
+  const Z = (window.UI && UI.scale) || 1;            // 화면 배율(html CSS zoom): 간격 · 높이 기준은 CSS 화소로 본다(사각형은 화면 화소)
   const vis = (el) => {
     if (!el.getClientRects().length) return false;
     const r = el.getBoundingClientRect();
@@ -62,9 +64,9 @@ LINT_JS = r"""
     if (ox > 1 && oy > 1) { out.push('겹침 ' + key(a.e) + ' × ' + key(b.e)); continue; }
     if (exempt(a.e) && exempt(b.e) && a.e.parentElement === b.e.parentElement) continue;
     // 같은 줄: 세로 범위가 겹치고 가로 간격이 6 px 미만
-    if (oy > 4 && ox <= 0 && -ox < 6) out.push('가로 간격 ' + Math.round(-ox) + 'px ' + key(a.e) + ' | ' + key(b.e));
+    if (oy > 4 && ox <= 0 && -ox / Z < 6) out.push('가로 간격 ' + Math.round(-ox / Z) + 'px ' + key(a.e) + ' | ' + key(b.e));
     // 위아래: 가로 범위가 겹치고 세로 간격이 4 px 미만
-    if (ox > 4 && oy <= 0 && -oy < 4) out.push('세로 간격 ' + Math.round(-oy) + 'px ' + key(a.e) + ' / ' + key(b.e));
+    if (ox > 4 && oy <= 0 && -oy / Z < 4) out.push('세로 간격 ' + Math.round(-oy / Z) + 'px ' + key(a.e) + ' / ' + key(b.e));
   }
   // 글자 잘림
   const tipped = (e) => { for (let x = e, n = 0; x && n < 4; x = x.parentElement, n++) if (x.getAttribute && (x.getAttribute('data-tip') || x.getAttribute('title'))) return true; return false; };
@@ -156,7 +158,7 @@ LINT_JS = r"""
   Array.from(scope.querySelectorAll('.card, .viewbox, .gbox, .panel')).filter(vis).forEach((e) => {
     const r = e.getBoundingClientRect();
     if (e.closest('.pop')) return;
-    if (r.height < 60 && (e.querySelector('button, input, select, svg, img') || (e.textContent || '').trim().length > 3)) out.push('카드 높이 부족 ' + name(e) + '.' + String(e.className).slice(0, 24) + ' ' + Math.round(r.height) + 'px');
+    if (r.height / Z < 60 && (e.querySelector('button, input, select, svg, img') || (e.textContent || '').trim().length > 3)) out.push('카드 높이 부족 ' + name(e) + '.' + String(e.className).slice(0, 24) + ' ' + Math.round(r.height) + 'px');
   });
   return Array.from(new Set(out));
 }
@@ -164,6 +166,8 @@ LINT_JS = r"""
 
 
 class Lint:
+    sfx = ""
+
     def __init__(self, out, sizes, client=None):
         self.out, self.sizes, self.total, self.screens, self.c = out, sizes, 0, 0, client
         self.fails = []
@@ -179,10 +183,10 @@ class Lint:
             v = pg.evaluate(LINT_JS)
             self.total += len(v)
             if (k == 0 and first_shot) or v:
-                pg.screenshot(path=os.path.join(self.out, "%s_%dx%d.png" % (tag, w, h)))
+                pg.screenshot(path=os.path.join(self.out, "%s_%dx%d%s.png" % (tag, w, h, self.sfx)))
             for x in v:
-                self.fails.append("[%s %dx%d] %s" % (tag, w, h, x))
-            print("%s %dx%d · 위반 %d" % (tag, w, h, len(v)), flush=True)
+                self.fails.append("[%s %dx%d%s] %s" % (tag, w, h, self.sfx, x))
+            print("%s %dx%d%s · 위반 %d" % (tag, w, h, self.sfx, len(v)), flush=True)
         pg.set_viewport_size({"width": self.sizes[0][0], "height": self.sizes[0][1]})
         pg.wait_for_timeout(300)
 
@@ -193,6 +197,7 @@ def main():
     if "--out" in args:
         out = args[args.index("--out") + 1]
     sizes = [SIZES[0], SIZES[-1]] if "--quick" in args else SIZES
+    dsf = float(args[args.index("--dsf") + 1]) if "--dsf" in args else 1.0
     if "--sizes" in args:
         sizes = [tuple(int(v) for v in x.split("x")) for x in args[args.index("--sizes") + 1].split(",")]
     if "--size" in args:                                  # 한 크기만(메모리가 모자랄 때 크기별로 나눠 돈다): --size 1366x728
@@ -200,12 +205,14 @@ def main():
         sizes = [(int(w_), int(h_))]
     os.makedirs(out, exist_ok=True)
     lint = Lint(out, sizes)
+    lint.sfx = "" if dsf == 1.0 else "@%g" % dsf
     with sync_playwright() as pw:
         br = pw.chromium.launch()
 
         def newpage(c):
             lint.c = c
-            pg = br.new_page(viewport={"width": sizes[0][0], "height": sizes[0][1]})
+            ctx = br.new_context(viewport={"width": sizes[0][0], "height": sizes[0][1]}, device_scale_factor=dsf)   # dsf 1.5 = 장비 PC(배율 150 %) - 자동 화면 배율이 걸린다
+            pg = ctx.new_page()
             pg.on("pageerror", lambda e: lint.fails.append("콘솔 오류 " + str(e)))
             pg.goto("http://127.0.0.1:%d/" % c.port)
             pg.wait_for_timeout(2200)
