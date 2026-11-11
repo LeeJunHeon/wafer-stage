@@ -295,3 +295,30 @@ def test_instrument_error_stops_whole_run(ready_ctrl):
     assert a["level"] == "경보"
     assert not ctrl.fake_fw.relay[0], "히트건은 꺼져 있다"
     assert ctrl.state.get("pos", "z") == 0.0
+
+
+def test_run_stays_active_until_files_are_saved_and_state_is_published(ready_ctrl):
+    """마지막 파일 저장(· NAS 복사)이 끝나고 끝난 상태를 화면에 보낸 뒤에야 "측정 중이 아님"이 된다.
+    그 전에는 새 측정 · 손 조작을 받지 않는다(같은 기록에 섞여 쓰지 않게)."""
+    import threading
+    ctrl, ids = _prepare(ready_ctrl, 1)
+    run = ctrl.runner
+    gate, reached = threading.Event(), threading.Event()
+    orig = run._save_summary
+    run._save_summary = lambda: (reached.set(), gate.wait(20), orig())[2]
+    ctrl.run_command("run_start")
+    assert reached.wait(40), "마지막 저장까지 가지 못했다"
+    try:
+        assert run.items[ids[0]]["status"] == DONE and run.active, "저장이 끝나기 전에는 아직 측정 중"
+        assert ctrl.state.get("run", "state") == "running" and ctrl.state.get("run", "active") is True
+        with pytest.raises(Rejected):
+            ctrl.run_command("run_start")
+        with pytest.raises(Rejected):
+            ctrl.run_command("jog", {"axis": "x", "mm": 1})
+    finally:
+        gate.set()
+    _finish(ctrl)
+    assert ctrl.state.get("run", "state") == "done" and ctrl.state.get("run", "active") is False
+    assert ctrl.state.get("run", "summary") == "1개 중 1개 끝남"
+    assert json.loads((run.folder / "run.json").read_text(encoding="utf-8"))["state"] == "done"
+    assert (run.folder / "summary.csv").is_file()

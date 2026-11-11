@@ -193,3 +193,29 @@ table.tb td input.name { height: 24px; width: 96px; }
 .g-read { flex: none; height: 16px; font-size: 12px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .g-box { flex: 1 1 0; min-height: 0; min-width: 0; overflow: hidden; }
 .g-box svg { display: block; }
+
+/* ---- 결과 탭: 왼쪽 230 / 가운데(그래프 · 표, 늘어남) / 오른쪽 270 ---- */
+#tab-results { display: grid; grid-template-columns: 230px minmax(0, 1fr) 270px; grid-template-rows: minmax(0, 1fr); }
+.reclist { overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; min-height: 80px; }
+.rec { padding: 4px 8px; cursor: pointer; border-bottom: 1px solid #ECEEF0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec:hover { background: #F7F8F9; }
+.rec.on { background: #E9EDF1; font-weight: 600; }
+.h4 { margin: 4px 0 0; font-size: 13px; font-weight: 700; }
+.picklist { display: flex; flex-direction: column; gap: 4px; max-height: 40%; overflow-y: auto; }
+.rtable { max-height: 34%; }
+#rs-right { max-height: 100%; overflow-y: auto; }                 /* 내용 높이만큼만(길면 패널 안에서 스크롤) */
+#rs-right h3 { margin-top: 4px; }
+.path { word-break: break-all; }
+.flist { max-height: 180px; overflow-y: auto; font-size: 12px; font-family: Consolas, "맑은 고딕", monospace; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; align-items: baseline; }
+
+/* ---- 설정 값 모두 보기 ---- */
+.setbody { display: flex; flex-direction: column; gap: 16px; }
+table.settb td { cursor: default; max-width: none; }
+table.settb tr:hover td { background: none; }
+td.setname { width: 380px; white-space: normal; }
+td.setval { width: 380px; }
+td.setunit { width: 80px; }
+input.setnum { width: 120px; text-align: right; }
+input.settext { width: 360px; }
+.vfy { margin-left: 8px; font-size: 12px; }

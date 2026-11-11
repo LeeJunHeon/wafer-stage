@@ -603,6 +603,14 @@ class Controller:
         if self.run_active():
             raise Rejected("측정 중에는 %s 을(를) 할 수 없습니다. 측정을 멈춘 뒤에 하십시오" % what)
 
+    def result_open_folder(self, id: str):
+        from app import results
+        return results.open_folder(self.cfg.data_path(), id)
+
+    def result_nas_copy(self, id: str):
+        from app import results
+        return results.nas_copy(self.cfg.data_path(), id)
+
     def alarm_clear(self, code: str):
         """[지우기] 를 누를 수 있는 알림(dismiss)만 지운다. 비상정지 · 장비 끊김 같은 경보는 원인이 풀려야 없어진다."""
         for a in self.state.get("alarms"):
@@ -975,12 +983,13 @@ COMMANDS = {
     # 측정(app/jobs/run.py)
     "run_start": "runner.start", "run_resume": "runner.resume", "run_stop": "runner.stop", "run_skip": "runner.skip",
     "run_pause_after": "runner.set_pause_after", "run_requeue": "runner.requeue",
+    "result_open_folder": "result_open_folder", "result_nas_copy": "result_nas_copy",
 }
 
 
 # 측정 중에도 되는 명령(읽기 · 측정 조작 · 경보 지우기). 그 밖의 명령은 측정 중에 거절한다. 비상정지는 명령 줄을 거치지 않는다.
 RUN_ALLOWED = {"devices", "estop_release", "alarm_clear", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_requeue",
-               "sample_rename", "batch_set"}
+               "sample_rename", "batch_set", "result_open_folder", "result_nas_copy"}
 
 
 def _ohm(v):

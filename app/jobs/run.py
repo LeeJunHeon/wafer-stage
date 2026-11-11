@@ -58,6 +58,7 @@ class Runner:
         self.heater = RelayHeater(ctrl)
         self._lock = threading.RLock()
         self._th = None
+        self._busy = False                          # 측정 스레드가 도는 중(active)
         self.state = "idle"                         # idle(측정 전) · running · stopped(멈춤 - 이어서 할 수 있다) · done
         self.items = {}                             # 샘플 id → 진행 기록
         self.order = []                             # 측정 순서(샘플 id)
@@ -78,7 +79,8 @@ class Runner:
     # ------------------------------------------------------------------
     @property
     def active(self):
-        return self.state == "running"
+        """측정 스레드가 도는 중(마지막 파일 저장 · NAS 복사 · 끝난 상태를 화면에 보내기까지). 이것이 False 가 된 뒤에야 다음 측정 · 손 조작을 받는다."""
+        return self._busy
 
     def gate(self):
         """측정을 시작하려면 필요한 것 중 빠진 것 [{"text", "step"(준비 단계 번호)}]. 빈 판 사진은 없어도 된다."""
@@ -228,6 +230,7 @@ class Runner:
     def _launch(self):
         self._stop = self._skip = self._estop = False
         self.msg = ""
+        self._busy = True
         self.state = "running"
         self.c.state.clear_alarm("run")
         self._th = threading.Thread(target=self._main, daemon=True, name="run")
@@ -271,17 +274,24 @@ class Runner:
             self.feeding = False
             self.cur, self.stage = None, None
             left = any(self.items[i]["status"] == WAIT for i in self.order)
-            self.state = "stopped" if left or self.msg.startswith("측정을 멈췄") or self.msg.startswith("비상정지") else "done"
+            final = "stopped" if left or self.msg.startswith("측정을 멈췄") or self.msg.startswith("비상정지") else "done"
             self.pause_after = False
-            self._save_json()
-            self._save_summary()
-            if self.nas is not None:
-                self.nas.finish()
-                self.nas.join(timeout=30)
-                self._save_json()
-            n = self.counts()
-            c.logs.app("측정 %s · 끝남 %d · 실패 %d · 남음 %d" % ("끝" if self.state == "done" else "멈춤", n[DONE], n[FAIL], n[WAIT]))
+            self.line = "파일을 저장하는 중"
             self.publish()
+            try:
+                self._save_json(final)
+                self._save_summary()
+                if self.nas is not None:
+                    self.nas.finish()
+                    self.nas.join(timeout=30)
+                    self._save_json(final)
+                n = self.counts()
+                c.logs.app("측정 %s · 끝남 %d · 실패 %d · 남음 %d" % ("끝" if final == "done" else "멈춤", n[DONE], n[FAIL], n[WAIT]))
+            finally:
+                # 순서: 파일 저장 · NAS 복사 → 끝난 상태를 화면에 보냄 → "측정 중이 아님". 그 사이에 새 측정이 시작돼 같은 기록에 섞여 쓰지 않게 한다.
+                self.state = final
+                self.publish()
+                self._busy = False
 
     def _one(self, it, g):
         c = self.c
@@ -658,21 +668,21 @@ class Runner:
             return []
         return it["points"][:it["cycles"][0]["rows"]]
 
-    def _json(self):
+    def _json(self, state=None):
         nas = None
         if self.nas is not None:
             nas = {"dir": self.nas.nas_dir, "ok": self.nas.ok, "pending": [Path(p).name for p in self.nas.pending], "done": [Path(p).name for p in self.nas.done]}
         elif self.cond.get("nas_dir"):
             nas = {"dir": files.nas_target(self.cond.get("nas_dir"), self.cond.get("nas_date_folder"), self.batch, self.t0), "ok": None, "pending": [], "done": []}
-        return {"batch": self.batch, "started": self.t0, "saved": time.time(), "state": self.state, "msg": self.msg, "cond": self.cond, "nas": nas,
+        return {"batch": self.batch, "started": self.t0, "saved": time.time(), "state": state or self.state, "msg": self.msg, "cond": self.cond, "nas": nas,
                 "samples": [{k: v for k, v in self.items[i].items() if k not in ("points", "_st")} | {"order": n + 1} for n, i in enumerate(self.order)]}
 
-    def _save_json(self):
+    def _save_json(self, state=None):
         if self.folder is None:
             return
         try:
             tmp = self.folder / "run.json.tmp"
-            tmp.write_text(json.dumps(self._json(), ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.write_text(json.dumps(self._json(state), ensure_ascii=False, indent=1), encoding="utf-8")
             tmp.replace(self.folder / "run.json")
         except OSError as e:
             self.c.logs.app("run.json 저장 실패 · %s" % e, "error")
@@ -732,10 +742,10 @@ class Runner:
         rec = None
         if self.folder is not None:
             rec = "%s/%s" % (self.folder.parent.name, self.folder.name)
-        return {"state": self.state, "active": self.active, "batch": self.batch or str(c.cfg["batch_name"]), "folder": None if self.folder is None else str(self.folder),
+        return {"state": self.state, "active": self.state == "running", "batch": self.batch or str(c.cfg["batch_name"]), "folder": None if self.folder is None else str(self.folder),
                 "record": rec, "cur": self.cur, "stage": self.stage, "frac": round(self.frac, 3), "line": self.line, "cycle": self.cycle,
                 "repeat": int(self.cond.get("run_repeat", c.cfg["run_repeat"])), "pause_after": self.pause_after, "rows": rows, "total": total,
-                "summary": summary, "msg": self.msg, "gate": [] if self.active else self.gate(), "volt": float(self.cond.get("meter_volt", c.cfg["meter_volt"]))}
+                "summary": summary, "msg": self.msg, "gate": [] if self.state == "running" else self.gate(), "volt": float(self.cond.get("meter_volt", c.cfg["meter_volt"]))}
 
     def publish(self):
         self.c.state.set("run", self.view())

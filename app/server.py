@@ -4,6 +4,7 @@
   GET  /api/camera/preview.jpg  카메라 미리보기(가로 preview_width 로 줄인 JPEG, 1 초에 한 장 갱신. 없으면 204)
   GET  /api/img/{raw|crop|plate|empty|live}.jpg  찍은 사진 · 원본 조각 · 보정한 판 사진 · 빈 판 사진 · 지금 카메라의 보정 사진(없으면 204)
   GET  /api/run/points?sample=<id>&from=<n>   측정 점(새 점만)
+  GET  /api/results          측정 기록 목록 · /api/results/record?id= 기록 하나 · /api/results/points?id=&sample= 점 · POST /api/results/png?id= 그림 저장
   GET  /api/state            상태 한 덩어리
   WS   /ws                   상태를 보내고(바뀔 때마다 + 1 초마다) 명령을 받는다: {"id", "cmd", "args"} → {"id", "ok", "msg" | "result"}
   POST /api/estop            비상정지(WS 의 {"cmd":"estop"} 과 같은 길 - 검사 없이 바로)
@@ -19,10 +20,11 @@ from contextlib import asynccontextmanager
 
 from pathlib import Path
 
-from fastapi import Body, FastAPI, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import results
 from app.config import ConfigError
 from app.control import Controller
 from app.safety import Rejected
@@ -82,6 +84,35 @@ def create_app(ctrl: Controller) -> FastAPI:
         """측정 중인(또는 이번 측정에서 잰) 샘플의 점 [온도, 저항, 단계] 중 from 번째부터. 점 데이터는 state 에 넣지 않는다."""
         return ctrl.runner.points(sample, frm)
 
+    # ---- 결과 탭: 저장된 측정 기록 ----
+    async def _res(fn, *args):
+        try:
+            return await asyncio.to_thread(fn, ctrl.cfg.data_path(), *args)
+        except Rejected as e:
+            return JSONResponse({"ok": False, "msg": str(e)}, status_code=404)
+
+    @app.get("/api/results")
+    async def results_list():
+        return await _res(results.list_records)
+
+    @app.get("/api/results/record")
+    async def results_record(id: str):
+        return await _res(results.load_record, id)
+
+    @app.get("/api/results/points")
+    async def results_points(id: str, sample: str):
+        return await _res(results.load_points, id, sample)
+
+    @app.post("/api/results/png")
+    async def results_png(id: str, request: Request):
+        """그래프 그림(PNG 바이트)을 그 기록 폴더에 저장한다."""
+        data = await request.body()
+        try:
+            r = await asyncio.to_thread(results.save_png, ctrl.cfg.data_path(), id, data)
+        except Rejected as e:
+            return {"ok": False, "msg": str(e)}
+        return {"ok": True, "result": r}
+
     @app.get("/api/state")
     async def get_state():
         return ctrl.state.snapshot()
@@ -108,6 +139,8 @@ def create_app(ctrl: Controller) -> FastAPI:
 
     @app.put("/api/settings")
     async def put_settings(patch: dict = Body(...)):
+        if ctrl.run_active():                                      # 측정이 쓰는 값이 도중에 바뀌지 않게
+            return JSONResponse({"ok": False, "msg": "측정 중에는 설정을 바꿀 수 없습니다"}, status_code=409)
         try:
             ctrl.cfg.update(patch)
             ctrl.cfg.save()
