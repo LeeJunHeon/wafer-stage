@@ -121,9 +121,21 @@ label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .split { display: grid; grid-template-columns: minmax(440px, 1fr) 400px; gap: 12px; min-height: 0; }
 .split > .photo-box { min-height: 440px; align-self: stretch; }
 .split > .ctl { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; overflow-y: auto; }
-.ctl .grp { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.grp { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.grp h4 { margin: 0; font-size: 13px; font-weight: 700; }
+.ctl .grp { padding-top: 12px; border-top: 1px solid var(--line); }
 .ctl .grp:first-child { padding-top: 0; border-top: 0; }
-.ctl h4, .grp h4 { margin: 0; font-size: 13px; font-weight: 700; }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 460px)); gap: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.axname { width: 48px; flex: none; }
+.photo-in { touch-action: none; }
+.mag { position: absolute; top: 8px; right: 8px; width: 200px; height: 200px; background: #fff no-repeat center / 200px 200px; border: 1px solid var(--dark); border-radius: 4px; pointer-events: none; }
+.mag.left { right: auto; left: 8px; }
+.mag .cross-h { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--dark); }
+.mag .cross-v { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--dark); }
+.exlist { display: flex; flex-direction: column; gap: 4px; }
+.cgrid { display: grid; grid-template-columns: repeat(3, 96px); gap: 4px; }
+.btn.ccell { width: 96px; height: 64px; padding: 0; font-size: 14px; }
+.fakebox { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--line); }
 .devrow { display: grid; grid-template-columns: 96px 360px max-content minmax(0, 1fr); gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
 .devrow:first-of-type { border-top: 0; }
 .devrow .name { font-weight: 600; }

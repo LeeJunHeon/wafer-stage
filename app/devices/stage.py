@@ -498,6 +498,14 @@ class Stage:
             self.call("%s %d" % (name, int(val)), gen, is_status_block_end, LINE_TIMEOUT_S)
         self.speed = (int(v), int(a), int(b))
 
+    def set_v(self, v, gen=None):
+        """이동 속도만 바꾼다(가속 · 시작 속도는 그대로). 핀을 샘플 가까이 내릴 때 느리게 하려고 쓴다."""
+        v = int(v)
+        if v == self.speed[0]:
+            return
+        self.call("v %d" % v, gen, is_status_block_end, LINE_TIMEOUT_S)
+        self.speed = (v, self.speed[1], self.speed[2])
+
     def jog(self, axis, pulses, gen):
         """조그(jx/jy/jz, 원점 없어도 된다). 한 번에 8000 펄스까지라 길면 나눠 보낸다. 조각마다 세대를 다시 본다."""
         left = int(pulses)

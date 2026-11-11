@@ -115,6 +115,63 @@ def resistance(volt, current):
     return abs(float(volt)) / abs(i)
 
 
+RANGES = [1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0]          # 2450 전류 측정 범위(10 nA ~ 1 A)
+START_RANGE = 1e-3                     # 범위 단계 방식의 시작 범위(1 mA) - v2 의 실장비 값
+LIMIT_FRAC = 0.106                     # 매뉴얼: 고정 범위에서 전압 소스의 전류 한도는 측정 범위의 10.6 % 이상이어야 한다
+
+
+def limit_ok(rng, ilim):
+    return float(ilim) >= LIMIT_FRAC * float(rng) * (1 - 1e-9)
+
+
+def clamp_range(rng, ilim):
+    """한도 규칙을 어기는 큰 범위는 규칙을 지키는 가장 큰 범위로 낮춘다. 그러면 한도 전류를 못 덮는 경우(한도 > 범위)는 그대로 둔다."""
+    r = float(rng)
+    if limit_ok(r, ilim):
+        return r
+    ok = [x for x in RANGES if x <= r * (1 + 1e-9) and limit_ok(x, ilim)]
+    best = max(ok) if ok else RANGES[0]
+    return best if best >= float(ilim) * 0.999 else r
+
+
+def next_range(cur_range, current, up=1.05, down=0.95):
+    """전류 범위 단계 변경(기존 LabVIEW 하위 VI 방식 - v2 에서 그대로).
+    전류 크기가 범위 끝 근처(up 배 넘음)면 10배 올리고, 한 단계 아래 범위의 끝(0.95 × 범위/10) 안쪽으로 떨어지면 10배 내린다."""
+    try:
+        a = abs(float(current))
+    except (TypeError, ValueError):
+        return cur_range
+    r = float(cur_range)
+    idx = min(range(len(RANGES)), key=lambda k: abs(math.log10(RANGES[k] / r)))
+    if a > up * RANGES[idx] and idx < len(RANGES) - 1:
+        while idx < len(RANGES) - 1 and a > up * RANGES[idx]:
+            idx += 1
+    elif idx > 0 and a < down * RANGES[idx - 1]:
+        while idx > 0 and a < down * RANGES[idx - 1]:
+            idx -= 1
+    return RANGES[idx]
+
+
+def step_range(cur_range, current, ilim):
+    """읽은 전류로 다음 범위를 정한다. 범위 넘음(None)이면 한도 전류를 덮는 범위까지 한 번에 올린다(전이 구간 점을 잃지 않게)."""
+    if current is None:
+        need = float(ilim)
+        new = next((r for r in RANGES if r >= need * 0.999 and r > cur_range), RANGES[-1])
+    else:
+        new = next_range(cur_range, current)
+    return clamp_range(new, float(ilim))
+
+
+def is_open_circuit(current, floor_a):
+    """전류 크기가 하한(기본 1 nA) 아래면 연결이 없는 것(열린 회로). 범위 넘음(None)은 열린 회로가 아니다."""
+    if current is None:
+        return False
+    try:
+        return abs(float(current)) < float(floor_a)
+    except (TypeError, ValueError):
+        return False
+
+
 # --------------------------------------------------------------------------
 class _Dev:
     NAME = "VISA"
@@ -240,6 +297,8 @@ class K2450(_Dev):
     NAME = "K2450"
     MODEL = "2450"
     out_state = False
+    range = START_RANGE                                 # 지금 전류 측정 범위(범위 단계 방식)
+    ilim = 0.1
 
     def check_scpi(self):
         """명령 세트가 SCPI 인가. 일부 펌웨어는 *LANG? 가 없다 - 그때는 SCPI 로 본다."""
@@ -258,8 +317,9 @@ class K2450(_Dev):
             return ""
         return "REAR" if t.startswith("REAR") else "FRON" if t.startswith("FRON") else ""
 
-    def configure(self, volt, ilim_a, four_wire=True, nplc=1.0, avg_count=10, terminal="REAR"):
-        """*RST → 단자 → 4단자 → 전압 소스(한도 · 수준) → 전류 측정(자동 범위) → 적분 → 평균 → 자동 영점. 출력은 켜지 않는다."""
+    def configure(self, volt, ilim_a, four_wire=True, nplc=1.0, avg_count=10, terminal="REAR", start_range=START_RANGE):
+        """v2 의 실장비 순서 그대로: *RST → 단자 → 4단자 → 전압 소스(한도 · 수준) → 전류 측정(자동 범위 끔 · 시작 범위) → 적분 → 평균 → 자동 영점.
+        범위는 단계 방식(read_step 이 읽을 때마다 올리고 내린다). 출력은 켜지 않는다."""
         with self.lock:
             if self.out_state:                                      # 출력이 켜진 채로는 단자를 바꾸지 않는다(매뉴얼: 바꾸면 출력이 꺼짐)
                 self.output(False)
@@ -274,18 +334,80 @@ class K2450(_Dev):
             self.write(":SOUR:VOLT:ILIM %.6g" % float(ilim_a))
             self.write(":SOUR:VOLT %.6g" % float(volt))
             self.write(':SENS:FUNC "CURR"')
-            self.write(":SENS:CURR:RANG:AUTO ON")
+            self.write(":SENS:CURR:RANG:AUTO OFF")
+            self.range = clamp_range(float(start_range), float(ilim_a))
+            self.ilim = float(ilim_a)
+            self.write(":SENS:CURR:RANG %.6g" % self.range)
             self.write(":SENS:CURR:NPLC %.6g" % float(nplc))
-            if int(avg_count) > 1:
-                self.write(":SENS:CURR:AVER:TCON REP")
-                self.write(":SENS:CURR:AVER:COUN %d" % int(avg_count))
-                self.write(":SENS:CURR:AVER ON")
-            else:
-                self.write(":SENS:CURR:AVER OFF")
+            self.write(":SENS:CURR:AVER:TCON REP")
+            self.write(":SENS:CURR:AVER:COUN %d" % max(1, int(avg_count)))
+            self.write(":SENS:CURR:AVER ON")
             self.write(":SENS:AZER:ONCE")
             errs = self.drain_errors()
             if errs:
                 raise VisaError("K2450 설정 오류 · " + errs[0][:40])
+
+    def set_range(self, r):
+        self.write(":SENS:CURR:RANG %.6g" % float(r))
+        self.range = float(r)
+
+    def read_step(self):
+        """한 번 읽고(전류 | None, 한도 걸림) 다음 읽기를 위해 범위를 한 단계 맞춘다(범위 단계 방식)."""
+        cur, trip = self.read()
+        new = step_range(self.range, cur, self.ilim)
+        if abs(new - self.range) > 1e-15:
+            self.set_range(new)
+        return cur, trip
+
+    # ---- 접촉 확인(app/contact.py): 아주 약한 전압 · 낮은 전류 한도 · 2단자 → (닿은 뒤) 4단자. v2 에서 그대로 ----
+    OVP_MIN = "PROT2"                                   # 과전압 보호의 가장 낮은 단계(2 V)
+
+    def configure_contact(self, volt, ilim_a, nplc=0.1, terminal="REAR"):
+        """접촉 확인 설정. 출력을 켜기 **전에** 단자 → 전압 소스 → 과전압 보호(가장 낮은 2 V) → 전류 한도 → 전압 → 전류 측정
+        (2단자 · 자동 범위 · 적분 · 평균 끔). 4단자로 바꾸면 감지 핀이 아직 떠 있을 수 있다 - 전압 소스는 감지 단자 전압을 맞추려고
+        출력을 올릴 수 있으므로(열린 감지선) 과전압 보호를 걸어 시료에 큰 전압이 걸리지 않게 한다. 측정은 *RST 부터 자기 설정을 다시 한다."""
+        with self.lock:
+            if self.out_state:
+                self.output(False)
+            self.write("*RST")
+            self.out_state = False
+            self.write(":ROUT:TERM %s" % terminal)
+            got = self.terminal()
+            if got != terminal:
+                raise VisaError("K2450 단자 설정 실패 · %s 로 읽힘" % (got or "?"))
+            self.write(":SOUR:FUNC VOLT")
+            self.write(":SOUR:VOLT:PROT %s" % self.OVP_MIN)
+            self.write(":SOUR:VOLT:ILIM %.6g" % float(ilim_a))
+            self.write(":SOUR:VOLT %.6g" % float(volt))
+            self.write(':SENS:FUNC "CURR"')
+            self.write(":SENS:CURR:RSEN OFF")
+            self.write(":SENS:CURR:RANG:AUTO ON")
+            self.write(":SENS:CURR:NPLC %.6g" % float(nplc))
+            self.write(":SENS:CURR:AVER OFF")
+            errs = self.drain_errors()
+            if errs:
+                raise VisaError("K2450 접촉 확인 설정 오류 · " + errs[0][:40])
+
+    def set_four_wire(self, on):
+        """2단자 ↔ 4단자. 출력을 끈 채 바꾸고 켠다(켠 채로 바꾸는 것은 매뉴얼에서 확인하지 못했다 - 끄고 바꾸는 쪽이 안전)."""
+        with self.lock:
+            was = self.out_state
+            if was:
+                self.output(False)
+            self.write(":SENS:CURR:RSEN %s" % ("ON" if on else "OFF"))
+            if was:
+                self.output(True)
+
+    def ovp_tripped(self):
+        """과전압 보호가 걸렸는가(:SOUR:VOLT:PROT:TRIP?). 못 읽으면 VisaError(모르는 것을 '안 걸림' 으로 보지 않는다)."""
+        return self.query(":SOUR:VOLT:PROT:TRIP?").strip() in ("1", "+1")
+
+    def read_strict(self):
+        """접촉 확인용 읽기: 전류와 한도 걸림을 **둘 다** 읽어야 한다(한도 걸림을 못 읽으면 단락을 놓칠 수 있다 - 예외)."""
+        with self.lock:
+            cur = parse_float(self.query(":READ?"))
+            trip = self.query(":SOUR:VOLT:ILIM:TRIP?").strip() in ("1", "+1")
+        return cur, trip
 
     def output(self, on):
         self.write(":OUTP %s" % ("ON" if on else "OFF"))
@@ -310,19 +432,20 @@ class K2450(_Dev):
                 self.lock.release()
 
     def measure_once(self, volt, ilim_a, four_wire=True, nplc=1.0, avg_count=10):
-        """저항 한 번: 설정 → 출력 켜기 → 읽기 → (무슨 일이 있어도) 출력 끄기. dict(current, ohm, tripped, volt, four_wire)."""
+        """저항 한 번: 설정 → 출력 켜기 → 범위가 맞을 때까지 읽기 → (무슨 일이 있어도) 출력 끄기. dict(current, ohm, tripped, volt, four_wire)."""
         with self.lock:
             try:
                 self.configure(volt, ilim_a, four_wire, nplc, avg_count)
                 self.output(True)
-                cur, trip = self.read()
+                cur, trip = None, False
+                for _ in range(len(RANGES)):                        # 범위 단계 방식: 범위가 더 안 바뀔 때의 값이 그 범위에서 잰 값이다
+                    before = self.range
+                    cur, trip = self.read_step()
+                    if abs(self.range - before) < 1e-15:
+                        break
             finally:
                 self._off_quiet()
         return {"current": cur, "ohm": resistance(volt, cur), "tripped": trip, "volt": float(volt), "four_wire": bool(four_wire)}
-
-    def contact_probe(self, volt, ilim_a, nplc=0.1):
-        """접촉 확인용 약한 2단자 측정(평균 없음). 출력은 끝나면 끈다."""
-        return self.measure_once(volt, ilim_a, four_wire=False, nplc=nplc, avg_count=1)
 
     def _off_quiet(self):
         """출력 끄기. 실패해도 예외를 올리지 않는다(이미 오류 중일 수 있다) - 실패는 로그에 남는다."""

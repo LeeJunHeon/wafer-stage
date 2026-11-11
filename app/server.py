@@ -2,6 +2,7 @@
 
   GET  /                     화면(ui/index.html) · /ui/ 아래 정적 파일
   GET  /api/camera/preview.jpg  카메라 미리보기(가로 preview_width 로 줄인 JPEG, 1 초에 한 장 갱신. 없으면 204)
+  GET  /api/img/{raw|crop|plate|empty|live}.jpg  찍은 사진 · 원본 조각 · 보정한 판 사진 · 빈 판 사진 · 지금 카메라의 보정 사진(없으면 204)
   GET  /api/state            상태 한 덩어리
   WS   /ws                   상태를 보내고(바뀔 때마다 + 1 초마다) 명령을 받는다: {"id", "cmd", "args"} → {"id", "ok", "msg" | "result"}
   POST /api/estop            비상정지(WS 의 {"cmd":"estop"} 과 같은 길 - 검사 없이 바로)
@@ -67,6 +68,14 @@ def create_app(ctrl: Controller) -> FastAPI:
             return Response(status_code=204)
         return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
+    @app.get("/api/img/{what}.jpg")
+    async def img(what: str, x: float = 0.0, y: float = 0.0, half: int = 120):
+        """화면용 그림: raw(찍은 원본) · crop(원본 해상도 조각 x, y, half) · plate(보정한 판 사진) · empty(보정한 빈 판 사진) · live(지금 카메라의 보정 사진)."""
+        jpg = await asyncio.to_thread(ctrl.prep.jpeg, what, x=x, y=y, half=half)
+        if jpg is None:
+            return Response(status_code=204)
+        return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
     @app.get("/api/state")
     async def get_state():
         return ctrl.state.snapshot()
@@ -99,6 +108,7 @@ def create_app(ctrl: Controller) -> FastAPI:
         except ConfigError as e:
             return JSONResponse({"ok": False, "msg": str(e)}, status_code=400)
         ctrl.publish_cfg()
+        ctrl.prep.on_settings()
         return {"ok": True}
 
     @app.websocket("/ws")

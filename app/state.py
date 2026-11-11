@@ -32,6 +32,9 @@ class State:
             "monitor": False,                                        # 1 초마다 계속 읽기
             "cfg": {},                                               # 화면이 쓰는 설정 일부
             "fake": False,                                           # 가짜 장비로 도는 중
+            "prep": None,                                            # 준비 단계 상태(app/prep.py view)
+            "samples": [],                                           # 찾은 샘플 목록
+            "run": None,                                             # 측정 진행(app/jobs/run.py view). 점 데이터는 넣지 않는다
         }
 
     # ---- 읽기 ----
@@ -82,16 +85,16 @@ class State:
                 self._bump()
 
     # ---- 경보 ----
-    def alarm(self, code: str, text: str, level: str = ALARM):
-        """같은 code 는 하나만 둔다(문구 · 등급만 갱신)."""
+    def alarm(self, code: str, text: str, level: str = ALARM, dismiss: bool = False):
+        """같은 code 는 하나만 둔다(문구 · 등급만 갱신). dismiss = 사람이 [지우기] 로 지울 수 있는 알림(한 번 알려 주면 되는 주의)."""
         with self._lock:
             for a in self.d["alarms"]:
                 if a["code"] == code:
                     if (a["text"], a["level"]) != (text, level):
-                        a.update(text=text, level=level, time=time.time())
+                        a.update(text=text, level=level, time=time.time(), dismiss=bool(dismiss))
                         self._bump()
                     return
-            self.d["alarms"].append({"code": code, "text": text, "level": level, "time": time.time()})
+            self.d["alarms"].append({"code": code, "text": text, "level": level, "time": time.time(), "dismiss": bool(dismiss)})
             self._bump()
 
     def clear_alarm(self, *codes: str):

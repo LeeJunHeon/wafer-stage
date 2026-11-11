@@ -34,11 +34,11 @@ def wait_for(fn, timeout=5.0, step=0.02):
 def make_ctrl(tmp_path):
     made = []
 
-    def make(clock=None, scale=0.05, connect=True, meters=True, camera=False, **cfg_over):
+    def make(clock=None, scale=0.05, connect=True, meters=True, camera=False, time_scale=1.0, **cfg_over):
         cfg = Config(tmp_path / "settings.json").load()
         cfg.update({"data_dir": str(tmp_path / "data"), "camera_width": 320, "camera_height": 240, **cfg_over})
         kw = {"clock": clock} if clock else {}
-        ctrl = Controller(cfg, fake=True, fake_scale=scale, **kw)
+        ctrl = Controller(cfg, fake=True, fake_scale=scale, time_scale=time_scale, **kw)
         made.append(ctrl)
         if connect:
             ctrl.connect_stage()
@@ -52,3 +52,16 @@ def make_ctrl(tmp_path):
     yield make
     for c in made:
         c.shutdown()
+
+
+@pytest.fixture
+def ready_ctrl(make_ctrl):
+    """준비가 끝난 가짜 장비: 카메라 1280×960 · 가짜 준비 값(판 영역 · 빈 판 사진 · 좌표 · 헤드 마커 · 접촉 높이)을 채운 상태."""
+    def make(**kw):
+        opts = dict(scale=0.02, camera=True, camera_width=1280, camera_height=960)
+        opts.update(kw)
+        ctrl = make_ctrl(**opts)
+        ctrl.lab.read_dt = 0.002
+        ctrl.run_command("fake_fill")
+        return ctrl
+    return make

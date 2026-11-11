@@ -13,10 +13,15 @@ app/safety.py           안전 규칙을 한 곳에
 app/control.py          명령 → 안전 규칙 → 장비 (서버 · 시험 공통 입구 run_command)
 app/devices/stage.py    아두이노 V11 드라이버
 app/devices/meters.py   K2110 · K2450
-app/devices/camera.py   카메라(OpenCV): 열기 · 1 초마다 미리보기 JPEG · 마지막 원본 한 장
+app/devices/camera.py   카메라(OpenCV): 열기 · 1 초마다 미리보기 JPEG · 마지막 원본 한 장 · 새 프레임(fresh_frame)
+app/geometry.py         좌표 변환(호모그래피) · 보정 사진 · 헤드 마커 찾기
+app/calib.py            준비 단계의 보정 값(calib/calib.json)
+app/prep.py             준비 2~7단계 · 사진 · 위치 확인 · 샘플 찾기 명령
+app/contact.py          전기로 접촉 찾기(v2 방식)
+app/vision/             샘플 찾기(v2 fixed_detect · refdiff 그대로 + find.py)
 ui/                     화면(빌드 없는 HTML · CSS · JS, Pretendard 글꼴은 ui/fonts): core.js(공통) · jog.js(이동 부품) · prep.js · manual.js · app.js(시작)
 app/server.py           FastAPI + WebSocket (127.0.0.1:8000)
-sim/                    가짜 장비: fake_v11.py(스테이지) · fake_visa.py(K2110 · K2450 + 열 모델) · fake_camera.py(판 · 샘플 · 헤드 마커)
+sim/                    가짜 장비: world.py(가짜 세계 하나) · fake_v11.py(스테이지) · fake_visa.py(K2110 · K2450 + 열 모델) · fake_camera.py(판 · 샘플 · 헤드 마커)
 tests/                  pytest 빠른 시험 (전체 1 분 안)
 firmware/stage_v11/     펌웨어 (고치지 않는다)
 ```
@@ -76,6 +81,21 @@ firmware/stage_v11/     펌웨어 (고치지 않는다)
 - 이동(조그) 부품은 `jogPart()`(jog.js) 하나를 수동 탭과 준비 단계가 같이 쓴다.
 - 종료 처리(`Controller.shutdown`)는 여러 번 불러도 한 번만 한다(창 닫기 · 서버 종료가 둘 다 부른다).
 - 확인 창을 띄우지 않는다. 같은 상태를 두 곳에 보여 주지 않는다. 화면 확인(브라우저 · 스크린샷)은 따로 한다 - 이 저장소의 시험은 pytest 빠른 시험만.
+
+## 3단계 B: 준비 2~7단계 · 좌표 · 샘플 찾기 · 가짜 세계
+- **좌표계 셋**: 사진(원본 픽셀) · 판(mm, 꼭짓점 A = (0, 0), A→B +x, A→D +y, 사진에서 왼쪽 위부터 시계 방향 A · B · C · D) · 스테이지(핀 가운데 X · Y mm). 변환은 `app/geometry.py` 의 호모그래피 하나.
+- **보정 값**은 `<데이터 폴더>/calib/calib.json` + `calib/empty_plate.png`(`app/calib.py`, settings.json 과 따로). 다시 하면 덮어쓴다.
+- **준비 명령**(`app/prep.py`): `photo_head_set` · `marker_check` · `photo_take` · `plate_set(corners)` · `empty_take` · `coord_set(name)` · `coord_goto_d` · `coord_clear` · `marker_learn` · `plate_goto(x, y)` · `coord_add_here` · `coord_remove(index)` · `samples_find` · `sample_use(id, use)` · `cooler_only(n)` · `cooler_save(grid)` · `contact_find` · `contact_save` · `fake_fill` · `fake_samples(on)` · `alarm_clear(code)`.
+- **판 영역**(3): 사진에서 누른 꼭짓점 4개 → "사진 → 판 mm" → 보정 사진(판을 위에서 본 정사각형, 1 mm = 8 px). 화면의 판 사진은 모두 보정 사진. 판 영역을 다시 정하면 사진 픽셀로 기억한 것(보정 점 · 헤드 마커)은 버린다.
+- **좌표 맞추기**(5): 꼭짓점 A~D 에 핀을 대고 스테이지 X · Y 를 기억(사진에서 누르지 않는다) → 4점이면 "사진 → 스테이지" 변환. 보정 점(판 사진을 눌러 간 자리 ↔ 조그로 맞춘 자리, 최근 30점)을 더하면 전체 점의 최소제곱으로 다시 맞춘다. 품질(변 길이 차이 · 직각 오차)은 주의만 띄우고 막지 않는다.
+- **헤드 마커**: 꼭짓점 4점 뒤에 자동으로 기억(사진 찍을 때 헤드 자리의 마커 픽셀 + X · Y ±10 mm 로 잰 "mm 당 픽셀" 2×2). 이후 그 자리에서 찍는 사진마다 위치 확인: 2 mm 넘으면 주의, 10 mm 넘으면 경보 + 측정 시작 막음(`prep.pos_block`). 원점을 다시 맞추거나 좌표 맞추기를 다시 하면 풀린다.
+  **왜 마커만으로 좌표를 맞추지 않는가**: 마커는 헤드 윗면에 있어 판보다 높다. 비스듬한 카메라에서는 높이가 다르면 같은 X · Y 라도 사진에서 다른 자리에 보인다(시차). 그래서 판 위의 점(꼭짓점)에 핀을 직접 대어 맞춘다.
+- **샘플 찾기**(`app/vision/`): `fixed_detect.py` · `refdiff.py` 는 v2 것을 **그대로** 옮긴 것(실제 사진으로 맞춘 값 - 바꾸지 않는다). `find.py` 가 입력 · 출력만 맞춘다: 보정 사진(새겨진 사각형 바깥 6 mm 여백 포함, 사각형 안만 찾음) → 빈 판 사진과 비교, 잘 안 맞거나 없으면 사진 한 장으로(막지 않고 주의 한 줄). 격자로만 짐작한 후보(predicted)는 "확인 필요", 핀(10 × 2 mm + 여유 0.3)이 윤곽에 안 들어가면 "핀보다 작음" - 둘 다 기본으로 빼 둔다.
+- 사진은 이동이 끝난 뒤 새로 들어온 프레임(`Camera.fresh_frame`)만 쓴다.
+- **전기로 접촉 찾기**(`app/contact.py`, v2 방식 · 값 그대로, 전부 settings `contact_*`): K2450 2단자 0.1 V · 한도 0.1 mA · 과전압 보호 2 V → 0.025 mm 씩 내리며 2번 연속 전류면 닿음 → +0.05 mm 누르고 4단자 확인. 단락 = 금속 판, 한도까지 안 닿으면 실패 - 둘 다 핀 맨 위. 어떤 끝에서도 출력 끔. 비상정지면 핀을 움직이지 않는다. 측정(높이 모드)은 저장 높이 + 0.5 mm 아래로 내려가지 않는다. 준비 6단계 · 수동 탭은 지금 높이부터 5 mm 까지 찾는다(찾기 모드).
+- **K2450 측정 설정**은 v2 순서 + 범위 단계 방식(자동 범위 끔 · 시작 1 mA · 읽을 때마다 `step_range`). 수동 탭 저항 한 번 읽기도 같다.
+- **가짜 세계**(`sim/world.py`): 판 자리 · 기울기(1°) · 샘플(자리 · 크기 · 두께 · 저항 전이) · 판 높이 · 샘플을 올렸는지. 가짜 카메라(사다리꼴 사진 · 헤드 · 시차 있는 ArUco 마커) · 가짜 K2450(접촉 · 단락 · 4단자) · 열 모델(샘플마다 온도)이 모두 이것과 가짜 스테이지의 실제 X · Y · Z 를 본다.
+- 측정 중에는 손으로 하는 명령을 `run_command` 에서 거절한다(`RUN_ALLOWED` 만 통과, 직접 명령은 st · rs · p 만).
 
 ## 작업 규칙
 - 확인은 `--fake` / 가짜 장비 + 임시 폴더로만. **실제 포트 · 카메라 · VISA 를 열지 않는다.** Windows 에서 그대로 돌아야 하므로 Linux 전용 코드 금지.

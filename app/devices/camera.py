@@ -15,6 +15,7 @@ import cv2
 
 BACKENDS = [("DSHOW", getattr(cv2, "CAP_DSHOW", 0)), ("MSMF", getattr(cv2, "CAP_MSMF", 0)), ("ANY", cv2.CAP_ANY)]
 FAIL_LIMIT = 30                                  # 연속으로 프레임을 못 받으면 끊김으로 본다
+FRESH_SKIP = 2                                   # 새 프레임 요청 뒤 버리는 프레임 수(드라이버 버퍼에 남은 옛 프레임)
 PERIOD_S = 1.0
 
 
@@ -49,9 +50,13 @@ class Camera:
         self._thread = None
         self._alive = False
         self._preview_w = 1280
+        self._want = 0                                # 새 프레임 요청 번호(올리면 읽기 스레드가 바로 한 장 가져온다)
+        self._seq = 0                                 # 저장한 프레임 번호
+        self._cv = threading.Condition()
 
     # ---- 열기 ----
-    def open(self, index, width, height, fourcc="MJPG", focus_fixed=True, focus_value=-1, preview_width=1280):
+    def open(self, index, width, height, fourcc="MJPG", focus_fixed=True, focus_value=-1, preview_width=1280, exposure=None, wb_k=None):
+        """exposure = 고정 노출 값(None 이면 자동 노출) · wb_k = 고정 화이트밸런스(None 이면 카메라 기본). v2 운용값: 노출 −5 · 5000 K · 초점 고정."""
         if self.connected:
             raise CameraError("이미 연결되어 있습니다")
         self._preview_w = int(preview_width)
@@ -66,7 +71,7 @@ class Camera:
                 self._release(cap)
                 errors.append("%s: 열기 실패" % name)
                 continue
-            self._configure(cap, name, width, height, fourcc, focus_fixed, focus_value)
+            self._configure(cap, name, width, height, fourcc, focus_fixed, focus_value, exposure, wb_k)
             frame = self._first_frame(cap, width * height)
             if frame is None:
                 self._release(cap)
@@ -93,7 +98,7 @@ class Camera:
         except Exception:                                           # noqa: BLE001
             pass
 
-    def _configure(self, cap, backend, w, h, fourcc, focus_fixed, focus_value):
+    def _configure(self, cap, backend, w, h, fourcc, focus_fixed, focus_value, exposure=None, wb_k=None):
         code = cv2.VideoWriter_fourcc(*fourcc) if len(fourcc) == 4 else 0
 
         def set_fourcc():
@@ -117,6 +122,14 @@ class Camera:
         cap.set(cv2.CAP_PROP_AUTO_WB, 0)
         if focus_fixed and int(focus_value) >= 0:
             cap.set(cv2.CAP_PROP_FOCUS, int(focus_value))
+        # 노출 · 화이트밸런스(v2 에서 실장비로 쓰던 순서): 자동 노출을 끄면 값을 같이 준다(안 주면 마지막 노출에 얼어붙는다)
+        if exposure is None:
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75 if backend == "DSHOW" else 1)
+        else:
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25 if backend == "DSHOW" else 0)
+            cap.set(cv2.CAP_PROP_EXPOSURE, float(exposure))
+        if wb_k is not None and int(wb_k) > 0:
+            cap.set(cv2.CAP_PROP_WB_TEMPERATURE, int(wb_k))
 
     def _first_frame(self, cap, pixels):
         """열린 뒤 프레임이 실제로 나오는지 확인한다(고해상도는 첫 장이 늦다 - 4백만 화소 넘으면 두 배로 기다린다)."""
@@ -147,6 +160,7 @@ class Camera:
     def _loop(self):
         fails = 0
         last = 0.0
+        served, skip = 0, 0
         while self._alive:
             cap = self.cap
             if cap is None:
@@ -154,11 +168,19 @@ class Camera:
             try:
                 ok = cap.grab()
                 now = time.monotonic()
-                if ok and now - last >= self.period_s:
+                want = self._want
+                if ok and want > served:
+                    skip += 1                                       # 요청 뒤에 들어온 프레임만 쓴다(드라이버에 쌓여 있던 옛 프레임 두 장은 버린다)
+                if ok and (now - last >= self.period_s or (want > served and skip > FRESH_SKIP)):
                     ok, frame = cap.retrieve()
                     if ok and frame is not None:
                         self._store(frame)
                         last = now
+                        if want > served and skip > FRESH_SKIP:
+                            served, skip = want, 0
+                            with self._cv:
+                                self._seq = served
+                                self._cv.notify_all()
             except Exception as e:                                  # noqa: BLE001
                 ok = False
                 self.log("카메라 읽기 오류 · %s" % str(e)[:40])
@@ -203,6 +225,18 @@ class Camera:
     def last_frame(self):
         with self._lock:
             return self._frame
+
+    def fresh_frame(self, timeout=6.0):
+        """지금부터 새로 들어온 프레임 한 장(원본). 이동이 끝난 뒤에 부른다 - 움직이기 전에 찍힌 프레임을 쓰지 않는다. 못 받으면 CameraError."""
+        if not self.connected:
+            raise CameraError("카메라가 연결되어 있지 않습니다")
+        with self._cv:
+            self._want += 1
+            n = self._want
+            if not self._cv.wait_for(lambda: self._seq >= n or not self._alive, timeout=timeout) or self._seq < n:
+                raise CameraError("카메라에서 새 사진을 받지 못했습니다")
+        with self._lock:
+            return self._frame, self._frame_t
 
     def close(self):
         self._alive = False
