@@ -103,7 +103,7 @@ UI.acts["set-save"] = async () => {
     const ci = (z.cells || []).findIndex((c) => Number(c.relay) === Number(hr));
     if (ci >= 0) {
       const edits = Object.assign({}, SET.edits);
-      dialog("히트건을 R" + hr + " 로 바꿀까요?", "쿨러 구역 칸 " + (ci + 1) + " 이 R" + hr + " 를 씁니다. 그 칸을 R" + old + " 로 맞바꿉니다. 실제 배치는 장비 설정 8 의 [2 s 켜 보기]로 확인하십시오.",
+      dialog("히트건을 R" + hr + " 로 바꿀까요?", "쿨러 구역 칸 " + (ci + 1) + " 이 R" + hr + " 를 씁니다. 그 칸을 R" + old + " 로 맞바꿉니다. 실제 배치는 장비 설정 8 의 [켜 보기]로 확인하십시오.",
         [{ label: "계속 고치기", fn: () => { openSettings(SET.cur, null, true); } },
           { label: "맞바꿔 저장", cls: "primary", fn: async () => { const r = await send("settings_save", { patch: edits, swap_heater: true }); if (r.ok) { SET.edits = {}; SET.open = false; toast("저장 · 히트건 R" + hr + " · 칸 " + (ci + 1) + " 은 R" + old); } else openSettings(SET.cur, null, true); } }]);
       return;

@@ -282,7 +282,10 @@ function renderPanel(s) {
     const base = lock || (nostage ? "스테이지 연결 안 됨" : sg && !(sg.z_ok && sg.xy_ok && !sg.locked) ? "원점 필요 · 단계 1" : "");
     const noS = withX.length ? "" : "샘플 필요 · 측정 탭에서 촬영";
     const sel = h("select", { id: "ct-no", onchange: (e) => { S.ctNo = Number(e.target.value); S.rightSig = ""; } }, withX.map((p) => h("option", { value: p.no, text: p.no + "번 · " + xy(p.X, p.Y), selected: p.no === S.ctNo })));
-    kids.push(card("접촉 높이", h("div", { class: "sub", text: "1 샘플 선택 · [샘플 위로] / 2 Z 조그(0.1 mm)로 핀이 닿을 때까지 / 3 [지금 높이를 접촉 높이로]" }),
+    const srch = (s.settings.contact && s.settings.contact.search_mm) || 5;
+    kids.push(card("접촉 높이", h("div", { class: "sub", text: ctOk
+      ? "1 샘플 선택 · [샘플 위로] / 2 Z 조그로 표면 " + srch + " mm 위 안까지 / 3 [전기로 접촉 찾기] → 확인 창에서 저장"
+      : "1 샘플 선택 · [샘플 위로] / 2 Z 조그(0.1 mm)로 핀이 닿을 때까지 / 3 [지금 높이를 접촉 높이로]" }),
       h("div", { class: "row" }, sel, btn("샘플 위로", "su-ct-goto", null, "", "고른 샘플 위로 공구를 옮깁니다(Z 를 먼저 올립니다).", base || noS)),
       h("div", { class: "row" }, btn("지금 높이를 접촉 높이로", "su-ct-save", null, ctOk ? "" : "primary", "지금 Z 높이(절대값)를 접촉 높이로 저장합니다. 고른 샘플 위일 때만 저장됩니다.", base || noS || (sg && sg.z < 0.1 ? "Z 를 먼저 내리기" : ""))),
       h("div", { class: "kv" }, h("span", { text: "현재 값" }), h("b", { text: ctr.z == null ? "비어 있음 · 측정 시작 불가" : "Z " + f1(ctr.z, 2) + " mm" })),
@@ -311,7 +314,10 @@ function renderPanel(s) {
     const addrSel = (key, val) => h("span", { class: "row grow" }, h("input", { type: "text", class: "grow mono", id: "ia-" + key, list: "ia-list", value: val || "", spellcheck: "false", disabled: !!lock,
       onchange: async (e) => { const r = await send("settings_save", { patch: { ["rt." + key]: e.target.value.trim() } }); if (!r.ok) e.target.value = val || ""; } }),
       h("span", { class: "chip", text: addrKind(val) || "?" }));
-    const devLine = (k, d) => h("div", { class: "kv" }, h("span", { text: k }), h("span", { class: d && d.ok ? "chip ok" : "chip no", text: d ? (d.ok ? "연결 · " + (d.kind ? d.kind + " · " : "") + (d.idn || "").split(",").slice(0, 2).join(" ") : d.err) : "연결 안 됨" }));
+    const devLine = (k, d) => {                                  /* 장비 이름이 길면 한 줄로 줄이고(…) 전체는 툴팁 - 두 줄로 칩 밖에 넘치지 않게 */
+      const t = d ? (d.ok ? "연결 · " + (d.kind ? d.kind + " · " : "") + (d.idn || "").split(",").slice(0, 2).join(" ") : d.err) : "연결 안 됨";
+      return h("div", { class: "kv" }, h("span", { text: k }), h("span", { class: (d && d.ok ? "chip ok" : "chip no") + " devchip", "data-tip": t }, h("span", { class: "nowrap", text: t })));
+    };
     const tst = ik.test;
     kids.push(card("측정 장비", h("datalist", { id: "ia-list" }, ...(S.instItems || []).map((v) => h("option", { value: v, label: addrKind(v) }))), h("div", { class: "sub", text: "K2110(열전대 온도) · K2450(전압 걸고 전류 측정). VISA 주소를 목록에서 고릅니다." }),
       ik.msg ? h("div", { class: "why", text: ik.msg }) : null,
@@ -322,7 +328,7 @@ function renderPanel(s) {
       devLine("K2110", ik.k2110), devLine("K2450", ik.k2450),
       tst ? h("div", { class: "sub", text: "시험 " + tst.t + " · 온도 " + (tst.temp == null ? "값 없음" : f1(tst.temp, 1) + " °C") + " · 저항 " + (tst.R == null ? "—" : Number(tst.R).toExponential(3) + " Ω") + " · 전류 " + (tst.I == null ? "—" : Number(tst.I).toExponential(3) + " A") + (tst.k2450_kind ? " · K2450 " + tst.k2450_kind : "") + (tst.k2110_kind ? " · K2110 " + tst.k2110_kind : "") + (tst.terminal ? " · 단자 " + (tst.terminal === "REAR" ? "뒷면" : "앞면") : "") + (tst.open ? " · 연결 없음 · 핀 접촉 · 앞/뒤 단자 설정 확인" : "") + (tst.err ? " · " + tst.err : "") }) : null));
     const zrel = zr.cells.map((c) => Number(c.relay)).sort((a, b) => a - b);
-    kids.push(card("릴레이", h("div", { class: "sub", text: "히트건 R" + hn + " · 쿨러 R" + zrel.join(",R") + ". 쓰는 릴레이만 켜 두고 실제 배치는 [2 s 켜 보기]로 확인합니다." }),
+    kids.push(card("릴레이", h("div", { class: "sub", text: "히트건 R" + hn + " · 쿨러 R" + zrel.join(",R") + ". 쓰는 릴레이만 켜 두고 실제 배치는 [켜 보기](2 초)로 확인합니다." }),
       h("div", { class: "row" }, h("span", { class: "sub fl", text: "히트건" }), selInput("m-hr", hn, relayOpts.map((n) => [n, "R" + n])),
         h("span", { class: "sub grow", text: "구역과 함께 바꾼 뒤 [저장] (한 번에 검증)" })),
       h("table", { class: "tb rltab" }, h("thead", {}, h("tr", {}, h("th", { text: "사용 · 번호" }), h("th", { text: "이름" }), h("th", { text: "용도" }), h("th", { text: "" }))), h("tbody", {}, ...rows)),

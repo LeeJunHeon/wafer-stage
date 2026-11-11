@@ -523,3 +523,4 @@ table.tb th { font-size: var(--fs-xs); color: var(--ink2); font-weight: var(--fw
 :where(html.lowh) .gate { padding: var(--sp-1) var(--sp-2); }          /* 시작 사유 줄 */
 :where(html.lowh2) .card h3 { font-size: var(--fs-m); }
 .jogpad .jleft { flex: none; gap: var(--sp-1); } .jogpad .jpz { gap: var(--gap-in); align-items: flex-start; }
+.chip.devchip { min-width: 0; max-width: 100%; justify-self: start; } .chip.devchip > .nowrap { min-width: 0; }

@@ -64,9 +64,10 @@ LINT_JS = r"""
     if (ox > 1 && oy > 1) { out.push('겹침 ' + key(a.e) + ' × ' + key(b.e)); continue; }
     if (exempt(a.e) && exempt(b.e) && a.e.parentElement === b.e.parentElement) continue;
     // 같은 줄: 세로 범위가 겹치고 가로 간격이 6 px 미만
-    if (oy > 4 && ox <= 0 && -ox / Z < 6) out.push('가로 간격 ' + Math.round(-ox / Z) + 'px ' + key(a.e) + ' | ' + key(b.e));
+    const gx = Math.round(-ox / Z * 10) / 10, gy = Math.round(-oy / Z * 10) / 10;   // CSS 화소 · 0.1 px 로 반올림(배율 0.667 에서 4 px 가 3.9999 로 나오는 부동소수 오차)
+    if (oy > 4 && ox <= 0 && gx < 6) out.push('가로 간격 ' + Math.round(gx) + 'px ' + key(a.e) + ' | ' + key(b.e));
     // 위아래: 가로 범위가 겹치고 세로 간격이 4 px 미만
-    if (ox > 4 && oy <= 0 && -oy / Z < 4) out.push('세로 간격 ' + Math.round(-oy / Z) + 'px ' + key(a.e) + ' / ' + key(b.e));
+    if (ox > 4 && oy <= 0 && gy < 4) out.push('세로 간격 ' + Math.round(gy) + 'px ' + key(a.e) + ' / ' + key(b.e));
   }
   // 글자 잘림
   const tipped = (e) => { for (let x = e, n = 0; x && n < 4; x = x.parentElement, n++) if (x.getAttribute && (x.getAttribute('data-tip') || x.getAttribute('title'))) return true; return false; };
@@ -219,8 +220,14 @@ def main():
             return pg
 
         def tab(pg, t):
-            pg.click('#tabs .tab[data-tab="%s"]' % t)
-            pg.wait_for_timeout(500)
+            """탭 이동. 화면이 스스로 바뀐 직후 400 ms 의 누름은 앱이 일부러 무시한다(띠 줄 수가 바뀜 등) - 바뀌었는지 보고 450 ms 뒤 다시 누른다."""
+            for _ in range(4):
+                pg.click('#tabs .tab[data-tab="%s"]' % t)
+                pg.wait_for_timeout(500)
+                if pg.evaluate("UI.tab") == t:
+                    return
+                pg.wait_for_timeout(450)
+            raise RuntimeError("탭 '%s' 로 바뀌지 않음" % t)
 
         # ---- 1) 아무것도 연결 안 됨: 띠 여러 줄 ----
         c = e2e.Client(env={"WAFER2_MISSING": "stage,camera,visa", "WAFER2_AUTO_LINK_S": "3600"})
