@@ -71,7 +71,7 @@ function updatePos(s) {
   if (!MC.pos) buildPos(s);
   const P = MC.pos, st = s.stage, why = stageWhy(s), lim = limitsXY(s);
   P.contact.textContent = s.contact.z == null ? "접촉 높이 없음" : "접촉 Z " + f1(s.contact.z, 2) + (s.contact.sense ? "" : " · 접촉 확인 꺼짐");
-  P.contact.setAttribute("data-tip", s.contact.z == null ? "저장된 접촉 높이가 없습니다(장비 설정 7)." : "저장된 접촉 높이(절대 Z)입니다.");
+  P.contact.setAttribute("data-tip", s.contact.z == null ? "저장된 접촉 높이가 없습니다(장비 설정 7)." : "저장된 접촉 높이(절대 Z)입니다." + (s.contact.sense ? " 내릴 때 전기로 접촉을 확인합니다." : " 접촉 확인이 꺼져 있어 저장한 높이까지만 내립니다."));
   if (MC.mvApplied !== MC.mvVer) {                                          // 프로그램이 넣은 좌표(사진 클릭 · 지금 좌표 넣기)만 칸에 반영한다 - 친 글자는 건드리지 않는다
     MC.mvApplied = MC.mvVer;
     if (P.x.value !== MC.mv.x) P.x.value = MC.mv.x;

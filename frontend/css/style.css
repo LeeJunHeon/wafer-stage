@@ -515,3 +515,11 @@ table.tb th { font-size: var(--fs-xs); color: var(--ink2); font-weight: var(--fw
 .toast { border-radius: var(--r-ctl); font-size: var(--fs-m); padding: var(--sp-2) var(--sp-4); }
 .tip { font-size: var(--fs-s); border-radius: var(--r-ctl); }
 .legend, .legend > span { font-size: var(--fs-xs); }
+
+/* ---- 낮은 창 · 디자인 기준 뒤에 다시: 위의 디자인 기준 규칙(같은 우선순위 · 뒤에 있음)이 앞쪽 낮은 창 규칙을 덮어
+   측정 탭 오른쪽(위치 + 측정)이 띠 3줄일 때 [측정 시작] · [중지] 가 창 밖으로 밀렸다(1366×728 · 1280×722 · 1280×640). 기준 변수만 쓴다. ---- */
+:root.lowh { --h-in: var(--h-sm); }                                    /* 입력 칸 = 낮은 창 버튼 높이(28) */
+:where(html.lowh) .rtbig .v { font-size: var(--fs-l); }                /* 상태 숫자: 20 → 16 */
+:where(html.lowh) .gate { padding: var(--sp-1) var(--sp-2); }          /* 시작 사유 줄 */
+:where(html.lowh2) .card h3 { font-size: var(--fs-m); }
+.jogpad .jleft { flex: none; gap: var(--sp-1); } .jogpad .jpz { gap: var(--gap-in); align-items: flex-start; }

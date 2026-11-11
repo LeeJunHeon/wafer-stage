@@ -262,7 +262,7 @@
 - **색**: 강조 = 파랑(`--sel`) 하나. 녹색 · 주황 · 빨강 · 주홍은 상태 표시(점 · 왼쪽 띠 · 작은 배지)에만 쓰고 넓은 면을 칠하지 않는다. 넓은 빨강은 비상정지 버튼과 진짜 경보(비상정지 잠금 · 통신 끊김 · R–T 오류 · 원점 없이 이동)에만. 버튼은 주(채움) · 보조(테두리) · 조용한(`.quiet`) · 위험(`.danger`) · 비상정지.
 - **정보는 한 번만**: 머리줄 상태 칩 · 띠 · 단계 목록이 같은 말을 되풀이하지 않는다. 띠는 "지금 해야 할 일" 하나(스테이지 · 카메라는 `mergeBands` 가 한 줄로 합친다). 서버 `bands` 계약은 그대로(stage · camera 가 따로 온다).
 - **그림 크기**: 사진은 자기 크기로 그린다 - 빈 판 `ref.size` · 정지 화면 `snap_size` · 촬영 `shot.size`. `camera.size` 는 실시간 화면에만(카메라가 끊기면 null).
-- **배율과 CSS 크기**(`core.js zoomApply`): CSS `zoom` 아래에서 `vh` · `vw` · `@media (max-height …)` 는 배율을 모른다 - `--vw` · `--vh` 변수와 html 클래스 `lowh` · `lowh2` · `narrow` 를 쓴다(낮은 창 규칙은 `:where(html.lowh)` 로 감싸 우선순위가 @media 때와 같다). `vh` · `vw` · `@media` 를 새로 쓰지 않는다. 시험 `tools/scale_ui.py zoom`(67 · 80 · 100 · 125 %).
+- **배율과 CSS 크기**(`core.js zoomApply`): CSS `zoom` 아래에서 `vh` · `vw` · `@media (max-height …)` 는 배율을 모른다 - `--vw` · `--vh` 변수와 html 클래스 `lowh` · `lowh2` · `narrow` 를 쓴다(낮은 창 규칙은 `:where(html.lowh)` 로 감싸 우선순위가 @media 때와 같다). `vh` · `vw` · `@media` 를 새로 쓰지 않는다. 시험 `tools/scale_ui.py zoom`(67 · 80 · 100 · 125 %). 낮은 창 규칙이 같은 우선순위의 디자인 기준 규칙보다 앞에 있으면 덮인다 - 고칠 값은 `style.css` 끝의 '낮은 창 · 디자인 기준 뒤에 다시' 블록에 둔다(입력 칸 28 · 상태 숫자 16 · 시작 사유 줄 여백). '원점 없이 이동 허용' 체크 칸은 패드 · Z 버튼 아래(스텝 열 끝에 두면 열이 길어져 띠 3줄 낮은 창에서 [측정 시작] 이 밀린다). `ui_lint --dsf 1.5` 는 간격 · 높이 · 그래프 채움을 CSS 화소(배율로 나눔)로 본다.
 - **화면 배율**(`core.js zoomOf/fit/zoomSet`, 설정 `ui_zoom`): html CSS `zoom`. 자동 = CSS 폭 1536 이상이면 1, 아니면 min(1920, 안쪽 물리 폭)이 되게. Ctrl + = · - · 0. **`UI.scale` = 배율**: 좌표 변환은 `(clientX - rect.left) / UI.scale`, 고정 위치(툴팁 · 팝업)는 `/ UI.scale`. 배율에서도 비상정지(오른쪽 위 · CSS 200×54 · 가려지지 않음) · 400 ms 무시 · 조그 규칙은 그대로다.
 
 ## 화면 원칙 (v2)

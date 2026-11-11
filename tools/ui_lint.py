@@ -29,7 +29,7 @@ SIZES = [(1920, 1040), (1536, 800), (1366, 728), (1280, 722), (1280, 680), (1280
 LINT_JS = r"""
 () => {
   const out = [];
-  const Z = (window.UI && UI.scale) || 1;            // 화면 배율(html CSS zoom): 간격 · 높이 기준은 CSS 화소로 본다(사각형은 화면 화소)
+  const Z = (typeof UI !== 'undefined' && UI.scale) || 1;   // 화면 배율(html CSS zoom): 간격 · 높이 기준은 CSS 화소로 본다(사각형은 화면 화소). UI 는 const 전역이라 window.UI 로는 안 보인다
   const vis = (el) => {
     if (!el.getClientRects().length) return false;
     const r = el.getBoundingClientRect();
@@ -100,7 +100,7 @@ LINT_JS = r"""
   ctl.forEach((e) => { const r = e.getBoundingClientRect(); if (r.right > innerWidth + 1 || r.bottom > innerHeight + 1 && !/(auto|scroll)/.test(getComputedStyle(e.closest('#stage') || document.body).overflowY)) { if (!e.closest('.mtop, .setscroll, .panel, .slist, #tab-results, .scroll')) out.push('화면 밖 ' + key(e)); } });
   const st = document.querySelector('#stage');
   if (innerWidth >= 1280 && st && st.scrollWidth > st.clientWidth + 1) {
-    const wide = Array.from(document.querySelectorAll('#stage *')).filter((e) => e.getBoundingClientRect().right > st.clientWidth + 1 && e.getClientRects().length).slice(0, 3).map((e) => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + '.' + String(e.className).slice(0, 20));
+    const wide = Array.from(document.querySelectorAll('#stage *')).filter((e) => e.getBoundingClientRect().right > st.clientWidth * Z + 1 && e.getClientRects().length).slice(0, 3).map((e) => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + '.' + String(e.className).slice(0, 20));
     out.push('가로 스크롤 #stage ' + st.scrollWidth + '>' + st.clientWidth + ' ← ' + wide.join(', '));
   }
   // (1) 주 동작은 스크롤 없이 보인다: 비상정지 · 조그 · Z · 스텝 · 촬영 · 측정 시작 · 중지 · 일시정지 · 다음 단계 · [다음]
@@ -136,14 +136,14 @@ LINT_JS = r"""
   // (5) 그래프 · 캔버스는 상자를 가로 · 세로 90 % 이상 채운다(viewBox 비율이 상자와 달라 작게 그려지거나 기본 크기로 그려진 것)
   Array.from(document.querySelectorAll('.gbox svg, .gbox canvas, .graph svg, .graph canvas')).filter(vis).forEach((g) => {
     const box = g.parentElement, br = box.getBoundingClientRect(), gr = g.getBoundingClientRect();
-    const bw = box.clientWidth, bh = box.clientHeight;
-    if (bw < 20 || bh < 20) return;
+    const bw = box.clientWidth * Z, bh = box.clientHeight * Z;            // clientWidth 는 CSS 화소 · 사각형은 화면 화소 - 화면 화소로 맞춰 비교
+    if (bw < 20 * Z || bh < 20 * Z) return;
     let dw = gr.width, dh = gr.height;
     if (g.tagName.toLowerCase() === 'svg' && g.viewBox && g.viewBox.baseVal && g.viewBox.baseVal.width) {
       const vb = g.viewBox.baseVal, k = Math.min(gr.width / vb.width, gr.height / vb.height);         // meet: 그려진 크기
       dw = vb.width * k; dh = vb.height * k;
     }
-    if (dw < 0.9 * bw || dh < 0.9 * bh) out.push('그래프가 상자를 덜 채움 ' + (box.id || g.id || 'graph') + ' ' + Math.round(dw) + 'x' + Math.round(dh) + ' / ' + bw + 'x' + bh);
+    if (dw < 0.9 * bw || dh < 0.9 * bh) out.push('그래프가 상자를 덜 채움 ' + (box.id || g.id || 'graph') + ' ' + Math.round(dw) + 'x' + Math.round(dh) + ' / ' + Math.round(bw) + 'x' + Math.round(bh));
   });
   // (6) 버튼 · 입력 칸이 부모 밖으로 잘려 일부만 보임: 작은 스크롤 칸(높이 < 컨트롤 3개)이 컨트롤을 가르면 잘린 것으로 본다(긴 목록의 아래 끝은 스크롤 대상)
   ctl.forEach((e) => {
@@ -152,7 +152,7 @@ LINT_JS = r"""
     if (v.height >= r.height - 1 && v.width >= r.width - 1) return;
     let sc = null;
     for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) { const cs = getComputedStyle(a); if (/(auto|scroll|hidden|clip)/.test(cs.overflowX + cs.overflowY)) { sc = a; break; } }
-    if (sc && sc.clientHeight < 3 * r.height) out.push('부모 밖으로 잘림 ' + key(e) + ' (보이는 ' + Math.round(v.width) + 'x' + Math.round(v.height) + ' / ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' · ' + name(sc) + ')');
+    if (sc && sc.clientHeight * Z < 3 * r.height) out.push('부모 밖으로 잘림 ' + key(e) + ' (보이는 ' + Math.round(v.width) + 'x' + Math.round(v.height) + ' / ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' · ' + name(sc) + ')');
   });
   // (4) 내용이 있는데 높이가 60 px 미만인 카드
   Array.from(scope.querySelectorAll('.card, .viewbox, .gbox, .panel')).filter(vis).forEach((e) => {

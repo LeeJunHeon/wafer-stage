@@ -279,8 +279,8 @@ function jogPad(s, opt) {
     const fml = h("label", { class: "chk freemv hidden", "data-tip": "원점이 없거나 비상정지 잠금일 때 사람이 보면서 하는 조그만 허용합니다(켤 때 확인 창). 좌표 이동 · 측정은 원점이 있어야 합니다." }, fm, "원점 없이 이동 허용");
     fm.addEventListener("click", (e) => { e.preventDefault(); jogFreeToggle(); });
     const sc = jogStepsCol();
-    sc.append(fml);
-    el = h("div", { class: "jogpad row" }, pad, h("div", { class: "col zpad" }, zUp, zDn, zt), sc);
+    /* 체크 칸은 패드 · Z 아래 빈 자리에(스텝 열 끝에 두면 그 열이 패드보다 길어져 낮은 창에서 측정 카드의 [측정 시작] 을 밀어냈다) */
+    el = h("div", { class: "jogpad row" }, h("div", { class: "col jleft" }, h("div", { class: "row jpz" }, pad, h("div", { class: "col zpad" }, zUp, zDn, zt)), fml), sc);
     el._j = { b, zUp, zDn, zt, stop, ztopOpt: opt.ztop, fm, fml };
     JOG.pads[key] = el;
   }
