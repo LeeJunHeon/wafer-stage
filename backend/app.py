@@ -245,6 +245,11 @@ class App:
             stage_mod.SERIAL_FACTORY = _mk
         st = stage_mod.Stage(port=port, dry=self.dry)
         st.on_line = lambda arrow, text: self.serial_log.append((time.strftime("%H:%M:%S"), arrow, text))
+
+        def _on_pos(x, y, z, st=st):                            # 펌웨어가 알려 준 위치(ST · 이동 완료 보고)를 받는 순간 화면 위치로 - 예전 연결의 늦은 보고는 버린다
+            if self.stage is st or self._conn_stage is st:
+                self.pos.update(x=x, y=y, z=z)
+        st.on_pos = _on_pos
         self.opens["stage"] += 1
         if self.sim and self.open_delay["stage"] > 0:
             time.sleep(self.open_delay["stage"])

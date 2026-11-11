@@ -276,6 +276,9 @@ class Stage:
         # 주고받은 줄을 그대로 넘겨받을 곳(서버가 화면 로그로 보낸다). 파일 로그는
         # 이것과 무관하게 항상 남는다 - 화면에서 껐다고 기록이 사라지면 안 된다.
         self.on_line = None
+        # 펌웨어가 알려 준 위치(ST 응답 · 이동 완료 보고 · 끊긴 보고)를 받는 순간 넘겨받을 곳: on_pos(x_mm, y_mm, z_mm | None).
+        # 앱의 화면 위치가 유지 신호(st) 주기나 다음 이동이 끝나기를 기다리지 않고 바로 따라간다.
+        self.on_pos = None
         self.warnings = collections.deque(maxlen=200)      # 펌웨어 경고 줄(오래 켜 두어도 늘지 않게 최근 200 줄만)
         # 비상정지('!')를 보낸 뒤 상태. 펌웨어는 '명령마다' abortFlag 를 지우므로
         # (.ino 395행) 다음 명령을 그냥 보내면 그대로 움직인다. 그래서 드라이버가
@@ -569,6 +572,31 @@ class Stage:
         """거래 시작 때 기억할 (비상정지 횟수, 정지 횟수)."""
         return (self.abort_seq, self.stop_seq)
 
+    def _report_pos(self, x_mm, y_mm, z_mm):
+        cb = self.on_pos
+        if cb is None:
+            return
+        try:
+            cb(x_mm, y_mm, z_mm)
+        except Exception:                                    # noqa: BLE001 - 화면 위치 갱신이 통신 경로를 깨지 않게
+            pass
+
+    def _report_line(self, ln):
+        """이동 보고 줄("... | X=11200 Y=11200 Z=0") · 끊긴 보고의 위치를 알린다. 형식이 다르면 아무것도 안 한다."""
+        if DONE_MARK not in ln:
+            return
+        d = {}
+        for tk in ln[ln.index(DONE_MARK) + 3:].split():        # " | " 뒤: "X=11200 Y=11200 Z=0"
+            if "=" in tk:
+                k, v = tk.split("=", 1)
+                d[k] = v
+        try:
+            x, y = int(d["X"]) / PPMM, int(d["Y"]) / PPMM
+            z = int(d["Z"]) / Z_PPMM if "Z" in d else None
+        except (KeyError, ValueError):
+            return
+        self._report_pos(x, y, z)
+
     def _collect(self, deadline_s, is_done, what, tok=None):
         """완료 줄이 올 때까지 읽는다. [거부] 면 예외, [!] 는 모아 둔다. tok: 거래 시작 때의 _tok() - 끊긴 보고가 정지인지 비상정지인지 가른다."""
         t0 = time.time()
@@ -584,6 +612,7 @@ class Stage:
                 # '!' 로 끊긴 이동이다. 보고 줄 형식은 정상 완료와 같아서 그냥
                 # 두면 '완료' 로 읽히고, goto_mm 이 이어서 Y 를 보내 버린다.
                 self.cut_info = {"line": ln.strip(), "wall": time.time()}
+                self._report_line(ln)                       # 멈춘 자리(펌웨어 보고)
                 if tok is not None and self.abort_seq == tok[0]:
                     raise StageStopped("정지로 중단됨: %s" % ln.strip())      # 비상정지가 아니다 - 잠그지 않는다
                 self._aborted = True
@@ -594,6 +623,7 @@ class Stage:
             if is_done(ln):
                 if WARN_MARK in ln:
                     self.warnings.append(ln.strip())
+                self._report_line(ln)
                 return ln
         raise StageTimeout("%s 응답이 %.0f초 안에 오지 않았습니다. 마지막 줄: %s"
                            % (what, deadline_s, seen[-1] if seen else "(없음)"))
@@ -607,6 +637,7 @@ class Stage:
                 raise StageIOError("읽기 실패: 포트 없음 (dry 뽑힘)")
             self._dry_rx()                                  # 진짜는 st 를 쓰므로 펌웨어가 줄을 받는다(통신 감시 갱신)
             x, y, z = self._dry_xy["x"], self._dry_xy["y"], self._dry_xy["z"]
+            self._report_pos(x, y, z)
             return {"x_pulse": int(x * PPMM), "y_pulse": int(y * PPMM),
                     "x2_pulse": int(x * PPMM), "z_pulse": int(z * Z_PPMM),
                     "homed_x": self._dry_homed["x"], "homed_y": self._dry_homed["y"],
@@ -638,6 +669,7 @@ class Stage:
         else:
             out["z_pulse"] = None
             out["z_mm"] = None
+        self._report_pos(out["x_mm"], out["y_mm"], out["z_mm"])
         return out
 
     def _dry_duration(self, pulses):
@@ -715,9 +747,14 @@ class Stage:
                 if ax is not None:
                     self._dry_xy[ax] = a0 + (tgt - a0) * frac
             pulses = abs((tgt - a0) * _ppmm(ax)) if ax is not None else 0
-            self._dry_wait(what, deadline_s, tok, pulses=pulses, on_cut=cut)
+            try:
+                self._dry_wait(what, deadline_s, tok, pulses=pulses, on_cut=cut)
+            finally:
+                if ax is not None:
+                    self._report_pos(self._dry_xy["x"], self._dry_xy["y"], self._dry_xy["z"])    # 끊겼으면 끊긴 자리
             if ax is not None:
                 self._dry_xy[ax] = tgt
+                self._report_pos(self._dry_xy["x"], self._dry_xy["y"], self._dry_xy["z"])
             return "(dry) %s" % cmd
         # 완료는 이동 보고 줄, 또는 '이미 그 위치'(움직일 필요가 없던 경우).
         try:
@@ -925,6 +962,7 @@ class Stage:
                 if nxt < 0 or nxt > _max_mm(ax):
                     self._dry_homed[ax] = False
             self._dry_xy[ax] = nxt
+            self._report_pos(self._dry_xy["x"], self._dry_xy["y"], self._dry_xy["z"])
             return "(dry) %s" % cmd
         try:
             return self._collect(MOVE_TIMEOUT_S,
