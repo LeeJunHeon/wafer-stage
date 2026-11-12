@@ -12,19 +12,19 @@ function buildResults() {
     rs.listEl, h("h4", { class: "h4", text: "샘플 (3개까지)" }), rs.samples);
   rs.graph = rtGraph();
   rs.tbody = h("tbody", {});
-  rs.save = busyBtn("그림으로 저장", saveResultPng);
+  rs.save = busyBtn("이미지 저장", saveResultPng);
   rs.saved = h("span", { class: "small nowrap grow" });
   const mid = h("div", { class: "panel fill", id: "rs-mid" },
     h("div", { class: "row" }, h("h3", { text: "온도별 저항" }), h("span", { class: "sp" }), rs.saved, rs.save),
     h("div", { class: "fill gwrap" }, rs.graph.el),
     h("div", { class: "tscroll rtable" }, h("table", { class: "tb" }, h("thead", {}, h("tr", {},
-      h("th", { text: "샘플" }), h("th", { class: "num", text: "시작 온도 저항" }), h("th", { class: "num", text: "최고 온도 저항" }), h("th", { class: "num", text: "저항 비" }),
+      h("th", { text: "샘플" }), h("th", { class: "num", text: "시작 온도 저항" }), h("th", { class: "num", text: "최고 온도 저항" }), h("th", { class: "num", text: "저항비" }),
       h("th", { class: "num", text: "가열 전이 온도" }), h("th", { class: "num", text: "냉각 전이 온도" }), h("th", { class: "num", text: "차이" }))), rs.tbody)),
     rs.note = h("div", { class: "small" }));
   rs.files = h("div", { class: "grp" });
   rs.nas = h("div", { class: "grp" });
   rs.cond = h("div", { class: "grp" });
-  const right = h("div", { class: "panel", id: "rs-right" }, h("h3", { text: "저장한 파일" }), rs.files, h("h3", { text: "NAS 복사" }), rs.nas, h("h3", { text: "측정 조건" }), rs.cond);
+  const right = h("div", { class: "panel", id: "rs-right" }, h("h3", { text: "저장 파일" }), rs.files, h("h3", { text: "NAS 복사" }), rs.nas, h("h3", { text: "측정 조건" }), rs.cond);
   setKids($("#tab-results"), left, mid, h("div", { class: "colwrap fill" }, right));       // 오른쪽 칸은 내용 높이만큼, 넘치면 그 칸 안에서 스크롤
   renderRecord();
 }
@@ -37,13 +37,13 @@ async function loadResults(keep) {
 }
 function renderRecList() {
   setKids(rs.listEl, ...(rs.list.length ? rs.list.map((r) => h("div", { class: "rec" + (r.id === rs.id ? " on" : ""), onclick: () => pickRecord(r.id) },
-    fmtWhen(r.started) + " · 묶음 " + r.batch + " · " + r.n + "개")) : [small("측정 기록이 없습니다")]));
+    fmtWhen(r.started) + " · 묶음 " + r.batch + " · " + r.n + "개")) : [small("측정 기록 없음")]));
 }
 async function pickRecord(id) {
   rs.id = id; rs.rec = null; rs.picks = []; rs.pts = {};
   renderRecList();
   const j = await getJson("/api/results/record?id=" + encodeURIComponent(id));
-  if (!j || j.ok === false || rs.id !== id) { if (rs.id === id) { rs.rec = null; renderRecord(); toast("측정 기록을 읽지 못했습니다"); } return; }
+  if (!j || j.ok === false || rs.id !== id) { if (rs.id === id) { rs.rec = null; renderRecord(); toast("측정 기록 읽기 실패"); } return; }
   rs.rec = j;
   const have = j.samples.filter((s) => s.n > 0);
   rs.picks = have.slice(0, 1).map((s) => s.id);                 // 처음에는 첫 샘플 하나
@@ -82,27 +82,27 @@ function resultTitle() {                                          // 그림으�
   return [fmtDate(rec.started), "묶음 " + rec.batch, c.meter_volt != null ? Number(c.meter_volt).toFixed(2) + " V" : null, c.meter_four_wire == null ? null : c.meter_four_wire ? "4단자" : "2단자"].filter(Boolean).join(" · ");
 }
 const COND_ROWS = [["meter_volt", "측정 전압", "V"], ["meter_four_wire", "4단자", ""], ["meter_avg_count", "평균", "회"], ["meter_nplc", "NPLC", ""], ["meter_ilim_a", "전류 한도", "A"],
-  ["run_start_c", "시작 온도", "°C"], ["run_heater_off_c", "가열 끝 온도", "°C"], ["run_cool_end_c", "냉각 끝 온도", "°C"], ["run_repeat", "반복", "회"], ["run_interval_s", "읽는 간격", "s"],
+  ["run_start_c", "시작 온도", "°C"], ["run_heater_off_c", "가열 끝 온도", "°C"], ["run_cool_end_c", "냉각 끝 온도", "°C"], ["run_repeat", "반복", "회"], ["run_interval_s", "측정 간격", "s"],
   ["run_cooler_mode", "쿨러", ""], ["run_cooler_during_heat", "가열 중 쿨러", ""], ["contact_z_mm", "접촉 높이", "mm"]];
-const COOLER_NAMES = { zone: "샘플 아래 구역만", all: "전부", none: "안 씀" };
+const COOLER_NAMES = { zone: "샘플 아래 구역", all: "전체", none: "사용 안 함" };
 function renderRecord() {
   const rec = rs.rec;
   rs.save.disabled = !rec || !rs.picks.length;
   rs.note.textContent = "전이 온도 = 저항이 가장 빨리 변하는 온도" + (rec && rec.samples.some((s) => s.cycles > 1) ? " · 반복 측정은 첫 회차 기준" : "");
   if (!rec) {
-    setKids(rs.samples, small(rs.list.length ? "기록을 고르세요" : ""));
+    setKids(rs.samples, small(rs.list.length ? "기록 선택" : ""));
     setKids(rs.tbody); setKids(rs.files, small("—")); setKids(rs.nas, small("—")); setKids(rs.cond, small("—"));
     rs.graph.set([]); rs.saved.textContent = "";
     return;
   }
   setKids(rs.samples, ...rec.samples.map((s) => {
     const c = h("input", { type: "checkbox", checked: rs.picks.includes(s.id), disabled: !s.n, onchange: () => togglePick(s.id) }), col = pickColor(s.id);
-    return h("label", { class: "chk" }, c, h("span", {}, col ? swatch(col) : null, s.name + (s.status !== "끝남" ? " · " + s.status : "") + (s.cycles > 1 ? " · " + s.cycles + "회" : "")));
+    return h("label", { class: "chk" }, c, h("span", {}, col ? swatch(col) : null, s.name + (s.status !== "완료" ? " · " + s.status : "") + (s.cycles > 1 ? " · " + s.cycles + "회" : "")));
   }));
   const e2 = (v) => (v == null ? "—" : fmtOhm2(v)), t1 = (v) => (v == null ? "—" : v.toFixed(1) + " °C");
   setKids(rs.tbody, ...rec.samples.map((s) => {
     const a = s.sum || {}, col = pickColor(s.id);
-    return h("tr", { class: rs.picks.includes(s.id) ? "sel" : "", onclick: () => { if (s.n) togglePick(s.id); } }, h("td", {}, col ? swatch(col) : null, s.name + (s.status !== "끝남" ? " (" + s.status + ")" : "")),
+    return h("tr", { class: rs.picks.includes(s.id) ? "sel" : "", onclick: () => { if (s.n) togglePick(s.id); } }, h("td", {}, col ? swatch(col) : null, s.name + (s.status !== "완료" ? " · " + s.status : "")),
       h("td", { class: "num", text: e2(a.r_start) }), h("td", { class: "num", text: e2(a.r_peak) }), h("td", { class: "num", text: a.ratio == null ? "—" : a.ratio >= 100 ? Math.round(a.ratio).toLocaleString() : a.ratio.toFixed(1) }),
       h("td", { class: "num", text: t1(a.t_heat) }), h("td", { class: "num", text: t1(a.t_cool) }), h("td", { class: "num", text: t1(a.hyst) }));
   }));
@@ -111,8 +111,8 @@ function renderRecord() {
   const nas = rec.nas;
   setKids(rs.nas, ...(!nas || !nas.dir ? [small("PC 에만 저장")] : [
     h("div", { class: "small path", text: nas.dir }),
-    h("div", {}, h("i", { class: "dot " + (nas.ok ? "ok" : "warn") }), " ", nas.ok ? "끝남" : "못 씀" + (nas.pending && nas.pending.length ? " · " + nas.pending.length + "개 남음" : "")),
-    h("div", { class: "row" }, busyBtn("다시 복사", async () => { const r = await api("result_nas_copy", { id: rec.id }); if (r.ok) toast("NAS 로 " + r.result.copied + "개 복사했습니다"); pickRecordKeep(rec.id); }))]));
+    h("div", {}, h("i", { class: "dot " + (nas.ok ? "ok" : "warn") }), " ", nas.ok ? "완료" : "실패" + (nas.pending && nas.pending.length ? " · " + nas.pending.length + "개 남음" : "")),
+    h("div", { class: "row" }, busyBtn("재복사", async () => { const r = await api("result_nas_copy", { id: rec.id }); if (r.ok) toast("NAS 복사 완료 · " + r.result.copied + "개"); pickRecordKeep(rec.id); }))]));
   const c = rec.cond || {};
   setKids(rs.cond, h("div", { class: "kv" }, ...COND_ROWS.filter(([k]) => c[k] != null).flatMap(([k, name, unit]) => {
     let v = c[k];
@@ -129,12 +129,12 @@ async function pickRecordKeep(id) {                             // 같은 기록
 async function saveResultPng() {
   if (!rs.rec) return;
   const blob = await rs.graph.toPng(resultTitle());
-  if (!blob) { toast("그림을 만들지 못했습니다"); return; }
+  if (!blob) { toast("이미지 생성 실패"); return; }
   try {
     const r = await fetch("/api/results/png?id=" + encodeURIComponent(rs.rec.id), { method: "POST", headers: { "Content-Type": "image/png" }, body: blob });
     const j = await r.json();
-    if (j.ok) { rs.saved.textContent = "저장함 · " + j.result.path; rs.saved.title = j.result.path; pickRecordKeep(rs.rec.id); } else toast(j.msg || "그림을 저장하지 못했습니다");
-  } catch (e) { toast("그림을 저장하지 못했습니다"); }
+    if (j.ok) { rs.saved.textContent = "저장 완료 · " + j.result.path; rs.saved.title = j.result.path; pickRecordKeep(rs.rec.id); } else toast(j.msg || "이미지 저장 실패");
+  } catch (e) { toast("이미지 저장 실패"); }
 }
 
 TABS.results = { build: buildResults, render: () => {}, show: () => loadResults() };

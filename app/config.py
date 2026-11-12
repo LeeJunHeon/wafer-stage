@@ -43,7 +43,7 @@ ITEMS = (
        Item("k2110_addr", "USB0::0x05E6::0x2110::8017862::INSTR", "str", "온도계 주소"),
        Item("k2450_addr", "GPIB0::18::INSTR", "str", "저항계 주소"),
        Item("data_dir", "../data_v3", "str", "데이터 폴더"),
-       Item("auto_connect", True, "bool", "시작할 때 자동 연결"))                         # 저장된 포트 · 주소 하나씩만 연다(찾아다니지 않는다)
+       Item("auto_connect", True, "bool", "시작 시 자동 연결"))                         # 저장된 포트 · 주소 하나씩만 연다(찾아다니지 않는다)
     + _g("카메라",                                                                        # 실장비 기본값(v2 운용값): 장치 1 · 4080×3060 · MJPG · 노출 −5 · 화이트밸런스 5000 K · 초점 고정
          Item("camera_index", 1, "int", "카메라 번호", "번", 0, 9),                    # 0 번은 노트북 내장 카메라
          Item("camera_width", 4080, "int", "카메라 가로", "px", 160, 10000),
@@ -64,14 +64,14 @@ ITEMS = (
          Item("move_speed_pps", 6000, "int", "이동 속도", "펄스/s", 100, 20000),
          Item("move_accel_pps2", 40000, "int", "가속", "펄스/s²", 1000, 200000),
          Item("move_start_pps", 300, "int", "시작 속도", "펄스/s", 50, 5000),
-         Item("slow_speed_pps", 1200, "int", "핀 내림 속도", "펄스/s", 100, 6000, verify=True),
-         Item("approach_mm", 2.0, "float", "천천히 내리는 거리", "mm", 0, 20),
+         Item("slow_speed_pps", 1200, "int", "핀 하강 속도", "펄스/s", 100, 6000, verify=True),
+         Item("approach_mm", 2.0, "float", "저속 하강 거리", "mm", 0, 20),
          Item("watchdog_ms", 2000, "int", "통신 감시 시간", "ms", 500, 60000))
     + _g("히트건 안전",
          Item("heater_relay", 1, "int", "히트건 릴레이", "번", 1, 10),
          Item("heater_max_c", 110.0, "float", "히트건 차단 온도", "°C", 30, 300),
          Item("heater_max_on_s", 180.0, "float", "히트건 최대 켜짐 시간", "s", 1, 3600),
-         Item("heater_min_off_s", 10.0, "float", "히트건 다시 켜기 대기", "s", 0, 600),
+         Item("heater_min_off_s", 10.0, "float", "히트건 재가동 대기", "s", 0, 600),
          Item("temp_stale_s", 3.0, "float", "온도 못 읽음 허용 시간", "s", 0.5, 60))
     + _g("쿨러",
          # 쿨러 3x3 자리 배치(판을 위에서 본 칸 → 릴레이 번호). 준비 7 에서 정한다
@@ -93,7 +93,7 @@ ITEMS = (
          Item("contact_volt", 0.1, "float", "접촉 확인 전압", "V", 0.01, 5),
          Item("contact_ilim_a", 1e-4, "float", "접촉 확인 전류 한도", "A", 1e-8, 1.0),
          Item("contact_nplc", 0.1, "float", "접촉 확인 NPLC", "", 0.01, 10),
-         Item("contact_step_mm", 0.025, "float", "내리는 간격", "mm", 0.00625, 1),
+         Item("contact_step_mm", 0.025, "float", "하강 간격", "mm", 0.00625, 1),
          Item("contact_start_above_mm", 0.3, "float", "저장 높이 위 시작", "mm", 0, 10),
          Item("contact_max_below_mm", 0.5, "float", "저장 높이 아래 한도", "mm", 0, 5),
          Item("contact_confirm_n", 2, "int", "접촉 확인 횟수", "번", 1, 10),
@@ -101,7 +101,7 @@ ITEMS = (
          Item("contact_short_ohm", 1000.0, "float", "금속 판 판정 저항", "Ω", 0.1, 1e9),
          Item("contact_search_mm", 5.0, "float", "탐색 거리", "mm", 0.1, 20),
          Item("contact_search_step_mm", 0.05, "float", "탐색 간격", "mm", 0.00625, 1),
-         Item("contact_open_a", 1e-9, "float", "안 닿음 판정 전류", "A", 1e-13, 1e-3))
+         Item("contact_open_a", 1e-9, "float", "미접촉 판정 전류", "A", 1e-13, 1e-3))
     + _g("측정 조건",
          Item("meter_volt", 1.0, "float", "측정 전압", "V", 0.01, 20),
          Item("meter_four_wire", True, "bool", "4단자"),
@@ -112,8 +112,8 @@ ITEMS = (
          Item("run_heater_off_c", 85.0, "float", "가열 끝 온도", "°C", 0, 250),
          Item("run_cool_end_c", 30.0, "float", "냉각 끝 온도", "°C", -20, 200),
          Item("run_repeat", 1, "int", "반복", "회", 1, 20),
-         Item("run_interval_s", 1.0, "float", "읽는 간격", "s", 0.05, 60),
-         Item("run_cooler_mode", "zone", "choice", "쿨러", choices=(("zone", "샘플 아래 구역만"), ("all", "전부"), ("none", "안 씀"))),
+         Item("run_interval_s", 1.0, "float", "측정 간격", "s", 0.05, 60),
+         Item("run_cooler_mode", "zone", "choice", "쿨러", choices=(("zone", "샘플 아래 구역"), ("all", "전체"), ("none", "사용 안 함"))),
          Item("run_cooler_during_heat", True, "bool", "가열 중 쿨러 켬"),
          Item("batch_name", "1", "str", "묶음"))
     + _g("측정 한계",                                                                     # v2 backend/rt.py 에서 쓰던 값
@@ -140,21 +140,21 @@ def check(item: Item, value: Any) -> Any:
     name = item.label
     if item.kind == "str":
         if not isinstance(value, str):
-            raise ConfigError("%s: 글자여야 합니다" % name)
+            raise ConfigError("%s: 문자 필요" % name)
         return value.strip()
     if item.kind == "bool":
         if not isinstance(value, bool):
-            raise ConfigError("%s: 켬/끔 값이어야 합니다" % name)
+            raise ConfigError("%s: 켬/끔 값 필요" % name)
         return value
     if item.kind == "grid":
         ok = isinstance(value, list) and len(value) == 3 and all(isinstance(r, list) and len(r) == 3 for r in value)
         nums = [n for r in value for n in r] if ok else []
         if not ok or not all(isinstance(n, int) and not isinstance(n, bool) and 2 <= n <= 10 for n in nums) or len(set(nums)) != 9:
-            raise ConfigError("%s: 3×3 칸에 릴레이 번호 2~10 을 겹치지 않게 넣어야 합니다" % name)
+            raise ConfigError("%s: 3×3 칸에 릴레이 번호 2~10 중복 없이 입력 필요" % name)
         return [list(r) for r in value]
     if item.kind == "choice":
         if value not in [c[0] for c in item.choices]:
-            raise ConfigError("%s: %s 중 하나여야 합니다" % (name, " · ".join(c[1] for c in item.choices)))
+            raise ConfigError("%s: %s 중 하나 필요" % (name, " · ".join(c[1] for c in item.choices)))
         return value
     if item.kind == "optfloat" and value is None:
         return None
@@ -162,19 +162,19 @@ def check(item: Item, value: Any) -> Any:
         if value is None:
             return None
         if not (isinstance(value, list) and len(value) == 2 and all(isinstance(n, (int, float)) and not isinstance(n, bool) for n in value)):
-            raise ConfigError("%s: [X, Y] 두 숫자이거나 비워 두어야 합니다" % name)
+            raise ConfigError("%s: [X, Y] 숫자 2개 또는 빈 값 필요" % name)
         return [float(value[0]), float(value[1])]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ConfigError("%s: 숫자여야 합니다" % name)
+        raise ConfigError("%s: 숫자 필요" % name)
     v = float(value)
     if v != v or v in (float("inf"), float("-inf")):
-        raise ConfigError("%s: 숫자여야 합니다" % name)
+        raise ConfigError("%s: 숫자 필요" % name)
     if item.min is not None and v < item.min:
-        raise ConfigError("%s: %g%s 이상이어야 합니다" % (name, item.min, item.unit))
+        raise ConfigError("%s: %g%s 이상 필요" % (name, item.min, item.unit))
     if item.max is not None and v > item.max:
-        raise ConfigError("%s: %g%s 이하여야 합니다" % (name, item.max, item.unit))
+        raise ConfigError("%s: %g%s 이하 필요" % (name, item.max, item.unit))
     if item.kind == "int" and v != int(v):
-        raise ConfigError("%s: 정수여야 합니다" % name)
+        raise ConfigError("%s: 정수 필요" % name)
     return int(v) if item.kind == "int" else v
 
 
@@ -205,10 +205,10 @@ class Config:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
-            self.loaded_notes.append("설정 파일을 읽지 못해 기본값을 씁니다 · %s" % str(e)[:40])
+            self.loaded_notes.append("설정 파일 읽기 실패 · 기본값 사용 · %s" % str(e)[:40])
             return self
         if not isinstance(raw, dict):
-            self.loaded_notes.append("설정 파일 모양이 달라 기본값을 씁니다")
+            self.loaded_notes.append("설정 파일 형식 오류 · 기본값 사용")
             return self
         for k, v in raw.items():
             item = BY_KEY.get(k)

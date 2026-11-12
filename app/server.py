@@ -58,7 +58,7 @@ def create_app(ctrl: Controller) -> FastAPI:
             return {"ok": False, "msg": str(e)}
         except Exception as e:                                      # noqa: BLE001 - 서버는 죽지 않는다. 사유는 로그에도 남긴다
             ctrl.logs.app("명령 오류 %s · %s: %s" % (cmd, type(e).__name__, e), "error")
-            return {"ok": False, "msg": "명령을 처리하지 못했습니다 · %s" % str(e)[:60]}
+            return {"ok": False, "msg": "명령 처리 실패 · %s" % str(e)[:60]}
 
     @app.get("/")
     async def index():
@@ -140,7 +140,7 @@ def create_app(ctrl: Controller) -> FastAPI:
     @app.put("/api/settings")
     async def put_settings(patch: dict = Body(...)):
         if ctrl.run_active():                                      # 측정이 쓰는 값이 도중에 바뀌지 않게
-            return JSONResponse({"ok": False, "msg": "측정 중에는 할 수 없습니다"}, status_code=409)
+            return JSONResponse({"ok": False, "msg": "측정 중 실행 불가"}, status_code=409)
         try:
             ctrl.cfg.update(patch)
             ctrl.cfg.save()

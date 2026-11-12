@@ -57,12 +57,12 @@ class Prep:
 
     def _need_camera(self):
         if not self.c.camera.connected:
-            raise Rejected("카메라가 연결되어 있지 않습니다")
+            raise Rejected("카메라 연결 안 됨")
 
     def _need_xy(self):
         self.c._need_stage()
         if not (self.c.stage.homed.get("x") and self.c.stage.homed.get("y")):
-            raise Rejected("X · Y 원점이 없습니다 (준비 2)")
+            raise Rejected("X · Y 원점 필요 (준비 2)")
 
     def _xy(self):
         return self.c._mm("x"), self.c._mm("y")
@@ -85,16 +85,16 @@ class Prep:
         """사진 한 장. move 면 핀 맨 위 → 촬영 위치로 간 뒤, 이동이 끝나고 새로 들어온 프레임을 쓴다.
         need_head: 촬영 위치가 정해져 있지 않으면 거절(빈 판 · 샘플 사진). 아니면 지금 자리에서 찍는다(준비 3단계)."""
         self._need_camera()
-        self.c._no_run("사진 찍기")
+        self.c._no_run("촬영")
         head = self.cfg["photo_head_xy"]
         at_head = False
         if head is None:
             if need_head:
-                raise Rejected("촬영 위치를 먼저 정하세요 (준비 3)")
+                raise Rejected("촬영 위치 설정 필요 (준비 3)")
         elif move:
             if not self.c.stage.connected or not all(self.c.stage.homed.get(a) for a in "xyz"):
                 if need_head:
-                    raise Rejected("스테이지 연결과 세 축 원점이 필요합니다")
+                    raise Rejected("스테이지 연결 · 세 축 원점 필요")
             else:
                 if not self._at(head) or self.c._mm("z") != 0:
                     self.c.goto(head[0], head[1])
@@ -120,13 +120,13 @@ class Prep:
             return
         if m is None:
             self.pos_off_mm = None
-            st.alarm("pos_check", "마커가 안 보여 헤드 위치를 확인하지 못했습니다", NOTICE)
+            st.alarm("pos_check", "마커 미검출 · 헤드 위치 확인 실패", NOTICE)
             return
         off = self.calib.head_offset_mm(m)
         self.pos_off_mm = None if off is None else round(off, 2)
         if off is None:
             return
-        text = "헤드 위치가 %.1f mm 다릅니다. 원점을 확인하세요." % off
+        text = "헤드 위치 %.1f mm 차이 · 원점 확인 필요" % off
         if off > float(self.cfg["pos_block_mm"]):
             self.pos_block = True
             st.alarm("pos_check", text, ALARM)
@@ -253,29 +253,29 @@ class Prep:
         self.c._no_run("판 영역 정하기")
         ph = self.photo
         if ph is None:
-            raise Rejected("사진을 먼저 찍으세요")
+            raise Rejected("촬영 필요")
         try:
             pts = [[float(p[0]), float(p[1])] for p in corners]
         except (TypeError, ValueError, IndexError):
-            raise Rejected("꼭짓점 4개를 누르세요")
+            raise Rejected("꼭짓점 4개 선택 필요")
         if len(pts) != 4:
-            raise Rejected("꼭짓점 4개를 누르세요")
+            raise Rejected("꼭짓점 4개 선택 필요")
         h, w = ph["frame"].shape[:2]
         if any(not (0 <= x < w and 0 <= y < h) for x, y in pts):
-            raise Rejected("꼭짓점이 사진 밖에 있습니다")
+            raise Rejected("꼭짓점이 사진 밖")
         q = np.asarray(pts, np.float32)
         area = cv2.contourArea(q, True)                              # 사진 좌표(y 가 아래)에서 시계 방향이면 양수
         if not cv2.isContourConvex(q) or abs(area) < 100:
-            raise Rejected("사각형이 되지 않습니다. 다시 누르세요.")
+            raise Rejected("사각형 아님 · 다시 선택 필요")
         if area < 0:
-            raise Rejected("왼쪽 위부터 시계 방향으로 누르세요")
+            raise Rejected("왼쪽 위부터 시계 방향으로 선택 필요")
         if geo.photo_to_plate(pts, self._size_mm()) is None:
-            raise Rejected("변환을 만들지 못했습니다. 다시 누르세요.")
+            raise Rejected("변환 계산 실패 · 다시 선택 필요")
         dropped = self.calib.set_plate(pts, (w, h))
         self.clear_pos_check()
         self._refresh_samples()
         self.publish()
-        note = "보정 점 %d개와 마커 기억을 지웠습니다" % dropped if dropped else ""
+        note = "보정 점 %d개 · 마커 등록 삭제" % dropped if dropped else ""
         return {"dropped": dropped, "note": note}
 
     # ------------------------------------------------------------------
@@ -287,11 +287,11 @@ class Prep:
         self.calib.dir.mkdir(parents=True, exist_ok=True)
         ok, buf = cv2.imencode(".png", frame, [cv2.IMWRITE_PNG_COMPRESSION, 1])
         if not ok:
-            raise Rejected("빈 판 사진을 저장하지 못했습니다")
+            raise Rejected("빈 판 사진 저장 실패")
         try:
             self.calib.empty_path.write_bytes(buf.tobytes())
         except OSError as e:
-            raise Rejected("빈 판 사진을 저장하지 못했습니다 · %s" % str(e)[:40])
+            raise Rejected("빈 판 사진 저장 실패 · %s" % str(e)[:40])
         self.calib.set_empty((frame.shape[1], frame.shape[0]))
         self._empty = (self.calib.d["empty"]["t"], frame)
         self.publish()
@@ -304,9 +304,9 @@ class Prep:
         """[여기가 A] … [여기가 D]: 지금 스테이지 X · Y 를 그 꼭짓점 자리로 기억한다. 4점이 모이면 헤드 마커도 이어서 기억한다."""
         name = str(name).upper()
         if name not in CORNERS:
-            raise Rejected("꼭짓점은 A · B · C · D 중 하나입니다")
+            raise Rejected("꼭짓점은 A · B · C · D 중 하나")
         self._need_xy()
-        self.c._no_run("좌표 맞추기")
+        self.c._no_run("좌표 보정")
         self.calib.set_corner_stage(name, self._xy())
         self.clear_pos_check()
         self._refresh_samples()
@@ -317,17 +317,17 @@ class Prep:
                 out["marker"] = self.marker_learn()
             except Rejected as e:
                 out["marker_note"] = str(e)
-                self.c.state.alarm("marker", "헤드 마커를 기억하지 못했습니다 · %s" % e, NOTICE)
+                self.c.state.alarm("marker", "마커 등록 실패 · %s" % e, NOTICE)
         return out
 
     def coord_goto_d(self):
         g = self.calib.d_guess()
         if g is None:
-            raise Rejected("A · B · C 를 먼저 찍으세요")
+            raise Rejected("A · B · C 등록 필요")
         return self.c.goto(g[0], g[1])
 
     def coord_clear(self):
-        self.c._no_run("좌표 맞추기")
+        self.c._no_run("좌표 보정")
         self.calib.clear_coords()
         self.clear_pos_check()
         self._refresh_samples()
@@ -338,11 +338,11 @@ class Prep:
         """촬영 위치에서 헤드 마커 가운데 픽셀을 기억하고, X · Y 로 조금 옮겨 보며 "mm 당 픽셀" 2×2 행렬을 잰다."""
         head = self.cfg["photo_head_xy"]
         if head is None:
-            raise Rejected("촬영 위치를 먼저 정하세요 (준비 3)")
+            raise Rejected("촬영 위치 설정 필요 (준비 3)")
         self._need_camera()
         self.c._no_run("헤드 마커 기억")
         if not all(self.c.stage.homed.get(a) for a in "xyz"):
-            raise Rejected("세 축 원점이 없습니다 (준비 2)")
+            raise Rejected("세 축 원점 필요 (준비 2)")
         step = float(self.cfg["marker_probe_mm"])
 
         def see(x, y):
@@ -355,7 +355,7 @@ class Prep:
         if m0 is None:
             self.calib.set_marker(None, None)
             self.publish()
-            raise Rejected("마커가 사진에 안 보입니다")
+            raise Rejected("마커 미검출")
         cols = []
         for axis in (0, 1):
             got = None
@@ -372,14 +372,14 @@ class Prep:
                 self.c.goto(head[0], head[1])
                 self.calib.set_marker(None, None)
                 self.publish()
-                raise Rejected("헤드를 옮겼을 때 마커가 안 보입니다")
+                raise Rejected("이동 후 마커 미검출")
             cols.append(got)
         self.c.goto(head[0], head[1])
         J = [[cols[0][0], cols[1][0]], [cols[0][1], cols[1][1]]]      # 열 = X · Y 로 1 mm 움직일 때 마커가 움직이는 픽셀
         if abs(np.linalg.det(np.asarray(J))) < 1e-6:
             self.calib.set_marker(None, None)
             self.publish()
-            raise Rejected("마커 움직임을 재지 못했습니다")
+            raise Rejected("마커 이동량 측정 실패")
         self.calib.set_marker(m0, J)
         self.clear_pos_check()
         self.c.state.clear_alarm("marker")
@@ -391,7 +391,7 @@ class Prep:
         """판 사진을 누른 자리(판 mm)로 간다(핀 맨 위로 올린 뒤). 샘플 근처를 누르면 샘플 가운데로 붙는다."""
         Hp, Hs = self.calib.plate_h(self._size_mm()), self.calib.stage_h()
         if Hp is None or Hs is None:
-            raise Rejected("준비 3 · 5 를 먼저 하세요")
+            raise Rejected("준비 3 · 5 필요")
         px, py = float(x), float(y)
         snapped = None
         best = None
@@ -412,9 +412,9 @@ class Prep:
     def coord_add_here(self):
         """[보정 점 추가]: (마지막으로 누른 사진 좌표, 지금 스테이지 X · Y)를 보정 점으로 더하고 변환을 전체 점으로 다시 맞춘다."""
         if self.last_click is None:
-            raise Rejected("판 사진을 먼저 누르세요")
+            raise Rejected("판 사진에서 위치 선택 필요")
         if not self.calib.coords_ready():
-            raise Rejected("좌표 맞추기를 먼저 하세요 (준비 5)")
+            raise Rejected("좌표 보정 필요 (준비 5)")
         self._need_xy()
         self.c._no_run("보정 점 더하기")
         self.calib.add_extra(self.last_click["px"], self._xy())
@@ -436,16 +436,16 @@ class Prep:
     def samples_find(self):
         """[사진 찍고 샘플 찾기]: 핀 맨 위 → 촬영 위치 → 촬영 → 위치 확인 → 샘플 찾기."""
         if not self.calib.d.get("plate"):
-            raise Rejected("판 영역(준비 3)을 먼저 정하세요")
+            raise Rejected("판 영역 설정 필요 (준비 3)")
         t0 = time.monotonic()
         self.capture(move=True, need_head=True)
         cur = self.photo_rect()
         if cur is None:
-            raise Rejected("사진 크기가 달라졌습니다. 준비 3 을 다시 하세요.")
+            raise Rejected("사진 크기 변경됨 · 준비 3 재설정 필요")
         emp = self.empty_rect()
         res = find_mod.find_samples(cur, emp, geo.RECT_PPMM, geo.RECT_MARGIN_MM, log=lambda t: self.c.logs.app("샘플 찾기 · " + t, "detail"))
         if emp is None:
-            res["notes"].append("빈 판 사진이 없어 사진 한 장으로 찾았습니다")
+            res["notes"].append("빈 판 사진 없음 · 사진 한 장으로 검출")
         batch = self.cfg["batch_name"]
         self.samples = []
         for i, s in enumerate(res["samples"], 1):
@@ -501,11 +501,11 @@ class Prep:
         if why:
             raise Rejected(why)
         if any(s["name"] == name and s["id"] != int(id) for s in self.samples):
-            raise Rejected("같은 이름의 샘플이 있습니다")
+            raise Rejected("같은 이름의 샘플 있음")
         from app.jobs.run import WAIT
         it = self.c.runner.items.get(int(id))
         if it is not None and it["status"] != WAIT:
-            raise Rejected("이미 잰 샘플의 이름은 고칠 수 없습니다")
+            raise Rejected("측정한 샘플은 이름 수정 불가")
         for s in self.samples:
             if s["id"] == int(id):
                 s["name"] = name
@@ -514,7 +514,7 @@ class Prep:
                 self.publish()
                 self.c.runner.publish()
                 return {"id": s["id"], "name": name}
-        raise Rejected("그런 샘플이 없습니다")
+        raise Rejected("해당 샘플 없음")
 
     def batch_set(self, name):
         """묶음. 샘플 이름 "<묶음>-<번호>" 도 같이 바뀐다(사람이 고친 이름은 그대로)."""
@@ -525,7 +525,7 @@ class Prep:
         if why:
             raise Rejected(why)
         if self.c.run_active():
-            raise Rejected("측정 중에는 할 수 없습니다")
+            raise Rejected("측정 중 실행 불가")
         old = str(self.cfg["batch_name"])
         try:
             self.cfg.update({"batch_name": name})
@@ -547,7 +547,7 @@ class Prep:
                 s["use"] = bool(use)
                 self.publish()
                 return {"id": s["id"], "use": s["use"]}
-        raise Rejected("그런 샘플이 없습니다")
+        raise Rejected("해당 샘플 없음")
 
     # ------------------------------------------------------------------
     # 7 · 쿨러 구역
@@ -559,7 +559,7 @@ class Prep:
         self.c._no_run("쿨러 시험")
         heater = int(self.cfg["heater_relay"])
         if n != 0 and (n == heater or not 1 <= n <= 10):
-            raise Rejected("쿨러 릴레이 번호가 아닙니다")
+            raise Rejected("쿨러 릴레이 번호 아님")
         for i, on in enumerate(self.c.stage.relays, 1):
             if on and i != heater and i != n:
                 self.c.relay_off(i)
@@ -586,12 +586,12 @@ class Prep:
         """가짜 준비 값 채우기: 준비 단계를 다 하지 않아도 측정을 바로 써 볼 수 있게 가짜 세계의 참값으로 채운다."""
         w = self.c.world
         if w is None:
-            raise Rejected("가짜 장비에서만 쓸 수 있습니다")
-        self.c._no_run("가짜 준비 값 채우기")
+            raise Rejected("시뮬레이션에서만 사용 가능")
+        self.c._no_run("시뮬레이션 설정 적용")
         self._need_camera()
         if not self.c.stage.connected:
-            raise Rejected("스테이지가 연결되어 있지 않습니다")
-        self.calib.set_origin("xyz", "가짜")
+            raise Rejected("스테이지 연결 안 됨")
+        self.calib.set_origin("xyz", "sim")
         head = [5.0, 125.0]
         self.c._remember(photo_head_xy=head, contact_z_mm=round(w.plate_z - 0.6, 3))
         loaded = w.loaded
@@ -605,7 +605,7 @@ class Prep:
             self.empty_take()
         finally:
             w.set_loaded(loaded)
-        self.calib.set_contact({"r2": None, "r4": None, "how": "가짜"})
+        self.calib.set_contact({"r2": None, "r4": None, "how": "sim"})
         self.calib.set_cooler()
         self.marker_learn()
         self.publish()
@@ -614,8 +614,8 @@ class Prep:
     def fake_samples(self, on):
         w = self.c.world
         if w is None:
-            raise Rejected("가짜 장비에서만 쓸 수 있습니다")
-        self.c._no_run("가짜 샘플 올리기")
+            raise Rejected("시뮬레이션에서만 사용 가능")
+        self.c._no_run("샘플 배치")
         w.set_loaded(bool(on))
         self.publish()
         return {"loaded": w.loaded}
@@ -640,7 +640,7 @@ class Prep:
         dev_ok = all(st.get("devices", k, "state") == "연결" for k in ("stage", "k2110", "k2450", "camera"))
         n_dev = sum(1 for k in ("stage", "k2110", "k2450", "camera") if st.get("devices", k, "state") == "연결")
         homed = st.get("homed")
-        how = {"here": "지금 자리", "end": "끝까지 밀어서", "가짜": "가짜 값"}
+        how = {"here": "현재 위치", "end": "끝단 접촉", "sim": "시뮬레이션"}
         org = cal.get("origin") or {}
         last = max((org[a] for a in org), key=lambda o: o["t"], default=None)
         o_done = all(homed.get(a) for a in "xyz")
@@ -657,13 +657,13 @@ class Prep:
         ct = cal.get("contact")
         cool = cal.get("cooler")
         return [
-            {"done": dev_ok, "text": "모두 연결됨" if dev_ok else "%d / 4 연결" % n_dev},
+            {"done": dev_ok, "text": "전체 연결됨" if dev_ok else "%d / 4 연결" % n_dev},
             {"done": o_done, "text": o_text},
             {"done": bool(plate) and head is not None, "text": p_text},
-            {"done": bool(emp), "text": "찍음 · %s" % when(emp["t"]) if emp else "없어도 됨"},
+            {"done": bool(emp), "text": "촬영 · %s" % when(emp["t"]) if emp else "없어도 측정 가능"},
             {"done": ready, "text": co_text},
             {"done": cz is not None, "text": ("Z %.2f mm · %s" % (cz, when(ct["t"] if ct else None))) if cz is not None else ""},
-            {"done": bool(cool), "text": "정함 · %s" % when(cool["t"]) if cool else "번호순 기본값"},
+            {"done": bool(cool), "text": "설정 완료 · %s" % when(cool["t"]) if cool else "번호순 기본값"},
         ]
 
     def view(self):

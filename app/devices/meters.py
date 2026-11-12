@@ -191,7 +191,7 @@ class _Dev:
             raise
         except Exception as e:                                      # noqa: BLE001
             _log(self.NAME, self.addr, "open", "", None, time.monotonic() - t0, e)
-            raise VisaError("장비를 열 수 없습니다 · %s · %s" % (self.addr, str(e)[:40]))
+            raise VisaError("장비 열기 실패 · %s · %s" % (self.addr, str(e)[:40]))
         _log(self.NAME, self.addr, "open", "", "ok", time.monotonic() - t0, None)
         try:
             self.res.timeout = VISA_TIMEOUT_MS
@@ -205,7 +205,7 @@ class _Dev:
         if self.MODEL and self.MODEL not in self.idn:
             idn = self.idn
             self.close()
-            raise VisaError("%s 가 아닌 장비입니다 · %s" % (self.NAME, idn[:40]))
+            raise VisaError("%s 아닌 장비 · %s" % (self.NAME, idn[:40]))
         return self.idn
 
     def write(self, cmd):
@@ -307,7 +307,7 @@ class K2450(_Dev):
         except VisaError:
             return True, ""
         if "SCPI" not in lang and "2450" not in lang:
-            return False, "K2450 명령 세트를 SCPI 로 바꾸세요"
+            return False, "K2450 명령 세트 SCPI 전환 필요"
         return True, ""
 
     def terminal(self):

@@ -76,13 +76,13 @@ def name_problem(name):
     """파일 이름으로 못 쓰는 이름이면 이유(쉬운 한 문장), 괜찮으면 ""."""
     n = str(name)
     if not n.strip():
-        return "이름이 비어 있습니다"
+        return "이름 비어 있음"
     if any(ch in BAD_NAME_CHARS or ord(ch) < 32 for ch in n):
-        return "이름에 못 쓰는 글자가 있습니다 · \\ / : * ? \" < > |"
+        return "이름에 사용 불가 문자 포함 · \\ / : * ? \" < > |"
     if n != n.strip() or n.endswith("."):
-        return "이름 앞뒤의 빈칸과 끝의 마침표는 못 씁니다"
+        return "이름 앞뒤 빈칸 · 끝 마침표 사용 불가"
     if len(n) > 60:
-        return "이름이 너무 깁니다 · 60자까지"
+        return "이름 길이 초과 · 60자까지"
     return ""
 
 
@@ -122,7 +122,7 @@ class NasCopier(threading.Thread):
             if dst is None:
                 dst, changed = unique_path(os.path.join(self.nas_dir, os.path.basename(local)))
                 if changed:
-                    self.warn("NAS 에 같은 이름이 있어 %s 로 저장했습니다" % os.path.basename(dst))
+                    self.warn("NAS 에 같은 이름 있음 · %s 로 저장" % os.path.basename(dst))
                 self.names[local] = dst
             shutil.copyfile(local, dst)
             if local in self.pending:
@@ -134,6 +134,6 @@ class NasCopier(threading.Thread):
             if local not in self.pending:
                 self.pending.append(local)
             if self.ok is not False:
-                self.warn("NAS 에 쓰지 못했습니다. 결과 탭에서 다시 복사하세요.")
+                self.warn("NAS 쓰기 실패 · 결과 탭에서 재복사 필요")
                 self.log("NAS 쓰기 오류 · %s" % e)
             self.ok = False

@@ -57,7 +57,7 @@ def test_run_two_samples_to_the_end(ready_ctrl, tmp_path):
     _finish(ctrl)
     run = ctrl.runner
     assert run.state == "done" and [run.items[i]["status"] for i in ids] == [DONE, DONE]
-    assert ctrl.state.get("run", "summary") == "2개 중 2개 끝남"
+    assert ctrl.state.get("run", "summary") == "2개 중 2개 완료"
     # 순서: 이동 → 접촉 → (냉각) → 가열 → 냉각 → 저장
     for sid in ids:
         seq = [st for cur, st in stages if cur == sid]
@@ -128,7 +128,7 @@ def test_start_needs_preparation(ready_ctrl):
     ctrl = ready_ctrl(time_scale=FAST)
     with pytest.raises(Rejected) as e:
         ctrl.run_command("run_start")
-    assert "측정할 샘플이 없습니다" in str(e.value)
+    assert "측정할 샘플 없음" in str(e.value)
     ctrl.run_command("samples_find")
     ctrl._remember(contact_z_mm=None)
     assert {"text": "접촉 높이", "step": 6} in ctrl.runner.gate()
@@ -196,7 +196,7 @@ def test_skip_pause_resume_stop_requeue(ready_ctrl):
     assert sorted(p.name for p in folder.glob(name + "_*.dat")) == [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"], "다시 잰 파일도 원래 이름으로"
     old = [p for p in folder.iterdir() if p.is_dir() and p.name.startswith("이전_")]
     assert len(old) == 1 and sorted(p.name for p in old[0].iterdir()) == [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"], "건너뛰기 전에 받은 데이터는 이전_ 폴더에 남는다"
-    assert ctrl.state.get("run", "summary") == "3개 중 2개 끝남 · 멈춤 1"
+    assert ctrl.state.get("run", "summary") == "3개 중 2개 완료 · 중지 1"
 
 
 def test_estop_during_run(ready_ctrl):
@@ -230,9 +230,9 @@ def test_contact_failure_goes_to_next_sample(ready_ctrl):
     ctrl.run_command("run_start")
     _finish(ctrl)
     run = ctrl.runner
-    assert run.items[ids[0]]["status"] == FAIL and run.items[ids[0]]["reason"] == "닿지 않았습니다"
+    assert run.items[ids[0]]["status"] == FAIL and run.items[ids[0]]["reason"] == "미접촉"
     assert run.items[ids[1]]["status"] == DONE, "실패한 샘플은 건너뛰고 다음으로"
-    assert run.state == "done" and ctrl.state.get("run", "summary") == "2개 중 1개 끝남 · 실패 1"
+    assert run.state == "done" and ctrl.state.get("run", "summary") == "2개 중 1개 완료 · 실패 1"
     assert max(int(c.split()[1]) for c in ctrl.fake_fw.log if c.startswith("gz ")) / 160.0 <= ctrl.cfg["contact_z_mm"] + 0.5 + 1e-6
     _all_off(ctrl)
 
@@ -246,7 +246,7 @@ def test_max_on_time_moves_on_to_cooling(ready_ctrl):
     ctrl.run_command("run_start")
     _finish(ctrl)
     it = ctrl.runner.items[ids[0]]
-    assert it["status"] == DONE and "최고 온도 못 미침" in it["notes"]
+    assert it["status"] == DONE and "가열 끝 온도 미도달" in it["notes"]
     assert max(p[0] for p in it["points"]) < 85.0 and it["points"][-1][2] == 1, "냉각으로 넘어가 끝까지 기록한다"
     cmds = _relay_cmds(ctrl, n0)
     assert cmds.count("r 1 1") == 1 and cmds.count("r 1 0") == 1
@@ -261,7 +261,7 @@ def test_no_temperature_rise_fails_sample(ready_ctrl):
     ctrl.lab.t_heat = 125.0
     _finish(ctrl)
     run = ctrl.runner
-    assert "온도가 오르지 않습니다" in run.items[ids[0]]["reason"]
+    assert "온도 상승 없음" in run.items[ids[0]]["reason"]
     assert run.items[ids[1]]["status"] == DONE
     _all_off(ctrl)
 
@@ -271,7 +271,7 @@ def test_phase_time_limit_fails_sample(ready_ctrl):
     ctrl.run_command("run_start")
     _finish(ctrl)
     it = ctrl.runner.items[ids[0]]
-    assert it["status"] == FAIL and "넘었습니다" in it["reason"]
+    assert it["status"] == FAIL and "초과" in it["reason"]
     assert len(it["points"]) > 20, "그때까지 받은 데이터는 남는다"
     _all_off(ctrl)
     assert ctrl.state.get("pos", "z") == 0.0
@@ -282,7 +282,7 @@ def test_cooling_stall_ends_phase_normally(ready_ctrl):
     ctrl.run_command("run_start")
     _finish(ctrl, 60)
     it = ctrl.runner.items[ids[0]]
-    assert it["status"] == DONE and any("에서 끝냄" in n for n in it["notes"])
+    assert it["status"] == DONE and any("에서 종료" in n for n in it["notes"])
     assert 9.0 < it["points"][-1][0] < 14.0
 
 
@@ -323,7 +323,7 @@ def test_run_stays_active_until_files_are_saved_and_state_is_published(ready_ctr
         gate.set()
     _finish(ctrl)
     assert ctrl.state.get("run", "state") == "done" and ctrl.state.get("run", "active") is False
-    assert ctrl.state.get("run", "summary") == "1개 중 1개 끝남"
+    assert ctrl.state.get("run", "summary") == "1개 중 1개 완료"
     assert json.loads((run.folder / "run.json").read_text(encoding="utf-8"))["state"] == "done"
     assert (run.folder / "summary.csv").is_file()
 

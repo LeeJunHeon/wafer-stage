@@ -58,7 +58,7 @@ class Camera:
     def open(self, index, width, height, fourcc="MJPG", focus_fixed=True, focus_value=-1, preview_width=1280, exposure=None, wb_k=None):
         """exposure = 고정 노출 값(None 이면 자동 노출) · wb_k = 고정 화이트밸런스(None 이면 카메라 기본). v2 운용값: 노출 −5 · 5000 K · 초점 고정."""
         if self.connected:
-            raise CameraError("이미 연결되어 있습니다")
+            raise CameraError("이미 연결됨")
         self._preview_w = int(preview_width)
         errors = []
         for name, flag in BACKENDS:
@@ -89,7 +89,7 @@ class Camera:
                                                                        self.info["actual_fourcc"] or "?", name))
             return dict(self.info)
         self.log("카메라 %d 번 열기 실패 · %s" % (index, ", ".join(errors)))
-        raise CameraError("카메라 %d 번을 열 수 없습니다. 번호와 USB 를 확인하세요." % index)
+        raise CameraError("카메라 %d 번 열기 실패 · 번호와 USB 확인 필요" % index)
 
     @staticmethod
     def _release(cap):
@@ -153,7 +153,7 @@ class Camera:
         if not i:
             return ""
         if i["actual"] != i["requested"] or (i["actual_fourcc"] and i["actual_fourcc"] != i["requested_fourcc"]):
-            return "카메라가 요청한 %dx%d %s 가 아니라 %dx%d %s 로 열렸습니다" % (
+            return "카메라 설정 불일치 · 요청 %dx%d %s · 실제 %dx%d %s" % (
                 i["requested"][0], i["requested"][1], i["requested_fourcc"], i["actual"][0], i["actual"][1], i["actual_fourcc"] or "?")
         return ""
 
@@ -191,7 +191,7 @@ class Camera:
             else:
                 fails += 1
                 if fails >= FAIL_LIMIT:
-                    self._lost("프레임을 받지 못함")
+                    self._lost("프레임 수신 실패")
                     return
                 time.sleep(0.1)
 
@@ -230,12 +230,12 @@ class Camera:
     def fresh_frame(self, timeout=6.0):
         """지금부터 새로 들어온 프레임 한 장(원본). 이동이 끝난 뒤에 부른다 - 움직이기 전에 찍힌 프레임을 쓰지 않는다. 못 받으면 CameraError."""
         if not self.connected:
-            raise CameraError("카메라가 연결되어 있지 않습니다")
+            raise CameraError("카메라 연결 안 됨")
         with self._cv:
             self._want += 1
             n = self._want
             if not self._cv.wait_for(lambda: self._seq >= n or not self._alive, timeout=timeout) or self._seq < n:
-                raise CameraError("카메라에서 새 사진을 받지 못했습니다")
+                raise CameraError("새 프레임 수신 실패")
         with self._lock:
             return self._frame, self._frame_t
 

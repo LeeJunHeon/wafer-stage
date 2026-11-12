@@ -96,7 +96,7 @@ def parse_st(line):
                 "hx": d.get("HX") == "1", "hy": d.get("HY") == "1", "hz": d.get("HZ") == "1",
                 "dirty": d.get("DIRTY") == "1"}
     except (KeyError, ValueError):
-        raise StageError("위치 응답을 읽지 못했습니다: %s" % line.strip()[:60])
+        raise StageError("위치 응답 읽기 실패: %s" % line.strip()[:60])
 
 
 def parse_rs(line):
@@ -105,7 +105,7 @@ def parse_rs(line):
     try:
         return [d["R%d" % i] == "1" for i in range(1, 11)]
     except KeyError:
-        raise StageError("릴레이 응답을 읽지 못했습니다: %s" % line.strip()[:60])
+        raise StageError("릴레이 응답 읽기 실패: %s" % line.strip()[:60])
 
 
 def parse_banner_version(line):
@@ -180,11 +180,11 @@ class Stage:
     def connect(self, port_name: str, speed=FW_DEFAULT_SPEED, wd_ms: int = 2000, banner_wait_s: float = 6.0):
         """포트를 열고(보드가 재시작한다) 배너로 V11 을 확인한 뒤 wd · 속도 · st · rs 를 읽는다. V11 이 아니면 연결을 거절한다."""
         if self.connected:
-            raise StageError("이미 연결되어 있습니다")
+            raise StageError("이미 연결됨")
         try:
             ser = self.open_port(port_name)
         except Exception as e:                                      # noqa: BLE001
-            raise StageIOError("포트를 열 수 없습니다 · %s · %s" % (port_name, str(e)[:50]))
+            raise StageIOError("포트 열기 실패 · %s · %s" % (port_name, str(e)[:50]))
         self.ser = ser
         self._rbuf = b""
         self.banner_lines = []
@@ -206,10 +206,10 @@ class Stage:
             raise
         if fw is None:
             self._close_port()
-            raise StageError("펌웨어 V11 을 확인하지 못했습니다")
+            raise StageError("펌웨어 V11 확인 실패")
         if fw != "V11":
             self._close_port()
-            raise StageError("펌웨어가 %s 입니다 · V11 이 필요합니다" % fw)
+            raise StageError("펌웨어 %s · V11 필요" % fw)
         self.firmware = fw
         self.port_name = port_name
         self.connected = True
@@ -236,7 +236,7 @@ class Stage:
             t.join(timeout=2.0)
         self._thread = None
         self._close_port()
-        self._fail_pending(StageError("스테이지 연결이 끊겼습니다"))
+        self._fail_pending(StageError("스테이지 연결 끊김"))
 
     def _close_port(self):
         ser, self.ser = self.ser, None
@@ -275,7 +275,7 @@ class Stage:
     def submit(self, cmd, gen, done, timeout, kind="cmd", pulses=0, prio=5) -> Future:
         if not self.connected:
             f = Future()
-            f.set_exception(StageError("스테이지가 연결되어 있지 않습니다"))
+            f.set_exception(StageError("스테이지 연결 안 됨"))
             return f
         job = _Job(cmd, gen, done, timeout, kind, pulses)
         self._seq_put(prio, job)
@@ -367,18 +367,18 @@ class Stage:
             lines.append(ln)
             self._note(ln)
             if "3-AXIS" in ln:
-                raise StageReboot("보드가 다시 시작했습니다")
+                raise StageReboot("보드 재시작")
             if REJECT_MARK in ln:
-                raise StageRejected("펌웨어가 거부했습니다: %s" % ln.strip())
+                raise StageRejected("펌웨어 거부: %s" % ln.strip())
             if ABORT_MARK in ln:
-                raise MoveAborted("이동이 중단됐습니다")
+                raise MoveAborted("이동 중단")
             if job.done(ln):
                 return lines
         if job.kind == "raw":
             return lines
         if job.kind == "move":
             self._recover()
-        raise StageTimeout("응답이 %.0f초 안에 없습니다 · %s" % (job.timeout, job.cmd))
+        raise StageTimeout("%.0f초 안에 응답 없음 · %s" % (job.timeout, job.cmd))
 
     def _recover(self):
         """이동 시간 한도를 넘었다: '!' → 입력 비우기 → st 로 다시 맞춘다."""
@@ -456,7 +456,7 @@ class Stage:
         """한 줄(줄바꿈까지). 시간 안에 줄바꿈이 없으면 줄 중간까지만 오므로 이어 붙인다."""
         ser = self.ser
         if ser is None:
-            raise StageIOError("포트가 닫혀 있습니다")
+            raise StageIOError("포트 닫힘")
         try:
             raw = ser.readline()
         except Exception as e:                                      # noqa: BLE001

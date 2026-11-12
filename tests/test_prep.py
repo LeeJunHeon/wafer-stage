@@ -206,7 +206,7 @@ def test_find_without_empty_plate_photo(ready_ctrl):
     ctrl.calib.d["empty"] = None                                     # 빈 판 사진이 없어도 찾는다(사진 한 장으로)
     r = ctrl.run_command("samples_find")
     assert r["n"] == 9 and ctrl.prep.find_info["path"] == "사진 한 장"
-    assert any("빈 판 사진이 없어" in n for n in r["notes"])
+    assert any("빈 판 사진 없음" in n for n in r["notes"])
 
 
 def test_pin_size_setting_changes_small_flag(ready_ctrl):
@@ -276,7 +276,7 @@ def test_contact_nothing_within_search_distance(ready_ctrl):
     ctrl.goto(x, y, z0)
     with pytest.raises(Rejected) as e:
         ctrl.run_command("contact_find")
-    assert "닿지 않았습니다" in str(e.value)
+    assert "미접촉" in str(e.value)
     assert _max_z_sent(ctrl) <= z0 + 1.0 + 1e-6, "한도 아래로는 한 펄스도 내려가지 않는다"
     assert ctrl.state.get("pos", "z") == 0.0 and ctrl.lab.out_on is False
 

@@ -15,7 +15,7 @@ function buildManual() {
   man.pb.svg.append(man.ov);
   const setView = (v) => { man.view = v; man.pb.setNote("미리보기 준비 중"); man.pb.show(""); refreshPreview(); renderManual(); };
   man.photoInfo = h("span", { class: "small" });
-  man.retake = busyGate("사진 다시 찍기", () => api("samples_find"), "sm");             // 측정 탭의 [사진 다시 찍기] 와 같다(사진 + 샘플 찾기)
+  man.retake = busyGate("재촬영", () => api("samples_find"), "sm");             // 측정 탭의 [사진 다시 찍기] 와 같다(사진 + 샘플 찾기)
   man.fixRow = h("div", { class: "row hidden" }, man.photoInfo, man.retake.b, man.retake.w);
   man.viewRaw = h("input", { type: "radio", name: "view", checked: true, onchange: () => setView("raw") });
   man.viewFix = h("input", { type: "radio", name: "view", onchange: () => setView("fix") });
@@ -32,31 +32,31 @@ function buildManual() {
     h("div", { class: "row" }, h("h3", { text: "카메라" }), h("span", { class: "sp" }),
       h("label", { class: "chk" }, man.viewRaw, "실시간"), h("label", { class: "chk" }, man.viewFix, "판 사진")),
     man.pb.box, man.fixRow,
-    h("div", { class: "row wrap" }, h("label", { class: "chk" }, man.clickGo, "눌러서 이동"), man.addHere.b),
+    h("div", { class: "row wrap" }, h("label", { class: "chk" }, man.clickGo, "클릭 이동"), man.addHere.b),
     man.camNote);
 
   man.jog = jogPart();
   const goInput = (ph) => h("input", { type: "number", class: "num", step: "any", placeholder: ph });
   man.gx = goInput("X"); man.gy = goInput("Y"); man.gz = goInput("Z");
-  man.head = btn("촬영 위치로", () => { const p = S.cfg.photo_head_xy; if (p) api("goto", { x: p[0], y: p[1] }); });
+  man.head = btn("촬영 위치로 이동", () => { const p = S.cfg.photo_head_xy; if (p) api("goto", { x: p[0], y: p[1] }); });
   man.headNote = h("span", { class: "why" });
-  man.go = btn("가기", () => {
+  man.go = btn("이동", () => {
     const x = parseFloat(man.gx.value), y = parseFloat(man.gy.value), z = man.gz.value === "" ? null : parseFloat(man.gz.value);
-    if (isNaN(x) || isNaN(y)) { toast("X 와 Y 를 입력하세요"); return; }
+    if (isNaN(x) || isNaN(y)) { toast("X · Y 입력 필요"); return; }
     api("goto", z == null || isNaN(z) ? { x, y } : { x, y, z });
   });
   const movePanel = h("div", { class: "panel", id: "man-move" }, h("h3", { text: "이동" }), man.jog.el,
     h("div", { class: "row" }, man.head, man.headNote),
-    h("div", { class: "row" }, small("바로 가기"), "X", man.gx, "Y", man.gy, "Z", man.gz, man.go));
+    h("div", { class: "row" }, small("좌표 이동"), "X", man.gx, "Y", man.gy, "Z", man.gz, man.go));
   const left = h("div", { class: "col", id: "man-left" }, camPanel, movePanel);
 
   /* 가운데: 수동 측정 · 릴레이 시험 */
   man.temp = h("div", { class: "big", text: "—" });
   man.ohm = h("div", { class: "big", text: "—" });
   man.cond = h("div", { class: "small" });
-  man.mon = btn("계속 읽기", () => api("monitor", { on: !S.monitor }));
-  man.readT = btn("한 번 읽기", () => api("read_temp"));
-  man.readR = btn("한 번 읽기", () => api("read_resistance"));
+  man.mon = btn("연속 측정", () => api("monitor", { on: !S.monitor }));
+  man.readT = btn("1회 측정", () => api("read_temp"));
+  man.readR = btn("1회 측정", () => api("read_resistance"));
   man.measWhy = h("div", { class: "why hidden" });
   man.contact = busyGate("접촉 탐색", () => api("contact_find"));
   man.contactLine = h("div", { class: "small" });
@@ -71,9 +71,9 @@ function buildManual() {
   man.grid = h("div", { class: "relays" });
   man.gridSig = "";
   const relay = h("div", { class: "panel" }, h("h3", { text: "릴레이 시험" }),
-    h("div", { class: "row" }, man.hLbl, man.hOn, man.hOff), h("div", { class: "small", text: "자주 켜고 끄지 마세요" }),
+    h("div", { class: "row" }, man.hLbl, man.hOn, man.hOff), h("div", { class: "small", text: "잦은 ON/OFF 금지" }),
     man.grid,
-    h("div", { class: "row" }, btn("모두 끄기", () => api("relays_off"))));
+    h("div", { class: "row" }, btn("전체 끄기", () => api("relays_off"))));
   const mid = h("div", { class: "col", id: "man-mid" }, measure, relay);
 
   /* 오른쪽: 직접 명령 */
@@ -84,7 +84,7 @@ function buildManual() {
   man.quick = () => setKids(man.quickBox, ...QUICK[man.target.value].map((q) => btn(q, () => { man.line.value = q; sendRaw(); })));
   man.quick();
   const cmd = h("div", { class: "panel", id: "man-right" }, h("h3", { text: "직접 명령" }), h("div", { class: "row" }, man.target), man.quickBox,
-    h("div", { class: "row" }, man.line, btn("보내기", sendRaw)), man.log, h("div", { class: "small", text: "이동 · 릴레이는 버튼으로" }));
+    h("div", { class: "row" }, man.line, btn("전송", sendRaw)), man.log, h("div", { class: "small", text: "이동 · 릴레이는 버튼 사용" }));
   setKids($("#tab-manual"), left, mid, cmd);
 }
 function logLine(cls, text) {
@@ -124,7 +124,7 @@ function renderManual() {
   man.mon.classList.toggle("on", !!S.monitor);
   const hp = c.photo_head_xy;
   man.head.disabled = !hp || running();
-  man.headNote.textContent = hp ? "" : "준비 3 에서 정합니다";
+  man.headNote.textContent = hp ? "" : "준비 3 에서 설정";
   const hr = c.heater_relay || 1;
   man.hLbl.textContent = "히트건 R" + hr;
   const grid = c.cooler_grid || [];
@@ -142,7 +142,7 @@ function renderManual() {
     b.disabled = busy;
   }
   for (const b of [man.hOn, man.hOff, man.readT, man.readR, man.mon, man.go]) b.disabled = busy;
-  man.measWhy.textContent = busy ? "측정 중에는 쓸 수 없습니다" : "";
+  man.measWhy.textContent = busy ? "측정 중 사용 불가" : "";
   man.measWhy.classList.toggle("hidden", !busy);
   const ct = (S.prep && S.prep.contact) || {};
   man.contact.b.disabled = !!(ct.active || whyContact());
@@ -157,16 +157,16 @@ function renderManual() {
   if (fix) {                                                     // 판 사진 보기: 마지막으로 찍은 판 사진(측정 탭과 같은 사진)
     const ph = pr.photo, has = !!(ph && ph.rect);
     man.pb.setAr(1);
-    man.pb.setNote("사진이 없습니다");
+    man.pb.setNote("사진 없음");
     man.pb.show(has ? "/api/img/plate.jpg?v=" + ph.id + "-" + pr.plate.t : "");
     man.photoInfo.textContent = has ? "사진 " + fmtClock(ph.t) : "사진 없음";
     man.retake.set(whyStage(true, true) || whyCamera() || whyHead());
   }
   man.clickGo.disabled = man.view !== "fix" || !ready || busy;
   if (man.clickGo.disabled) man.clickGo.checked = false;
-  man.addHere.set(busy ? "측정 중" : !ready ? "" : pr.last_click ? "" : "판 사진을 먼저 누르세요");
+  man.addHere.set(busy ? "측정 중" : !ready ? "" : pr.last_click ? "" : "판 사진에서 위치 선택 필요");
   man.addHere.b.disabled = busy || !ready || !pr.last_click;
-  man.camNote.textContent = !hasPlate ? "준비 3 · 5 뒤에 쓸 수 있습니다" : !ready ? "준비 5 뒤에 쓸 수 있습니다" : fix ? "십자 = 핀 · 동그라미 = 누른 자리" : "";
+  man.camNote.textContent = !hasPlate ? "준비 3 · 5 후 사용 가능" : !ready ? "준비 5 후 사용 가능" : fix ? "십자 = 핀 · 원 = 선택 위치" : "";
   man.camNote.title = man.camNote.textContent;
   drawManualOverlay();
   man.jog.update();

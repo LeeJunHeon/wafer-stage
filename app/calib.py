@@ -44,7 +44,7 @@ class Calib:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
-            self.note = "보정 값 파일을 읽지 못했습니다 · %s" % str(e)[:40]
+            self.note = "보정 값 파일 읽기 실패 · %s" % str(e)[:40]
             return
         if isinstance(raw, dict):
             for k in self.d:

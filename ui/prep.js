@@ -2,7 +2,7 @@
    앞 단계 값이 없어서 못 하는 일은 그 버튼만 회색으로 두고 이유를 한 줄 쓴다(gate). 확인 창은 띄우지 않는다. */
 "use strict";
 
-const STEPS = ["장비 연결", "원점 맞추기", "카메라 · 판 영역", "빈 판 사진", "좌표 맞추기", "접촉 높이 찾기", "쿨러 구역 확인"];
+const STEPS = ["장비 연결", "원점 설정", "카메라 · 판 영역", "빈 판 사진", "좌표 보정", "접촉 높이 설정", "쿨러 배치"];
 const DEVS = [
   { key: "stage", name: "스테이지", cfg: "stage_port", list: "dl-ports", ph: "COM 번호", conn: (v) => api("connect_stage", { port: v }), off: () => api("disconnect_stage") },
   { key: "k2110", name: "온도계 K2110", cfg: "k2110_addr", list: "dl-visa", ph: "VISA 주소", conn: (v) => api("connect_meter", { kind: "k2110", addr: v }), off: () => api("disconnect_meter", { kind: "k2110" }) },
@@ -30,15 +30,15 @@ function busyGate(text, fn, cls) {
 const P = () => (S && S.prep) || {};
 const homedAll = () => S && S.homed.x && S.homed.y && S.homed.z;
 function whyStage(needXY, needZ) {
-  if (running()) return "측정 중에는 할 수 없습니다";
-  if (!devOk("stage")) return "스테이지를 먼저 연결하세요 (준비 1)";
-  if (S.estop_locked) return "비상정지를 먼저 푸세요";
-  if (needXY && !(S.homed.x && S.homed.y)) return "X · Y 원점이 없습니다 (준비 2)";
-  if (needZ && !S.homed.z) return "Z 원점이 없습니다 (준비 2)";
+  if (running()) return "측정 중 실행 불가";
+  if (!devOk("stage")) return "스테이지 연결 필요 (준비 1)";
+  if (S.estop_locked) return "비상정지 해제 필요";
+  if (needXY && !(S.homed.x && S.homed.y)) return "X · Y 원점 필요 (준비 2)";
+  if (needZ && !S.homed.z) return "Z 원점 필요 (준비 2)";
   return "";
 }
-const whyCamera = () => (devOk("camera") ? "" : "카메라를 먼저 연결하세요 (준비 1)");
-const whyHead = () => (S.cfg.photo_head_xy ? "" : "촬영 위치를 먼저 정하세요 (준비 3)");
+const whyCamera = () => (devOk("camera") ? "" : "카메라 연결 필요 (준비 1)");
+const whyHead = () => (S.cfg.photo_head_xy ? "" : "촬영 위치 설정 필요 (준비 3)");
 
 function buildPrep() {
   prep.items = STEPS.map((t, i) => {
@@ -47,11 +47,11 @@ function buildPrep() {
       h("div", { class: "txt" }, h("div", { class: "t", text: t }), sub), done);
     return { el, sub, done };
   });
-  prep.allItem = h("div", { class: "step", onclick: () => setStep(7) }, h("span", { class: "no blank" }), h("div", { class: "txt" }, h("div", { class: "t", text: "설정 값 모두 보기" })));
-  prep.fakeFill = busyBtn("가짜 준비 값 채우기", () => api("fake_fill"));
-  prep.fakeLoad = busyBtn("가짜 샘플 올리기", () => api("fake_samples", { on: !P().fake_loaded }));
-  prep.fakeBox = h("div", { class: "fakebox hidden" }, small("가짜 장비"), prep.fakeFill, prep.fakeLoad);
-  const list = h("div", { class: "panel", id: "prep-list" }, h("h3", { text: "처음 한 번 준비" }), ...prep.items.map((x) => x.el), h("div", { class: "sep" }), prep.allItem, prep.fakeBox);
+  prep.allItem = h("div", { class: "step", onclick: () => setStep(7) }, h("span", { class: "no blank" }), h("div", { class: "txt" }, h("div", { class: "t", text: "전체 설정" })));
+  prep.fakeFill = busyBtn("시뮬레이션 설정 적용", () => api("fake_fill"));
+  prep.fakeLoad = busyBtn("샘플 배치", () => api("fake_samples", { on: !P().fake_loaded }));
+  prep.fakeBox = h("div", { class: "fakebox hidden" }, small("시뮬레이션"), prep.fakeFill, prep.fakeLoad);
+  const list = h("div", { class: "panel", id: "prep-list" }, h("h3", { text: "초기 설정" }), ...prep.items.map((x) => x.el), h("div", { class: "sep" }), prep.allItem, prep.fakeBox);
   prep.main = h("div", { id: "prep-main" });
   prep.pages = [buildStep1(), buildStep2(), buildStep3(), buildStep4(), buildStep5(), buildStep6(), buildStep7(),
     typeof buildSettingsPage === "function" ? buildSettingsPage() : null];
@@ -88,7 +88,7 @@ function buildStep1() {
   const el = h("div", { class: "panel prep-panel" }, h("h3", { text: "1 · 장비 연결" }),
     h("datalist", { id: "dl-ports" }), h("datalist", { id: "dl-visa" }), h("datalist", { id: "dl-cams" }),
     h("div", {}, ...rows),
-    h("div", { class: "row" }, btn("새로 고침", readLists), h("label", { class: "chk" }, auto, "시작할 때 자동 연결")));
+    h("div", { class: "row" }, btn("새로 고침", readLists), h("label", { class: "chk" }, auto, "시작 시 자동 연결")));
   return { el, render: renderStep1 };
 }
 async function readLists() {
@@ -118,24 +118,24 @@ function renderStep1() {
 /* ---------- 2 · 원점 맞추기 ---------- */
 function buildStep2() {
   const pg = { jog: jogPart(), ax: {} };
-  const HOW = { here: "지금 자리", end: "끝까지 밀어서", "가짜": "가짜 값" };
+  const HOW = { here: "현재 위치", end: "끝단 접촉", sim: "시뮬레이션" };
   const rows = ["x", "y", "z"].map((a) => {
     const dot = h("i", { class: "dot" }), txt = h("span", {}), when = h("span", { class: "small" });
     pg.ax[a] = { dot, txt, when };
     return h("div", { class: "row" }, h("b", { class: "axname", text: a.toUpperCase() + " 축" }), dot, txt, when);
   });
   const origin = (axis, mode) => () => api("set_origin", { axis, mode });
-  pg.here = [gate("X 등록", origin("x", "here")), gate("Y 등록", origin("y", "here")), gate("Z 등록", origin("z", "here")), gate("세 축 모두 등록", origin("all", "here"))];
+  pg.here = [gate("X 등록", origin("x", "here")), gate("Y 등록", origin("y", "here")), gate("Z 등록", origin("z", "here")), gate("전체 등록", origin("all", "here"))];
   pg.end = [gate("X", origin("x", "end")), gate("Y", origin("y", "end")), gate("Z", origin("z", "end"))];
   pg.whyHere = h("div", { class: "why" }); pg.whyEnd = h("div", { class: "why" });
-  const el = h("div", { class: "panel prep-panel" }, h("h3", { text: "2 · 원점 맞추기" }),
+  const el = h("div", { class: "panel prep-panel" }, h("h3", { text: "2 · 원점 설정" }),
     h("div", { class: "grp" }, ...rows),
     h("div", { class: "two" },
-      h("div", { class: "grp" }, h("h4", { text: "지금 자리를 원점으로" }),
-        h("div", { class: "small", text: "세 축을 모터 방향에 붙인 뒤 누르세요." }),
+      h("div", { class: "grp" }, h("h4", { text: "현재 위치를 원점으로" }),
+        h("div", { class: "small", text: "세 축을 모터 쪽 끝에 붙인 후 등록" }),
         pg.jog.el, h("div", { class: "row wrap" }, ...pg.here.map((g) => g.b)), pg.whyHere),
-      h("div", { class: "grp" }, h("h4", { text: "끝까지 밀어서 잡기" }),
-        h("div", { class: "small", text: "끝에 닿을 때 소리가 납니다." }),
+      h("div", { class: "grp" }, h("h4", { text: "끝단 접촉 원점" }),
+        h("div", { class: "small", text: "끝단 접촉 시 소음 발생" }),
         h("div", { class: "row" }, ...pg.end.map((g) => g.b)), pg.whyEnd)));
   pg.el = el;
   pg.render = () => {
@@ -149,7 +149,7 @@ function buildStep2() {
     const why = whyStage(false, false);
     pg.here.forEach((g) => { g.b.disabled = !!why; });
     pg.whyHere.textContent = why;
-    const whyXY = why || (!S.homed.z ? "Z 원점을 먼저 잡으세요" : "");
+    const whyXY = why || (!S.homed.z ? "Z 원점 필요" : "");
     pg.end[0].b.disabled = pg.end[1].b.disabled = !!whyXY;
     pg.end[2].b.disabled = !!why;
     pg.whyEnd.textContent = why || (whyXY ? whyXY : "");
@@ -162,27 +162,27 @@ function buildStep2() {
 function buildStep3() {
   const pg = { jog: jogPart(), pts: [], drag: -1, photoId: null, dirty: false, magT: 0 };
   pg.ov = svgEl("g", {});
-  pg.pb = photoBox({ ar: 4 / 3, note: "사진이 없습니다", onfit: () => drawPts() });
+  pg.pb = photoBox({ ar: 4 / 3, note: "사진 없음", onfit: () => drawPts() });
   pg.pb.svg.append(pg.ov);
-  pg.headSet = busyGate("지금 자리로 정하기", () => api("photo_head_set"));
+  pg.headSet = busyGate("현재 위치로 설정", () => api("photo_head_set"));
   pg.headTxt = h("div", {});
-  pg.take = busyGate("사진 찍기", async () => { const r = await api("photo_take"); if (r.ok) { pg.dirty = false; pg.photoId = null; } });
+  pg.take = busyGate("촬영", async () => { const r = await api("photo_take"); if (r.ok) { pg.dirty = false; pg.photoId = null; } });
   pg.list = h("div", { class: "small" });
-  pg.redo = btn("다시 누르기", () => { pg.pts = []; pg.dirty = true; drawPts(); renderPts(); });
-  pg.apply = busyGate("이대로 정하기", async () => {
+  pg.redo = btn("다시 선택", () => { pg.pts = []; pg.dirty = true; drawPts(); renderPts(); });
+  pg.apply = busyGate("확정", async () => {
     const r = await api("plate_set", { corners: pg.pts });
-    if (r.ok) { pg.dirty = false; toast(r.result.note || "판 영역을 정했습니다"); }
+    if (r.ok) { pg.dirty = false; toast(r.result.note || "판 영역 설정 완료"); }
   }, "on");
   pg.mag = h("div", { class: "mag hidden" }, h("i", { class: "cross-h" }), h("i", { class: "cross-v" }));
   pg.pb.box.append(pg.mag);                                     // 확대창은 사진 위 구석에 띄운다(누르는 자리의 반대쪽)
   pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "3 · 카메라 · 판 영역" }),
     photoSplit(pg.pb, h("div", {},
       h("div", { class: "grp" }, h("h4", { text: "촬영 위치" }),
-        h("div", { class: "small", text: "헤드가 판을 가리지 않고 마커가 보이는 자리" }),
+        h("div", { class: "small", text: "헤드가 판을 가리지 않고 마커가 보이는 위치" }),
         pg.jog.el, h("div", { class: "row" }, pg.headSet.b, pg.headSet.w), pg.headTxt),
       h("div", { class: "grp" }, h("h4", { text: "판 영역" }),
         h("div", { class: "row" }, pg.take.b, pg.take.w),
-        h("div", { class: "small", text: "사각형 꼭짓점을 왼쪽 위부터 시계 방향으로 누르세요." }),
+        h("div", { class: "small", text: "꼭짓점을 왼쪽 위부터 시계 방향으로 선택" }),
         pg.list, h("div", { class: "row" }, pg.redo, pg.apply.b, pg.apply.w)))));
 
   const photo = () => P().photo;
@@ -201,13 +201,13 @@ function buildStep3() {
     setKids(pg.ov, ...kids);
   }
   function renderPts() {
-    pg.list.textContent = pg.pts.length ? pg.pts.map((p, i) => CORNER[i] + " (" + Math.round(p[0]) + ", " + Math.round(p[1]) + ")").join("  ") : "누른 점이 없습니다";
+    pg.list.textContent = pg.pts.length ? pg.pts.map((p, i) => CORNER[i] + " (" + Math.round(p[0]) + ", " + Math.round(p[1]) + ")").join("  ") : "선택한 점 없음";
     if (S) syncApply();                                           // 누르는 그 자리에서 바로(서버 상태가 올 때까지 기다리지 않는다)
   }
   function syncApply() {                                          // [이대로 정하기] · [다시 누르기] 를 누를 수 있는지와 그 이유
     const ph = photo(), pl = P().plate;
-    pg.apply.set(!ph ? "사진을 먼저 찍으세요" : pg.pts.length < 4 ? "꼭짓점 " + pg.pts.length + " / 4" : running() ? "측정 중에는 할 수 없습니다" : "");
-    if (pg.pts.length === 4 && pl && !pg.dirty) pg.apply.w.textContent = "정함 · " + fmtWhen(pl.t);
+    pg.apply.set(!ph ? "촬영 필요" : pg.pts.length < 4 ? "꼭짓점 " + pg.pts.length + " / 4" : running() ? "측정 중 실행 불가" : "");
+    if (pg.pts.length === 4 && pl && !pg.dirty) pg.apply.w.textContent = "설정 완료 · " + fmtWhen(pl.t);
     pg.redo.disabled = !pg.pts.length;
   }
   function showMag(p) {
@@ -253,9 +253,9 @@ function buildStep3() {
     }
     pg.headSet.set(whyStage(true, false) || whyCamera());
     const hp = c.photo_head_xy, seen = P().marker_seen;
-    setKids(pg.headTxt, hp ? "X " + f1(hp[0]) + " · Y " + f1(hp[1]) : "정하지 않았습니다",
+    setKids(pg.headTxt, hp ? "X " + f1(hp[0]) + " · Y " + f1(hp[1]) : "미설정",
       hp && seen != null ? h("span", { class: seen ? "st-ok" : "st-warn", text: seen ? " · 마커 보임" : " · 마커 안 보임" }) : "");
-    pg.take.set(running() ? "측정 중에는 할 수 없습니다" : whyCamera());
+    pg.take.set(running() ? "측정 중 실행 불가" : whyCamera());
     syncApply();
     pg.jog.update();
   };
@@ -266,20 +266,20 @@ function buildStep3() {
 /* ---------- 4 · 빈 판 사진 ---------- */
 function buildStep4() {
   const pg = {};
-  pg.pb = photoBox({ ar: 1, note: "빈 판 사진이 없습니다" });
-  pg.take = busyGate("빈 판 사진 찍기", () => api("empty_take"), "on");
+  pg.pb = photoBox({ ar: 1, note: "빈 판 사진 없음" });
+  pg.take = busyGate("빈 판 촬영", () => api("empty_take"), "on");
   pg.txt = h("div", {});
   pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "4 · 빈 판 사진" }),
     photoSplit(pg.pb, h("div", {},
       h("div", { class: "grp" },
-        h("div", { class: "small", text: "샘플을 모두 치운 뒤 누르세요." }),
+        h("div", { class: "small", text: "샘플 제거 후 촬영" }),
         h("div", { class: "row" }, pg.take.b, pg.take.w), pg.txt,
-        h("div", { class: "small", text: "없어도 측정할 수 있습니다." })))));
+        h("div", { class: "small", text: "없어도 측정 가능" })))));
   pg.render = () => {
     const e = P().empty, pl = P().plate;
     pg.take.set(whyStage(true, true) || whyCamera() || whyHead());
-    pg.txt.textContent = e ? "찍은 때 " + fmtWhen(e.t) : "";
-    pg.pb.setNote(e ? (pl ? "사진을 불러오는 중" : "판 영역(준비 3)을 먼저 정하세요") : "빈 판 사진이 없습니다");
+    pg.txt.textContent = e ? "촬영 " + fmtWhen(e.t) : "";
+    pg.pb.setNote(e ? (pl ? "사진을 불러오는 중" : "판 영역 설정 필요 (준비 3)") : "빈 판 사진 없음");
     pg.pb.show(e && pl ? "/api/img/empty.jpg?v=" + e.t + "-" + pl.t : "");
   };
   return pg;
@@ -289,29 +289,29 @@ function buildStep4() {
 function buildStep5() {
   const pg = { jog: jogPart() };
   pg.ov = svgEl("g", {});
-  pg.pb = photoBox({ ar: 1, note: "판 영역(준비 3)을 먼저 정하세요", onfit: () => pg.draw() });
+  pg.pb = photoBox({ ar: 1, note: "판 영역 설정 필요 (준비 3)", onfit: () => pg.draw() });
   pg.pb.svg.append(pg.ov);
-  pg.set = CORNER.map((n) => busyGate("여기가 " + n, () => api("coord_set", { name: n })));
+  pg.set = CORNER.map((n) => busyGate(n + " 등록", () => api("coord_set", { name: n })));
   pg.whySet = h("div", { class: "why" });
-  pg.gotoD = busyGate("D 근처로 가기", () => api("coord_goto_d"));
+  pg.gotoD = busyGate("D 예상 위치로 이동", () => api("coord_goto_d"));
   pg.cells = CORNER.map(() => [h("td", { class: "num" }), h("td", { class: "num" })]);
   pg.pts = h("table", { class: "tb ctab" }, h("thead", {}, h("tr", {}, h("th", { text: "꼭짓점" }), h("th", { class: "num", text: "X (mm)" }), h("th", { class: "num", text: "Y (mm)" }))),
     h("tbody", {}, ...CORNER.map((n, i) => h("tr", {}, h("td", { text: n }), pg.cells[i][0], pg.cells[i][1]))));
   pg.q = h("div", { class: "small" });
   pg.marker = h("div", { class: "small" });
-  pg.learn = busyGate("헤드 마커 다시 기억", () => api("marker_learn"), "sm");
+  pg.learn = busyGate("마커 재등록", () => api("marker_learn"), "sm");
   pg.extra = h("div", { class: "exlist" });
-  pg.clear = btn("처음부터 다시", () => api("coord_clear"), "sm");
-  pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "5 · 좌표 맞추기" }),
+  pg.clear = btn("초기화", () => api("coord_clear"), "sm");
+  pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "5 · 좌표 보정" }),
     photoSplit(pg.pb, h("div", {},
       h("div", { class: "grp" },
-        h("div", { class: "small", text: "핀을 꼭짓점에 대고 그 꼭짓점 버튼을 누르세요." }),
+        h("div", { class: "small", text: "핀을 꼭짓점에 맞춘 후 해당 버튼 누름" }),
         pg.jog.el, h("div", { class: "row wrap" }, ...pg.set.map((g) => g.b)), pg.whySet,
         h("div", { class: "row" }, pg.gotoD.b, pg.gotoD.w), pg.pts),
-      h("div", { class: "grp" }, h("h4", { text: "맞춘 정도" }), pg.q),
+      h("div", { class: "grp" }, h("h4", { text: "정확도" }), pg.q),
       h("div", { class: "grp" }, h("h4", { text: "헤드 마커" }), pg.marker, h("div", { class: "row" }, pg.learn.b, pg.learn.w)),
       h("div", { class: "grp" }, h("h4", { text: "보정 점" }),
-        h("div", { class: "small", text: "수동 탭 판 사진에서 추가합니다." }),
+        h("div", { class: "small", text: "수동 탭 판 사진에서 추가" }),
         pg.extra, h("div", { class: "row" }, pg.clear)))));
   pg.draw = () => {
     const c = S && S.cfg, co = P().coords;
@@ -330,28 +330,28 @@ function buildStep5() {
   pg.render = () => {
     const co = P().coords || { stage: {}, extra: [] }, pl = P().plate, ph = P().photo, e = P().empty;
     const src = pl && ph && ph.rect ? "/api/img/plate.jpg?v=" + ph.id + "-" + pl.t : pl && e ? "/api/img/empty.jpg?v=" + e.t + "-" + pl.t : "";
-    pg.pb.setNote(pl ? "사진이 없습니다" : "판 영역(준비 3)을 먼저 정하세요");
+    pg.pb.setNote(pl ? "사진 없음" : "판 영역 설정 필요 (준비 3)");
     pg.pb.show(src);
     const why = whyStage(true, false);
     pg.set.forEach((g) => { g.b.disabled = !!why; });
-    pg.whySet.textContent = why || (pl ? "" : "판 영역(준비 3)을 먼저 정하세요");
-    pg.gotoD.set(whyStage(true, true) || (co.d_guess ? "" : co.stage.D ? "D 를 이미 찍었습니다" : "A · B · C 를 먼저 찍으세요"));
+    pg.whySet.textContent = why || (pl ? "" : "판 영역 설정 필요 (준비 3)");
+    pg.gotoD.set(whyStage(true, true) || (co.d_guess ? "" : co.stage.D ? "D 등록됨" : "A · B · C 등록 필요"));
     CORNER.forEach((n, i) => { const p = co.stage[n]; pg.cells[i][0].textContent = p ? f1(p[0]) : "—"; pg.cells[i][1].textContent = p ? f1(p[1]) : "—"; });
     const q = co.quality;
     if (q) {
       setKids(pg.q, 
-        h("div", { text: "변 길이 차이 최대 " + q.max_side_err.toFixed(1) + " mm" }),
+        h("div", { text: "변 길이 오차 최대 " + q.max_side_err.toFixed(1) + " mm" }),
         h("div", { text: "직각 오차 최대 " + q.max_angle_err.toFixed(2) + "°" }),
-        q.warn ? h("div", { class: "st-warn", text: "차이가 큽니다. 다시 찍어 보세요." }) : null);
-    } else pg.q.textContent = "꼭짓점 4개를 찍으면 보입니다";
-    pg.marker.textContent = co.marker ? "기억함 · " + fmtWhen(co.marker.t) : "기억 안 함";
+        q.warn ? h("div", { class: "st-warn", text: "오차 큼 · 재설정 권장" }) : null);
+    } else pg.q.textContent = "꼭짓점 4개 등록 후 표시";
+    pg.marker.textContent = co.marker ? "등록됨 · " + fmtWhen(co.marker.t) : "미등록";
     pg.learn.set(whyStage(true, true) || whyCamera() || whyHead());
     const sig = JSON.stringify(co.extra);
     if (sig !== pg.exSig) {
       pg.exSig = sig;
       setKids(pg.extra, ...(co.extra.length ? co.extra.map((x, i) => h("div", { class: "row" },
         h("span", { class: "grow", text: (i + 1) + ". X " + f1(x.xy[0]) + " Y " + f1(x.xy[1]) + " · 오차 " + (x.err == null ? "—" : x.err.toFixed(2) + " mm") + " · " + fmtWhen(x.t) }),
-        btn("지우기", () => api("coord_remove", { index: i }), "sm"))) : [small("없습니다")]));
+        btn("지우기", () => api("coord_remove", { index: i }), "sm"))) : [small("없음")]));
     }
     pg.clear.disabled = running() || !Object.keys(co.stage).length;
     pg.draw();
@@ -363,35 +363,35 @@ function buildStep5() {
 /* ---------- 6 · 접촉 높이 찾기 ---------- */
 function contactLine(ct) {                                       // 접촉 찾기의 진행 · 결과 한 줄(준비 6단계 · 수동 탭이 같이 쓴다)
   if (!ct) return "";
-  if (ct.active) return "내리는 중 · Z " + f3(ct.z) + " mm · " + (ct.text || "");
-  if (ct.result) return "닿음 Z " + f2(ct.result.first_z) + " mm · 2단자 " + fmtOhm2(ct.result.r2) + " · 4단자 " + fmtOhm2(ct.result.r4);
-  if (ct.fail) return ct.fail + " · 핀을 올렸습니다";
+  if (ct.active) return "하강 중 · Z " + f3(ct.z) + " mm · " + (ct.text || "");
+  if (ct.result) return "접촉 Z " + f2(ct.result.first_z) + " mm · 2단자 " + fmtOhm2(ct.result.r2) + " · 4단자 " + fmtOhm2(ct.result.r4);
+  if (ct.fail) return ct.fail + " · 핀 상승 완료";
   return "";
 }
 function whyContact() {
-  return whyStage(false, true) || (devOk("k2450") ? "" : "저항계를 먼저 연결하세요 (준비 1)");
+  return whyStage(false, true) || (devOk("k2450") ? "" : "저항계 연결 필요 (준비 1)");
 }
 function buildStep6() {
   const pg = { jog: jogPart() };
   pg.find = busyGate("접촉 탐색", () => api("contact_find"), "on");
   pg.line = h("div", {});
-  pg.save = busyGate("이 높이로 저장", () => api("contact_save"));
+  pg.save = busyGate("높이 저장", () => api("contact_save"));
   pg.saved = h("div", {});
-  pg.el = h("div", { class: "panel prep-panel" }, h("h3", { text: "6 · 접촉 높이 찾기" }),
+  pg.el = h("div", { class: "panel prep-panel" }, h("h3", { text: "6 · 접촉 높이 설정" }),
     h("div", { class: "grp" },
-      h("div", { class: "small", text: "핀을 샘플 위 5 mm 안으로 내린 뒤 누르세요." }),
+      h("div", { class: "small", text: "핀을 샘플 위 5 mm 이내로 내린 후 누름" }),
       pg.jog.el,
       h("div", { class: "row" }, pg.find.b, pg.find.w), pg.line,
       h("div", { class: "row" }, pg.save.b, pg.save.w)),
     h("div", { class: "grp" }, pg.saved));
   pg.render = () => {
     const ct = P().contact || {};
-    pg.find.set(ct.active ? "찾는 중" : whyContact());
+    pg.find.set(ct.active ? "탐색 중" : whyContact());
     pg.line.textContent = contactLine(ct);
     pg.line.className = ct.fail && !ct.active ? "st-warn" : "";
-    pg.save.set(running() ? "측정 중에는 할 수 없습니다" : ct.result && !ct.active ? "" : "[접촉 탐색]을 먼저 하세요");
+    pg.save.set(running() ? "측정 중 실행 불가" : ct.result && !ct.active ? "" : "[접촉 탐색] 필요");
     const z = S.cfg.contact_z_mm;
-    pg.saved.textContent = z == null ? "저장한 접촉 높이가 없습니다" : "저장한 접촉 높이 Z " + f2(z) + " mm";
+    pg.saved.textContent = z == null ? "접촉 높이 없음" : "접촉 높이 Z " + f2(z) + " mm";
     pg.jog.update();
   };
   return pg;
@@ -414,15 +414,15 @@ function buildStep7() {
   }
   pg.note = h("div", {});
   pg.why = h("div", { class: "why" });
-  pg.off = btn("모두 끄기", () => api("cooler_only", { n: 0 }));
-  pg.el = h("div", { class: "panel prep-panel" }, h("h3", { text: "7 · 쿨러 구역 확인" }),
-    h("div", { class: "small", text: "릴레이를 켜고 차가워지는 칸을 누르세요." }),
+  pg.off = btn("전체 끄기", () => api("cooler_only", { n: 0 }));
+  pg.el = h("div", { class: "panel prep-panel" }, h("h3", { text: "7 · 쿨러 배치" }),
+    h("div", { class: "small", text: "릴레이를 켜고 냉각되는 칸 선택" }),
     h("div", { class: "two" },
       h("div", { class: "grp" }, h("h4", { text: "릴레이" }), pg.relBox, h("div", { class: "row" }, pg.off), pg.why),
       h("div", { class: "grp" }, h("h4", { text: "판 (왼쪽 위 = A)" }), pg.gridEl, pg.note)));
   async function put(i) {
     const on = onRelay();
-    if (on == null) { toast("먼저 릴레이를 하나 켜세요"); return; }
+    if (on == null) { toast("릴레이 켜기 필요"); return; }
     const g = pg.grid.slice();
     const prev = g.indexOf(on);
     if (prev >= 0) g[prev] = null;                               // 그 릴레이가 다른 칸에 있었으면 거기서 빠진다
@@ -430,7 +430,7 @@ function buildStep7() {
     pg.grid = g;
     if (g.every((v) => v != null)) {
       const r = await api("cooler_save", { grid: [g.slice(0, 3), g.slice(3, 6), g.slice(6, 9)] });
-      if (r.ok) toast("쿨러 배치를 저장했습니다");
+      if (r.ok) toast("쿨러 배치 저장 완료");
     }
     pg.render();
   }
@@ -449,7 +449,7 @@ function buildStep7() {
     pg.why.textContent = why;
     const miss = [];
     for (let n = 2; n <= 10; n++) if (n !== S.cfg.heater_relay && pg.grid.indexOf(n) < 0) miss.push("R" + n);
-    pg.note.textContent = miss.length ? "남은 릴레이: " + miss.join(" · ") : "저장된 배치입니다";
+    pg.note.textContent = miss.length ? "남은 릴레이: " + miss.join(" · ") : "저장된 배치";
     pg.note.className = miss.length ? "st-warn" : "small";
   };
   return pg;
@@ -466,7 +466,7 @@ function renderPrepList() {
   });
   prep.fakeBox.classList.toggle("hidden", !S.fake);
   if (S.fake) {
-    prep.fakeLoad.textContent = P().fake_loaded ? "가짜 샘플 치우기" : "가짜 샘플 올리기";
+    prep.fakeLoad.textContent = P().fake_loaded ? "샘플 제거" : "샘플 배치";
     prep.fakeFill.disabled = prep.fakeLoad.disabled = running();
   }
 }

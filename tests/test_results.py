@@ -74,7 +74,7 @@ def test_results_from_a_finished_run(ready_ctrl, tmp_path, monkeypatch):
 
     # 기록 하나: 파일에서 다시 읽은 요약이 가짜 모델 값과 맞는다
     rec = results.load_record(data, rid)
-    assert [s["id"] for s in rec["samples"]] == ids and all(s["status"] == "끝남" for s in rec["samples"])
+    assert [s["id"] for s in rec["samples"]] == ids and all(s["status"] == "완료" for s in rec["samples"])
     assert {"run.json", "summary.csv", "plate.jpg"} <= set(rec["files"])
     assert rec["cond"]["run_heater_off_c"] == ctrl.cfg["run_heater_off_c"] and rec["nas"]["ok"] is True
     for s in rec["samples"]:

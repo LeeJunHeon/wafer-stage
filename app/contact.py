@@ -19,7 +19,7 @@ FOUR_MIN_RATIO = 0.1             # 4단자가 2단자의 1/10 보다 작으면 �
 SEARCH_BACK_MM = 0.3             # 찾기 모드: 닿으면 이만큼 올렸다가 촘촘히 다시
 MAX_READS = 2000                 # 한 번 찾기의 읽기 상한(한도 계산이 틀려도 끝없이 돌지 않게)
 KEYS = ("volt", "ilim_a", "nplc", "step_mm", "start_above_mm", "max_below_mm", "confirm_n", "overdrive_mm", "short_ohm", "search_mm", "search_step_mm", "open_a")
-FAIL_TEXT = {"none": "닿지 않았습니다", "short": "금속 판에 닿았습니다", "four": "네 핀이 다 닿지 않았습니다", "inst": "저항계 오류"}
+FAIL_TEXT = {"none": "미접촉", "short": "금속 판 접촉", "four": "4핀 접촉 실패", "inst": "저항계 오류"}
 
 
 class ContactFail(Exception):
@@ -72,14 +72,14 @@ def make_sense(k2450, p, mode, floor, one_mm, on_step=None):
         try:
             return k2450.read_strict()
         except meters.VisaError as e:
-            raise ContactFail("저항계 값을 읽지 못했습니다 · %s" % str(e)[:40], "inst")
+            raise ContactFail("저항계 읽기 실패 · %s" % str(e)[:40], "inst")
 
     def down(z, d):
         """d 만큼 더 내리는 요청 - 한도를 넘으면 움직이지 않고 실패."""
         if z + d > floor + 1e-9:
             if st["phase"] == "4w":
-                raise ContactFail("네 핀이 다 닿지 않았습니다 · Z %.2f mm" % floor, "four")
-            raise ContactFail("닿지 않았습니다 · Z %.2f mm" % floor, "none")
+                raise ContactFail("4핀 접촉 실패 · Z %.2f mm" % floor, "four")
+            raise ContactFail("미접촉 · Z %.2f mm" % floor, "none")
         return d
 
     def note(z, kind, ohm):
@@ -90,15 +90,15 @@ def make_sense(k2450, p, mode, floor, one_mm, on_step=None):
     def sense(z):
         st["n"] += 1
         if st["n"] > MAX_READS:
-            raise ContactFail("닿지 않았습니다 · 읽기 횟수를 넘었습니다", "none")
+            raise ContactFail("미접촉 · 측정 횟수 초과", "none")
         if st["phase"] in ("coarse", "2w"):
             cur, trip = read()
             kind, r = classify(cur, trip, volt, p)
             note(z, kind, r)
             if kind == "bad":
-                raise ContactFail("저항계 값이 이상합니다", "inst")
+                raise ContactFail("저항계 값 이상", "inst")
             if kind == "short":
-                raise ContactFail("금속 판에 닿았습니다 · Z %.2f mm" % z, "short")
+                raise ContactFail("금속 판 접촉 · Z %.2f mm" % z, "short")
             d = float(p["search_step_mm"]) if st["phase"] == "coarse" else step
             if kind == "open":
                 st["streak"], st["first"] = 0, None
@@ -128,13 +128,13 @@ def make_sense(k2450, p, mode, floor, one_mm, on_step=None):
         try:
             ovp = k2450.ovp_tripped()
         except meters.VisaError as e:
-            raise ContactFail("저항계 값을 읽지 못했습니다 · %s" % str(e)[:40], "inst")
+            raise ContactFail("저항계 읽기 실패 · %s" % str(e)[:40], "inst")
         kind, r4 = classify(cur, trip, volt, p)
         note(z, "4w:" + kind + (":ovp" if ovp else ""), r4)
         if kind == "short":
-            raise ContactFail("금속 판에 닿았습니다 · Z %.2f mm" % z, "short")
+            raise ContactFail("금속 판 접촉 · Z %.2f mm" % z, "short")
         if kind == "bad":
-            raise ContactFail("저항계 값이 이상합니다", "inst")
+            raise ContactFail("저항계 값 이상", "inst")
         if kind == "contact" and four_ok(r4, st["r2"], ovp):
             st["r4"] = r4
             return None

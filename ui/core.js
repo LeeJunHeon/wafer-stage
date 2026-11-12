@@ -37,8 +37,8 @@ async function api(name, args, quiet) {
     if (!j.ok && j.msg && !quiet) toast(j.msg);              // 거절 이유(서버가 준 한 문장)
     return j;
   } catch (e) {
-    if (!quiet) toast("서버에 보내지 못했습니다");
-    return { ok: false, msg: "서버에 보내지 못했습니다" };
+    if (!quiet) toast("서버 전송 실패");
+    return { ok: false, msg: "서버 전송 실패" };
   }
 }
 async function getJson(url) {
@@ -52,9 +52,9 @@ async function putSettings(patch) {
   try {
     const r = await fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
     const j = await r.json();
-    if (!r.ok || j.ok === false) { toast(j.msg || "설정을 저장하지 못했습니다"); return false; }
+    if (!r.ok || j.ok === false) { toast(j.msg || "설정 저장 실패"); return false; }
     return true;
-  } catch (e) { toast("설정을 저장하지 못했습니다"); return false; }
+  } catch (e) { toast("설정 저장 실패"); return false; }
 }
 
 /* ---------- 비상정지: 어디서든 바로(WS 응답을 기다리지 않는다) ---------- */
@@ -172,7 +172,7 @@ function renderStatus() {
     posEl,
     h("span", { class: "item " + (heaterOn ? "st-warn" : "") }, "히트건 " + (heaterOn ? "켜짐" : "꺼짐")),
     h("span", { class: "item" }, "쿨러 " + (unknown ? "—" : cool.length ? "켜짐 " + cool.join("·") : "꺼짐")),
-    s.fake ? h("span", { class: "item st-warn" }, "가짜 장비") : null,
+    s.fake ? h("span", { class: "item st-warn" }, "시뮬레이션") : null,
     h("span", { class: "safety" }, "차단 " + (c.heater_max_c != null ? c.heater_max_c : 110) + " °C · 통신 감시 " + ((c.watchdog_ms || 2000) / 1000) + "초"));
 }
 let alarmSig = "";
@@ -181,7 +181,7 @@ function renderAlarms() {
   if (sig === alarmSig) return;
   alarmSig = sig;
   setKids($("#alarms"), ...S.alarms.map((a) => h("div", { class: "alarm " + a.level }, h("span", { class: "grow", text: a.text }),
-    (a.code === "estop" || a.code === "reboot") ? btn("비상정지 풀기", () => api("estop_release"), "sm")
+    (a.code === "estop" || a.code === "reboot") ? btn("비상정지 해제", () => api("estop_release"), "sm")
       : a.dismiss ? btn("지우기", () => api("alarm_clear", { code: a.code }), "sm") : null)));
 }
 
@@ -240,7 +240,7 @@ function photoSplit(pb, ctl) {
 function renderTab() {
   const m = TABS[tab];
   if (!m || !m.render) return;
-  try { m.render(); } catch (e) { console.error(e); toast("화면을 그리지 못했습니다 · " + String(e && e.message ? e.message : e).slice(0, 60)); }
+  try { m.render(); } catch (e) { console.error(e); toast("화면 표시 실패 · " + String(e && e.message ? e.message : e).slice(0, 60)); }
 }
 function render() {
   renderStatus(); renderAlarms(); renderTab();

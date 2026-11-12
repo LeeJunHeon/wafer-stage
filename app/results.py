@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from app.jobs import analysis, files
+from app.jobs.run import DONE
 from app.safety import Rejected
 
 ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}/[^/\\]+$")
@@ -20,11 +21,11 @@ MAX_LIST = 300
 
 def _folder(data_dir, rec_id):
     if not ID_RE.match(str(rec_id or "")):
-        raise Rejected("그런 측정 기록이 없습니다")
+        raise Rejected("해당 측정 기록 없음")
     root = Path(data_dir).resolve()
     p = (root / rec_id).resolve()
     if root not in p.parents or not (p / "run.json").is_file():
-        raise Rejected("그런 측정 기록이 없습니다")
+        raise Rejected("해당 측정 기록 없음")
     return p
 
 
@@ -32,7 +33,7 @@ def _meta(folder):
     try:
         return json.loads((folder / "run.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        raise Rejected("측정 기록을 읽지 못했습니다")
+        raise Rejected("측정 기록 읽기 실패")
 
 
 def list_records(data_dir):
@@ -50,7 +51,7 @@ def list_records(data_dir):
                 continue
             ss = m.get("samples") or []
             out.append({"id": "%s/%s" % (d.name, f.name), "started": m.get("started"), "batch": m.get("batch", ""), "n": len(ss),
-                        "done": sum(1 for s in ss if s.get("status") == "끝남"), "state": m.get("state", "")})
+                        "done": sum(1 for s in ss if s.get("status") == DONE), "state": m.get("state", "")})
             if len(out) >= MAX_LIST:
                 return out
     return out
@@ -123,21 +124,21 @@ def load_points(data_dir, rec_id, sample_id):
     for s in m.get("samples") or []:
         if str(s.get("id")) == str(sample_id):
             return {"name": s.get("name"), "cycles": len(s.get("cycles") or []), "points": sample_all_points(folder, s)}
-    raise Rejected("그런 샘플이 없습니다")
+    raise Rejected("해당 샘플 없음")
 
 
 def save_png(data_dir, rec_id, data):
     """그래프 그림(PNG)을 그 기록 폴더에 저장하고 경로를 돌려준다."""
     folder = _folder(data_dir, rec_id)
     if not data or data[:8] != b"\x89PNG\r\n\x1a\n":
-        raise Rejected("그림 데이터가 아닙니다")
+        raise Rejected("이미지 데이터 아님")
     if len(data) > 20 * 1024 * 1024:
-        raise Rejected("그림이 너무 큽니다")
+        raise Rejected("이미지 크기 초과")
     path, _ch = files.unique_path(str(folder / ("graph_%s.png" % time.strftime("%H%M%S"))))
     try:
         Path(path).write_bytes(data)
     except OSError as e:
-        raise Rejected("그림을 저장하지 못했습니다 · %s" % str(e)[:50])
+        raise Rejected("이미지 저장 실패 · %s" % str(e)[:50])
     return {"path": path}
 
 
@@ -146,11 +147,11 @@ def open_folder(data_dir, rec_id):
     folder = _folder(data_dir, rec_id)
     opener = getattr(os, "startfile", None)
     if opener is None:
-        raise Rejected("이 컴퓨터에서는 폴더를 열 수 없습니다 · %s" % folder)
+        raise Rejected("이 PC 에서는 폴더 열기 불가 · %s" % folder)
     try:
         opener(str(folder))
     except OSError as e:
-        raise Rejected("폴더를 열지 못했습니다 · %s" % str(e)[:50])
+        raise Rejected("폴더 열기 실패 · %s" % str(e)[:50])
     return {"folder": str(folder)}
 
 
@@ -161,7 +162,7 @@ def nas_copy(data_dir, rec_id):
     nas = m.get("nas") or {}
     dst = nas.get("dir")
     if not dst:
-        raise Rejected("NAS 폴더가 없는 기록입니다")
+        raise Rejected("NAS 폴더 없는 기록")
     dats = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix == ".dat")
     names = dict(nas.get("names") or {})                            # PC 파일 이름 → 이 기록이 NAS 에 쓴 이름
     done, pending, err = [], [], ""
@@ -190,5 +191,5 @@ def nas_copy(data_dir, rec_id):
     except OSError:
         pass
     if pending:
-        raise Rejected("NAS 에 쓰지 못했습니다 · %s" % err[:60])
+        raise Rejected("NAS 쓰기 실패 · %s" % err[:60])
     return {"copied": len(done)}

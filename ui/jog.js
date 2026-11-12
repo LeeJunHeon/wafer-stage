@@ -12,7 +12,7 @@ function jogPart() {
   sync();
   const jog = (axis, sign) => () => api("jog", { axis, mm: sign * st.step });
   const moveBtns = [btn("Y +", jog("y", 1), "u"), btn("X −", jog("x", -1), "l"), btn("X +", jog("x", 1), "r"), btn("Y −", jog("y", -1), "d"),
-    btn("Z 위로", jog("z", -1)), btn("Z 아래로", jog("z", 1)), btn("핀 올리기", () => api("z_top"))];
+    btn("Z 상승", jog("z", -1)), btn("Z 하강", jog("z", 1)), btn("핀 상승", () => api("z_top"))];
   const why = h("div", { class: "why hidden" });
   const el = h("div", { class: "jog" },
     h("div", { class: "steps" }, small("이동 거리"), ...stepBtns, custom, small("mm")),
@@ -21,7 +21,7 @@ function jogPart() {
       h("div", { class: "zcol" }, ...moveBtns.slice(4))),
     why);
   function update() {
-    const block = running() ? "측정 중에는 쓸 수 없습니다" : "";       // 서버도 거절한다 - 화면은 이유만 미리 보여 준다
+    const block = running() ? "측정 중 사용 불가" : "";       // 서버도 거절한다 - 화면은 이유만 미리 보여 준다
     moveBtns.forEach((b) => { b.disabled = !!block; });
     why.textContent = block;
     why.classList.toggle("hidden", !block);

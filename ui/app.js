@@ -4,7 +4,7 @@
 for (const name of TAB_NAMES) {
   const m = TABS[name];
   if (!m || !m.build) continue;
-  try { m.build(); } catch (e) { console.error(e); toast("화면을 만들지 못했습니다 · " + name); }
+  try { m.build(); } catch (e) { console.error(e); toast("화면 생성 실패 · " + name); }
 }
 connectWS();
 fetch("/api/state").then((r) => r.json()).then((s) => { if (!S) { S = s; render(); readLists(); } }).catch(() => {});
