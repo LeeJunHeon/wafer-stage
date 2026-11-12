@@ -140,7 +140,7 @@ def create_app(ctrl: Controller) -> FastAPI:
     @app.put("/api/settings")
     async def put_settings(patch: dict = Body(...)):
         if ctrl.run_active():                                      # 측정이 쓰는 값이 도중에 바뀌지 않게
-            return JSONResponse({"ok": False, "msg": "측정 중에는 설정을 바꿀 수 없습니다"}, status_code=409)
+            return JSONResponse({"ok": False, "msg": "측정 중에는 할 수 없습니다"}, status_code=409)
         try:
             ctrl.cfg.update(patch)
             ctrl.cfg.save()

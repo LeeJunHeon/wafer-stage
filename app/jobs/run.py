@@ -4,8 +4,8 @@
   1. 이동  : 히트건이 꺼졌는지 확인 → 핀 맨 위(Z 0, st 로 확인) → 샘플 가운데로 X · Y.
   2. 접촉  : 저장한 접촉 높이 − 0.3 mm 까지 내린 뒤 전기로 확인하며 내린다. 실패(안 닿음 · 금속 판 · 4단자)면 핀을 올리고 이 샘플은 "실패", 다음 샘플로.
   3. 냉각  : 쿨러를 켠다. 온도가 시작 온도보다 높으면 내려갈 때까지 기다린다(기록하지 않는다).
-  4. 가열  : K2450 출력을 켜고 기록 시작. 히트건을 **한 번** 켜고, 히트건 끄는 온도에 닿으면 **한 번** 끈다(그 사이에 다시 켜거나 끄지 않는다 - 자주 켜고 끄면 연기가 난다).
-  5. 냉각  : 식힘 끝 온도 아래로 내려갈 때까지 기록한다(히트건을 끈 뒤 더 오르는 구간도 그대로 기록).
+  4. 가열  : K2450 출력을 켜고 기록 시작. 히트건을 **한 번** 켜고, 가열 끝 온도에 닿으면 **한 번** 끈다(그 사이에 다시 켜거나 끄지 않는다 - 자주 켜고 끄면 연기가 난다).
+  5. 냉각  : 냉각 끝 온도 아래로 내려갈 때까지 기록한다(히트건을 끈 뒤 더 오르는 구간도 그대로 기록).
   6. 반복이 2회 이상이면 4~5 를 되풀이.
   7. 저장  : K2450 출력 끔 → 쿨러 끔 → 핀 맨 위 → 파일 닫기 → NAS 복사.
 읽기: 읽는 간격마다 온도(K2110) 한 번 · 저항(K2450) 한 번. 그 온도를 안전 감시에 그대로 넘긴다(온도를 따로 두 번 읽지 않는다).
@@ -29,7 +29,7 @@ from app.safety import Rejected
 from app.state import ALARM, NOTICE
 
 STAGES = ("이동", "접촉", "냉각", "가열", "냉각", "저장")
-WAIT, NOW, DONE, FAIL, SKIPPED, STOPPED, OUT = "할 차례", "지금", "끝남", "실패", "건너뜀", "멈춤", "빼 둠"
+WAIT, NOW, DONE, FAIL, SKIPPED, STOPPED, OUT = "대기", "지금", "끝남", "실패", "건너뜀", "멈춤", "제외"
 T_MISS_N = 3                                      # 온도를 이만큼 연속으로 못 읽으면 측정을 멈춘다(열전대 끊김)
 MAX_POINTS = 200000
 COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "meter_ilim_a", "run_start_c", "run_heater_off_c", "run_cool_end_c",
@@ -102,7 +102,7 @@ class Runner:
         if c.cfg["contact_z_mm"] is None:
             out.append({"text": "접촉 높이", "step": 6})
         if c.prep.pos_block:
-            out.append({"text": "헤드 위치 확인(원점이나 좌표를 다시 맞추기)", "step": 2})
+            out.append({"text": "헤드 위치 확인", "step": 2})
         return out
 
     def reset(self):
@@ -123,18 +123,18 @@ class Runner:
                 raise Rejected("이미 측정 중입니다")
             miss = self.gate()
             if miss:
-                raise Rejected("준비가 덜 됐습니다 · " + " · ".join(m["text"] for m in miss))
+                raise Rejected("먼저 할 것: " + " · ".join(m["text"] for m in miss))
             used = [s for s in c.prep.samples if s["use"]]
             if not used:
-                raise Rejected("고른 샘플이 없습니다. 사진을 찍고 샘플을 찾은 뒤 측정할 샘플을 고르십시오")
+                raise Rejected("측정할 샘플이 없습니다")
             if any(s["xy"] is None for s in used):
-                raise Rejected("샘플 자리를 스테이지 좌표로 바꾸지 못했습니다. 좌표 맞추기(준비 5)를 확인하십시오")
+                raise Rejected("샘플 자리를 못 구했습니다. 좌표 맞추기를 확인하세요 (준비 5)")
             names = [s["name"] for s in used]
             if len(set(names)) != len(names):
-                raise Rejected("샘플 이름이 겹칩니다. 이름을 고쳐 주십시오")
+                raise Rejected("샘플 이름이 겹칩니다. 이름을 고치세요.")
             self.cond = {k: c.cfg[k] for k in COND_KEYS}
             if float(self.cond["run_heater_off_c"]) >= float(self.cond["heater_max_c"]):
-                raise Rejected("히트건 끄는 온도(%g °C)가 히트건 차단 온도(%g °C)보다 낮아야 합니다" % (self.cond["run_heater_off_c"], self.cond["heater_max_c"]))
+                raise Rejected("가열 끝 온도 %g °C 는 차단 온도 %g °C 보다 낮아야 합니다" % (self.cond["run_heater_off_c"], self.cond["heater_max_c"]))
             self.batch = str(c.cfg["batch_name"])
             self.t0 = time.time()
             lt = time.localtime(self.t0)
@@ -153,21 +153,21 @@ class Runner:
         return {"folder": str(self.folder), "n": len(self.order)}
 
     def resume(self):
-        """[이어서 측정]: 남은 "할 차례"부터 같은 폴더에 이어서. 멈춘 뒤 새로 고른 샘플은 맨 뒤에 붙는다."""
+        """[이어서 측정]: 남은 "대기"부터 같은 폴더에 이어서. 멈춘 뒤 새로 고른 샘플은 맨 뒤에 붙는다."""
         with self._lock:
             if self.active:
                 raise Rejected("이미 측정 중입니다")
             if self.state not in ("stopped", "done") or self.folder is None:
-                raise Rejected("이어서 할 측정이 없습니다. [측정 시작] 을 누르십시오")
+                raise Rejected("이어서 할 측정이 없습니다")
             miss = self.gate()
             if miss:
-                raise Rejected("준비가 덜 됐습니다 · " + " · ".join(m["text"] for m in miss))
+                raise Rejected("먼저 할 것: " + " · ".join(m["text"] for m in miss))
             for s in self.c.prep.samples:
                 if s["use"] and s["id"] not in self.items and s["xy"] is not None:
                     self.items[s["id"]] = self._new_item(s)
                     self.order.append(s["id"])
             if not any(self.items[i]["status"] == WAIT for i in self.order):
-                raise Rejected("남은 샘플이 없습니다. 끝난 샘플을 누르고 [다시 측정 목록에 넣기] 를 하십시오")
+                raise Rejected("남은 샘플이 없습니다")
             if self.nas is None or not self.nas.is_alive():
                 self._start_nas(keep=True)
             self._launch()
@@ -198,7 +198,7 @@ class Runner:
                 raise Rejected("측정 중에는 할 수 없습니다")
             it = self.items.get(int(id))
             if it is None or it["status"] in (WAIT, NOW):
-                raise Rejected("다시 넣을 수 있는 샘플이 아닙니다")
+                raise Rejected("다시 측정할 수 없는 샘플입니다")
             it.update(status=WAIT, reason="", notes=[])
             self.state = "stopped"
             self.msg = ""
@@ -259,6 +259,7 @@ class Runner:
         c = self.c
         g = c.safety.generation
         c.logs.app("측정 시작 · 묶음 %s · %d개 · %s" % (self.batch, sum(1 for i in self.order if self.items[i]["status"] == WAIT), self.folder))
+        halted = False                                              # 중지 · 비상정지 · 오류로 멈췄다(남은 샘플이 없어도 "끝남"이 아니다)
         try:
             for sid in list(self.order):
                 it = self.items[sid]
@@ -268,25 +269,28 @@ class Runner:
                     raise Halt("stop")
                 self._one(it, g)
                 if self.pause_after and any(self.items[i]["status"] == WAIT for i in self.order):
-                    self.msg = "이 샘플까지 하고 멈췄습니다"
+                    self.msg = "샘플을 끝내고 멈췄습니다"
                     break
         except Halt as h:
+            halted = True
             self.msg = {"stop": "측정을 멈췄습니다", "estop": "비상정지로 멈췄습니다"}.get(h.kind, "")
         except RunAbort as e:
+            halted = True
             self.msg = "측정을 멈췄습니다 · %s" % e
             c.state.alarm("run", "측정을 멈췄습니다 · %s" % e, ALARM, dismiss=True)
             c.logs.app("측정 멈춤(장비 오류) · %s" % e, "error")
         except Exception as e:                                      # noqa: BLE001 - 예상하지 못한 오류도 "끝남"으로 두지 않는다
-            self.msg = "측정을 멈췄습니다 · 예상하지 못한 오류"
-            c.state.alarm("run", "측정을 멈췄습니다 · 예상하지 못한 오류 (%s: %s)" % (type(e).__name__, str(e)[:60]), ALARM, dismiss=True)
+            halted = True
+            self.msg = "측정을 멈췄습니다 · 오류"
+            c.state.alarm("run", "측정을 멈췄습니다 · 오류 · %s: %s" % (type(e).__name__, str(e)[:60]), ALARM, dismiss=True)
             c.logs.app("측정 멈춤(예상 못 한 오류) · %s: %s" % (type(e).__name__, e), "error")
         finally:
             self.feeding = False
             self.cur, self.stage = None, None
             left = any(self.items[i]["status"] == WAIT for i in self.order)
-            final = "stopped" if left or self.msg.startswith("측정을 멈췄") or self.msg.startswith("비상정지") else "done"
+            final = "stopped" if left or halted else "done"
             self.pause_after = False
-            self.line = "파일을 저장하는 중"
+            self.line = "저장 중"
             self.publish()
             try:
                 self._save_json(final)
@@ -326,8 +330,8 @@ class Runner:
             it.update(status=FAIL, reason=str(e))
             abort = e
         except Exception as e:                                      # noqa: BLE001
-            it.update(status=FAIL, reason="예상하지 못한 오류")
-            abort = RunAbort("예상하지 못한 오류 (%s: %s)" % (type(e).__name__, str(e)[:60]))
+            it.update(status=FAIL, reason="오류")
+            abort = RunAbort("오류 · %s: %s" % (type(e).__name__, str(e)[:60]))
         finally:
             self.feeding = False
             self._cleanup(estop=bool(halt and halt.kind == "estop") or c.safety.locked)
@@ -363,13 +367,13 @@ class Runner:
         fname = it["name"] + "_"                                    # LabVIEW 의 File name 은 밑줄까지다
         # ---- 1 이동 ----
         self._check(g)
-        self._set(0, "핀을 맨 위로 올리고 샘플 %s 위로 갑니다" % it["name"])
+        self._set(0, "샘플 위로 이동")
         if self.heater.is_on:
             self.heater.off()
         c.goto(it["xy"][0], it["xy"][1])
         # ---- 2 접촉 ----
         self._check(g)
-        self._set(1, "전기로 확인하며 핀을 내립니다")
+        self._set(1, "접촉 탐색")
         try:
             res = c.contact_descend("height", cd["contact_z_mm"], g)
         except contact_mod.ContactFail as e:
@@ -385,19 +389,18 @@ class Runner:
         self.feeding = True
         T = self._read_temp()
         if T is not None and T > start_c:
-            self._set(2, "쿨러로 %g °C 까지 식힌 뒤 가열을 시작합니다" % start_c)
+            self._set(2, "%g °C 까지 냉각" % start_c)
             self._loop(it, g, phase=None, with_r=False, done=lambda t, now: t <= start_c, stall=True,
-                       frac=_frac_down(T, start_c), what="시작 전 식힘")
+                       frac=_frac_down(T, start_c), what="시작 전 냉각")
         dev = c.k2450
         if dev is None or not dev.is_open:
-            raise RunAbort("저항계(K2450)가 연결되어 있지 않습니다")
+            raise RunAbort("저항계가 연결되어 있지 않습니다")
         for cyc in range(1, repeat + 1):
             self.cycle = cyc
             # ---- 4 가열 ----
             self._check(g)
-            path = self._open_cycle(it, fname, volt, cyc)
-            tail = "%g °C 까지 식힘 → %s 저장" % (end_c, path.name)
-            self._set(3, "%g °C 에서 히트건 끔 → %s" % (off_c, tail))
+            self._open_cycle(it, fname, volt, cyc)
+            self._set(3, "%g °C 까지 가열" % off_c)                  # 진행 글은 지금 하는 일만 쓴다
             if cyc == 1:
                 try:
                     dev.configure(volt, cd["meter_ilim_a"], cd["meter_four_wire"], cd["meter_nplc"], cd["meter_avg_count"])
@@ -419,21 +422,21 @@ class Runner:
             if not cd["run_cooler_during_heat"]:
                 for n in self._coolers:
                     c.relay_on(n)
-            self._set(4, tail)
+            self._set(4, "%g °C 까지 냉각" % end_c)
             peak = {"t": None}
             self._loop(it, g, phase=1, with_r=True, done=lambda t, now: t < end_c, stall=True, peak=peak,
-                       frac=lambda t: _frac_down(peak["t"] if peak["t"] is not None else t, end_c)(t), what="식힘")
+                       frac=lambda t: _frac_down(peak["t"] if peak["t"] is not None else t, end_c)(t), what="냉각")
             it["peak"] = peak["t"] if it["peak"] is None else max(it["peak"], peak["t"] or -1e9)
             self._close_cycle(it)
         # ---- 7 저장 ---- (출력 끔 · 쿨러 끔 · 핀 맨 위 · 파일 닫기 · NAS 복사는 _one 의 정리가 한다)
-        self._set(5, "출력과 쿨러를 끄고 핀을 올린 뒤 파일을 닫습니다", 0.5)
+        self._set(5, "저장 중", 0.5)
 
     # ---- 읽기 ----
     def _read_temp(self):
         c = self.c
         dev = c.k2110
         if dev is None or not dev.is_open:
-            raise RunAbort("온도계(K2110)가 연결되어 있지 않습니다")
+            raise RunAbort("온도계가 연결되어 있지 않습니다")
         try:
             T = dev.read_temp()
         except meters.VisaError as e:
@@ -443,7 +446,7 @@ class Runner:
         if T is None:
             self._t_miss += 1
             if self._t_miss >= T_MISS_N:
-                raise RunAbort("온도를 읽지 못했습니다 · 열전대를 확인하십시오")
+                raise RunAbort("온도를 읽지 못했습니다. 열전대를 확인하세요.")
         else:
             self._t_miss = 0
         return T
@@ -460,7 +463,7 @@ class Runner:
                 self.line = line
                 return T
             self._check(g)
-            self.line = "히트건을 다시 켜기까지 %d 초 기다립니다" % (int(wait) + 1)
+            self.line = "히트건 대기 %d초" % (int(wait) + 1)
             self.publish()
             c.sleep(min(float(self.cond["run_interval_s"]), wait))
 
@@ -500,11 +503,11 @@ class Runner:
             if st["low"] >= int(cd["run_open_n"]) and not st["open_warned"]:
                 st["open_warned"] = True
                 it["notes"].append("핀이 떨어진 것 같음")
-                c.state.alarm("pin_open", "샘플 %s · 핀이 떨어진 것 같습니다 (전류가 거의 흐르지 않습니다) · 측정은 계속합니다" % it["name"], NOTICE, dismiss=True)
+                c.state.alarm("pin_open", "%s · 핀이 떨어진 것 같습니다" % it["name"], NOTICE, dismiss=True)
         if trip and not st["trip_warned"]:
             st["trip_warned"] = True
             it["notes"].append("전류 한도 걸림")
-            c.state.alarm("ilim", "샘플 %s · 전류가 한도에 닿았습니다 (그 점은 기록하지 않습니다)" % it["name"], NOTICE, dismiss=True)
+            c.state.alarm("ilim", "%s · 전류 한도에 닿았습니다" % it["name"], NOTICE, dismiss=True)
 
     def _heat(self, it, g, T_start, off_c):
         """가열: 히트건을 켠 채 끄는 온도에 닿을 때까지 기록한다. 닿으면 True, 안전 규칙(최대 켜짐 시간 등)이 먼저 껐으면 False."""
@@ -532,7 +535,7 @@ class Runner:
                     return False
                 if prev is not None and now - prev[0] > 0.05 and (T - prev[1]) / (now - prev[0]) > fast and not st["fast_warned"]:
                     st["fast_warned"] = True
-                    c.state.alarm("fast_rise", "온도가 너무 빨리 오름 · 열전대가 히트건 바람을 직접 맞는지 확인", NOTICE, dismiss=True)
+                    c.state.alarm("fast_rise", "온도가 너무 빨리 오릅니다. 열전대를 확인하세요.", NOTICE, dismiss=True)
                 prev = (now, T)
                 if on_t0 is None:
                     on_t0, on_T0 = now, T
@@ -540,18 +543,18 @@ class Runner:
                     on_t0, on_T0 = now, T
                 elif now - on_t0 >= no_s:                           # 켜 놓았는데 온도가 안 오른다
                     self.heater.off()
-                    raise SampleFail("온도가 오르지 않음 · 열전대나 핀 확인")
+                    raise SampleFail("온도가 오르지 않습니다")
                 self.frac = max(0.0, min(1.0, (T - T_start) / max(1e-6, off_c - T_start)))
             elif not self.heater.is_on:
                 return False
             if now - t0 > float(cd["run_phase_limit_s"]):
                 self.heater.off()
-                raise SampleFail("가열이 %g 초를 넘었습니다" % cd["run_phase_limit_s"])
+                raise SampleFail("가열이 %g초를 넘었습니다" % cd["run_phase_limit_s"])
             self.publish()
             c.sleep(max(0.0, interval - (c.clock() - t_it)))
 
     def _loop(self, it, g, phase, with_r, done, stall, frac, what, peak=None):
-        """식힘(시작 전 · 가열 뒤): done(온도, 지금) 이 참이 되거나, 한동안 더 안 내려가면(방 온도에 닿음) 정상으로 끝낸다."""
+        """냉각(시작 전 · 가열 뒤): done(온도, 지금) 이 참이 되거나, 한동안 더 안 내려가면(방 온도에 닿음) 정상으로 끝낸다."""
         c, cd = self.c, self.cond
         interval = float(cd["run_interval_s"])
         span, step = float(cd["run_stall_s"]), float(cd["run_stall_c"])
@@ -579,11 +582,11 @@ class Runner:
                     if best is None or T < best - step:
                         best, best_t = T, now
                     elif now - best_t >= span:                      # 방 온도에 닿아 더 안 내려간다 - 그 단계를 정상으로 끝낸다
-                        it["notes"].append("%s을 %.1f °C 에서 끝냄(더 안 내려감)" % (what, T))
+                        it["notes"].append("%s을 %.1f °C 에서 끝냄" % (what, T))
                         return T
                 self.frac = max(0.0, min(1.0, frac(T)))
             if now - t0 > float(cd["run_phase_limit_s"]):
-                raise SampleFail("%s이 %g 초를 넘었습니다" % (what, cd["run_phase_limit_s"]))
+                raise SampleFail("%s이 %g초를 넘었습니다" % (what, cd["run_phase_limit_s"]))
             self.publish()
             c.sleep(max(0.0, interval - (c.clock() - t_it)))
 
@@ -609,7 +612,8 @@ class Runner:
             if c.stage.connected and (self.heater.is_on or c.stage.relays[hr - 1] is not False):
                 self.heater.off()
         except Rejected as e:
-            c.state.alarm("heater_off_fail", "히트건을 끄지 못했습니다 (%s). 전원을 직접 끄십시오" % str(e)[:40], ALARM)
+            c.state.alarm("heater_off_fail", "히트건을 끄지 못했습니다. 전원을 끄세요.", ALARM)
+            c.logs.app("측정 뒤 히트건 끄기 실패 · %s" % e, "error")
         if c.k2450 is not None and c.k2450.is_open:
             c._k2450_off(c.k2450)
         for n in list(self._coolers):
@@ -617,7 +621,8 @@ class Runner:
                 if c.stage.connected and c.stage.relays[n - 1] is not False:
                     c.relay_off(n)
             except Rejected as e:
-                c.state.alarm("cooler_off_fail", "쿨러를 끄지 못했습니다 (%s)" % str(e)[:40], ALARM)
+                c.state.alarm("cooler_off_fail", "쿨러를 끄지 못했습니다. 전원을 끄세요.", ALARM)
+                c.logs.app("측정 뒤 쿨러 끄기 실패 · %s" % e, "error")
         self._coolers = []
         if not estop and c.stage.connected and not c.safety.locked:
             try:
@@ -625,7 +630,7 @@ class Runner:
                     c.z_top()
             except Rejected as e:
                 c.logs.app("측정 뒤 핀 올리기 실패 · %s" % e, "error")
-                c.state.alarm("run_ztop", "핀을 맨 위로 올리지 못했습니다 · %s" % e, ALARM, dismiss=True)
+                c.state.alarm("run_ztop", "핀을 올리지 못했습니다 · %s" % e, ALARM, dismiss=True)
 
     # ---- 파일 ----
     _fc = _fm = None
@@ -669,7 +674,8 @@ class Runner:
                 os.replace(str(self.folder / n), dst)
                 moved.append(n)
         except OSError as e:
-            raise SampleFail("예전 파일을 옮기지 못했습니다 · 다른 프로그램이 그 파일을 열고 있는지 확인하십시오 (%s)" % str(e)[:40])
+            self.c.logs.app("샘플 %s · 예전 파일 옮기기 실패 · %s" % (it["name"], e), "error")
+            raise SampleFail("예전 파일을 옮기지 못했습니다. 열려 있는 파일을 닫으세요.")
         finally:
             if moved:
                 it.setdefault("moved", []).append({"to": sub, "files": moved, "t": time.time()})
@@ -774,11 +780,8 @@ class Runner:
         total = len(self.order)
         summary = ""
         if self.state in ("done", "stopped") and total:
-            parts = ["%d개 중 %d개 끝남" % (total, n[DONE])]
-            for key, word in ((FAIL, "실패"), (SKIPPED, "건너뜀"), (STOPPED, "멈춤"), (WAIT, "남음")):
-                if n[key]:
-                    parts.append("%d개 %s" % (n[key], word))
-            summary = " · ".join(parts)
+            rest = ["%s %d" % (word, n[key]) for key, word in ((FAIL, "실패"), (SKIPPED, "건너뜀"), (STOPPED, "멈춤"), (WAIT, "남음")) if n[key]]
+            summary = "%d개 중 %d개 끝남" % (total, n[DONE]) + (" · " + ", ".join(rest) if rest else "")       # 예: 9개 중 7개 끝남 · 실패 1, 남음 1
         rec = None
         if self.folder is not None:
             rec = "%s/%s" % (self.folder.parent.name, self.folder.name)

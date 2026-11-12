@@ -112,7 +112,7 @@ def load_record(data_dir, rec_id):
                      "n": len(pts), "cycles": len(s.get("cycles") or []), "sum": a, "files": s.get("files") or [], "moved": s.get("moved") or []})
     names = sorted(p.name for p in folder.iterdir() if p.is_file())
     for d in sorted(p for p in folder.iterdir() if p.is_dir() and p.name.startswith("이전_")):      # 다시 재기 전의 파일을 옮겨 둔 폴더
-        names.append("%s\\ (예전 파일 %d개)" % (d.name, sum(1 for x in d.iterdir() if x.is_file())))
+        names.append("%s\\ · 예전 파일 %d개" % (d.name, sum(1 for x in d.iterdir() if x.is_file())))
     return {"id": rec_id, "folder": str(folder), "started": m.get("started"), "batch": m.get("batch", ""), "state": m.get("state", ""), "cond": m.get("cond") or {},
             "nas": m.get("nas"), "samples": rows, "files": names}
 
@@ -146,7 +146,7 @@ def open_folder(data_dir, rec_id):
     folder = _folder(data_dir, rec_id)
     opener = getattr(os, "startfile", None)
     if opener is None:
-        raise Rejected("이 컴퓨터에서는 폴더를 열 수 없습니다 · 경로: %s" % folder)
+        raise Rejected("이 컴퓨터에서는 폴더를 열 수 없습니다 · %s" % folder)
     try:
         opener(str(folder))
     except OSError as e:
@@ -161,7 +161,7 @@ def nas_copy(data_dir, rec_id):
     nas = m.get("nas") or {}
     dst = nas.get("dir")
     if not dst:
-        raise Rejected("이 기록은 NAS 폴더가 정해져 있지 않습니다")
+        raise Rejected("NAS 폴더가 없는 기록입니다")
     dats = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix == ".dat")
     names = dict(nas.get("names") or {})                            # PC 파일 이름 → 이 기록이 NAS 에 쓴 이름
     done, pending, err = [], [], ""

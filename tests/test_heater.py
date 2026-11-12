@@ -38,7 +38,7 @@ def test_heater_cut_when_temperature_unreadable(make_ctrl):
     clock.advance(2.0)
     ctrl.check_heater()
     assert ctrl.fake_fw.relay[0] is False
-    assert "읽지 못해" in [a for a in ctrl.state.snapshot()["alarms"] if a["code"] == "heater"][0]["text"]
+    assert "못 읽어" in [a for a in ctrl.state.snapshot()["alarms"] if a["code"] == "heater"][0]["text"]
 
 
 def test_heater_cut_at_max_on_time(make_ctrl):
@@ -50,7 +50,7 @@ def test_heater_cut_at_max_on_time(make_ctrl):
         clock.advance(10.0)
         ctrl.feed_temperature(40.0)                           # 온도는 계속 읽힌다
     assert ctrl.fake_fw.relay[0] is False
-    assert "최대 켜짐 시간" in [a for a in ctrl.state.snapshot()["alarms"] if a["code"] == "heater"][0]["text"]
+    assert "켜서 껐습니다" in [a for a in ctrl.state.snapshot()["alarms"] if a["code"] == "heater"][0]["text"]
 
 
 def test_heater_cannot_restart_within_min_off_time(make_ctrl):
@@ -63,7 +63,7 @@ def test_heater_cannot_restart_within_min_off_time(make_ctrl):
     ctrl.feed_temperature(30.0)
     with pytest.raises(Rejected) as e:
         ctrl.relay_on(1)
-    assert "다시 켤 수 있습니다" in str(e.value)
+    assert "뒤에 켤 수 있습니다" in str(e.value)
     clock.advance(7.0)                                        # 끈 지 11 초
     ctrl.feed_temperature(30.0)
     ctrl.relay_on(1)

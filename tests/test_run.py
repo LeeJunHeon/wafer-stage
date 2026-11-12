@@ -128,7 +128,7 @@ def test_start_needs_preparation(ready_ctrl):
     ctrl = ready_ctrl(time_scale=FAST)
     with pytest.raises(Rejected) as e:
         ctrl.run_command("run_start")
-    assert "고른 샘플이 없습니다" in str(e.value)
+    assert "측정할 샘플이 없습니다" in str(e.value)
     ctrl.run_command("samples_find")
     ctrl._remember(contact_z_mm=None)
     assert {"text": "접촉 높이", "step": 6} in ctrl.runner.gate()
@@ -191,12 +191,12 @@ def test_skip_pause_resume_stop_requeue(ready_ctrl):
     ctrl.run_command("run_requeue", {"id": ids[0]})                  # 끝난(건너뛴) 샘플을 다시 측정 목록에
     ctrl.run_command("run_resume")
     _finish(ctrl, 60)
-    assert run.items[ids[0]]["status"] == DONE and run.state == "done", "남은 '할 차례'가 없으면 끝(멈춘 샘플은 요약에 남는다)"
+    assert run.items[ids[0]]["status"] == DONE and run.state == "done", "남은 '대기'가 없으면 끝(멈춘 샘플은 요약에 남는다)"
     name = run.items[ids[0]]["name"]
     assert sorted(p.name for p in folder.glob(name + "_*.dat")) == [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"], "다시 잰 파일도 원래 이름으로"
     old = [p for p in folder.iterdir() if p.is_dir() and p.name.startswith("이전_")]
     assert len(old) == 1 and sorted(p.name for p in old[0].iterdir()) == [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"], "건너뛰기 전에 받은 데이터는 이전_ 폴더에 남는다"
-    assert ctrl.state.get("run", "summary") == "3개 중 2개 끝남 · 1개 멈춤"
+    assert ctrl.state.get("run", "summary") == "3개 중 2개 끝남 · 멈춤 1"
 
 
 def test_estop_during_run(ready_ctrl):
@@ -232,7 +232,7 @@ def test_contact_failure_goes_to_next_sample(ready_ctrl):
     run = ctrl.runner
     assert run.items[ids[0]]["status"] == FAIL and run.items[ids[0]]["reason"] == "닿지 않았습니다"
     assert run.items[ids[1]]["status"] == DONE, "실패한 샘플은 건너뛰고 다음으로"
-    assert run.state == "done" and ctrl.state.get("run", "summary") == "2개 중 1개 끝남 · 1개 실패"
+    assert run.state == "done" and ctrl.state.get("run", "summary") == "2개 중 1개 끝남 · 실패 1"
     assert max(int(c.split()[1]) for c in ctrl.fake_fw.log if c.startswith("gz ")) / 160.0 <= ctrl.cfg["contact_z_mm"] + 0.5 + 1e-6
     _all_off(ctrl)
 
@@ -261,7 +261,7 @@ def test_no_temperature_rise_fails_sample(ready_ctrl):
     ctrl.lab.t_heat = 125.0
     _finish(ctrl)
     run = ctrl.runner
-    assert "온도가 오르지 않음" in run.items[ids[0]]["reason"]
+    assert "온도가 오르지 않습니다" in run.items[ids[0]]["reason"]
     assert run.items[ids[1]]["status"] == DONE
     _all_off(ctrl)
 
@@ -282,7 +282,7 @@ def test_cooling_stall_ends_phase_normally(ready_ctrl):
     ctrl.run_command("run_start")
     _finish(ctrl, 60)
     it = ctrl.runner.items[ids[0]]
-    assert it["status"] == DONE and any("더 안 내려감" in n for n in it["notes"])
+    assert it["status"] == DONE and any("에서 끝냄" in n for n in it["notes"])
     assert 9.0 < it["points"][-1][0] < 14.0
 
 

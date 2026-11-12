@@ -1,7 +1,7 @@
 """prep.py - 준비 탭 2~7단계와 사진 · 좌표 · 샘플 찾기. 이동 · 릴레이는 전부 Controller 의 안전 규칙을 지난다.
 
 사진(photo): 마지막으로 찍은 원본 한 장. 판 꼭짓점이 정해져 있으면 보정 사진(판을 위에서 본 정사각형)을 만들어 둔다.
-위치 확인: 사진 찍을 때 헤드 자리에서 찍은 사진마다 헤드 마커를 찾아 기억한 자리와의 차이(mm)를 낸다.
+위치 확인: 촬영 위치에서 찍은 사진마다 헤드 마커를 찾아 기억한 자리와의 차이(mm)를 낸다.
 왜 마커만으로 좌표를 맞추지 않는가: 마커는 헤드 윗면에 있어 판보다 높다. 비스듬한 카메라에서는 높이가 다르면 같은 X · Y 라도
 사진에서 다른 자리에 보인다. 그래서 판 위의 점(꼭짓점)에 핀을 직접 대어 맞추고, 마커는 "원점이나 카메라가 움직였는지" 확인에만 쓴다.
 """
@@ -27,7 +27,7 @@ class Prep:
     def __init__(self, ctrl):
         self.c = ctrl
         self._lock = threading.RLock()
-        self.photo = None                           # {"frame", "t", "id", "at_head": 사진 찍을 때 헤드 자리에서 찍었는가}
+        self.photo = None                           # {"frame", "t", "id", "at_head": 촬영 위치에서 찍었는가}
         self._photo_n = 0
         self._rect = {}                             # 보정 사진 캐시: 이름 → (열쇠, 그림)
         self._empty = None                          # 빈 판 원본(파일에서 읽어 둔 것)
@@ -62,7 +62,7 @@ class Prep:
     def _need_xy(self):
         self.c._need_stage()
         if not (self.c.stage.homed.get("x") and self.c.stage.homed.get("y")):
-            raise Rejected("X · Y 원점이 없습니다. 준비 2단계에서 원점을 먼저 맞추십시오")
+            raise Rejected("X · Y 원점이 없습니다 (준비 2)")
 
     def _xy(self):
         return self.c._mm("x"), self.c._mm("y")
@@ -82,19 +82,19 @@ class Prep:
             raise Rejected(str(e))
 
     def capture(self, move=True, need_head=False):
-        """사진 한 장. move 면 핀 맨 위 → 사진 찍을 때 헤드 자리로 간 뒤, 이동이 끝나고 새로 들어온 프레임을 쓴다.
-        need_head: 헤드 자리가 정해져 있지 않으면 거절(빈 판 · 샘플 사진). 아니면 지금 자리에서 찍는다(준비 3단계)."""
+        """사진 한 장. move 면 핀 맨 위 → 촬영 위치로 간 뒤, 이동이 끝나고 새로 들어온 프레임을 쓴다.
+        need_head: 촬영 위치가 정해져 있지 않으면 거절(빈 판 · 샘플 사진). 아니면 지금 자리에서 찍는다(준비 3단계)."""
         self._need_camera()
         self.c._no_run("사진 찍기")
         head = self.cfg["photo_head_xy"]
         at_head = False
         if head is None:
             if need_head:
-                raise Rejected("사진 찍을 때 헤드 자리가 정해져 있지 않습니다. 준비 3단계에서 먼저 정하십시오")
+                raise Rejected("촬영 위치를 먼저 정하세요 (준비 3)")
         elif move:
             if not self.c.stage.connected or not all(self.c.stage.homed.get(a) for a in "xyz"):
                 if need_head:
-                    raise Rejected("스테이지가 연결되고 세 축 원점이 있어야 사진 찍을 자리로 갈 수 있습니다")
+                    raise Rejected("스테이지 연결과 세 축 원점이 필요합니다")
             else:
                 if not self._at(head) or self.c._mm("z") != 0:
                     self.c.goto(head[0], head[1])
@@ -108,11 +108,11 @@ class Prep:
             self._position_check(frame)
         else:
             self.marker_seen = geo.find_marker(frame) is not None
-        self.c.logs.app("사진 찍음 · %d×%d%s" % (frame.shape[1], frame.shape[0], " · 헤드 자리" if at_head else ""))
+        self.c.logs.app("사진 찍음 · %d×%d%s" % (frame.shape[1], frame.shape[0], " · 촬영 위치" if at_head else ""))
         return frame
 
     def _position_check(self, frame):
-        """사진 찍을 때 헤드 자리에서 찍은 사진: 헤드 마커가 기억한 자리와 얼마나 다른지(mm). 2 mm 넘으면 주의, 10 mm 넘으면 경보 + 측정 시작 막음."""
+        """촬영 위치에서 찍은 사진: 헤드 마커가 기억한 자리와 얼마나 다른지(mm). 2 mm 넘으면 주의, 10 mm 넘으면 경보 + 측정 시작 막음."""
         st = self.c.state
         m = geo.find_marker(frame)
         self.marker_seen = m is not None
@@ -120,16 +120,16 @@ class Prep:
             return
         if m is None:
             self.pos_off_mm = None
-            st.alarm("pos_check", "헤드 마커가 사진에 안 보여 헤드 위치를 확인하지 못했습니다", NOTICE)
+            st.alarm("pos_check", "마커가 안 보여 헤드 위치를 확인하지 못했습니다", NOTICE)
             return
         off = self.calib.head_offset_mm(m)
         self.pos_off_mm = None if off is None else round(off, 2)
         if off is None:
             return
-        text = "헤드 위치가 기억한 자리와 %.1f mm 다릅니다 · 원점이나 카메라가 움직였을 수 있습니다" % off
+        text = "헤드 위치가 %.1f mm 다릅니다. 원점을 확인하세요." % off
         if off > float(self.cfg["pos_block_mm"]):
             self.pos_block = True
-            st.alarm("pos_check", text + " · 원점을 다시 맞추거나 좌표 맞추기를 다시 하십시오", ALARM)
+            st.alarm("pos_check", text, ALARM)
             self.c.logs.app("위치 확인 경보 · %.2f mm" % off, "error")
         elif off > float(self.cfg["pos_warn_mm"]):
             self.pos_block = False
@@ -221,9 +221,9 @@ class Prep:
     # 3 · 카메라 · 판 영역
     # ------------------------------------------------------------------
     def photo_head_set(self):
-        """지금 자리를 사진 찍을 때 헤드 자리로 정한다. 그 자리에서 헤드 마커가 보이는지도 알려 준다."""
+        """지금 자리를 촬영 위치로 정한다. 그 자리에서 헤드 마커가 보이는지도 알려 준다."""
         self._need_xy()
-        self.c._no_run("헤드 자리 정하기")
+        self.c._no_run("촬영 위치 정하기")
         x, y = self._xy()
         self.c._remember(photo_head_xy=[round(x, 2), round(y, 2)])
         seen = None
@@ -243,7 +243,7 @@ class Prep:
         return {"marker": self.marker_seen}
 
     def photo_take(self):
-        """준비 3단계 [사진 찍기]: 헤드 자리가 정해져 있고 갈 수 있으면 거기로 가서, 아니면 지금 자리에서 찍는다."""
+        """준비 3단계 [사진 찍기]: 촬영 위치가 정해져 있고 갈 수 있으면 거기로 가서, 아니면 지금 자리에서 찍는다."""
         self.capture(move=True, need_head=False)
         self.publish()
         return {"photo": self._photo_view()}
@@ -253,36 +253,36 @@ class Prep:
         self.c._no_run("판 영역 정하기")
         ph = self.photo
         if ph is None:
-            raise Rejected("사진을 먼저 찍으십시오")
+            raise Rejected("사진을 먼저 찍으세요")
         try:
             pts = [[float(p[0]), float(p[1])] for p in corners]
         except (TypeError, ValueError, IndexError):
-            raise Rejected("꼭짓점 4개를 눌러 주십시오")
+            raise Rejected("꼭짓점 4개를 누르세요")
         if len(pts) != 4:
-            raise Rejected("꼭짓점 4개를 눌러 주십시오")
+            raise Rejected("꼭짓점 4개를 누르세요")
         h, w = ph["frame"].shape[:2]
         if any(not (0 <= x < w and 0 <= y < h) for x, y in pts):
             raise Rejected("꼭짓점이 사진 밖에 있습니다")
         q = np.asarray(pts, np.float32)
         area = cv2.contourArea(q, True)                              # 사진 좌표(y 가 아래)에서 시계 방향이면 양수
         if not cv2.isContourConvex(q) or abs(area) < 100:
-            raise Rejected("꼭짓점 4개가 사각형이 되지 않습니다. 다시 눌러 주십시오")
+            raise Rejected("사각형이 되지 않습니다. 다시 누르세요.")
         if area < 0:
-            raise Rejected("꼭짓점을 왼쪽 위부터 시계 방향(A · B · C · D)으로 눌러 주십시오")
+            raise Rejected("왼쪽 위부터 시계 방향으로 누르세요")
         if geo.photo_to_plate(pts, self._size_mm()) is None:
-            raise Rejected("꼭짓점으로 변환을 만들지 못했습니다. 다시 눌러 주십시오")
+            raise Rejected("변환을 만들지 못했습니다. 다시 누르세요.")
         dropped = self.calib.set_plate(pts, (w, h))
         self.clear_pos_check()
         self._refresh_samples()
         self.publish()
-        note = "판 영역을 다시 정해서 보정 점 %d개와 헤드 마커 기억을 지웠습니다" % dropped if dropped else ""
+        note = "보정 점 %d개와 마커 기억을 지웠습니다" % dropped if dropped else ""
         return {"dropped": dropped, "note": note}
 
     # ------------------------------------------------------------------
     # 4 · 빈 판 사진
     # ------------------------------------------------------------------
     def empty_take(self):
-        """핀 맨 위 → 사진 찍을 때 헤드 자리 → 원본 한 장을 calib/empty_plate.png 로 저장. 언제든 다시 찍어 바꿀 수 있다."""
+        """핀 맨 위 → 촬영 위치 → 원본 한 장을 calib/empty_plate.png 로 저장. 언제든 다시 찍어 바꿀 수 있다."""
         frame = self.capture(move=True, need_head=True)
         self.calib.dir.mkdir(parents=True, exist_ok=True)
         ok, buf = cv2.imencode(".png", frame, [cv2.IMWRITE_PNG_COMPRESSION, 1])
@@ -317,13 +317,13 @@ class Prep:
                 out["marker"] = self.marker_learn()
             except Rejected as e:
                 out["marker_note"] = str(e)
-                self.c.state.alarm("marker", "헤드 마커를 기억하지 못했습니다 · %s (위치 확인을 쓰지 않습니다)" % e, NOTICE)
+                self.c.state.alarm("marker", "헤드 마커를 기억하지 못했습니다 · %s" % e, NOTICE)
         return out
 
     def coord_goto_d(self):
         g = self.calib.d_guess()
         if g is None:
-            raise Rejected("A · B · C 를 먼저 찍어 주십시오")
+            raise Rejected("A · B · C 를 먼저 찍으세요")
         return self.c.goto(g[0], g[1])
 
     def coord_clear(self):
@@ -335,14 +335,14 @@ class Prep:
         return {}
 
     def marker_learn(self):
-        """사진 찍을 때 헤드 자리에서 헤드 마커 가운데 픽셀을 기억하고, X · Y 로 조금 옮겨 보며 "mm 당 픽셀" 2×2 행렬을 잰다."""
+        """촬영 위치에서 헤드 마커 가운데 픽셀을 기억하고, X · Y 로 조금 옮겨 보며 "mm 당 픽셀" 2×2 행렬을 잰다."""
         head = self.cfg["photo_head_xy"]
         if head is None:
-            raise Rejected("사진 찍을 때 헤드 자리가 정해져 있지 않습니다 (준비 3단계)")
+            raise Rejected("촬영 위치를 먼저 정하세요 (준비 3)")
         self._need_camera()
         self.c._no_run("헤드 마커 기억")
         if not all(self.c.stage.homed.get(a) for a in "xyz"):
-            raise Rejected("세 축 원점이 있어야 합니다")
+            raise Rejected("세 축 원점이 없습니다 (준비 2)")
         step = float(self.cfg["marker_probe_mm"])
 
         def see(x, y):
@@ -355,7 +355,7 @@ class Prep:
         if m0 is None:
             self.calib.set_marker(None, None)
             self.publish()
-            raise Rejected("헤드 마커가 사진에 안 보입니다")
+            raise Rejected("마커가 사진에 안 보입니다")
         cols = []
         for axis in (0, 1):
             got = None
@@ -379,7 +379,7 @@ class Prep:
         if abs(np.linalg.det(np.asarray(J))) < 1e-6:
             self.calib.set_marker(None, None)
             self.publish()
-            raise Rejected("헤드 마커 움직임을 재지 못했습니다")
+            raise Rejected("마커 움직임을 재지 못했습니다")
         self.calib.set_marker(m0, J)
         self.clear_pos_check()
         self.c.state.clear_alarm("marker")
@@ -391,7 +391,7 @@ class Prep:
         """판 사진을 누른 자리(판 mm)로 간다(핀 맨 위로 올린 뒤). 샘플 근처를 누르면 샘플 가운데로 붙는다."""
         Hp, Hs = self.calib.plate_h(self._size_mm()), self.calib.stage_h()
         if Hp is None or Hs is None:
-            raise Rejected("판 영역(준비 3)과 좌표 맞추기(준비 5)를 먼저 하십시오")
+            raise Rejected("준비 3 · 5 를 먼저 하세요")
         px, py = float(x), float(y)
         snapped = None
         best = None
@@ -410,11 +410,11 @@ class Prep:
         return {"xy": [round(sx, 2), round(sy, 2)], "sample": snapped}
 
     def coord_add_here(self):
-        """[지금 자리를 보정에 더하기]: (마지막으로 누른 사진 좌표, 지금 스테이지 X · Y)를 보정 점으로 더하고 변환을 전체 점으로 다시 맞춘다."""
+        """[보정 점 추가]: (마지막으로 누른 사진 좌표, 지금 스테이지 X · Y)를 보정 점으로 더하고 변환을 전체 점으로 다시 맞춘다."""
         if self.last_click is None:
-            raise Rejected("판 사진에서 자리를 먼저 누르십시오")
+            raise Rejected("판 사진을 먼저 누르세요")
         if not self.calib.coords_ready():
-            raise Rejected("좌표 맞추기(준비 5)를 먼저 하십시오")
+            raise Rejected("좌표 맞추기를 먼저 하세요 (준비 5)")
         self._need_xy()
         self.c._no_run("보정 점 더하기")
         self.calib.add_extra(self.last_click["px"], self._xy())
@@ -434,14 +434,14 @@ class Prep:
     # 샘플 찾기
     # ------------------------------------------------------------------
     def samples_find(self):
-        """[사진 찍고 샘플 찾기]: 핀 맨 위 → 사진 찍을 때 헤드 자리 → 촬영 → 위치 확인 → 샘플 찾기."""
+        """[사진 찍고 샘플 찾기]: 핀 맨 위 → 촬영 위치 → 촬영 → 위치 확인 → 샘플 찾기."""
         if not self.calib.d.get("plate"):
-            raise Rejected("판 영역이 정해져 있지 않습니다. 준비 3단계에서 먼저 정하십시오")
+            raise Rejected("판 영역(준비 3)을 먼저 정하세요")
         t0 = time.monotonic()
         self.capture(move=True, need_head=True)
         cur = self.photo_rect()
         if cur is None:
-            raise Rejected("사진 크기가 판 영역을 정할 때와 다릅니다. 준비 3단계를 다시 하십시오")
+            raise Rejected("사진 크기가 달라졌습니다. 준비 3 을 다시 하세요.")
         emp = self.empty_rect()
         res = find_mod.find_samples(cur, emp, geo.RECT_PPMM, geo.RECT_MARGIN_MM, log=lambda t: self.c.logs.app("샘플 찾기 · " + t, "detail"))
         if emp is None:
@@ -489,7 +489,7 @@ class Prep:
                 s["use"] = not s["weak"] and not s["small"]                # 확인 필요 · 핀보다 작음은 기본으로 빼 둔다(사람이 다시 넣을 수 있다)
 
     def on_settings(self):
-        """설정이 바뀌었다(핀 크기 · 판 한 변 등): 샘플의 자리 · "핀보다 작음"을 다시 계산한다(사람이 고른 넣기/빼기는 그대로)."""
+        """설정이 바뀌었다(핀 크기 · 판 한 변 등): 샘플의 자리 · "핀보다 작음"을 다시 계산한다(사람이 고른 포함/제외는 그대로)."""
         self._refresh_samples()
         self.publish()
 
@@ -502,8 +502,9 @@ class Prep:
             raise Rejected(why)
         if any(s["name"] == name and s["id"] != int(id) for s in self.samples):
             raise Rejected("같은 이름의 샘플이 있습니다")
+        from app.jobs.run import WAIT
         it = self.c.runner.items.get(int(id))
-        if it is not None and it["status"] != "할 차례":
+        if it is not None and it["status"] != WAIT:
             raise Rejected("이미 잰 샘플의 이름은 고칠 수 없습니다")
         for s in self.samples:
             if s["id"] == int(id):
@@ -516,7 +517,7 @@ class Prep:
         raise Rejected("그런 샘플이 없습니다")
 
     def batch_set(self, name):
-        """묶음 이름. 샘플 이름 "<묶음 이름>-<번호>" 도 같이 바뀐다(사람이 고친 이름은 그대로)."""
+        """묶음. 샘플 이름 "<묶음>-<번호>" 도 같이 바뀐다(사람이 고친 이름은 그대로)."""
         from app import config as config_mod
         from app.jobs import files
         name = str(name)
@@ -524,7 +525,7 @@ class Prep:
         if why:
             raise Rejected(why)
         if self.c.run_active():
-            raise Rejected("측정 중에는 묶음 이름을 바꿀 수 없습니다")
+            raise Rejected("측정 중에는 할 수 없습니다")
         old = str(self.cfg["batch_name"])
         try:
             self.cfg.update({"batch_name": name})
@@ -585,7 +586,7 @@ class Prep:
         """가짜 준비 값 채우기: 준비 단계를 다 하지 않아도 측정을 바로 써 볼 수 있게 가짜 세계의 참값으로 채운다."""
         w = self.c.world
         if w is None:
-            raise Rejected("가짜 장비로 실행했을 때만 쓸 수 있습니다")
+            raise Rejected("가짜 장비에서만 쓸 수 있습니다")
         self.c._no_run("가짜 준비 값 채우기")
         self._need_camera()
         if not self.c.stage.connected:
@@ -613,7 +614,7 @@ class Prep:
     def fake_samples(self, on):
         w = self.c.world
         if w is None:
-            raise Rejected("가짜 장비로 실행했을 때만 쓸 수 있습니다")
+            raise Rejected("가짜 장비에서만 쓸 수 있습니다")
         self.c._no_run("가짜 샘플 올리기")
         w.set_loaded(bool(on))
         self.publish()
@@ -639,14 +640,14 @@ class Prep:
         dev_ok = all(st.get("devices", k, "state") == "연결" for k in ("stage", "k2110", "k2450", "camera"))
         n_dev = sum(1 for k in ("stage", "k2110", "k2450", "camera") if st.get("devices", k, "state") == "연결")
         homed = st.get("homed")
-        how = {"here": "눈으로 맞춰 등록", "end": "끝단까지 밀어서", "가짜": "가짜 값"}
+        how = {"here": "지금 자리", "end": "끝까지 밀어서", "가짜": "가짜 값"}
         org = cal.get("origin") or {}
         last = max((org[a] for a in org), key=lambda o: o["t"], default=None)
         o_done = all(homed.get(a) for a in "xyz")
         o_text = ("%s · %s" % (how.get(last["how"], last["how"]), when(last["t"])) if (o_done and last) else
                   "원점 있음" if o_done else "원점 없음: " + " · ".join(a.upper() for a in "xyz" if not homed.get(a)))
         plate, head = cal.get("plate"), c["photo_head_xy"]
-        p_text = ("판 영역 · %s" % when(plate["t"]) if plate else "판 영역 없음") if head is not None else "헤드 자리 없음"
+        p_text = ("판 영역 · %s" % when(plate["t"]) if plate else "판 영역 없음") if head is not None else "촬영 위치 없음"
         emp = cal.get("empty")
         ready = self.calib.coords_ready()
         n_ex = len(cal["coords"]["extra"])
@@ -659,7 +660,7 @@ class Prep:
             {"done": dev_ok, "text": "모두 연결됨" if dev_ok else "%d / 4 연결" % n_dev},
             {"done": o_done, "text": o_text},
             {"done": bool(plate) and head is not None, "text": p_text},
-            {"done": bool(emp), "text": "찍음 · %s" % when(emp["t"]) if emp else "없어도 측정할 수 있음"},
+            {"done": bool(emp), "text": "찍음 · %s" % when(emp["t"]) if emp else "없어도 됨"},
             {"done": ready, "text": co_text},
             {"done": cz is not None, "text": ("Z %.2f mm · %s" % (cz, when(ct["t"] if ct else None))) if cz is not None else ""},
             {"done": bool(cool), "text": "정함 · %s" % when(cool["t"]) if cool else "번호순 기본값"},

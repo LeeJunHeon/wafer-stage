@@ -78,11 +78,11 @@ def name_problem(name):
     if not n.strip():
         return "이름이 비어 있습니다"
     if any(ch in BAD_NAME_CHARS or ord(ch) < 32 for ch in n):
-        return "이름에 파일 이름으로 못 쓰는 글자( \\ / : * ? \" < > | )가 있습니다"
+        return "이름에 못 쓰는 글자가 있습니다 · \\ / : * ? \" < > |"
     if n != n.strip() or n.endswith("."):
-        return "이름의 앞뒤에 빈칸이나 끝에 마침표를 둘 수 없습니다"
+        return "이름 앞뒤의 빈칸과 끝의 마침표는 못 씁니다"
     if len(n) > 60:
-        return "이름이 너무 깁니다 (60자까지)"
+        return "이름이 너무 깁니다 · 60자까지"
     return ""
 
 
@@ -134,6 +134,6 @@ class NasCopier(threading.Thread):
             if local not in self.pending:
                 self.pending.append(local)
             if self.ok is not False:
-                self.warn("NAS 에 쓰지 못했습니다 · 측정은 계속합니다 · 결과 탭에서 다시 복사할 수 있습니다")
+                self.warn("NAS 에 쓰지 못했습니다. 결과 탭에서 다시 복사하세요.")
                 self.log("NAS 쓰기 오류 · %s" % e)
             self.ok = False

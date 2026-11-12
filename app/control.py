@@ -125,7 +125,7 @@ class Controller:
     def connect_stage(self, port: Optional[str] = None):
         port = (port or self.cfg["stage_port"]).strip()
         if not port:
-            raise Rejected("스테이지 포트를 골라 주십시오")
+            raise Rejected("스테이지 포트를 고르세요")
         if self.stage.connected:
             raise Rejected("스테이지가 이미 연결되어 있습니다")
         self.state.set_device("stage", "연결 중", "", port)
@@ -233,18 +233,18 @@ class Controller:
         if kind == "reboot":
             threading.Thread(target=self._board_reboot, args=(text,), daemon=True, name="reboot").start()
         elif kind == "wd_trip":
-            self.state.alarm("wd", "통신 감시가 릴레이를 껐습니다 (통신이 2 초 넘게 끊겼습니다)", NOTICE)
+            self.state.alarm("wd", "통신이 끊겨 릴레이를 껐습니다", NOTICE)
             self.logs.app("통신 감시 작동 · %s" % text, "warn")
         elif kind == "lost":
             self.state.set_device("stage", "오류", "통신 끊김 · " + text[:40], self.stage.port_name)
-            self.state.alarm("stage_lost", "스테이지 통신이 끊겼습니다. 케이블을 확인하고 다시 연결하십시오 (릴레이는 펌웨어 통신 감시가 끕니다)", ALARM)
+            self.state.alarm("stage_lost", "스테이지 연결이 끊겼습니다", ALARM)
             self._heater_bookkeeping(False)
             self.logs.app("스테이지 통신 끊김 · %s" % text, "error")
 
     def _board_reboot(self, text):
         """보드가 다시 시작됐다: 비상정지와 같이 잠그고, wd 를 다시 보내고, 위치 확인 경보를 낸다."""
         self.safety.begin_estop()
-        self.state.alarm("reboot", "보드가 다시 시작됨 · 위치 확인 필요. 위치를 확인한 뒤 [비상정지 풀기]를 누르십시오", ALARM)
+        self.state.alarm("reboot", "보드가 다시 시작했습니다. 위치를 확인하세요.", ALARM)
         self.logs.app("보드 재시작 감지 · %s" % text, "error")
         self._heater_bookkeeping(False)
         try:
@@ -271,20 +271,23 @@ class Controller:
         try:
             banged = self.stage.bang()
         except StageError as e:
-            self.state.alarm("estop_io", "비상정지 신호를 보내지 못했습니다 (%s). 모터 전원을 직접 끄십시오" % str(e)[:30], ALARM)
+            self.state.alarm("estop_io", "비상정지 신호를 보내지 못했습니다. 모터 전원을 끄세요.", ALARM)
+            self.logs.app("비상정지 신호 실패 · %s" % e, "error")
         self.logs.app("비상정지 (%s) · '!' %s · %.1f ms" % (source, "전송" if banged else "못 보냄", (time.monotonic() - t0) * 1000))
         if banged:
             try:
                 self.stage.submit("r all 0", None, stage_mod.is_rs, 3.0, prio=0).result(timeout=10)
             except Exception as e:                                  # noqa: BLE001
-                self.state.alarm("estop_relay", "릴레이를 끄지 못했습니다 (%s). 히트건 · 쿨러 전원을 직접 끄십시오" % str(e)[:30], ALARM)
+                self.state.alarm("estop_relay", "릴레이를 끄지 못했습니다. 히트건 · 쿨러 전원을 끄세요.", ALARM)
+                self.logs.app("비상정지 뒤 릴레이 끄기 실패 · %s" % e, "error")
         self._heater_bookkeeping(False)
         dev = self.k2450
         if dev is not None:
             try:
                 dev.output_off_urgent(1.0)
             except Exception as e:                                  # noqa: BLE001
-                self.state.alarm("estop_k2450", "K2450 출력을 끄지 못했습니다 (%s). 장비에서 직접 끄십시오" % str(e)[:30], ALARM)
+                self.state.alarm("estop_k2450", "K2450 출력을 끄지 못했습니다. 장비에서 끄세요.", ALARM)
+                self.logs.app("비상정지 뒤 K2450 출력 끄기 실패 · %s" % e, "error")
         return {"locked": True}
 
     def estop_release(self):
@@ -313,7 +316,7 @@ class Controller:
     @contextmanager
     def _moving(self, what, target=None, lock=True):
         if lock and not self._motion.acquire(blocking=False):
-            raise Rejected("다른 이동이 진행 중입니다. 끝난 뒤에 눌러 주십시오")
+            raise Rejected("이동 중입니다")
         self.state.set("busy", what)
         self._set_move(what, target)
         try:
@@ -321,9 +324,9 @@ class Controller:
         except Rejected:
             raise
         except stage_mod.Discarded:
-            raise Rejected("비상정지로 취소되었습니다")
+            raise Rejected("비상정지로 취소됐습니다")
         except stage_mod.MoveAborted:
-            raise Rejected("이동이 중단되었습니다. 위치를 확인하십시오")
+            raise Rejected("이동이 중단됐습니다. 위치를 확인하세요.")
         except stage_mod.StageRejected as e:
             raise Rejected(str(e))
         except StageError as e:
@@ -354,7 +357,7 @@ class Controller:
         if not self._motion.acquire(blocking=False):
             with self._plock:
                 if self._cur_kind != "jog":
-                    raise Rejected("다른 이동이 진행 중입니다. 끝난 뒤에 눌러 주십시오")
+                    raise Rejected("이동 중입니다")
                 p = self._jog_pending
                 if p and p["axis"] == axis and (p["mm"] > 0) == (mm > 0):
                     p["mm"] += mm
@@ -413,7 +416,7 @@ class Controller:
         homed = self.stage.homed
         miss = [a.upper() for a in AXES if not homed.get(a)] if z is not None else [a.upper() for a in "xyz" if not homed.get(a)]
         if miss:
-            raise Rejected("%s 축 원점이 없어 좌표로 갈 수 없습니다. 먼저 원점을 잡으십시오" % "·".join(miss))
+            raise Rejected("%s 원점이 없습니다 (준비 2)" % " · ".join(miss))
         for ax, v in (("x", x), ("y", y)) + ((("z", z),) if z is not None else ()):
             why = self.safety.reject_target(ax, v, True)
             if why:
@@ -440,17 +443,17 @@ class Controller:
             self.stage.goto("z", 0, g)
             st = self.stage.read_status(g)
         if not self.safety.z_is_top(st["pos"]["z"]):
-            raise Rejected("Z 가 맨 위에 있는지 확인되지 않아 움직이지 않았습니다")
+            raise Rejected("Z 가 맨 위인지 확인하지 못했습니다")
 
     def z_top(self):
         self._need_stage()
         if not self.stage.homed.get("z"):
-            raise Rejected("Z 원점이 없어 맨 위로 올릴 수 없습니다. 먼저 원점을 잡으십시오")
+            raise Rejected("Z 원점이 없습니다 (준비 2)")
         g = self.safety.generation
         why = self.safety.reject_move(False, False)
         if why:
             raise Rejected(why)
-        with self._moving("Z 맨 위로", {"x": self._mm("x"), "y": self._mm("y"), "z": 0.0}):
+        with self._moving("핀 올리기", {"x": self._mm("x"), "y": self._mm("y"), "z": 0.0}):
             self.stage.goto("z", 0, g)
         return {"pos": dict(self.state.get("pos"))}
 
@@ -458,7 +461,7 @@ class Controller:
         """mode: here = 지금 자리를 원점으로 · end = 끝단까지 밀어서 잡기. 끝나면 save."""
         axis = str(axis).lower()
         if mode not in ("here", "end"):
-            raise Rejected("원점 방식은 지금 자리 / 끝단 밀기 중 하나여야 합니다")
+            raise Rejected("원점 방식이 맞지 않습니다")
         if axis == "all" and mode == "here":                        # 세 축 모두 등록
             self.set_origin("xy", "here")
             return self.set_origin("z", "here")
@@ -468,7 +471,7 @@ class Controller:
         self._no_run("원점 맞추기")
         xy_push = mode == "end" and axis in "xy"
         if xy_push and not self.stage.homed.get("z"):
-            raise Rejected("Z 원점을 먼저 잡아 주십시오")           # 핀이 내려간 채 X · Y 를 밀면 판을 긁을 수 있다
+            raise Rejected("Z 원점을 먼저 잡으세요")           # 핀이 내려간 채 X · Y 를 밀면 판을 긁을 수 있다
         g = self.safety.generation
         why = self.safety.reject_move(xy_push, self._heater_on())
         if why:
@@ -507,7 +510,7 @@ class Controller:
         try:
             self.stage.relay(n, True, g)
         except stage_mod.Discarded:
-            raise Rejected("비상정지로 취소되었습니다")
+            raise Rejected("비상정지로 취소됐습니다")
         except StageError as e:
             raise Rejected("릴레이를 켜지 못했습니다 · %s" % e)
         return {"relays": list(self.state.get("relays"))}
@@ -563,25 +566,26 @@ class Controller:
             if self.stage.connected:
                 self.stage.relay(heater, False, None, prio=0)
         except StageError as e:
-            self.state.alarm("heater_off_fail", "히트건을 끄지 못했습니다 (%s). 전원을 직접 끄십시오" % str(e)[:30], ALARM)
+            self.state.alarm("heater_off_fail", "히트건을 끄지 못했습니다. 전원을 끄세요.", ALARM)
+            self.logs.app("히트건 끄기 실패 · %s" % e, "error")
         self._heater_bookkeeping(False)
 
     def read_temp(self):
         dev = self.k2110
         if dev is None or not dev.is_open:
-            raise Rejected("온도계(K2110)가 연결되어 있지 않습니다")
+            raise Rejected("온도계가 연결되어 있지 않습니다")
         try:
             v = dev.read_temp()
         except meters.VisaError as e:
             self.state.set_device("k2110", "오류", str(e), dev.addr)
             raise Rejected(str(e))
         self.feed_temperature(v)
-        return {"temp": v, "note": "" if v is not None else "값 없음 (열전대 끊김 또는 범위 넘음)"}
+        return {"temp": v, "note": "" if v is not None else "값 없음 · 열전대를 확인하세요"}
 
     def read_resistance(self):
         dev = self.k2450
         if dev is None or not dev.is_open:
-            raise Rejected("저항계(K2450)가 연결되어 있지 않습니다")
+            raise Rejected("저항계가 연결되어 있지 않습니다")
         self._no_run("저항 읽기")                                   # 측정이 K2450 을 쓰는 중이다(설정을 바꾸면 안 된다)
         c = self.cfg
         try:
@@ -602,7 +606,7 @@ class Controller:
     def _no_run(self, what: str):
         """측정 중에는 손으로 하는 이동 · 릴레이 · 측정을 막는다(비상정지와 읽기만 된다)."""
         if self.run_active():
-            raise Rejected("측정 중에는 %s 을(를) 할 수 없습니다. 측정을 멈춘 뒤에 하십시오" % what)
+            raise Rejected("측정 중에는 할 수 없습니다")
 
     def result_open_folder(self, id: str):
         from app import results
@@ -618,7 +622,7 @@ class Controller:
             if a["code"] == code and a.get("dismiss"):
                 self.state.clear_alarm(code)
                 return {}
-        raise Rejected("이 경보는 원인을 해결해야 없어집니다")
+        raise Rejected("원인을 해결해야 없어집니다")
 
     # ------------------------------------------------------------------
     # 전기로 접촉 찾기 (app/contact.py - v2 방식 그대로)
@@ -626,7 +630,7 @@ class Controller:
     def _need_k2450(self):
         dev = self.k2450
         if dev is None or not dev.is_open:
-            raise Rejected("저항계(K2450)가 연결되어 있지 않습니다")
+            raise Rejected("저항계가 연결되어 있지 않습니다")
         return dev
 
     def _k2450_off(self, dev):
@@ -639,7 +643,8 @@ class Controller:
             except Exception as e:                                  # noqa: BLE001
                 err = e
                 time.sleep(0.2)
-        self.state.alarm("k2450_off", "K2450 출력을 끄지 못했습니다 (%s). 장비에서 직접 끄십시오" % str(err)[:30], ALARM)
+        self.state.alarm("k2450_off", "K2450 출력을 끄지 못했습니다. 장비에서 끄세요.", ALARM)
+        self.logs.app("K2450 출력 끄기 실패 · %s" % err, "error")
         return False
 
     def contact_descend(self, mode: str, z_ref, g, lock: bool = True):
@@ -648,7 +653,7 @@ class Controller:
         dev = self._need_k2450()
         self._need_stage()
         if not self.stage.homed.get("z"):
-            raise Rejected("Z 원점이 없습니다. 준비 2단계에서 원점을 먼저 맞추십시오")
+            raise Rejected("Z 원점이 없습니다 (준비 2)")
         why = self.safety.reject_move(False, self._heater_on())
         if why:
             raise Rejected(why)
@@ -658,10 +663,10 @@ class Controller:
         pc = self.prep.contact
 
         def on_step(z, kind, ohm):
-            names = {"open": "아직 안 닿음", "contact": "닿음", "short": "단락", "bad": "값 없음"}
+            names = {"open": "안 닿음", "contact": "닿음", "short": "단락", "bad": "값 없음"}
             four = kind.startswith("4w:")
             k2 = kind.split(":")[1] if four else kind
-            pc.update(z=round(z, 3), text=("4단자 확인 · " if four else "") + names.get(k2, k2) + (" · %s" % _ohm(ohm) if ohm else ""))
+            pc.update(z=round(z, 3), text=("4단자 " if four else "") + names.get(k2, k2) + (" %s" % _ohm(ohm) if ohm else ""))
             self.prep.publish()
 
         sense, st = contact_mod.make_sense(dev, p, mode, floor, one, on_step)
@@ -669,7 +674,7 @@ class Controller:
         self.prep.publish()
         fail = None
         try:
-            with self._moving("접촉 찾는 중", {"x": self._mm("x"), "y": self._mm("y"), "z": round(floor, 3)}, lock=lock):
+            with self._moving("접촉 탐색 중", {"x": self._mm("x"), "y": self._mm("y"), "z": round(floor, 3)}, lock=lock):
                 try:
                     dev.configure_contact(p["volt"], p["ilim_a"], p["nplc"])
                     dev.output(True)
@@ -703,10 +708,10 @@ class Controller:
         floor_p = int(float(floor) * PPMM + 1e-6)
         start_p = stage_mod.mm_to_pulse(z_start)
         if not 0 < start_p <= floor_p:
-            raise Rejected("접촉 찾기 범위가 맞지 않습니다 (시작 Z %.2f · 한도 Z %.2f)" % (z_start, floor))
+            raise Rejected("접촉 탐색 범위가 맞지 않습니다 · Z %.2f ~ %.2f mm" % (z_start, floor))
         cur_p = self.stage.read_status(g)["pos"]["z"]
         if cur_p > start_p:
-            raise Rejected("핀이 찾기 시작 높이(Z %.2f mm)보다 아래에 있습니다. 핀을 올린 뒤 다시 하십시오" % (start_p / PPMM))
+            raise Rejected("핀이 시작 높이 Z %.2f mm 보다 아래입니다. 핀을 올리세요." % (start_p / PPMM))
         pre_p = max(cur_p, start_p - stage_mod.mm_to_pulse(self.cfg["approach_mm"]))
         if pre_p > cur_p:
             self.stage.goto("z", pre_p, g)
@@ -727,7 +732,7 @@ class Controller:
                     continue
                 np_ = max(0, zp + dp)
                 if np_ > floor_p:                                   # sense 가 이미 막지만 한 번 더(한도 아래로는 절대 내리지 않는다)
-                    raise contact_mod.ContactFail("닿지 않았습니다 · Z %.2f mm 까지 내렸습니다" % (floor_p / PPMM), "none")
+                    raise contact_mod.ContactFail("닿지 않았습니다 · Z %.2f mm" % (floor_p / PPMM), "none")
                 self.stage.goto("z", np_, g)
                 zp = np_
         finally:
@@ -738,13 +743,13 @@ class Controller:
                     self.logs.app("이동 속도 되돌리기 실패 · %s" % e, "warn")
 
     def contact_find(self):
-        """준비 6단계 [전기로 찾기] · 수동 탭 [핀 내리며 접촉 찾기]: 지금 높이부터 0.05 mm 씩 내리며 찾는다(샘플 위 5 mm 안쪽까지 조그한 뒤)."""
+        """준비 6 · 수동 탭 [접촉 탐색]: 지금 높이부터 0.05 mm 씩 내리며 찾는다(샘플 위 5 mm 안쪽까지 조그한 뒤)."""
         self._no_run("접촉 찾기")
         g = self.safety.generation
         try:
             res = self.contact_descend("search", self._mm("z") or 0.0, g)
         except contact_mod.ContactFail as e:
-            raise Rejected("%s · 핀을 맨 위로 올렸습니다" % e)
+            raise Rejected("%s · 핀을 올렸습니다" % e)
         return {k: res[k] for k in ("first_z", "final_z", "r2", "r4")}
 
     def contact_save(self):
@@ -752,16 +757,16 @@ class Controller:
         self._no_run("접촉 높이 저장")
         res = self.prep.contact.get("result")
         if not res:
-            raise Rejected("먼저 [전기로 찾기] 로 접촉 높이를 찾으십시오")
+            raise Rejected("[접촉 탐색]을 먼저 하세요")
         self._remember(contact_z_mm=round(float(res["first_z"]), 3))
-        self.calib.set_contact({"r2": res["r2"], "r4": res["r4"], "how": "전기로 찾음"})
+        self.calib.set_contact({"r2": res["r2"], "r4": res["r4"], "how": "접촉 탐색"})
         self.prep.publish()
         return {"contact_z_mm": self.cfg["contact_z_mm"]}
 
     def raw(self, target: str, line: str):
         line = str(line).strip()
         if not line:
-            raise Rejected("명령을 입력하십시오")
+            raise Rejected("명령을 입력하세요")
         if target == "stage":
             self._need_stage()
             tok = line.split()
@@ -770,11 +775,11 @@ class Controller:
                 self.estop("직접 명령")
                 return {"reply": "비상정지"}
             if self.safety.locked and head not in ("st", "p", "rs", "w"):
-                raise Rejected("비상정지 상태라 보낼 수 없습니다. 비상정지를 풀어 주십시오")
+                raise Rejected("비상정지 상태입니다")
             if head == "r" and len(tok) >= 3 and tok[2] == "1":
-                raise Rejected("릴레이 켜기는 릴레이 버튼으로 하십시오 (안전 규칙을 지나야 합니다)")
+                raise Rejected("릴레이는 버튼으로 하세요")
             if head in MOTION_WORDS or head[:1] in ("g", "j", "m") and len(head) == 2:
-                raise Rejected("이동 · 원점 명령은 이동 버튼으로 하십시오 (안전 규칙을 지나야 합니다)")
+                raise Rejected("이동은 버튼으로 하세요")
             try:
                 lines = self.stage.raw(line, self.safety.generation)
             except StageError as e:
@@ -828,7 +833,7 @@ class Controller:
     def _camera_event(self, kind, text):
         if kind == "lost":
             self.state.set_device("camera", "오류", "프레임을 받지 못함 · USB 확인", str(self.cfg["camera_index"]))
-            self.state.alarm("camera_lost", "카메라가 끊겼습니다. USB 를 확인하고 다시 연결하십시오", NOTICE)
+            self.state.alarm("camera_lost", "카메라 연결이 끊겼습니다. USB 를 확인하세요.", NOTICE)
             self.logs.app("카메라 끊김 · %s" % text, "warn")
 
     def _remember(self, **kw):
@@ -864,9 +869,9 @@ class Controller:
         on = bool(on)
         if on:
             if self.safety.locked:
-                raise Rejected("비상정지 상태입니다. 비상정지를 풀어 주십시오")
+                raise Rejected("비상정지 상태입니다")
             if self.k2450 is None and self.k2110 is None:
-                raise Rejected("온도계나 저항계를 먼저 연결하십시오")
+                raise Rejected("온도계나 저항계를 먼저 연결하세요")
         self._monitor_on = on
         self.state.set("monitor", on)
         return {"monitor": on}
@@ -927,7 +932,7 @@ class Controller:
             raise Rejected("알 수 없는 명령입니다: %s" % name)
         if self.run_active() and name not in RUN_ALLOWED:           # 측정 중에는 손으로 하는 이동 · 릴레이 · 측정을 막는다(측정은 명령이 아니라 메서드를 직접 부른다)
             if not (name == "raw" and (args or {}).get("target") == "stage" and str((args or {}).get("line", "")).strip().split(" ")[0].lower() in ("st", "rs", "p")):
-                raise Rejected("측정 중에는 할 수 없습니다. 측정을 멈춘 뒤에 하십시오")
+                raise Rejected("측정 중에는 할 수 없습니다")
         obj = self
         if "." in fn:                                               # "prep.photo_take" → self.prep.photo_take
             owner, fn = fn.split(".", 1)

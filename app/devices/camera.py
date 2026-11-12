@@ -88,7 +88,8 @@ class Camera:
             self.log("카메라 열림 · 요청 %dx%d %s → 실제 %dx%d %s (%s)" % (width, height, fourcc, self.info["actual"][0], self.info["actual"][1],
                                                                        self.info["actual_fourcc"] or "?", name))
             return dict(self.info)
-        raise CameraError("카메라 %d 번을 열 수 없습니다 (%s). 번호와 USB 연결을 확인하십시오. 0 번은 노트북 내장 카메라입니다" % (index, ", ".join(errors)))
+        self.log("카메라 %d 번 열기 실패 · %s" % (index, ", ".join(errors)))
+        raise CameraError("카메라 %d 번을 열 수 없습니다. 번호와 USB 를 확인하세요." % index)
 
     @staticmethod
     def _release(cap):

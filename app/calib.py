@@ -6,7 +6,7 @@
   plate    : 사진에서 누른 판 꼭짓점 A · B · C · D 픽셀(원본 해상도) · 사진 크기 · 때
   empty    : 빈 판 사진을 찍은 때(파일은 empty_plate.png)
   coords   : 꼭짓점 A~D 에 핀을 대고 기억한 스테이지 X · Y, 보정 점(사진 픽셀 ↔ 스테이지 X · Y, 최근 30점)
-  marker   : 사진 찍을 때 헤드 자리에서 본 헤드 마커 픽셀 · "mm 당 픽셀" 2×2 행렬
+  marker   : 촬영 위치에서 본 헤드 마커 픽셀 · "mm 당 픽셀" 2×2 행렬
   contact  : 접촉 높이를 저장한 때 · 그때 잰 저항(높이 값은 settings contact_z_mm)
 
 변환(사진 → 판 mm, 사진 → 스테이지 X · Y)은 여기 값에서 그때그때 만든다(따로 저장하지 않는다).
@@ -44,7 +44,7 @@ class Calib:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
-            self.note = "보정 값 파일을 읽지 못해 비운 채로 시작합니다 (%s)" % str(e)[:40]
+            self.note = "보정 값 파일을 읽지 못했습니다 · %s" % str(e)[:40]
             return
         if isinstance(raw, dict):
             for k in self.d:

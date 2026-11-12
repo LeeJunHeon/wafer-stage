@@ -7,7 +7,7 @@ const stg = { items: [], rows: {} };
 function buildSettingsPage() {
   stg.body = h("div", { class: "setbody" });
   const el = h("div", { class: "panel prep-panel" }, h("h3", { text: "설정 값 모두 보기" }),
-    h("div", { class: "small", text: "값을 바꾸면 바로 저장됩니다. '실장비 확인 필요' 는 측정 PC 에서 아직 확인하지 않은 값입니다." }), stg.body);
+    h("div", { class: "small", text: "바꾸면 바로 저장됩니다." }), stg.body);
   return { el, render: renderSettingsPage, show: loadSettingsPage };
 }
 async function loadSettingsPage() {
@@ -30,10 +30,10 @@ function settingRow(it) {
   else if (it.kind === "choice") input = h("select", { onchange: () => save(input.value) }, ...it.choices.map(([v, t]) => h("option", { value: v, text: t, selected: it.value === v })));
   else if (it.kind === "int" || it.kind === "float" || it.kind === "optfloat") {
     input = h("input", { type: "number", class: "setnum", step: "any", value: it.value == null ? "" : it.value, placeholder: it.kind === "optfloat" ? "없음" : "",
-      onchange: () => { const t = input.value.trim(); if (t === "") { if (it.kind === "optfloat") save(null); else loadSettingsPage(); return; } const v = Number(t); if (!isFinite(v)) { toast("숫자를 넣어 주세요"); loadSettingsPage(); return; } save(v); } });
+      onchange: () => { const t = input.value.trim(); if (t === "") { if (it.kind === "optfloat") save(null); else loadSettingsPage(); return; } const v = Number(t); if (!isFinite(v)) { toast("숫자를 넣으세요"); loadSettingsPage(); return; } save(v); } });
   } else if (it.kind === "grid" || it.kind === "xy") {
     input = h("input", { type: "text", class: "settext mono", spellcheck: "false", value: it.value == null ? "" : JSON.stringify(it.value), placeholder: it.kind === "xy" ? "없음 또는 [X, Y]" : "",
-      onchange: () => { const t = input.value.trim(); if (t === "" && it.kind === "xy") { save(null); return; } try { save(JSON.parse(t)); } catch (e) { toast("모양이 맞지 않습니다 (예: " + JSON.stringify(it.default) + ")"); loadSettingsPage(); } } });
+      onchange: () => { const t = input.value.trim(); if (t === "" && it.kind === "xy") { save(null); return; } try { save(JSON.parse(t)); } catch (e) { toast("모양이 맞지 않습니다 · 예 " + JSON.stringify(it.default)); loadSettingsPage(); } } });
   } else input = h("input", { type: "text", class: "settext", spellcheck: "false", value: it.value == null ? "" : it.value, onchange: () => save(input.value) });
   stg.rows[it.key] = { it, input };
   return h("tr", {}, h("td", { class: "setname" }, it.label, it.verify ? h("span", { class: "st-warn vfy", text: "실장비 확인 필요" }) : null),

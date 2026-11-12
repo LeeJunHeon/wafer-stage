@@ -266,7 +266,7 @@ class _Dev:
         if line.endswith("?"):
             return self.query(line)
         self.write(line)
-        return "(보냄)"
+        return "보냄"
 
 
 class K2110(_Dev):
@@ -307,7 +307,7 @@ class K2450(_Dev):
         except VisaError:
             return True, ""
         if "SCPI" not in lang and "2450" not in lang:
-            return False, "K2450 명령 세트를 SCPI 로 바꿔 주십시오 (장비 메뉴)"
+            return False, "K2450 명령 세트를 SCPI 로 바꾸세요"
         return True, ""
 
     def terminal(self):

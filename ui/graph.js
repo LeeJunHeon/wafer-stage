@@ -119,7 +119,7 @@ function rtGraph() {
     return best;
   }
   function readout() {
-    if (g.hoverT == null) { read.textContent = g.series.length ? "그래프에 마우스를 올리면 그 온도의 값이 여기에 보입니다" : ""; return; }
+    if (g.hoverT == null) { read.textContent = ""; return; }      // 마우스를 올렸을 때만 값이 보인다(줄 높이는 CSS 가 잡아 둔다)
     const parts = [g.hoverT.toFixed(1) + " °C"];
     for (const s of g.series) {
       const a = nearest(s.points, 0, g.hoverT), b = nearest(s.points, 1, g.hoverT);

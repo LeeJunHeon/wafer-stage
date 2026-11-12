@@ -173,7 +173,7 @@ function renderStatus() {
     h("span", { class: "item " + (heaterOn ? "st-warn" : "") }, "히트건 " + (heaterOn ? "켜짐" : "꺼짐")),
     h("span", { class: "item" }, "쿨러 " + (unknown ? "—" : cool.length ? "켜짐 " + cool.join("·") : "꺼짐")),
     s.fake ? h("span", { class: "item st-warn" }, "가짜 장비") : null,
-    h("span", { class: "safety" }, (c.heater_max_c != null ? c.heater_max_c : 110) + " °C 넘으면 히트건 끔 · 통신 " + ((c.watchdog_ms || 2000) / 1000) + "초 끊기면 릴레이 끔"));
+    h("span", { class: "safety" }, "차단 " + (c.heater_max_c != null ? c.heater_max_c : 110) + " °C · 통신 감시 " + ((c.watchdog_ms || 2000) / 1000) + "초"));
 }
 let alarmSig = "";
 function renderAlarms() {

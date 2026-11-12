@@ -1,4 +1,4 @@
-/* results.js - 결과 탭 3칸: 왼쪽(230px) 측정 기록 · 가운데(늘어남) 그래프 + 표 · 오른쪽(270px) 저장한 파일 · NAS · 그날 측정 조건.
+/* results.js - 결과 탭 3칸: 왼쪽(230px) 측정 기록 · 가운데(늘어남) 그래프 + 표 · 오른쪽(270px) 저장한 파일 · NAS · 측정 조건.
    기록은 디스크에서 읽는다(/api/results). 그래프는 측정 탭과 같은 부품이고 한 번에 3개까지 넣는다.
    그래프에 넣은 샘플은 체크 목록과 표의 이름 앞에 그 선 색의 짧은 선을 붙인다. 반복 측정은 모든 회차를 같은 색으로 그리고, 표는 첫 회차로 계산한다. */
 "use strict";
@@ -8,8 +8,8 @@ const rs = { list: [], rec: null, id: null, picks: [], pts: {} };
 function buildResults() {
   rs.listEl = h("div", { class: "reclist fill" });
   rs.samples = h("div", { class: "picklist" });
-  const left = h("div", { class: "panel fill", id: "rs-left" }, h("div", { class: "row" }, h("h3", { text: "측정 기록" }), h("span", { class: "sp" }), btn("새로 읽기", loadResults, "sm")),
-    rs.listEl, h("h4", { class: "h4", text: "샘플 (그래프에 3개까지)" }), rs.samples);
+  const left = h("div", { class: "panel fill", id: "rs-left" }, h("div", { class: "row" }, h("h3", { text: "측정 기록" }), h("span", { class: "sp" }), btn("새로 고침", loadResults, "sm")),
+    rs.listEl, h("h4", { class: "h4", text: "샘플 (3개까지)" }), rs.samples);
   rs.graph = rtGraph();
   rs.tbody = h("tbody", {});
   rs.save = busyBtn("그림으로 저장", saveResultPng);
@@ -20,11 +20,11 @@ function buildResults() {
     h("div", { class: "tscroll rtable" }, h("table", { class: "tb" }, h("thead", {}, h("tr", {},
       h("th", { text: "샘플" }), h("th", { class: "num", text: "시작 온도 저항" }), h("th", { class: "num", text: "최고 온도 저항" }), h("th", { class: "num", text: "저항 비" }),
       h("th", { class: "num", text: "가열 전이 온도" }), h("th", { class: "num", text: "냉각 전이 온도" }), h("th", { class: "num", text: "차이" }))), rs.tbody)),
-    h("div", { class: "small", text: "전이 온도 = log10(저항)을 온도로 미분한 값의 크기가 가장 큰 온도(가열 · 냉각 따로, 5점 이동 평균 뒤) · 반복 측정은 첫 회차 기준" }));
+    rs.note = h("div", { class: "small" }));
   rs.files = h("div", { class: "grp" });
   rs.nas = h("div", { class: "grp" });
   rs.cond = h("div", { class: "grp" });
-  const right = h("div", { class: "panel", id: "rs-right" }, h("h3", { text: "저장한 파일" }), rs.files, h("h3", { text: "NAS 복사" }), rs.nas, h("h3", { text: "그날 측정 조건" }), rs.cond);
+  const right = h("div", { class: "panel", id: "rs-right" }, h("h3", { text: "저장한 파일" }), rs.files, h("h3", { text: "NAS 복사" }), rs.nas, h("h3", { text: "측정 조건" }), rs.cond);
   setKids($("#tab-results"), left, mid, h("div", { class: "colwrap fill" }, right));       // 오른쪽 칸은 내용 높이만큼, 넘치면 그 칸 안에서 스크롤
   renderRecord();
 }
@@ -37,7 +37,7 @@ async function loadResults(keep) {
 }
 function renderRecList() {
   setKids(rs.listEl, ...(rs.list.length ? rs.list.map((r) => h("div", { class: "rec" + (r.id === rs.id ? " on" : ""), onclick: () => pickRecord(r.id) },
-    fmtWhen(r.started) + " · 묶음 " + r.batch + " · " + r.n + "개")) : [small("아직 측정 기록이 없습니다")]));
+    fmtWhen(r.started) + " · 묶음 " + r.batch + " · " + r.n + "개")) : [small("측정 기록이 없습니다")]));
 }
 async function pickRecord(id) {
   rs.id = id; rs.rec = null; rs.picks = []; rs.pts = {};
@@ -81,15 +81,16 @@ function resultTitle() {                                          // 그림으�
   const rec = rs.rec, c = rec.cond || {};
   return [fmtDate(rec.started), "묶음 " + rec.batch, c.meter_volt != null ? Number(c.meter_volt).toFixed(2) + " V" : null, c.meter_four_wire == null ? null : c.meter_four_wire ? "4단자" : "2단자"].filter(Boolean).join(" · ");
 }
-const COND_ROWS = [["meter_volt", "거는 전압", "V"], ["meter_four_wire", "4단자", ""], ["meter_avg_count", "평균", "회"], ["meter_nplc", "NPLC", ""], ["meter_ilim_a", "전류 한도", "A"],
-  ["run_start_c", "시작 온도", "°C"], ["run_heater_off_c", "히트건 끄는 온도", "°C"], ["run_cool_end_c", "식힘 끝 온도", "°C"], ["run_repeat", "반복", "회"], ["run_interval_s", "읽는 간격", "s"],
+const COND_ROWS = [["meter_volt", "측정 전압", "V"], ["meter_four_wire", "4단자", ""], ["meter_avg_count", "평균", "회"], ["meter_nplc", "NPLC", ""], ["meter_ilim_a", "전류 한도", "A"],
+  ["run_start_c", "시작 온도", "°C"], ["run_heater_off_c", "가열 끝 온도", "°C"], ["run_cool_end_c", "냉각 끝 온도", "°C"], ["run_repeat", "반복", "회"], ["run_interval_s", "읽는 간격", "s"],
   ["run_cooler_mode", "쿨러", ""], ["run_cooler_during_heat", "가열 중 쿨러", ""], ["contact_z_mm", "접촉 높이", "mm"]];
 const COOLER_NAMES = { zone: "샘플 아래 구역만", all: "전부", none: "안 씀" };
 function renderRecord() {
   const rec = rs.rec;
   rs.save.disabled = !rec || !rs.picks.length;
+  rs.note.textContent = "전이 온도 = 저항이 가장 빨리 변하는 온도" + (rec && rec.samples.some((s) => s.cycles > 1) ? " · 반복 측정은 첫 회차 기준" : "");
   if (!rec) {
-    setKids(rs.samples, small(rs.list.length ? "왼쪽에서 기록을 고르세요" : ""));
+    setKids(rs.samples, small(rs.list.length ? "기록을 고르세요" : ""));
     setKids(rs.tbody); setKids(rs.files, small("—")); setKids(rs.nas, small("—")); setKids(rs.cond, small("—"));
     rs.graph.set([]); rs.saved.textContent = "";
     return;
@@ -108,7 +109,7 @@ function renderRecord() {
   setKids(rs.files, h("div", { class: "small path", text: rec.folder }), h("div", { class: "flist" }, ...rec.files.map((f) => h("div", { text: f }))),
     h("div", { class: "row" }, btn("폴더 열기", () => api("result_open_folder", { id: rec.id }))));
   const nas = rec.nas;
-  setKids(rs.nas, ...(!nas || !nas.dir ? [small("NAS 를 쓰지 않았습니다 (PC 에만 저장)")] : [
+  setKids(rs.nas, ...(!nas || !nas.dir ? [small("PC 에만 저장")] : [
     h("div", { class: "small path", text: nas.dir }),
     h("div", {}, h("i", { class: "dot " + (nas.ok ? "ok" : "warn") }), " ", nas.ok ? "끝남" : "못 씀" + (nas.pending && nas.pending.length ? " · " + nas.pending.length + "개 남음" : "")),
     h("div", { class: "row" }, busyBtn("다시 복사", async () => { const r = await api("result_nas_copy", { id: rec.id }); if (r.ok) toast("NAS 로 " + r.result.copied + "개 복사했습니다"); pickRecordKeep(rec.id); }))]));

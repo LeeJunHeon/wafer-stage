@@ -206,7 +206,7 @@ class Stage:
             raise
         if fw is None:
             self._close_port()
-            raise StageError("펌웨어 배너를 받지 못했습니다 · V11 인지 확인할 수 없어 연결하지 않습니다")
+            raise StageError("펌웨어 V11 을 확인하지 못했습니다")
         if fw != "V11":
             self._close_port()
             raise StageError("펌웨어가 %s 입니다 · V11 이 필요합니다" % fw)
@@ -367,18 +367,18 @@ class Stage:
             lines.append(ln)
             self._note(ln)
             if "3-AXIS" in ln:
-                raise StageReboot("보드가 다시 시작되었습니다")
+                raise StageReboot("보드가 다시 시작했습니다")
             if REJECT_MARK in ln:
                 raise StageRejected("펌웨어가 거부했습니다: %s" % ln.strip())
             if ABORT_MARK in ln:
-                raise MoveAborted("이동이 중단되었습니다")
+                raise MoveAborted("이동이 중단됐습니다")
             if job.done(ln):
                 return lines
         if job.kind == "raw":
             return lines
         if job.kind == "move":
             self._recover()
-        raise StageTimeout("응답이 %.0f 초 안에 오지 않았습니다 (%s)" % (job.timeout, job.cmd))
+        raise StageTimeout("응답이 %.0f초 안에 없습니다 · %s" % (job.timeout, job.cmd))
 
     def _recover(self):
         """이동 시간 한도를 넘었다: '!' → 입력 비우기 → st 로 다시 맞춘다."""

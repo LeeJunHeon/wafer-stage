@@ -39,7 +39,7 @@ def test_end_push_refused_without_z_origin(make_ctrl):
     n = len(fw.log)
     with pytest.raises(Rejected) as e:
         ctrl.set_origin("x", "end")
-    assert str(e.value) == "Z 원점을 먼저 잡아 주십시오"
+    assert str(e.value) == "Z 원점을 먼저 잡으세요"
     assert not any(ln.startswith(("fz", "gz", "jz")) for ln in fw.log[n:])
 
 
@@ -110,7 +110,7 @@ def test_other_moves_are_still_refused_while_jogging(make_ctrl):
     t, res = long_jog(ctrl)
     with pytest.raises(Rejected) as e:
         ctrl.goto(10, 10)
-    assert "다른 이동이 진행 중" in str(e.value)
+    assert "이동 중입니다" in str(e.value)
     with pytest.raises(Rejected):
         ctrl.set_origin("z", "here")
     ctrl.estop()

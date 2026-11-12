@@ -47,7 +47,7 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None):
             path = "빈 판 비교"
             lg("빈 판 사진 정렬 · 이동 %.1f, %.1f px · 잔차 %.2f" % (a["dx"], a["dy"], a["resid"]))
         else:
-            notes.append("빈 판 사진과 잘 맞지 않아 사진 한 장으로 찾았습니다 (빈 판 사진을 다시 찍으면 더 잘 찾습니다)")
+            notes.append("빈 판 사진과 달라 사진 한 장으로 찾았습니다")
             lg("빈 판 사진 정렬 실패 · %s" % a.get("msg", ""))
     if res is None:
         res = fixed_detect.detect(cur, PARAMS, mm_px, valid, None, area, lg)
@@ -66,7 +66,7 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None):
         })
     out = order_rows(out, L)
     if any(s["weak"] for s in out):
-        notes.append("자리만 짐작한 샘플 %d개는 확인이 필요합니다" % sum(1 for s in out if s["weak"]))
+        notes.append("불확실한 샘플 %d개를 확인하세요" % sum(1 for s in out if s["weak"]))
     return {"samples": out, "notes": notes, "path": path, "ms": round((time.perf_counter() - t0) * 1000.0)}
 
 

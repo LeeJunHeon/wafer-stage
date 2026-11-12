@@ -49,7 +49,7 @@ class Safety:
             if self.heater_on_t is not None:              # 히트건은 비상정지가 끈다(r all 0) - 감시는 이 순간부터 꺼진 것으로 본다.
                 self.heater_turned_off()                  # 끄기 응답을 기다리는 동안 "온도를 못 읽어 껐습니다" 경보가 덧붙지 않게
         self.state.set("estop_locked", True)
-        self.state.alarm("estop", "비상정지 · 이동과 릴레이 켜기가 잠겼습니다. 확인한 뒤 [비상정지 풀기]를 누르십시오", ALARM)
+        self.state.alarm("estop", "비상정지 상태입니다", ALARM)
         return g
 
     def release(self):
@@ -66,14 +66,14 @@ class Safety:
     # ---- 이동 · 릴레이 거절 ----
     def reject_move(self, xy: bool, heater_on: bool) -> Optional[str]:
         if self.locked:
-            return "비상정지 상태라 움직일 수 없습니다. 비상정지를 풀어 주십시오"
+            return "비상정지 상태입니다"
         if xy and heater_on:
             return "히트건이 켜져 있어 움직일 수 없습니다"
         return None
 
     def reject_relay_on(self) -> Optional[str]:
         if self.locked:
-            return "비상정지 상태라 릴레이를 켤 수 없습니다. 비상정지를 풀어 주십시오"
+            return "비상정지 상태입니다"
         return None
 
     def reject_target(self, axis: str, target_mm: float, homed: bool) -> Optional[str]:
@@ -82,7 +82,7 @@ class Safety:
             return None
         hi = float(self.cfg["%s_max_mm" % axis])
         if target_mm < -1e-9 or target_mm > hi + 1e-9:
-            return "%s 축 가동 범위(0~%g mm)를 벗어납니다 (목표 %.2f mm)" % (axis.upper(), hi, target_mm)
+            return "%s 가동 범위 0~%g mm 를 벗어납니다" % (axis.upper(), hi)
         return None
 
     def z_is_top(self, z_pulse) -> bool:
@@ -105,13 +105,13 @@ class Safety:
         if r:
             return r
         if not thermometer_ok or not self.temp_fresh(now):
-            return "온도계(K2110)로 온도를 읽을 수 없어 히트건을 켤 수 없습니다"
+            return "온도를 못 읽어 히트건을 켤 수 없습니다"
         if self.last_temp >= float(self.cfg["heater_max_c"]):
-            return "온도가 %.0f °C 로 차단 온도(%g °C) 이상이라 켤 수 없습니다" % (self.last_temp, self.cfg["heater_max_c"])
+            return "온도 %.0f °C 가 차단 온도 %g °C 이상입니다" % (self.last_temp, self.cfg["heater_max_c"])
         if self.heater_off_t is not None:
             wait = float(self.cfg["heater_min_off_s"]) - (now - self.heater_off_t)
             if wait > 0:
-                return "히트건을 끈 지 얼마 안 됐습니다. %d 초 뒤에 다시 켤 수 있습니다" % (int(wait) + 1)
+                return "히트건은 %d초 뒤에 켤 수 있습니다" % (int(wait) + 1)
         return None
 
     def heater_turned_on(self, now: Optional[float] = None):
@@ -128,12 +128,12 @@ class Safety:
         now = self.clock() if now is None else now
         if self.last_temp is not None and self.last_temp_t is not None and self.last_temp_t >= self.heater_on_t - 1e-9 \
                 and self.last_temp >= float(self.cfg["heater_max_c"]):
-            return "온도가 %.0f °C 에 닿아 히트건을 껐습니다 (차단 온도 %g °C)" % (self.last_temp, self.cfg["heater_max_c"])
+            return "온도가 %.0f °C 에 닿아 히트건을 껐습니다" % self.last_temp
         since = max(self.heater_on_t, self.last_temp_t if self.last_temp_t is not None else -1e18)
         if now - since > float(self.cfg["temp_stale_s"]):
-            return "온도를 %g 초 넘게 읽지 못해 히트건을 껐습니다" % self.cfg["temp_stale_s"]
+            return "온도를 못 읽어 히트건을 껐습니다"
         if now - self.heater_on_t >= float(self.cfg["heater_max_on_s"]):
-            return "히트건이 %g 초 동안 켜져 있어 껐습니다 (최대 켜짐 시간)" % self.cfg["heater_max_on_s"]
+            return "히트건을 %g초 켜서 껐습니다" % self.cfg["heater_max_on_s"]
         return None
 
 

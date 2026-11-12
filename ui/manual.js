@@ -1,5 +1,5 @@
-/* manual.js - 수동 탭: 왼쪽(카메라 · 이동) / 가운데(수동 측정 · 릴레이 시험) / 오른쪽(장비에 직접 명령).
-   카메라 "원본" = 실시간 미리보기. "보정" = 마지막으로 찍은 판 사진(측정 탭과 같은 사진) + 샘플 윤곽 · 이름 + 지금 핀 자리(십자).
+/* manual.js - 수동 탭: 왼쪽(카메라 · 이동) / 가운데(수동 측정 · 릴레이 시험) / 오른쪽(직접 명령).
+   카메라 "실시간" = 실시간 미리보기. "판 사진" = 마지막으로 찍은 판 사진(측정 탭과 같은 사진) + 샘플 윤곽 · 이름 + 지금 핀 자리(십자).
    실시간 화면을 보정해 보여 주지 않는 까닭: 헤드가 판 위에 있으면 헤드가 판을 가린다. */
 "use strict";
 
@@ -20,9 +20,9 @@ function buildManual() {
   man.viewRaw = h("input", { type: "radio", name: "view", checked: true, onchange: () => setView("raw") });
   man.viewFix = h("input", { type: "radio", name: "view", onchange: () => setView("fix") });
   man.clickGo = h("input", { type: "checkbox" });
-  man.addHere = busyGate("지금 자리를 보정에 더하기", () => api("coord_add_here"), "sm");
+  man.addHere = busyGate("보정 점 추가", () => api("coord_add_here"), "sm");
   man.camNote = h("div", { class: "why line" });
-  man.pb.inner.addEventListener("click", (ev) => {                 // 보정 보기에서 판 사진을 누르면 그 자리로 간다(핀을 맨 위로 올린 뒤)
+  man.pb.inner.addEventListener("click", (ev) => {                 // 판 사진 보기에서 사진을 누르면 그 자리로 간다(핀을 맨 위로 올린 뒤)
     if (man.view !== "fix" || !man.clickGo.checked || running()) return;
     const [fx, fy] = man.pb.toFrac(ev), sz = S.cfg.plate_size_mm;
     if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
@@ -30,19 +30,19 @@ function buildManual() {
   });
   const camPanel = h("div", { class: "panel", id: "man-cam" },
     h("div", { class: "row" }, h("h3", { text: "카메라" }), h("span", { class: "sp" }),
-      h("label", { class: "chk" }, man.viewRaw, "원본"), h("label", { class: "chk" }, man.viewFix, "보정")),
+      h("label", { class: "chk" }, man.viewRaw, "실시간"), h("label", { class: "chk" }, man.viewFix, "판 사진")),
     man.pb.box, man.fixRow,
-    h("div", { class: "row wrap" }, h("label", { class: "chk" }, man.clickGo, "판을 누르면 그 자리로 이동"), man.addHere.b),
+    h("div", { class: "row wrap" }, h("label", { class: "chk" }, man.clickGo, "눌러서 이동"), man.addHere.b),
     man.camNote);
 
   man.jog = jogPart();
   const goInput = (ph) => h("input", { type: "number", class: "num", step: "any", placeholder: ph });
   man.gx = goInput("X"); man.gy = goInput("Y"); man.gz = goInput("Z");
-  man.head = btn("사진 찍을 때 헤드 자리로", () => { const p = S.cfg.photo_head_xy; if (p) api("goto", { x: p[0], y: p[1] }); });
+  man.head = btn("촬영 위치로", () => { const p = S.cfg.photo_head_xy; if (p) api("goto", { x: p[0], y: p[1] }); });
   man.headNote = h("span", { class: "why" });
   man.go = btn("가기", () => {
     const x = parseFloat(man.gx.value), y = parseFloat(man.gy.value), z = man.gz.value === "" ? null : parseFloat(man.gz.value);
-    if (isNaN(x) || isNaN(y)) { toast("X 와 Y 를 입력하십시오"); return; }
+    if (isNaN(x) || isNaN(y)) { toast("X 와 Y 를 입력하세요"); return; }
     api("goto", z == null || isNaN(z) ? { x, y } : { x, y, z });
   });
   const movePanel = h("div", { class: "panel", id: "man-move" }, h("h3", { text: "이동" }), man.jog.el,
@@ -54,11 +54,11 @@ function buildManual() {
   man.temp = h("div", { class: "big", text: "—" });
   man.ohm = h("div", { class: "big", text: "—" });
   man.cond = h("div", { class: "small" });
-  man.mon = btn("1초마다 계속 읽기", () => api("monitor", { on: !S.monitor }));
+  man.mon = btn("계속 읽기", () => api("monitor", { on: !S.monitor }));
   man.readT = btn("한 번 읽기", () => api("read_temp"));
   man.readR = btn("한 번 읽기", () => api("read_resistance"));
   man.measWhy = h("div", { class: "why hidden" });
-  man.contact = busyGate("핀 내리며 접촉 찾기", () => api("contact_find"));
+  man.contact = busyGate("접촉 탐색", () => api("contact_find"));
   man.contactLine = h("div", { class: "small" });
   const measure = h("div", { class: "panel" }, h("h3", { text: "수동 측정" }),
     h("div", { class: "reading" }, h("span", { class: "lbl", text: "온도 · K2110" }), man.temp, man.readT),
@@ -71,21 +71,20 @@ function buildManual() {
   man.grid = h("div", { class: "relays" });
   man.gridSig = "";
   const relay = h("div", { class: "panel" }, h("h3", { text: "릴레이 시험" }),
-    h("div", { class: "row" }, man.hLbl, man.hOn, man.hOff), h("div", { class: "small", text: "켜고 끄기를 자주 하지 마세요" }),
+    h("div", { class: "row" }, man.hLbl, man.hOn, man.hOff), h("div", { class: "small", text: "자주 켜고 끄지 마세요" }),
     man.grid,
-    h("div", { class: "row" }, btn("모두 끄기", () => api("relays_off"))),
-    h("div", { class: "small", text: "자리 배치는 준비 7단계에서 정합니다" }));
+    h("div", { class: "row" }, btn("모두 끄기", () => api("relays_off"))));
   const mid = h("div", { class: "col", id: "man-mid" }, measure, relay);
 
-  /* 오른쪽: 장비에 직접 명령 */
+  /* 오른쪽: 직접 명령 */
   man.target = h("select", { onchange: () => { man.quick(); } }, h("option", { value: "k2450", text: "저항계 K2450" }), h("option", { value: "k2110", text: "온도계 K2110" }), h("option", { value: "stage", text: "스테이지" }));
   man.quickBox = h("div", { class: "quick" });
   man.line = h("input", { type: "text", class: "grow mono", spellcheck: "false", placeholder: "한 줄 입력", onkeydown: (e) => { if (e.key === "Enter") sendRaw(); } });
   man.log = h("div", { id: "cmd-log", class: "fill" });
   man.quick = () => setKids(man.quickBox, ...QUICK[man.target.value].map((q) => btn(q, () => { man.line.value = q; sendRaw(); })));
   man.quick();
-  const cmd = h("div", { class: "panel", id: "man-right" }, h("h3", { text: "장비에 직접 명령" }), h("div", { class: "row" }, man.target), man.quickBox,
-    h("div", { class: "row" }, man.line, btn("보내기", sendRaw)), man.log, h("div", { class: "small", text: "이동 · 원점 · 릴레이 켜기는 버튼으로 합니다" }));
+  const cmd = h("div", { class: "panel", id: "man-right" }, h("h3", { text: "직접 명령" }), h("div", { class: "row" }, man.target), man.quickBox,
+    h("div", { class: "row" }, man.line, btn("보내기", sendRaw)), man.log, h("div", { class: "small", text: "이동 · 릴레이는 버튼으로" }));
   setKids($("#tab-manual"), left, mid, cmd);
 }
 function logLine(cls, text) {
@@ -114,18 +113,18 @@ function openCond() {
     const ok = await putSettings({ meter_volt: parseFloat(volt.value), meter_four_wire: four.checked, meter_avg_count: parseInt(avg.value, 10), meter_nplc: parseFloat(nplc.value), meter_ilim_a: parseFloat(ilim.value) });
     if (ok) closeDialog();
   };
-  openDialog("저항 측정 조건", h("div", { class: "form" }, "거는 전압 (V)", volt, "4단자", four, "평균 횟수", avg, "NPLC", nplc, "전류 한도 (A)", ilim),
+  openDialog("저항 측정 조건", h("div", { class: "form" }, "측정 전압 (V)", volt, "4단자", four, "평균 횟수", avg, "NPLC", nplc, "전류 한도 (A)", ilim),
     [btn("닫기", closeDialog), btn("저장", save, "on")]);
 }
 function renderManual() {
   const c = S.cfg || {};
   man.temp.textContent = S.temp.value == null ? "—" : S.temp.value.toFixed(1) + " °C";
   man.ohm.textContent = fmtOhm(S.resistance.ohm);
-  man.cond.textContent = (c.meter_volt != null ? Number(c.meter_volt).toFixed(2) : "—") + " V · " + (c.meter_four_wire ? "4단자" : "2단자") + " · 평균 " + c.meter_avg_count + " · NPLC " + c.meter_nplc;
+  man.cond.textContent = (c.meter_volt != null ? Number(c.meter_volt).toFixed(2) : "—") + " V · " + (c.meter_four_wire ? "4단자" : "2단자") + " · 평균 " + c.meter_avg_count + "회";
   man.mon.classList.toggle("on", !!S.monitor);
   const hp = c.photo_head_xy;
   man.head.disabled = !hp || running();
-  man.headNote.textContent = hp ? "" : "준비 3단계에서 정합니다";
+  man.headNote.textContent = hp ? "" : "준비 3 에서 정합니다";
   const hr = c.heater_relay || 1;
   man.hLbl.textContent = "히트건 R" + hr;
   const grid = c.cooler_grid || [];
@@ -143,35 +142,31 @@ function renderManual() {
     b.disabled = busy;
   }
   for (const b of [man.hOn, man.hOff, man.readT, man.readR, man.mon, man.go]) b.disabled = busy;
-  man.measWhy.textContent = busy ? "측정 중에는 수동 측정 · 릴레이 · 이동을 쓸 수 없습니다" : "";
+  man.measWhy.textContent = busy ? "측정 중에는 쓸 수 없습니다" : "";
   man.measWhy.classList.toggle("hidden", !busy);
   const ct = (S.prep && S.prep.contact) || {};
   man.contact.b.disabled = !!(ct.active || whyContact());
   man.contact.b.title = whyContact();
   man.contactLine.textContent = contactLine(ct) || (whyContact() && !busy ? whyContact() : "");
-  /* 카메라: 보정 보기 · 판 누르기 · 보정 점 더하기 */
+  /* 카메라: 판 사진 보기 · 눌러서 이동 · 보정 점 추가 */
   const pr = S.prep || {}, hasPlate = !!pr.plate, ready = !!(pr.coords && pr.coords.ready);
   man.viewFix.disabled = !hasPlate;
   if (!hasPlate && man.view === "fix") { man.view = "raw"; man.viewRaw.checked = true; man.pb.show(""); refreshPreview(); }
   const fix = man.view === "fix";
   man.fixRow.classList.toggle("hidden", !fix);
-  if (fix) {                                                     // 보정 보기: 마지막으로 찍은 판 사진(측정 탭과 같은 사진)
+  if (fix) {                                                     // 판 사진 보기: 마지막으로 찍은 판 사진(측정 탭과 같은 사진)
     const ph = pr.photo, has = !!(ph && ph.rect);
     man.pb.setAr(1);
-    man.pb.setNote("아직 판 사진이 없습니다 · [사진 다시 찍기] 를 누르세요");
+    man.pb.setNote("사진이 없습니다");
     man.pb.show(has ? "/api/img/plate.jpg?v=" + ph.id + "-" + pr.plate.t : "");
     man.photoInfo.textContent = has ? "사진 " + fmtClock(ph.t) : "사진 없음";
     man.retake.set(whyStage(true, true) || whyCamera() || whyHead());
   }
   man.clickGo.disabled = man.view !== "fix" || !ready || busy;
   if (man.clickGo.disabled) man.clickGo.checked = false;
-  man.addHere.set(busy ? "측정 중" : !ready ? "" : pr.last_click ? "" : "판 사진에서 자리를 먼저 누르세요");
+  man.addHere.set(busy ? "측정 중" : !ready ? "" : pr.last_click ? "" : "판 사진을 먼저 누르세요");
   man.addHere.b.disabled = busy || !ready || !pr.last_click;
-  man.camNote.textContent = !hasPlate ? "보정 보기 · 판 누르기는 준비 3 · 5단계 뒤에 쓸 수 있습니다"
-    : !ready ? "판 누르기는 준비 5단계(좌표 맞추기) 뒤에 쓸 수 있습니다"
-      : !fix ? ""
-        : pr.last_click ? "십자 = 지금 핀 자리 · 동그라미 = 누른 자리" + (pr.last_click.sample ? "(샘플 " + pr.last_click.sample + " 가운데)" : "") + " · 어긋나면 조그로 맞춘 뒤 [지금 자리를 보정에 더하기]"
-          : "십자 = 지금 핀 자리";
+  man.camNote.textContent = !hasPlate ? "준비 3 · 5 뒤에 쓸 수 있습니다" : !ready ? "준비 5 뒤에 쓸 수 있습니다" : fix ? "십자 = 핀 · 동그라미 = 누른 자리" : "";
   man.camNote.title = man.camNote.textContent;
   drawManualOverlay();
   man.jog.update();
@@ -196,7 +191,7 @@ function drawManualOverlay() {
   }
   setKids(man.ov, ...kids);
 }
-/* "원본" 보기의 미리보기: 1 초마다 새로 받는다(204 = 아직 프레임 없음). "보정" 보기는 찍어 둔 사진이라 새로 받지 않는다 */
+/* "실시간" 보기의 미리보기: 1 초마다 새로 받는다(204 = 아직 프레임 없음). "판 사진" 보기는 찍어 둔 사진이라 새로 받지 않는다 */
 let prevUrl = null;
 async function refreshPreview() {
   if (tab !== "manual" || !S || man.view !== "raw") return;
