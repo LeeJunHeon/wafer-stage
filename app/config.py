@@ -15,8 +15,6 @@ from typing import Any, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PATH = ROOT / "settings.json"
-FAKE_PATH = ROOT / "settings_fake.json"            # --fake 는 실제 값과 섞이지 않게 따로 쓴다
-FAKE_DATA_DIR = "../data_v3_fake"
 
 
 @dataclass(frozen=True)
@@ -182,22 +180,14 @@ def defaults() -> dict:
 
 
 class Config:
-    def __init__(self, path: Optional[os.PathLike] = None, fake: bool = False):
-        """fake = 가짜 장비용: 파일은 settings_fake.json, 데이터 폴더 기본값은 ../data_v3_fake (실제 값과 섞이지 않는다)."""
-        self.fake = bool(fake)
-        self.path = Path(path) if path else (FAKE_PATH if fake else DEFAULT_PATH)
-        self.values = self._defaults()
+    def __init__(self, path: Optional[os.PathLike] = None):
+        self.path = Path(path) if path else DEFAULT_PATH
+        self.values = defaults()
         self.loaded_notes = []                       # 읽을 때 무시한 값(화면 · 로그용)
-
-    def _defaults(self):
-        d = defaults()
-        if self.fake:
-            d["data_dir"] = FAKE_DATA_DIR
-        return d
 
     # ---- 읽기 · 쓰기 ----
     def load(self):
-        self.values = self._defaults()
+        self.values = defaults()
         self.loaded_notes = []
         if not self.path.exists():
             return self

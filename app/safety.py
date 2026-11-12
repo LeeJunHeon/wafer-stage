@@ -59,6 +59,12 @@ class Safety:
         self.state.alarm("estop", "비상정지 상태", ALARM)
         return g
 
+    def cancel_pending(self) -> int:
+        """이동 정지: 세대를 올려 줄 서 있던 명령과 여러 걸음 이동의 남은 걸음을 버리게 한다. 잠그지 않는다(비상정지와 다르다)."""
+        with self._lock:
+            self.generation += 1
+            return self.generation
+
     def release(self):
         """비상정지 풀기(위치는 control 이 st 로 다시 읽은 뒤 부른다)."""
         with self._lock:

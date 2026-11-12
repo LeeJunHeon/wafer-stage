@@ -169,7 +169,7 @@ def test_camera_head_marker_follows_fake_stage(make_ctrl):
 
 
 def test_camera_format_mismatch_raises_notice(make_ctrl):
-    from sim.fake_camera import open_fake
+    from tests.fakes.fake_camera import open_fake
     ctrl = make_ctrl()
     ctrl.camera.open_capture = open_fake(size_override=(160, 120))
     ctrl.connect_camera()
@@ -178,7 +178,7 @@ def test_camera_format_mismatch_raises_notice(make_ctrl):
 
 
 def test_missing_camera_only_marks_camera(make_ctrl):
-    from sim.fake_camera import FakeCapture
+    from tests.fakes.fake_camera import FakeCapture
     ctrl = make_ctrl()
     cap = FakeCapture()
     cap.opened = False

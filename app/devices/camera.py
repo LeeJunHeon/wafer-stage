@@ -32,7 +32,7 @@ def fourcc_str(v):
 
 
 class Camera:
-    """open_capture(index, backend_flag) → cv2.VideoCapture 모양 객체(시험 · --fake 는 가짜를 꽂는다)."""
+    """open_capture(index, backend_flag) → cv2.VideoCapture 모양 객체. 카메라 여는 함수를 꽂는 자리(기본 cv2.VideoCapture)."""
 
     def __init__(self, open_capture: Optional[Callable] = None, log: Optional[Callable] = None,
                  on_event: Optional[Callable] = None, period_s: float = PERIOD_S):

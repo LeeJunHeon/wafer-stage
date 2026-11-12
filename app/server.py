@@ -8,10 +8,11 @@
   GET  /api/state            상태 한 덩어리
   WS   /ws                   상태를 보내고(바뀔 때마다 + 1 초마다) 명령을 받는다: {"id", "cmd", "args"} → {"id", "ok", "msg" | "result"}
   POST /api/estop            비상정지(WS 의 {"cmd":"estop"} 과 같은 길 - 검사 없이 바로)
+  POST /api/stop             이동 정지(WS · /api/cmd 의 motion_stop 과 같은 길 - 명령 줄을 거치지 않고 새 스레드에서 바로). 잠그지 않는다
   POST /api/estop/release    비상정지 풀기
   POST /api/cmd/{name}       WS 와 같은 명령(시험 · 도구용)
   GET  /api/settings         설정 표 · PUT /api/settings  바꿀 값 {key: value}
-비상정지는 명령 줄에 서지 않고 새 스레드에서 바로 처리한다.
+비상정지와 이동 정지는 명령 줄에 서지 않고 새 스레드에서 바로 처리한다.
 """
 
 import asyncio
@@ -38,6 +39,25 @@ def _estop_thread(ctrl: Controller, source: str):
     t = threading.Thread(target=ctrl.estop, args=(source,), daemon=True, name="estop")
     t.start()
     return t
+
+
+async def _stop_now(ctrl: Controller, source: str):
+    """이동 정지: 명령 줄(스레드 풀)을 거치지 않는다 - 이동 명령들이 줄을 잡고 있어도 새 스레드에서 바로 실행하고 결과만 기다린다."""
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+
+    def work():
+        try:
+            res = {"ok": True, "result": ctrl.motion_stop(source)}
+        except Rejected as e:
+            res = {"ok": False, "msg": str(e)}
+        except Exception as e:                                      # noqa: BLE001 - 서버는 죽지 않는다
+            ctrl.logs.app("이동 정지 오류 · %s: %s" % (type(e).__name__, e), "error")
+            res = {"ok": False, "msg": "명령 처리 실패 · %s" % str(e)[:60]}
+        loop.call_soon_threadsafe(fut.set_result, res)
+
+    threading.Thread(target=work, daemon=True, name="motion-stop").start()
+    return await fut
 
 
 def create_app(ctrl: Controller) -> FastAPI:
@@ -126,11 +146,17 @@ def create_app(ctrl: Controller) -> FastAPI:
     async def post_release():
         return await run("estop_release", {})
 
+    @app.post("/api/stop")
+    async def post_stop():
+        return await _stop_now(ctrl, "화면")
+
     @app.post("/api/cmd/{name}")
     async def post_cmd(name: str, args: dict = Body(default={})):
         if name == "estop":
             _estop_thread(ctrl, "HTTP")
             return {"ok": True}
+        if name == "motion_stop":
+            return await _stop_now(ctrl, "화면")
         return await run(name, args)
 
     @app.get("/api/settings")
@@ -172,6 +198,8 @@ def create_app(ctrl: Controller) -> FastAPI:
             if cmd == "estop":                                      # 맨 앞에서 검사 없이
                 _estop_thread(ctrl, "WS")
                 res = {"ok": True}
+            elif cmd == "motion_stop":                              # 이동 정지도 줄 서지 않는다
+                res = await _stop_now(ctrl, "화면")
             else:
                 res = await run(cmd, args)
             await sock.send_json(dict(res, type="reply", id=mid))

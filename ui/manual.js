@@ -23,7 +23,7 @@ function buildManual() {
   man.addHere = busyGate("보정 점 추가", () => api("coord_add_here"), "sm");
   man.camNote = h("div", { class: "why line" });
   man.pb.inner.addEventListener("click", (ev) => {                 // 판 사진 보기에서 사진을 누르면 그 자리로 간다(핀을 맨 위로 올린 뒤)
-    if (man.view !== "fix" || !man.clickGo.checked || running()) return;
+    if (man.view !== "fix" || !man.clickGo.checked || running() || !man.pb.url) return;      // 사진이 없는 빈 상자는 누를 수 없다
     const [fx, fy] = man.pb.toFrac(ev), sz = S.cfg.plate_size_mm;
     if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
     api("plate_goto", { x: fx * sz, y: fy * sz });
@@ -195,8 +195,8 @@ function drawManualOverlay() {
 let prevUrl = null;
 async function refreshPreview() {
   if (tab !== "manual" || !S || man.view !== "raw") return;
+  man.pb.setAr(4 / 3);                                           // 사진이 없어도 상자는 카메라 화면 크기 그대로
   if (!devOk("camera")) { man.pb.setNote("카메라 연결 안 됨"); man.pb.show(""); return; }
-  man.pb.setAr(4 / 3);
   try {
     const r = await fetch("/api/camera/preview.jpg?t=" + Date.now(), { cache: "no-store" });
     if (man.view !== "raw") return;                              // 받는 사이에 보기를 바꿨다

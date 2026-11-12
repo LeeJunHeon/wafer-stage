@@ -580,47 +580,6 @@ class Prep:
         return {"cooler_grid": self.cfg["cooler_grid"]}
 
     # ------------------------------------------------------------------
-    # 가짜 장비 도우미(--fake 일 때만)
-    # ------------------------------------------------------------------
-    def fake_fill(self):
-        """가짜 준비 값 채우기: 준비 단계를 다 하지 않아도 측정을 바로 써 볼 수 있게 가짜 세계의 참값으로 채운다."""
-        w = self.c.world
-        if w is None:
-            raise Rejected("시뮬레이션에서만 사용 가능")
-        self.c._no_run("시뮬레이션 설정 적용")
-        self._need_camera()
-        if not self.c.stage.connected:
-            raise Rejected("스테이지 연결 안 됨")
-        self.calib.set_origin("xyz", "sim")
-        head = [5.0, 125.0]
-        self.c._remember(photo_head_xy=head, contact_z_mm=round(w.plate_z - 0.6, 3))
-        loaded = w.loaded
-        w.set_loaded(False)
-        try:
-            frame = self.capture(move=True, need_head=True)
-            fh, fw = frame.shape[:2]
-            self.calib.set_plate([[float(x), float(y)] for x, y in w.plate_corners_px(fw, fh)], (fw, fh))
-            for n, xy in zip(CORNERS, w.corners_stage()):
-                self.calib.set_corner_stage(n, xy)
-            self.empty_take()
-        finally:
-            w.set_loaded(loaded)
-        self.calib.set_contact({"r2": None, "r4": None, "how": "sim"})
-        self.calib.set_cooler()
-        self.marker_learn()
-        self.publish()
-        return {}
-
-    def fake_samples(self, on):
-        w = self.c.world
-        if w is None:
-            raise Rejected("시뮬레이션에서만 사용 가능")
-        self.c._no_run("샘플 배치")
-        w.set_loaded(bool(on))
-        self.publish()
-        return {"loaded": w.loaded}
-
-    # ------------------------------------------------------------------
     # 화면에 보낼 상태
     # ------------------------------------------------------------------
     def _photo_view(self):
@@ -640,7 +599,7 @@ class Prep:
         dev_ok = all(st.get("devices", k, "state") == "연결" for k in ("stage", "k2110", "k2450", "camera"))
         n_dev = sum(1 for k in ("stage", "k2110", "k2450", "camera") if st.get("devices", k, "state") == "연결")
         homed = st.get("homed")
-        how = {"here": "현재 위치", "end": "끝단 접촉", "sim": "시뮬레이션"}
+        how = {"here": "현재 위치", "end": "끝단 접촉"}
         org = cal.get("origin") or {}
         last = max((org[a] for a in org), key=lambda o: o["t"], default=None)
         o_done = all(homed.get(a) for a in "xyz")
@@ -674,7 +633,6 @@ class Prep:
             quality = geo.quad_quality([stage_pts[n] for n in CORNERS], self._size_mm())
             quality["warn"] = bool(quality["max_side_err"] > float(self.cfg["coord_warn_mm"]) or quality["max_angle_err"] > float(self.cfg["coord_warn_deg"]))
         errs = self.calib.extra_errors()
-        w = self.c.world
         to_plate = self.calib.stage_to_plate(self._size_mm())
         return {
             "steps": self.steps(),
@@ -691,7 +649,6 @@ class Prep:
             "contact": dict(self.contact),
             "pos_block": self.pos_block,
             "find": self.find_info,
-            "fake_loaded": None if w is None else bool(w.loaded),
         }
 
     def publish(self):

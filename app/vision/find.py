@@ -55,12 +55,12 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None):
     out = []
     for sm in res.samples:
         cnt = np.asarray(sm["_cnt"], np.float32).reshape(-1, 1, 2)
-        simp = cv2.approxPolyDP(cnt, 0.15 * ppmm, True).reshape(-1, 2)                                 # 0.15 mm 안에서 꼭짓점을 줄인다
-        if len(simp) < 3:
-            simp = cnt.reshape(-1, 2)
+        poly = cv2.approxPolyDP(cnt, 0.15 * ppmm, True).reshape(-1, 2)                                 # 0.15 mm 안에서 꼭짓점을 줄인다
+        if len(poly) < 3:
+            poly = cnt.reshape(-1, 2)
         out.append({
             "plate": [round(float(sm["x_px"]) * mm_px - margin_mm, 2), round(float(sm["y_px"]) * mm_px - margin_mm, 2)],
-            "outline": [[round(float(x) * mm_px - margin_mm, 2), round(float(y) * mm_px - margin_mm, 2)] for x, y in simp],
+            "outline": [[round(float(x) * mm_px - margin_mm, 2), round(float(y) * mm_px - margin_mm, 2)] for x, y in poly],
             "w": float(sm["w_mm"]), "h": float(sm["h_mm"]), "area": float(sm["area_mm2"]),
             "source": sm["source"], "weak": sm["source"] == "predicted",
         })

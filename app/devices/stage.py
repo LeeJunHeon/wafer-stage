@@ -331,11 +331,11 @@ class Stage:
     def _run(self, job, quiet=False):
         try:
             if not self.gen_ok(job.gen):
-                raise Discarded("비상정지로 취소됨")
+                raise Discarded("정지로 취소됨")
             self._drain_before()
             with self._wlock:
                 if not self.gen_ok(job.gen):                        # 쓰기 직전에 한 번 더(비상정지가 그 사이에 세대를 올렸다)
-                    raise Discarded("비상정지로 취소됨")
+                    raise Discarded("정지로 취소됨")
                 self._ser_write((job.cmd + "\n").encode("ascii"))
             self.log("->", job.cmd)
             if job.kind == "move":

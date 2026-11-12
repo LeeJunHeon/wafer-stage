@@ -1,6 +1,6 @@
 """fake_camera.py - 가짜 카메라: cv2.VideoCapture 모양(isOpened · set · get · read · grab · retrieve · release).
 
-가짜 세계(sim/world.py)를 약간 비스듬한(사다리꼴) 사진으로 그린다: 바닥 · 금속 판 · 새겨진 사각형 · 샘플(올려 있을 때) ·
+가짜 세계(tests/fakes/world.py)를 약간 비스듬한(사다리꼴) 사진으로 그린다: 바닥 · 금속 판 · 새겨진 사각형 · 샘플(올려 있을 때) ·
 헤드(판 위에 있으면 샘플을 가린다) · 헤드 마커(실제 ArUco 4X4_50 id 10 무늬 - 판보다 높은 평면이라 시차가 생긴다).
 헤드는 head_xy_fn() 이 주는 스테이지 X · Y(가짜 스테이지의 실제 위치)를 따라 움직인다.
 장면은 가로 최대 2040 으로 그린 뒤 요청한 해상도로 늘린다(4080×3060 도 가볍게 흉내 낸다).
@@ -12,7 +12,7 @@ import time
 import cv2
 import numpy as np
 
-from sim.world import World
+from tests.fakes.world import World
 
 HEAD_ID = 10
 BASE_MAX_W = 2040

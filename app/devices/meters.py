@@ -14,7 +14,7 @@ NO_DRIVER = "장비 통신 드라이버 없음 · NI-VISA 설치 필요"
 OVERFLOW = 9.0e37                      # SCPI 범위 넘음 · 열전대 끊김 표기 9.91E+37
 VISA_TIMEOUT_MS = 5000
 
-RM_FACTORY: Optional[Callable] = None  # 시험 · --fake 가 가짜 장비 관리자를 꽂는다: callable() -> rm
+RM_FACTORY: Optional[Callable] = None  # 장비 관리자를 꽂는 자리: callable() -> rm (없으면 pyvisa 의 ResourceManager)
 LOG: Optional[Callable] = None         # (name, addr, op, cmd, resp, dt, exc) - 주고받은 줄 기록
 
 

@@ -41,27 +41,20 @@ def open_serial(name):
 
 
 class Controller:
-    def __init__(self, cfg: Optional[Config] = None, fake: bool = False, fake_scale: float = 0.2, clock=None, time_scale: float = 1.0):
-        """time_scale: 가짜 장비에서만 쓰는 시간 배율(10 = 열 모델 · 측정 · 안전 시계가 10배 빠르게 간다). 실장비에서는 항상 1 이다."""
+    def __init__(self, cfg: Optional[Config] = None, clock=None, sleep=None, open_port=None):
+        """장비를 꽂는 자리: open_port(이름) → 시리얼 포트 객체(기본 open_serial) · clock() · sleep(초)(기본 time.monotonic · time.sleep) ·
+        meters.RM_FACTORY(VISA 관리자) · camera.open_capture(카메라 열기). 시험은 이 자리에 시험용 장비와 시계를 꽂는다."""
         self.cfg = cfg or Config().load()
-        self.fake = fake
-        self.fake_scale = fake_scale
-        self.time_scale = float(time_scale) if fake and time_scale and time_scale > 0 else 1.0
-        k = self.time_scale
-        self.sim_clock = (lambda: time.monotonic() * k) if k != 1.0 else time.monotonic     # 가짜 열 모델의 시계
-        self.clock = clock or self.sim_clock                         # 안전 규칙 · 측정이 쓰는 시계(초)
-        self.sleep = (lambda s: time.sleep(s / k)) if k != 1.0 else time.sleep
+        self.clock = clock or time.monotonic                        # 안전 규칙 · 측정이 쓰는 시계(초)
+        self.sleep = sleep or time.sleep                            # 측정이 읽는 간격을 기다릴 때 쓴다
         self.state = State()
         self.logs = Logs(self.cfg.data_path())
         self.safety = Safety(self.cfg, self.state, self.clock)
-        self.stage = Stage(self._open_port, gen_ok=self.safety.gen_ok, log=self.logs.serial,
+        self.stage = Stage(open_port or open_serial, gen_ok=self.safety.gen_ok, log=self.logs.serial,
                            on_event=self._stage_event, on_status=self._stage_status)
         self.k2110: Optional[meters.K2110] = None
         self.k2450: Optional[meters.K2450] = None
         self.camera = Camera(log=self.logs.app, on_event=self._camera_event)
-        self.fake_fw = None
-        self.lab = None
-        self.world = None                                           # 가짜 세계(sim/world.py) - 가짜 장비일 때만
         self.calib = Calib(self.cfg.data_path())
         self.prep = Prep(self)
         self.runner = Runner(self)                                  # 측정(app/jobs/run.py)
@@ -77,52 +70,21 @@ class Controller:
         self._shut = False                                          # 종료 처리는 한 번만(창 닫기 · 서버 종료가 둘 다 부른다)
         self._shut_lock = threading.Lock()
         self._threads = []
-        self.state.set("fake", bool(fake))
         meters.LOG = self.logs.visa
         for n in self.cfg.loaded_notes:
             self.logs.app(n, "warn")
             self.state.alarm("config", n, NOTICE)
-        if fake:
-            self._setup_fake()
         self.publish_cfg()
         self.prep.publish()
         self.runner.publish()
         self._start_threads()
 
     # ------------------------------------------------------------------
-    # 가짜 장비
-    # ------------------------------------------------------------------
-    def _setup_fake(self):
-        """가짜 세계 하나를 만들고 가짜 카메라 · 가짜 K2450 · 열 모델이 모두 그것과 가짜 스테이지의 실제 X · Y · Z 를 보게 한다."""
-        from sim import fake_visa
-        from sim.world import World
-        self.world = World()
-        heater = int(self.cfg["heater_relay"]) - 1
-        fw = lambda: self.fake_fw                                   # noqa: E731
-        self.lab = fake_visa.Lab(clock=self.sim_clock, sleep=self.sleep, world=self.world,
-                                 heater_fn=lambda: bool(fw() and fw().relay[heater]),
-                                 cooler_fn=lambda: bool(fw() and any(r for i, r in enumerate(fw().relay) if i != heater)),
-                                 relays_fn=lambda: [i + 1 for i, r in enumerate(fw().relay) if r] if fw() else [],
-                                 pos_fn=lambda: (fw().true_xy() + (fw().real["z"] / PPMM,)) if fw() else None)
-        self.lab.read_dt = 0.02                                     # 가짜 읽기 시간(실장비는 길다)
-        self.lab.addrs = ["ASRL5::INSTR", "ASRL4::INSTR", self.cfg["k2110_addr"], self.cfg["k2450_addr"]]
-        fake_visa.install(self.lab)
-        from sim.fake_camera import open_fake
-        self.camera.open_capture = open_fake(lambda: self.fake_fw.true_xy() if self.fake_fw else (0.0, 0.0), world=self.world)
-
-    def _open_port(self, name):
-        if self.fake:
-            from sim.fake_v11 import FakeV11
-            self.fake_fw = FakeV11(time_scale=self.fake_scale, homed=True)
-            return self.fake_fw
-        return open_serial(name)
-
-    # ------------------------------------------------------------------
     # 연결
     # ------------------------------------------------------------------
     def list_devices(self):
         visa, note = meters.list_resources()
-        return {"serial_ports": ["COM5"] if self.fake else serial_ports(), "visa": visa, "note": note, "cameras": [0, 1, 2, 3]}
+        return {"serial_ports": serial_ports(), "visa": visa, "note": note, "cameras": [0, 1, 2, 3]}
 
     def connect_stage(self, port: Optional[str] = None):
         port = (port or self.cfg["stage_port"]).strip()
@@ -335,9 +297,9 @@ class Controller:
         except Rejected:
             raise
         except stage_mod.Discarded:
-            raise Rejected("비상정지로 취소됨")
-        except stage_mod.MoveAborted:
-            raise Rejected("이동 중단 · 위치 확인 필요")
+            raise Rejected(self._cancel_text())
+        except stage_mod.MoveAborted:                               # '!' 로 끊겼다: 비상정지면 위치 확인을 알리고, 이동 정지면 취소만 알린다
+            raise Rejected("이동 중단 · 위치 확인 필요" if self.safety.locked else "정지로 취소됨")
         except stage_mod.StageRejected as e:
             raise Rejected(str(e))
         except StageError as e:
@@ -347,6 +309,34 @@ class Controller:
             self._set_move(None)
             if lock:
                 self._motion.release()
+
+    def _cancel_text(self):
+        """세대가 바뀌어 버려진 명령의 거절 글: 비상정지(잠김) / 이동 정지."""
+        return "비상정지로 취소됨" if self.safety.locked else "정지로 취소됨"
+
+    def motion_stop(self, source: str = "화면"):
+        """이동 정지: 이동만 멈추고 잠그지 않는다(비상정지와 다르다).
+        1) 세대를 올려 대기 중인 조그 · 줄 서 있는 이동 · 여러 걸음 이동의 남은 걸음을 버린다 2) '!' 를 줄 서지 않고 바로 쓴다 3) st 로 위치를 다시 읽는다.
+        원점 · 릴레이 · 히트건 · K2450 출력은 건드리지 않는다. 접촉 탐색 중이었다면 탐색이 스스로 끝나며 출력을 끈다(핀은 그 자리).
+        멈춰 있을 때 불러도 된다. 명령 줄을 거치지 않게 서버는 새 스레드에서 부른다(/api/stop)."""
+        if self.run_active():
+            raise Rejected("측정 중 · 측정 중지 또는 비상정지 사용")
+        self._need_stage()
+        t0 = time.monotonic()
+        self.safety.cancel_pending()
+        with self._plock:
+            self._jog_pending = None
+        try:
+            banged = self.stage.bang()
+        except StageError as e:
+            self.logs.app("이동 정지 (%s) · '!' 전송 실패 · %s" % (source, e), "error")
+            raise Rejected("정지 신호 전송 실패 · 비상정지 사용")
+        self.logs.app("이동 정지 (%s) · '!' %s · %.1f ms" % (source, "전송" if banged else "못 보냄", (time.monotonic() - t0) * 1000))
+        try:
+            self.stage.call("st", None, stage_mod.is_st, 3.0, prio=0)   # 끊긴 이동이 끝난 뒤의 위치를 다시 읽는다
+        except StageError as e:
+            raise Rejected("위치 읽기 실패 · %s" % e)
+        return {"pos": dict(self.state.get("pos")), "locked": self.safety.locked}
 
     def _mm(self, ax):
         p = self.stage.pos.get(ax)
@@ -531,7 +521,7 @@ class Controller:
         try:
             self.stage.relay(n, True, g)
         except stage_mod.Discarded:
-            raise Rejected("비상정지로 취소됨")
+            raise Rejected(self._cancel_text())
         except StageError as e:
             raise Rejected("릴레이 켜기 실패 · %s" % e)
         finally:
@@ -761,7 +751,7 @@ class Controller:
             while True:
                 dz = sense(zp / PPMM)
                 if not self.safety.gen_ok(g):                       # 재는 동안 비상정지가 왔으면 다음 걸음을 보내지 않는다
-                    raise stage_mod.Discarded("비상정지로 취소됨")
+                    raise stage_mod.Discarded("정지로 취소됨")
                 if dz is None:
                     return zp / PPMM
                 dp = stage_mod.mm_to_pulse(dz)
@@ -1013,7 +1003,7 @@ COMMANDS = {
     "connect_stage": "connect_stage", "disconnect_stage": "disconnect_stage",
     "connect_meter": "connect_meter", "disconnect_meter": "disconnect_meter", "devices": "list_devices",
     "connect_camera": "connect_camera", "disconnect_camera": "disconnect_camera", "monitor": "monitor",
-    "jog": "jog", "goto": "goto", "z_top": "z_top", "set_origin": "set_origin",
+    "jog": "jog", "goto": "goto", "z_top": "z_top", "set_origin": "set_origin", "motion_stop": "motion_stop",
     "relay_on": "relay_on", "relay_off": "relay_off", "relays_off": "relays_off",
     "read_temp": "read_temp", "read_resistance": "read_resistance", "raw": "raw",
     "estop_release": "estop_release", "alarm_clear": "alarm_clear",
@@ -1024,7 +1014,6 @@ COMMANDS = {
     "marker_learn": "prep.marker_learn", "plate_goto": "prep.plate_goto", "coord_add_here": "prep.coord_add_here", "coord_remove": "prep.coord_remove",
     "samples_find": "prep.samples_find", "sample_use": "prep.sample_use",
     "cooler_only": "prep.cooler_only", "cooler_save": "prep.cooler_save",
-    "fake_fill": "prep.fake_fill", "fake_samples": "prep.fake_samples",
     "sample_rename": "prep.sample_rename", "batch_set": "prep.batch_set",
     # 측정(app/jobs/run.py)
     "run_start": "runner.start", "run_resume": "runner.resume", "run_stop": "runner.stop", "run_skip": "runner.skip",
@@ -1034,7 +1023,7 @@ COMMANDS = {
 
 
 # 측정 중에도 되는 명령(읽기 · 측정 조작 · 경보 지우기). 그 밖의 명령은 측정 중에 거절한다. 비상정지는 명령 줄을 거치지 않는다.
-RUN_ALLOWED = {"devices", "estop_release", "alarm_clear", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_requeue",
+RUN_ALLOWED = {"devices", "estop_release", "alarm_clear", "motion_stop", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_requeue",
                "sample_rename", "batch_set", "result_open_folder", "result_nas_copy"}
 
 

@@ -172,7 +172,6 @@ function renderStatus() {
     posEl,
     h("span", { class: "item " + (heaterOn ? "st-warn" : "") }, "히트건 " + (heaterOn ? "켜짐" : "꺼짐")),
     h("span", { class: "item" }, "쿨러 " + (unknown ? "—" : cool.length ? "켜짐 " + cool.join("·") : "꺼짐")),
-    s.fake ? h("span", { class: "item st-warn" }, "시뮬레이션") : null,
     h("span", { class: "safety" }, "차단 " + (c.heater_max_c != null ? c.heater_max_c : 110) + " °C · 통신 감시 " + ((c.watchdog_ms || 2000) / 1000) + "초"));
 }
 let alarmSig = "";
@@ -187,15 +186,16 @@ function renderAlarms() {
 
 /* ====================================================================
    사진 칸: 비율(ar = 가로 ÷ 세로)을 지켜 칸 안에 맞춘다. 위 · 왼쪽부터 채우고 남는 자리는 패널 바탕색(opts.center 면 칸 가운데).
+   사진이 들어갈 크기 그대로 상자(1px 테두리 · 옅은 바탕)를 항상 그린다: 사진이 없으면 안내 글을 상자 가운데에, 있으면 사진을 그 안에.
    svg 덧그림은 사진과 같은 크기(좌표는 쓰는 쪽이 viewBox 로 정한다). toFrac(ev) = 사진 안 위치(0~1).
    ==================================================================== */
 function photoBox(opts) {
   opts = opts || {};
-  const img = h("img", { alt: "", draggable: "false" });
-  const svg = svgEl("svg", { preserveAspectRatio: "none" });
-  const inner = h("div", { class: "photo-in hidden" }, img, svg);
+  const img = h("img", { alt: "", draggable: "false", class: "hidden" });
+  const svg = svgEl("svg", { preserveAspectRatio: "none", class: "hidden" });
   const note = h("div", { class: "photo-note", text: opts.note || "" });
-  const box = h("div", { class: "photo-box " + (opts.cls || "") }, inner, note);
+  const inner = h("div", { class: "photo-in" }, img, svg, note);      // 상자: 사진이 없어도 사진 크기 그대로 보인다
+  const box = h("div", { class: "photo-box " + (opts.cls || "") }, inner);
   const pb = { box, inner, img, svg, note, ar: opts.ar || 1, w: 0, h: 0, url: "" };
   pb.fit = () => {
     const cw = box.clientWidth, ch = box.clientHeight;
@@ -209,12 +209,18 @@ function photoBox(opts) {
   };
   new ResizeObserver(pb.fit).observe(box);
   pb.setAr = (ar) => { if (ar > 0 && Math.abs(ar - pb.ar) > 1e-6) { pb.ar = ar; pb.w = 0; if (pb.relayout) pb.relayout(); pb.fit(); } };
-  pb.show = (url) => {                                     // url 이 없으면 안내 글만
-    if (url) { if (url !== pb.url) { pb.url = url; img.src = url; } inner.classList.remove("hidden"); note.classList.add("hidden"); pb.fit(); }
-    else { pb.url = ""; inner.classList.add("hidden"); note.classList.remove("hidden"); }
+  pb.show = (url) => {                                     // url 이 없으면 빈 상자 + 가운데 안내 글
+    const has = !!url;
+    if (has && url !== pb.url) img.src = url;
+    pb.url = has ? url : "";
+    img.classList.toggle("hidden", !has); svg.classList.toggle("hidden", !has); note.classList.toggle("hidden", has);
+    pb.fit();
   };
   pb.setNote = (t) => { note.textContent = t; };
-  pb.toFrac = (ev) => { const r = inner.getBoundingClientRect(); return [(ev.clientX - r.left) / Math.max(1, r.width), (ev.clientY - r.top) / Math.max(1, r.height)]; };
+  pb.toFrac = (ev) => {                                    // 테두리 안쪽(사진이 그려진 영역) 기준
+    const r = inner.getBoundingClientRect(), bw = inner.clientLeft, bh = inner.clientTop;
+    return [(ev.clientX - r.left - bw) / Math.max(1, inner.clientWidth), (ev.clientY - r.top - bh) / Math.max(1, inner.clientHeight)];
+  };
   return pb;
 }
 

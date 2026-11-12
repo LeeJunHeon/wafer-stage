@@ -31,7 +31,6 @@ class State:
             "move": None,                                            # 이동 중 정보 {what, target{x,y,z mm}, pending{axis,mm}} - 끝나면 None
             "monitor": False,                                        # 1 초마다 계속 읽기
             "cfg": {},                                               # 화면이 쓰는 설정 일부
-            "fake": False,                                           # 가짜 장비로 도는 중
             "prep": None,                                            # 준비 단계 상태(app/prep.py view)
             "samples": [],                                           # 찾은 샘플 목록
             "run": None,                                             # 측정 진행(app/jobs/run.py view). 점 데이터는 넣지 않는다

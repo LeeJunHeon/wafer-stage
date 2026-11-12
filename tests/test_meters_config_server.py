@@ -57,7 +57,7 @@ def test_missing_driver_marks_only_that_device(monkeypatch, tmp_path):
     from app.control import Controller
     cfg = Config(tmp_path / "s.json").load()
     cfg.update({"data_dir": str(tmp_path / "d")})
-    ctrl = Controller(cfg, fake=False)
+    ctrl = Controller(cfg)                                        # 가짜 장비를 꽂지 않은 프로그램 그대로
     monkeypatch.setattr(meters, "RM_FACTORY", None)
     monkeypatch.setattr(meters, "_rm", lambda: (_ for _ in ()).throw(meters.VisaUnavailable()))
     from app.safety import Rejected

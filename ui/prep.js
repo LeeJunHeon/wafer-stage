@@ -48,10 +48,7 @@ function buildPrep() {
     return { el, sub, done };
   });
   prep.allItem = h("div", { class: "step", onclick: () => setStep(7) }, h("span", { class: "no blank" }), h("div", { class: "txt" }, h("div", { class: "t", text: "전체 설정" })));
-  prep.fakeFill = busyBtn("시뮬레이션 설정 적용", () => api("fake_fill"));
-  prep.fakeLoad = busyBtn("샘플 배치", () => api("fake_samples", { on: !P().fake_loaded }));
-  prep.fakeBox = h("div", { class: "fakebox hidden" }, small("시뮬레이션"), prep.fakeFill, prep.fakeLoad);
-  const list = h("div", { class: "panel", id: "prep-list" }, h("h3", { text: "초기 설정" }), ...prep.items.map((x) => x.el), h("div", { class: "sep" }), prep.allItem, prep.fakeBox);
+  const list = h("div", { class: "panel", id: "prep-list" }, h("h3", { text: "초기 설정" }), ...prep.items.map((x) => x.el), h("div", { class: "sep" }), prep.allItem);
   prep.main = h("div", { id: "prep-main" });
   prep.pages = [buildStep1(), buildStep2(), buildStep3(), buildStep4(), buildStep5(), buildStep6(), buildStep7(),
     typeof buildSettingsPage === "function" ? buildSettingsPage() : null];
@@ -118,7 +115,7 @@ function renderStep1() {
 /* ---------- 2 · 원점 맞추기 ---------- */
 function buildStep2() {
   const pg = { jog: jogPart(), ax: {} };
-  const HOW = { here: "현재 위치", end: "끝단 접촉", sim: "시뮬레이션" };
+  const HOW = { here: "현재 위치", end: "끝단 접촉" };
   const rows = ["x", "y", "z"].map((a) => {
     const dot = h("i", { class: "dot" }), txt = h("span", {}), when = h("span", { class: "small" });
     pg.ax[a] = { dot, txt, when };
@@ -464,11 +461,6 @@ function renderPrepList() {
     x.sub.title = s.text || "";
     x.done.textContent = s.done ? "✓" : "";
   });
-  prep.fakeBox.classList.toggle("hidden", !S.fake);
-  if (S.fake) {
-    prep.fakeLoad.textContent = P().fake_loaded ? "샘플 제거" : "샘플 배치";
-    prep.fakeFill.disabled = prep.fakeLoad.disabled = running();
-  }
 }
 function renderPrep() {
   renderPrepList();

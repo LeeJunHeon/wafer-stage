@@ -1,4 +1,4 @@
-"""준비 단계: 좌표 맞추기 · 헤드 마커 위치 확인 · 샘플 찾기 · 전기로 접촉 찾기. 가짜 세계(sim/world.py)의 참값과 비교한다."""
+"""준비 단계: 좌표 맞추기 · 헤드 마커 위치 확인 · 샘플 찾기 · 전기로 접촉 찾기. 가짜 세계(tests/fakes/world.py)의 참값과 비교한다."""
 
 import math
 
@@ -195,9 +195,9 @@ def test_find_all_samples(ready_ctrl):
 
 def test_empty_plate_finds_nothing(ready_ctrl):
     ctrl = ready_ctrl()
-    ctrl.run_command("fake_samples", {"on": False})
+    ctrl.world.set_loaded(False)                                     # 샘플을 치운다
     assert ctrl.run_command("samples_find")["n"] == 0
-    ctrl.run_command("fake_samples", {"on": True})
+    ctrl.world.set_loaded(True)
     assert ctrl.run_command("samples_find")["n"] == 9
 
 
