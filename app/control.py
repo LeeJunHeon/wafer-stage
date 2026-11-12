@@ -19,7 +19,7 @@ from app.devices.stage import PPMM, Stage, StageError
 from app.logs import Logs
 from app.jobs.run import Runner
 from app.prep import Prep
-from app.safety import Rejected, Safety
+from app.safety import BY_MANUAL, BY_RUN, TRIP_MAX_C, TRIP_MAX_ON, TRIP_NO_TEMP, Rejected, Safety
 from app.state import ALARM, NOTICE, State
 
 AXES = "xyz"
@@ -66,6 +66,8 @@ class Controller:
         self.prep = Prep(self)
         self.runner = Runner(self)                                  # 측정(app/jobs/run.py)
         self.heater_trip = ""                                       # 안전 규칙이 히트건을 마지막으로 끈 이유
+        self._heater_by = None                                      # 지금 보내는 "히트건 켜기"의 주체(수동 · 측정) - 릴레이 상태가 읽히는 순간에 쓴다
+        self._heater_why = None                                     # 지금 보내는 "히트건 끄기"의 까닭(로그용)
         self._motion = threading.Lock()
         self._plock = threading.Lock()                              # 조그 대기 칸 · 현재 이동 종류
         self._cur_kind = None
@@ -151,7 +153,7 @@ class Controller:
                 pass
         self.stage.disconnect()
         self.state.set_device("stage", "끊김", "", "")
-        self._heater_bookkeeping(False)
+        self._heater_bookkeeping(False, "스테이지 연결 끊기")
         self._set_move(None)
 
     def connect_meter(self, kind: str, addr: Optional[str] = None):
@@ -217,13 +219,19 @@ class Controller:
         if h is not None:
             self._heater_bookkeeping(bool(h))
 
-    def _heater_bookkeeping(self, on: bool):
+    def _heater_bookkeeping(self, on: bool, why: Optional[str] = None):
+        """히트건 릴레이가 켜지거나 꺼진 것을 안전 감시 · 화면 상태에 반영하고, 프로그램 로그에 한 줄 남긴다.
+        켠 주체(수동 · 측정)와 끈 까닭(수동 · 측정 · 차단 온도 · 최대 켜짐 시간 · 온도 못 읽음 · 비상정지 …)을 같이 적는다."""
         if on and self.safety.heater_on_t is None:
-            self.safety.heater_turned_on()
+            by = self._heater_by
+            self.safety.heater_turned_on(by or BY_RUN)              # 누가 켰는지 모르면 측정 쪽 규칙(더 엄한 쪽)으로 본다
             self.state.set("heater_on_since", time.time())
+            self.logs.app("히트건 켬 · %s" % (by or "릴레이 켜짐 감지"))
         elif not on and self.safety.heater_on_t is not None:
             self.safety.heater_turned_off()
             self.state.set("heater_on_since", None)
+            why = why or self._heater_why or "릴레이 꺼짐 감지"
+            self.logs.app("히트건 끔 · %s" % why, "error" if why.startswith((TRIP_MAX_C, TRIP_NO_TEMP, TRIP_MAX_ON)) else "info")
 
     def _heater_on(self) -> bool:
         return self.safety.heater_on_t is not None
@@ -238,7 +246,7 @@ class Controller:
         elif kind == "lost":
             self.state.set_device("stage", "오류", "통신 끊김 · " + text[:40], self.stage.port_name)
             self.state.alarm("stage_lost", "스테이지 연결 끊김", ALARM)
-            self._heater_bookkeeping(False)
+            self._heater_bookkeeping(False, "통신 끊김")
             self.logs.app("스테이지 통신 끊김 · %s" % text, "error")
 
     def _board_reboot(self, text):
@@ -246,7 +254,7 @@ class Controller:
         self.safety.begin_estop()
         self.state.alarm("reboot", "보드 재시작 · 위치 확인 필요", ALARM)
         self.logs.app("보드 재시작 감지 · %s" % text, "error")
-        self._heater_bookkeeping(False)
+        self._heater_bookkeeping(False, "보드 재시작")
         try:
             self.stage.call("wd %d" % int(self.cfg["watchdog_ms"]), None, lambda ln: "통신 감시" in ln, 3.0, prio=0)
             self.stage.read_relays()
@@ -260,8 +268,11 @@ class Controller:
     def estop(self, source: str = "화면"):
         """어떤 일 중이든 기다리지 않는다: 세대 올리기 → '!' → (이동이 멈추면) r all 0 → K2450 출력 끄기."""
         t0 = time.monotonic()
+        heater_was_on = self._heater_on()
         self.safety.begin_estop()                                   # 세대 올림 · 잠금 · 히트건 감시는 이 순간부터 "꺼짐"
         self.state.set("heater_on_since", None)
+        if heater_was_on:
+            self.logs.app("히트건 끔 · 비상정지")
         self.runner.on_estop()                                      # 측정도 멈춘다(정리는 측정 스레드가: 히트건 · 출력 · 쿨러 끔, 핀은 그대로)
         with self._plock:
             self._jog_pending = None                                # 대기 중이던 조그를 지운다
@@ -497,39 +508,61 @@ class Controller:
     # 릴레이
     # ------------------------------------------------------------------
     def relay_on(self, n: int):
+        """릴레이 켜기 버튼(수동 탭 · 준비 탭). 히트건이면 "수동" 규칙: 온도계 조건을 보지 않는다."""
+        return self._relay_on(n, BY_MANUAL)
+
+    def relay_off(self, n: int):
+        return self._relay_off(n, BY_MANUAL)
+
+    def _relay_on(self, n: int, by: str):
+        """by = 켜는 주체(BY_MANUAL 수동 · BY_RUN 측정). 히트건(R1)일 때만 뜻이 있다."""
         n = self._relay_no(n)
         self._need_stage()
         heater = n == int(self.cfg["heater_relay"])
         if heater:
-            why = self.safety.reject_heater_on(self.k2110 is not None and self.k2110.is_open)
+            why = self.safety.reject_heater_on(by, self.k2110 is not None and self.k2110.is_open)
         else:
             why = self.safety.reject_relay_on()
         if why:
             raise Rejected(why)
         g = self.safety.generation
+        if heater:
+            self._heater_by = by                                    # 릴레이 응답이 읽히는 순간(_stage_status)에 주체를 알 수 있게 먼저 적는다
         try:
             self.stage.relay(n, True, g)
         except stage_mod.Discarded:
             raise Rejected("비상정지로 취소됨")
         except StageError as e:
             raise Rejected("릴레이 켜기 실패 · %s" % e)
+        finally:
+            if heater:
+                self._heater_by = None
         return {"relays": list(self.state.get("relays"))}
 
-    def relay_off(self, n: int):
+    def _relay_off(self, n: int, by: str):
         n = self._relay_no(n)
         self._need_stage()
+        heater = n == int(self.cfg["heater_relay"])
+        if heater:
+            self._heater_why = by                                   # 로그: "히트건 끔 · 수동" / "히트건 끔 · 측정"
         try:
             self.stage.relay(n, False, None)                        # 끄기는 비상정지 뒤에도 된다
         except StageError as e:
             raise Rejected("릴레이 끄기 실패 · %s" % e)
+        finally:
+            if heater:
+                self._heater_why = None
         return {"relays": list(self.state.get("relays"))}
 
     def relays_off(self):
         self._need_stage()
+        self._heater_why = BY_MANUAL
         try:
             self.stage.relays_off(None, prio=1)
         except StageError as e:
             raise Rejected("릴레이 끄기 실패 · %s" % e)
+        finally:
+            self._heater_why = None
         return {"relays": list(self.state.get("relays"))}
 
     @staticmethod
@@ -553,22 +586,26 @@ class Controller:
         self.check_heater(now)
 
     def check_heater(self, now: Optional[float] = None):
-        reason = self.safety.heater_trip_reason(now)
-        if reason:
-            self._heater_off(reason)
+        trip = self.safety.heater_trip(now)
+        if trip:
+            self._heater_off(*trip)
 
-    def _heater_off(self, reason: str):
-        self.logs.app("히트건 끔 · %s" % reason, "error")
-        self.heater_trip = reason
-        self.state.alarm("heater", reason, ALARM, dismiss=True)
+    def _heater_off(self, cause: str, text: str):
+        """안전 규칙이 히트건을 끈다. cause = 차단 온도 · 온도 못 읽음 · 최대 켜짐 시간(로그), text = 경보 문구."""
+        self.heater_trip = text
+        self.state.alarm("heater", text, ALARM, dismiss=True)
         heater = int(self.cfg["heater_relay"])
+        why = "%s (켠 주체 %s)" % (cause, self.safety.heater_by or "?")
+        self._heater_why = why
         try:
             if self.stage.connected:
                 self.stage.relay(heater, False, None, prio=0)
         except StageError as e:
             self.state.alarm("heater_off_fail", "히트건 끄기 실패 · 전원 직접 차단 필요", ALARM)
             self.logs.app("히트건 끄기 실패 · %s" % e, "error")
-        self._heater_bookkeeping(False)
+        finally:
+            self._heater_why = None
+        self._heater_bookkeeping(False, why)
 
     def read_temp(self):
         dev = self.k2110
@@ -957,11 +994,14 @@ class Controller:
             self.runner._stop = True
             self.runner.join(timeout=20)
         self._alive = False
+        self._heater_why = "종료"
         try:
             if self.stage.connected:
                 self.stage.relays_off(None, prio=0)
         except Exception as e:                                      # noqa: BLE001
             self.logs.app("종료 중 릴레이 끄기 실패 · %s" % e, "error")
+        finally:
+            self._heater_why = None
         for kind in ("k2450", "k2110"):
             self._close_meter(kind)
         self.camera.close()

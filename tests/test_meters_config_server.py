@@ -73,7 +73,7 @@ def test_missing_driver_marks_only_that_device(monkeypatch, tmp_path):
 def test_defaults_without_file(tmp_path):
     cfg = Config(tmp_path / "none.json").load()
     assert cfg.values == defaults()
-    assert cfg["stage_port"] == "COM5" and cfg["heater_max_c"] == 110.0 and cfg["heater_min_off_s"] == 10.0
+    assert cfg["stage_port"] == "COM5" and cfg["heater_max_c"] == 110.0 and cfg["heater_max_on_s"] == 180.0
     assert cfg["cooler_grid"] == [[2, 3, 4], [5, 6, 7], [8, 9, 10]]
     assert cfg["x_max_mm"] == 247.6 and cfg["y_max_mm"] == 247.8 and cfg["z_max_mm"] == 45.0
 

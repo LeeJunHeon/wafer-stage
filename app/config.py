@@ -71,7 +71,6 @@ ITEMS = (
          Item("heater_relay", 1, "int", "히트건 릴레이", "번", 1, 10),
          Item("heater_max_c", 110.0, "float", "히트건 차단 온도", "°C", 30, 300),
          Item("heater_max_on_s", 180.0, "float", "히트건 최대 켜짐 시간", "s", 1, 3600),
-         Item("heater_min_off_s", 10.0, "float", "히트건 재가동 대기", "s", 0, 600),
          Item("temp_stale_s", 3.0, "float", "온도 못 읽음 허용 시간", "s", 0.5, 60))
     + _g("쿨러",
          # 쿨러 3x3 자리 배치(판을 위에서 본 칸 → 릴레이 번호). 준비 7 에서 정한다

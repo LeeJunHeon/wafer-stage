@@ -410,9 +410,9 @@ class Runner:
             if not cd["run_cooler_during_heat"]:
                 for n in self._coolers:
                     c.relay_off(n)
-            T0 = self._wait_heater_ready(g)
+            T0 = self._read_temp()                                  # 켜기 직전 온도(측정이 켤 때는 방금 읽은 온도가 있어야 한다 · 진행률의 시작점)
             self._check(g)
-            self.heater.on()                                        # 한 번 켠다
+            self.heater.on()                                        # 바로 한 번 켠다(끈 뒤 기다리는 시간은 없다)
             reached = self._heat(it, g, T0 if T0 is not None else start_c, off_c)
             if self.heater.is_on:
                 self.heater.off()                                   # 한 번 끈다
@@ -450,22 +450,6 @@ class Runner:
         else:
             self._t_miss = 0
         return T
-
-    def _wait_heater_ready(self, g):
-        """히트건을 끈 지 얼마 안 됐으면(앞 샘플을 건너뛰거나 멈춘 직후) 다시 켤 수 있을 때까지 기다린다. 마지막으로 읽은 온도를 돌려준다."""
-        c = self.c
-        line = self.line
-        while True:
-            T = self._read_temp()
-            off_t = c.safety.heater_off_t
-            wait = 0.0 if off_t is None else float(c.cfg["heater_min_off_s"]) - (c.clock() - off_t)
-            if wait <= 0:
-                self.line = line
-                return T
-            self._check(g)
-            self.line = "히트건 대기 %d초" % (int(wait) + 1)
-            self.publish()
-            c.sleep(min(float(self.cond["run_interval_s"]), wait))
 
     def _read_r(self):
         c = self.c

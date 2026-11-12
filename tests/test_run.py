@@ -6,10 +6,13 @@ import re
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from app.config import BY_KEY
 from app.jobs import files
 from app.jobs.run import DONE, FAIL, SKIPPED, STOPPED, WAIT
 from app.safety import Rejected
+from app.server import create_app
 from tests.conftest import wait_for
 
 FAST = 200.0
@@ -397,3 +400,39 @@ def test_nas_does_not_overwrite_another_records_file(ready_ctrl, tmp_path):
     ctrl.run_command("result_nas_copy", {"id": "%s/%s" % (run.folder.parent.name, run.folder.name)})
     assert (other / (name + "_1.00V_0.dat")).read_bytes() == b"other record"
     assert sorted(p.name for p in other.iterdir()) == sorted([name + "_1.00V_0.dat", name + "_1.00V_0_1.dat", name + "_1.00V_merged.dat"])
+
+
+def test_fast_rise_is_only_a_notice_and_changed_limits_apply_to_the_next_run(ready_ctrl):
+    """1 초에 run_fast_rise_c_s 넘게 오르면 주의 알림만 한 번 띄우고 히트건은 끄지 않는다.
+    측정 한계는 "전체 설정"에서 바꾸면 다음 측정부터 그 값으로 판정한다. 로그 세 가지는 설정과 상관없이 항상 저장된다."""
+    ctrl, ids = _prepare(ready_ctrl, 1)
+    run = ctrl.runner
+    with TestClient(create_app(ctrl)) as c:
+        assert c.put("/api/settings", json={"run_fast_rise_c_s": 0.5}).json() == {"ok": True}      # 가짜 판은 1 초에 1 °C 넘게 오른다
+        n0 = len(ctrl.fake_fw.log)
+        assert c.post("/api/cmd/run_start", json={}).json()["ok"]
+        _finish(ctrl)
+        it = run.items[ids[0]]
+        assert run.cond["run_fast_rise_c_s"] == 0.5
+        al = [a for a in ctrl.state.get("alarms") if a["code"] == "fast_rise"]
+        assert len(al) == 1 and al[0]["level"] == "주의" and "온도 급상승" in al[0]["text"]
+        cmds = _relay_cmds(ctrl, n0)
+        assert cmds.count("r 1 1") == 1 and cmds.count("r 1 0") == 1, "빠르게 올라도 히트건은 끄지 않는다(한 번 켜고 가열 끝 온도에서 한 번 끈다)"
+        assert it["status"] == DONE and max(p[0] for p in it["points"]) >= 85.0 and "가열 끝 온도 미도달" not in it["notes"]
+        assert not ctrl.state.has_alarm("heater")
+
+        # 다음 측정: 가열 무반응 시간 · 기준을 바꾸면 그 값으로 판정한다(1 초 안에 20 °C 는 못 오른다)
+        assert c.put("/api/settings", json={"run_no_rise_s": 1, "run_no_rise_c": 20}).json() == {"ok": True}
+        assert c.post("/api/cmd/run_start", json={}).json()["ok"]
+        _finish(ctrl)
+        assert run.cond["run_no_rise_s"] == 1 and run.cond["run_no_rise_c"] == 20
+        assert run.items[ids[0]]["status"] == FAIL and "온도 상승 없음" in run.items[ids[0]]["reason"]
+        _all_off(ctrl)
+
+    # 로그: 프로그램 · 시리얼 · VISA 가 모두 파일로 남는다(끄는 설정은 없다). 히트건을 켜고 끈 것과 주체가 프로그램 로그에 있다
+    assert not any("log" in k for k in BY_KEY)
+    day = next(p for p in (ctrl.cfg.data_path() / "logs").iterdir() if p.is_dir())
+    for name in ("app", "serial", "visa"):
+        assert (day / (name + ".log")).stat().st_size > 0, name
+    text = (day / "app.log").read_text(encoding="utf-8")
+    assert text.count("히트건 켬 · 측정") == 2 and text.count("히트건 끔 · 측정") == 2

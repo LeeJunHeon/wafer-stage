@@ -119,7 +119,8 @@ def test_estop_marks_heater_off_at_once_and_leaves_only_the_estop_alarm(make_ctr
     assert seen == {"since": None, "relay": True}, "비상정지를 받은 순간 화면의 히트건은 꺼짐이어야 한다"
     assert [a["code"] for a in ctrl.state.snapshot()["alarms"]] == ["estop"], ctrl.state.snapshot()["alarms"]
     assert ctrl.fake_fw.relay[0] is False and ctrl.state.get("heater_on_since") is None
-    # 끈 뒤 다시 켜기 대기(10 초)는 비상정지 순간부터 센다
+    assert [ln for ln in ctrl.logs.recent if "히트건 끔 · 비상정지" in ln], "끈 까닭이 프로그램 로그에 남는다"
+    # 비상정지를 풀면 바로 다시 켤 수 있다(다시 켜기 대기는 없다)
     ctrl.run_command("estop_release")
     ctrl.feed_temperature(30.0)
     ctrl.relay_on(1)
