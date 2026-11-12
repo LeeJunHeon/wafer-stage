@@ -2,26 +2,8 @@
 
 import pytest
 
-from app.devices import meters
 from app.safety import Rejected
-from tests.conftest import FakeClock
-
-
-class DeadThermometer:
-    """연결은 돼 있지만 온도를 못 읽는 K2110(감시 스레드가 값을 덮어쓰지 않게)."""
-    addr = "dead"
-    is_open = True
-
-    def read_temp(self):
-        raise meters.VisaError("읽기 실패")
-
-    def close(self):
-        pass
-
-
-def with_thermometer(ctrl, clock):
-    ctrl.k2110 = DeadThermometer()
-    ctrl.feed_temperature(30.0)
+from tests.conftest import FakeClock, with_thermometer
 
 
 def test_heater_refused_without_thermometer(make_ctrl):

@@ -1,7 +1,7 @@
 """results.py - 결과 탭: 저장된 측정 기록을 읽는다(<데이터 폴더>/<YYYY-MM-DD>/<HHMMSS>_<묶음>/run.json 과 .dat).
 
 기록 id = "<날짜 폴더>/<기록 폴더>"(예 "2026-11-11/142000_1"). 점은 회차 .dat 파일에서 읽는다(온도 · 저항) - 가열/냉각 구분은
-run.json 의 heat_rows(가열 줄 수), 없으면 최고 온도에서 나눈다.
+run.json 의 heat_rows(가열 줄 수), 없으면 최고 온도에서 나눈다. 표는 첫 회차로 계산하고, 그래프용 점은 모든 회차를 이어서 준다.
 """
 
 import json
@@ -74,9 +74,8 @@ def read_dat(path):
     return pts
 
 
-def sample_points(folder, sample):
-    """샘플의 첫 회차 점 [[온도, 저항, 단계(0 가열 · 1 냉각)]]."""
-    cyc = (sample.get("cycles") or [None])[0]
+def cycle_points(folder, cyc):
+    """회차 하나의 점 [[온도, 저항, 단계(0 가열 · 1 냉각)]]."""
     if not cyc:
         return []
     raw = read_dat(folder / cyc["file"])
@@ -88,6 +87,19 @@ def sample_points(folder, sample):
     return [[t, r, 0 if i < k else 1] for i, (t, r) in enumerate(raw)]
 
 
+def sample_points(folder, sample):
+    """샘플의 첫 회차 점 - 표(전이 온도 · 저항 비)는 첫 회차로 계산한다."""
+    return cycle_points(folder, (sample.get("cycles") or [None])[0])
+
+
+def sample_all_points(folder, sample):
+    """샘플의 모든 회차 점을 이어 붙인 것 - 그래프는 반복 측정의 모든 회차를 그린다."""
+    out = []
+    for cyc in sample.get("cycles") or []:
+        out += cycle_points(folder, cyc)
+    return out
+
+
 def load_record(data_dir, rec_id):
     """기록 하나: 샘플 표(시작 온도 저항 · 최고 온도 저항 · 저항 비 · 전이 온도) · 파일 · NAS · 그날 조건."""
     folder = _folder(data_dir, rec_id)
@@ -97,8 +109,10 @@ def load_record(data_dir, rec_id):
         pts = sample_points(folder, s)
         a = analysis.analyze(pts)
         rows.append({"id": s.get("id"), "name": s.get("name"), "order": s.get("order"), "status": s.get("status"), "reason": s.get("reason", ""), "notes": s.get("notes") or [],
-                     "n": len(pts), "sum": a, "files": s.get("files") or []})
+                     "n": len(pts), "cycles": len(s.get("cycles") or []), "sum": a, "files": s.get("files") or [], "moved": s.get("moved") or []})
     names = sorted(p.name for p in folder.iterdir() if p.is_file())
+    for d in sorted(p for p in folder.iterdir() if p.is_dir() and p.name.startswith("이전_")):      # 다시 재기 전의 파일을 옮겨 둔 폴더
+        names.append("%s\\ (예전 파일 %d개)" % (d.name, sum(1 for x in d.iterdir() if x.is_file())))
     return {"id": rec_id, "folder": str(folder), "started": m.get("started"), "batch": m.get("batch", ""), "state": m.get("state", ""), "cond": m.get("cond") or {},
             "nas": m.get("nas"), "samples": rows, "files": names}
 
@@ -108,7 +122,7 @@ def load_points(data_dir, rec_id, sample_id):
     m = _meta(folder)
     for s in m.get("samples") or []:
         if str(s.get("id")) == str(sample_id):
-            return {"name": s.get("name"), "points": sample_points(folder, s)}
+            return {"name": s.get("name"), "cycles": len(s.get("cycles") or []), "points": sample_all_points(folder, s)}
     raise Rejected("그런 샘플이 없습니다")
 
 
@@ -148,7 +162,8 @@ def nas_copy(data_dir, rec_id):
     dst = nas.get("dir")
     if not dst:
         raise Rejected("이 기록은 NAS 폴더가 정해져 있지 않습니다")
-    dats = sorted(p for p in folder.iterdir() if p.suffix == ".dat")
+    dats = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix == ".dat")
+    names = dict(nas.get("names") or {})                            # PC 파일 이름 → 이 기록이 NAS 에 쓴 이름
     done, pending, err = [], [], ""
     try:
         os.makedirs(dst, exist_ok=True)
@@ -159,12 +174,15 @@ def nas_copy(data_dir, rec_id):
             pending.append(p.name)
             continue
         try:
-            shutil.copyfile(str(p), os.path.join(dst, p.name))      # 같은 기록을 다시 복사하는 것이라 같은 이름은 덮어쓴다
+            # 이 기록이 전에 쓴 파일은 같은 이름으로 덮어쓴다. 처음 보내는 파일은 NAS 에 같은 이름(다른 기록의 것)이 있으면 덮어쓰지 않고 _1 을 붙인다.
+            to = os.path.join(dst, names[p.name]) if p.name in names else files.unique_path(os.path.join(dst, p.name))[0]
+            shutil.copyfile(str(p), to)
+            names[p.name] = os.path.basename(to)
             done.append(p.name)
         except OSError as e:
             pending.append(p.name)
             err = str(e)
-    m["nas"] = {"dir": dst, "ok": not pending, "pending": pending, "done": done}
+    m["nas"] = {"dir": dst, "ok": not pending, "pending": pending, "done": done, "names": names}
     try:
         tmp = folder / "run.json.tmp"
         tmp.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")

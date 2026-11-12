@@ -3,7 +3,8 @@
    점 데이터는 state 에 없다 - /api/run/points 로 새 점만 받아 간다. */
 "use strict";
 
-const ms = { sel: null, pts: {}, key: "", overlay: false, editing: null };
+const ms = { sel: null, pts: {}, key: "", overlay: false, editing: null, prevState: null };
+const ORDER_W = 260, RIGHT_MIN_W = 440;                           // 순서 표 폭 · 오른쪽 패널(그래프) 최소 폭
 const STAGE_NAMES = ["이동", "접촉", "냉각", "가열", "냉각", "저장"];
 const R = () => (S && S.run) || { rows: [], gate: [], state: "idle" };
 const rowOf = (id) => R().rows.find((r) => r.id === id);
@@ -30,40 +31,56 @@ function buildMeasure() {
     h("div", { class: "tscroll fill" }, h("table", { class: "tb" }, h("thead", {}, h("tr", {}, h("th", { text: "순서" }), h("th", { text: "샘플" }), h("th", { text: "진행" }))), ms.tbody)),
     small("이름을 두 번 누르면 고칠 수 있습니다"));
   ms.body = h("div", { class: "plate-body fill" }, ms.pb.box, ms.table);
-  const left = h("div", { class: "panel fill", id: "ms-left" },
-    h("div", { class: "row" }, h("h3", { text: "판 (위에서 본 모습)" }), h("span", { class: "sp" }), ms.btns),
+  const left = ms.left = h("div", { class: "panel fill", id: "ms-left" },
+    h("div", { class: "row hd" }, h("h3", { text: "판 (위에서 본 모습)" }), h("span", { class: "sp" }), ms.btns),
     ms.gate, ms.body, ms.legend, ms.info);
-  new ResizeObserver(layoutPlate).observe(ms.body);
+  const ro = new ResizeObserver(layoutPlate);
+  ro.observe(ms.body); ro.observe($("#tab-measure"));
 
   /* ---- 오른쪽: 샘플 ---- */
   ms.title = h("h3", {});
   ms.sub = h("span", { class: "small" });
-  ms.act = h("span", {});
+  ms.act = h("span", { class: "row" });
+  ms.follow = btn("지금 샘플 보기", () => selectSample(null), "sm hidden");      // 측정 중에 다른 샘플을 보고 있을 때만
+  ms.tLbl = small("온도 · K2110"); ms.rLbl = small("저항 · K2450");
   ms.band = h("div", { class: "band" }, ...STAGE_NAMES.map((n) => h("div", { class: "cell" }, h("i", {}), h("span", { text: n }))));
   ms.line = h("div", { class: "small line1" });
   ms.temp = h("div", { class: "val" }); ms.ohm = h("div", { class: "val" });
   ms.graph = rtGraph();
   ms.ovChk = h("input", { type: "checkbox", onchange: () => { ms.overlay = ms.ovChk.checked; renderMeasure(); } });
   const right = h("div", { class: "panel fill", id: "ms-right" },
-    h("div", { class: "row" }, ms.title, ms.sub, h("span", { class: "sp" }), ms.act),
+    h("div", { class: "row hd" }, ms.title, ms.sub, ms.follow, h("span", { class: "sp" }), ms.act),
     ms.band, ms.line,
-    h("div", { class: "vals" }, h("div", {}, small("온도 · K2110"), ms.temp), h("div", {}, small("저항 · K2450"), ms.ohm)),
+    h("div", { class: "vals" }, h("div", {}, ms.tLbl, ms.temp), h("div", {}, ms.rLbl, ms.ohm)),
     h("div", { class: "row" }, h("label", { class: "chk" }, ms.ovChk, "앞 샘플과 겹쳐 보기")),
     h("div", { class: "fill gwrap" }, ms.graph.el));
-  $("#tab-measure").replaceChildren(left, right);
+  setKids($("#tab-measure"), left, right);
 }
 
-/* 사진은 높이에 맞춰 정사각형으로, 순서 표는 그 오른쪽(240~300px) */
+/* 왼쪽 패널은 내용에 맞춘다: 판 사진(높이에 맞춘 정사각형) + 12px + 순서 표 260px + 안쪽 여백. 남는 폭은 전부 오른쪽 패널(그래프, 최소 440px)이 가져간다. */
 function layoutPlate() {
-  const w = ms.body.clientWidth, hh = ms.body.clientHeight;
-  if (!w || !hh) return;
-  const side = Math.max(200, Math.floor(Math.min(hh, w - 12 - 240)));
+  const pw = $("#tab-measure").clientWidth - 24, hh = ms.body.clientHeight;        // 탭 안쪽 여백 12px × 2
+  if (pw <= 0 || !hh) return;
+  const fixed = 12 + ORDER_W + 26;                                                 // 사진과 표 사이 12 + 순서 표 + 패널 안쪽 여백 12 × 2 + 테두리 2
+  const side = Math.max(200, Math.floor(Math.min(hh, pw - 12 - RIGHT_MIN_W - fixed)));
+  ms.left.style.width = side + fixed + "px";
   ms.pb.box.style.width = side + "px"; ms.pb.box.style.height = side + "px";
   ms.table.style.height = side + "px";
   ms.pb.fit();
 }
 function selectSample(id) { ms.sel = id; renderMeasure(); syncPoints(); }
-const shownId = () => (ms.sel != null && rowOf(ms.sel) ? ms.sel : R().cur != null ? R().cur : null);   // 안 고르면 지금 측정 중인 샘플을 따라간다
+function lastMeasured() {                                         // 마지막으로 잰 샘플(가장 늦게 시작한 것)
+  let best = null;
+  for (const r of R().rows) if (r.t0 != null && r.order != null && (best == null || r.t0 > best.t0)) best = r;
+  return best ? best.id : null;
+}
+/* 오른쪽 패널에 보일 샘플: 고른 샘플 → (안 골랐으면) 지금 측정 중인 샘플 → 측정이 끝났거나 멈췄으면 마지막으로 잰 샘플 */
+function shownId() {
+  if (ms.sel != null && rowOf(ms.sel)) return ms.sel;
+  const run = R();
+  if (run.cur != null) return run.cur;
+  return run.state === "stopped" || run.state === "done" ? lastMeasured() : null;
+}
 
 /* ---- 판 사진 위 표시: 상태는 색만이 아니라 모양으로 ---- */
 function drawPlate() {
@@ -90,7 +107,7 @@ function drawPlate() {
     }
     kids.push(g);
   }
-  ms.ov.replaceChildren(...kids);
+  setKids(ms.ov, ...kids);
 }
 
 function progText(row, s) {
@@ -111,7 +128,7 @@ function renderTable() {
   if (sig !== ms.tsig) {
     ms.tsig = sig;
     ms.cells = {};
-    ms.tbody.replaceChildren(...rows.map((r) => {
+    setKids(ms.tbody, ...rows.map((r) => {
       let nameEl;
       if (ms.editing === r.id) {
         const inp = h("input", { type: "text", class: "name", value: r.name, spellcheck: "false" });
@@ -149,7 +166,7 @@ function renderButtons() {
       ms.find = busyBtn("사진 다시 찍기", () => api("samples_find")); b.push(ms.find);
       b.push(btn("조건", openRunCond));
     }
-    ms.btns.replaceChildren(...b);
+    setKids(ms.btns, ...b);
   }
   /* 준비가 덜 됐으면 [측정 시작] 을 회색으로 두고 빠진 것을 한 줄로(누르면 그 준비 단계로) */
   const gate = run.gate || [];
@@ -167,7 +184,8 @@ function renderButtons() {
     else if (n && used === 0) kids.push("고른 샘플이 없습니다 · 샘플을 누른 뒤 [넣기] 를 누르세요");
     else if (run.summary) kids.push(run.summary + (run.msg ? " · " + run.msg : ""));
   } else if (run.pause_after) kids.push("이 샘플이 끝나면 멈춥니다");
-  ms.gate.replaceChildren(...kids);
+  setKids(ms.gate, ...kids);
+  ms.gate.title = ms.gate.textContent;                            // 한 줄로만 보인다(길면 줄임) - 전체 글은 마우스를 올리면
 }
 
 /* ---- 오른쪽 패널 ---- */
@@ -175,10 +193,16 @@ function renderSample() {
   const run = R(), id = shownId(), row = id == null ? null : rowOf(id), s = id == null ? null : sampleOf(id);
   ms.temp.textContent = S.temp.value == null ? "—" : S.temp.value.toFixed(1) + " °C";
   ms.ohm.textContent = fmtOhm(S.resistance.ohm);
+  /* 측정 중에 다른 샘플을 보고 있으면: [지금 샘플 보기] + 큰 숫자가 누구 값인지(측정 중인 샘플의 값이다) */
+  const curRow = run.state === "running" && run.cur != null ? rowOf(run.cur) : null;
+  const other = !!curRow && id !== run.cur;
+  ms.follow.classList.toggle("hidden", !other);
+  ms.tLbl.textContent = other ? "온도 · 지금 측정 중 · " + curRow.name : "온도 · K2110";
+  ms.rLbl.textContent = other ? "저항 · 지금 측정 중 · " + curRow.name : "저항 · K2450";
   if (!row) {
     ms.title.textContent = "샘플";
     ms.sub.textContent = (S.samples || []).length ? "판 사진이나 표에서 샘플을 누르세요" : "";
-    ms.act.replaceChildren(); ms.line.textContent = "";
+    setKids(ms.act); ms.line.textContent = "";
     setBand(-1, 0);
     ms.graph.set([]);
     return;
@@ -195,7 +219,7 @@ function renderSample() {
     const b = [];
     if (run.state !== "running" && s && (run.state === "idle" || !row.order)) b.push(btn(s.use ? "빼기" : "넣기", () => api("sample_use", { id, use: !s.use })));
     if (run.state !== "running" && ["끝남", "실패", "건너뜀", "멈춤"].includes(row.status)) b.push(btn("다시 측정 목록에 넣기", () => api("run_requeue", { id })));
-    ms.act.replaceChildren(...b);
+    setKids(ms.act, ...b);
   }
   if (isNow) { setBand(run.stage, run.frac); ms.line.textContent = run.line || ""; }
   else {
@@ -203,10 +227,10 @@ function renderSample() {
     ms.line.textContent = row.status === "빼 둠" && s ? (s.weak ? "자리만 짐작한 샘플입니다 · 확인한 뒤 [넣기]" : s.small ? "핀(" + S.cfg.pin_long_mm + " × " + S.cfg.pin_short_mm + " mm)보다 작아 빼 두었습니다" : "") : row.notes.join(" · ");
   }
   /* 그래프: 고른 샘플(진한 색) + 겹쳐 보기면 바로 앞에 끝난 두 샘플 */
-  const series = [{ name: row.name, points: ptsOf(id), live: isNow }];
+  const series = [{ name: row.name, points: ptsOf(id), live: isNow, main: true }];
   if (ms.overlay) {
     const before = run.rows.filter((r) => r.status === "끝남" && r.id !== id && r.order != null && (row.order == null || r.order < row.order)).sort((a, b) => b.order - a.order).slice(0, 2);
-    before.forEach((r, i) => series.push({ name: r.name, points: ptsOf(r.id), color: G_COLORS[i + 1] }));
+    before.forEach((r, i) => series.push({ name: r.name, points: ptsOf(r.id), color: G_COLORS[i + 1], main: false }));
   }
   const gsig = series.map((x) => x.name + ":" + x.points.length + ":" + (x.live ? 1 : 0)).join("|");
   if (gsig !== ms.gsig) { ms.gsig = gsig; ms.graph.set(series); }
@@ -245,7 +269,7 @@ async function syncPoints() {
 }
 setInterval(syncPoints, 1000);
 
-/* ---- [조건] 창 ---- */
+/* ---- [조건] 창: 왼쪽 "저항 측정 · 온도" / 오른쪽 "쿨러 · 저장". [닫기] [저장] 은 창 아래에 항상 보인다 ---- */
 function openRunCond() {
   const c = S.cfg;
   const num = (k, step) => h("input", { type: "number", step: step || "any", value: c[k] });
@@ -254,24 +278,25 @@ function openRunCond() {
     run_start_c: num("run_start_c", "1"), run_heater_off_c: num("run_heater_off_c", "1"), run_cool_end_c: num("run_cool_end_c", "1"), run_repeat: num("run_repeat", "1"), run_interval_s: num("run_interval_s", "0.1"),
     run_cooler_mode: h("select", {}, ...[["zone", "샘플 아래 구역만"], ["all", "전부"], ["none", "안 씀"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_cooler_mode === v }))),
     run_cooler_during_heat: chk("run_cooler_during_heat"), nas_dir: h("input", { type: "text", value: c.nas_dir || "", spellcheck: "false" }), nas_date_folder: chk("nas_date_folder") };
-  const close = () => $("#dlg").classList.add("hidden");
   const save = async () => {
     const patch = {};
     for (const [k, e] of Object.entries(f)) patch[k] = e.type === "checkbox" ? e.checked : e.type === "number" ? (["meter_avg_count", "run_repeat"].includes(k) ? parseInt(e.value, 10) : parseFloat(e.value)) : e.value;
-    if (await putSettings(patch)) close();
+    if (await putSettings(patch)) closeDialog();
   };
-  $("#dlg").replaceChildren(h("div", { class: "box" }, h("h3", { text: "측정 조건" }),
-    h("div", { class: "form" },
-      h("h4", { text: "저항 측정" }), "거는 전압 (V)", f.meter_volt, "4단자", f.meter_four_wire, "평균 횟수", f.meter_avg_count, "NPLC", f.meter_nplc, "전류 한도 (A)", f.meter_ilim_a,
-      h("h4", { text: "온도" }), "시작 온도 (°C) · 이보다 높으면 먼저 식힘", f.run_start_c, "히트건 끄는 온도 (°C)", f.run_heater_off_c, "식힘 끝 온도 (°C)", f.run_cool_end_c, "반복 (회)", f.run_repeat, "읽는 간격 (s)", f.run_interval_s,
-      h("h4", { text: "쿨러" }), "쿨러", f.run_cooler_mode, "가열 중에도 쿨러 켜 둠", f.run_cooler_during_heat,
-      h("h4", { text: "저장" }), "NAS 폴더 (비우면 PC 에만)", f.nas_dir, "날짜 폴더 자동", f.nas_date_folder,
-      h("div", { class: "row" }, btn("닫기", close), btn("저장", save, "on")))));
-  $("#dlg").classList.remove("hidden");
+  const left = h("div", { class: "form" },
+    h("h4", { text: "저항 측정" }), "거는 전압 (V)", f.meter_volt, "4단자", f.meter_four_wire, "평균 횟수", f.meter_avg_count, "NPLC", f.meter_nplc, "전류 한도 (A)", f.meter_ilim_a,
+    h("h4", { text: "온도" }), h("span", {}, "시작 온도 (°C)", h("br"), small("이보다 높으면 먼저 식힘")), f.run_start_c, "히트건 끄는 온도 (°C)", f.run_heater_off_c,
+    "식힘 끝 온도 (°C)", f.run_cool_end_c, "반복 (회)", f.run_repeat, "읽는 간격 (s)", f.run_interval_s);
+  const right = h("div", { class: "form" },
+    h("h4", { text: "쿨러" }), "쿨러", f.run_cooler_mode, "가열 중에도 쿨러 켜 둠", f.run_cooler_during_heat,
+    h("h4", { text: "저장" }), h("span", {}, "NAS 폴더", h("br"), small("비우면 PC 에만 저장")), f.nas_dir, "날짜 폴더 자동", f.nas_date_folder);
+  openDialog("측정 조건", h("div", { class: "form2" }, left, right), [btn("닫기", closeDialog), btn("저장", save, "on")]);
 }
 
 function renderMeasure() {
   const run = R(), ph = P().photo, pl = P().plate, find = P().find;
+  if (run.state === "running" && ms.prevState !== "running") ms.sel = null;       // 측정을 시작하거나 이어서 하면 고른 샘플을 풀어 지금 샘플을 따라간다
+  ms.prevState = run.state;
   ms.pb.setNote(pl ? "아직 사진이 없습니다 · [사진 찍고 샘플 찾기] 를 누르세요" : "판 영역(준비 3)을 먼저 정해야 판 사진이 보입니다");
   ms.pb.show(pl && ph && ph.rect ? "/api/img/plate.jpg?v=" + ph.id + "-" + pl.t : "");
   const n = (S.samples || []).length, used = (S.samples || []).filter((s) => s.use).length;

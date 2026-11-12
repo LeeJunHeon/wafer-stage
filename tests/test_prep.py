@@ -330,3 +330,26 @@ def test_contact_needs_k2450(ready_ctrl):
     with pytest.raises(Rejected):
         ctrl.run_command("contact_find")
     assert not [c for c in ctrl.fake_fw.log[n:] if c.startswith("gz ")], "저항계가 없으면 내리지 않는다"
+
+
+def test_pin_position_can_be_drawn_on_the_plate_photo(ready_ctrl):
+    """수동 탭 "보정" 보기: 화면은 state.prep.coords.to_plate(스테이지 X · Y → 판 mm)로 지금 핀 자리를 판 사진 위에 그린다.
+    샘플의 스테이지 자리를 이 변환으로 옮기면 그 샘플의 판 자리가 나와야 한다. 좌표를 지우면 변환도 없다."""
+    ctrl = ready_ctrl()
+    ctrl.run_command("samples_find")
+    H = ctrl.state.get("prep", "coords", "to_plate")
+    assert H is not None and len(H) == 3 and all(len(r) == 3 for r in H)
+
+    def to_plate(x, y):
+        w = H[2][0] * x + H[2][1] * y + H[2][2]
+        return (H[0][0] * x + H[0][1] * y + H[0][2]) / w, (H[1][0] * x + H[1][1] * y + H[1][2]) / w
+
+    assert len(ctrl.prep.samples) >= 9
+    for s in ctrl.prep.samples:
+        px, py = to_plate(*s["xy"])
+        assert abs(px - s["plate"][0]) < 0.05 and abs(py - s["plate"][1]) < 0.05, (s["plate"], (px, py))
+    # 판 꼭짓점 A 에 댄 자리는 판 (0, 0)
+    a = ctrl.state.get("prep", "coords", "stage")["A"]
+    assert max(abs(v) for v in to_plate(*a)) < 0.5
+    ctrl.run_command("coord_clear")
+    assert ctrl.state.get("prep", "coords", "to_plate") is None

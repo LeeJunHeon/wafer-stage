@@ -29,7 +29,7 @@ python run.py --fake --fake-speed 10 # 가짜 장비의 시간 배율(기본 10 
 | 2 원점 | (가) 0 쪽 끝에 눈으로 맞추고 [X 등록] · [Y 등록] · [Z 등록], 또는 (나) 끝단까지 밀어서 잡기 [X] · [Y] · [Z]. X · Y 를 끝단으로 밀려면 Z 원점이 먼저 있어야 한다 |
 | 3 카메라 · 판 영역 | 헤드가 판을 가리지 않고 헤드 마커가 보이는 자리로 옮겨 [지금 자리로 정하기] → [사진 찍기] → 사진에서 판에 새겨진 사각형의 꼭짓점 A · B · C · D 를 왼쪽 위부터 시계 방향으로 누르고 [이대로 정하기] |
 | 4 빈 판 사진 | 샘플을 올리지 않은 판을 [빈 판 사진 찍기](없어도 측정은 되지만 샘플을 더 잘 찾는다) |
-| 5 좌표 맞추기 | 핀을 꼭짓점 A~D 에 차례로 대고 [여기가 A] … 를 누른다. 더 맞추고 싶으면 수동 탭의 "보정"에서 판 사진을 눌러 간 뒤 조그로 맞추고 [지금 자리를 보정에 더하기] |
+| 5 좌표 맞추기 | 핀을 꼭짓점 A~D 에 차례로 대고 [여기가 A] … 를 누른다. 더 맞추고 싶으면 수동 탭 카메라의 "보정"(마지막으로 찍은 판 사진 · 십자 = 지금 핀 자리)에서 판 사진을 눌러 간 뒤 조그로 맞추고 [지금 자리를 보정에 더하기] |
 | 6 접촉 높이 | 핀을 샘플 위 5 mm 안쪽까지 내린 뒤 [전기로 찾기] → [이 높이로 저장] |
 | 7 쿨러 구역 | 쿨러를 하나씩 켜 보고 3×3 칸에 릴레이 번호를 맞춘다 |
 
@@ -52,6 +52,7 @@ python run.py --fake --fake-speed 10 # 가짜 장비의 시간 배율(기본 10 
     <이름>_1.00V_0.dat        회차 파일(LabVIEW 와 같은 형식: 첫 줄 "Temp   Resistance   ", 탭 · CRLF)
     <이름>_1.00V_merged.dat   머리글 없이 이어 붙인 것
     run.json · summary.csv · plate.jpg · graph_<시각>.png
+    이전_<HHMMSS>\             같은 기록 안에서 다시 잰 샘플의 예전 .dat · merged (새 파일은 원래 이름으로 쓴다)
 ```
 NAS 폴더를 정해 두면 `<NAS>\연도\YYYYMMDD\<묶음>\` 에 .dat 만 복사한다. 못 쓰면 주의만 띄우고 측정은 계속하며, 결과 탭의 [다시 복사]로 다시 보낼 수 있다.
 
@@ -63,7 +64,7 @@ NAS 폴더를 정해 두면 `<NAS>\연도\YYYYMMDD\<묶음>\` 에 .dat 만 복�
 | `POST /api/estop` · `/api/estop/release` | 비상정지 · 비상정지 풀기 |
 | `POST /api/cmd/{name}` | WS 와 같은 명령. 거절되면 `ok: false` 와 쉬운 한국어 한 문장 `msg` |
 | `GET · PUT /api/settings` | 설정 표 · 바꾸기(전부 검증을 통과해야 저장. 측정 중에는 못 바꾼다) |
-| `GET /api/camera/preview.jpg` · `/api/img/{what}.jpg` | 카메라 미리보기 · 판 사진(raw · crop · plate · empty · live) |
+| `GET /api/camera/preview.jpg` · `/api/img/{what}.jpg` | 카메라 미리보기 · 찍은 사진(raw 원본 · crop 조각 · plate 보정한 판 사진 · empty 빈 판 사진) |
 | `GET /api/run/points?sample=&from=` | 측정 중인 샘플의 점(새 점만) |
 | `GET /api/results` · `/api/results/record?id=` · `/api/results/points?id=&sample=` | 측정 기록 목록 · 기록 하나 · 점 |
 | `POST /api/results/png?id=` | 그래프 그림(PNG)을 그 기록 폴더에 저장 |
@@ -73,6 +74,7 @@ NAS 폴더를 정해 두면 `<NAS>\연도\YYYYMMDD\<묶음>\` 에 .dat 만 복�
 ## 시험
 ```
 python -m compileall -q app sim run.py
-python -m pytest -q       # 가짜 장비만 쓴다. 약 80 초
+python -m pytest -q       # 가짜 장비만 쓴다. 약 90 초
+node --check ui/core.js   # 화면 JS 는 문법 검사까지만(ui/*.js 모두)
 ```
 화면(브라우저)은 이 시험에 들어 있지 않다. 화면 확인은 `python run.py --fake` 로 따로 한다.

@@ -12,11 +12,11 @@ function buildSettingsPage() {
 }
 async function loadSettingsPage() {
   const j = await getJson("/api/settings");
-  if (!Array.isArray(j)) { stg.body.replaceChildren(small("설정을 읽지 못했습니다")); return; }
+  if (!Array.isArray(j)) { setKids(stg.body, small("설정을 읽지 못했습니다")); return; }
   stg.items = j; stg.rows = {};
   const groups = [];
   for (const it of j) { let g = groups.find((x) => x.name === it.group); if (!g) { g = { name: it.group, items: [] }; groups.push(g); } g.items.push(it); }
-  stg.body.replaceChildren(...groups.map((g) => h("div", { class: "grp" }, h("h4", { text: g.name || "그 밖" }),
+  setKids(stg.body, ...groups.map((g) => h("div", { class: "grp" }, h("h4", { text: g.name || "그 밖" }),
     h("table", { class: "tb settb" }, h("tbody", {}, ...g.items.map(settingRow))))));
 }
 function settingRow(it) {

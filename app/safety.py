@@ -46,6 +46,8 @@ class Safety:
         with self._lock:
             self.generation += 1
             g = self.generation
+            if self.heater_on_t is not None:              # 히트건은 비상정지가 끈다(r all 0) - 감시는 이 순간부터 꺼진 것으로 본다.
+                self.heater_turned_off()                  # 끄기 응답을 기다리는 동안 "온도를 못 읽어 껐습니다" 경보가 덧붙지 않게
         self.state.set("estop_locked", True)
         self.state.alarm("estop", "비상정지 · 이동과 릴레이 켜기가 잠겼습니다. 확인한 뒤 [비상정지 풀기]를 누르십시오", ALARM)
         return g

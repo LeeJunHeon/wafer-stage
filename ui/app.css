@@ -42,6 +42,7 @@ button, input, select { font: inherit; color: inherit; }
 .row { display: flex; align-items: center; gap: 8px; flex: none; }
 .row.wrap { flex-wrap: wrap; }
 .row.top { align-items: flex-start; }
+.row.hd { min-height: 32px; }                     /* 패널 제목 줄: 버튼이 생기거나 없어져도 높이가 같다 */
 .grow { flex: 1; min-width: 0; }
 .sp { flex: 1; }                                  /* 줄 안에서 남는 폭을 먹는 빈 칸(버튼은 늘어나지 않는다) */
 
@@ -63,6 +64,7 @@ label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .dot.ok { background: var(--ok-dot); } .dot.warn { background: var(--warn-dot); } .dot.err { background: var(--err-ink); } .dot.off { background: var(--off-dot); }
 .st-ok { color: var(--ok-ink); } .st-warn { color: var(--warn-ink); background: var(--warn-bg); padding: 0 4px; border-radius: 4px; } .st-err { color: var(--err-ink); }
 .why { font-size: 12px; color: var(--ink2); }
+.why.line { line-height: 16px; min-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }   /* 항상 한 줄 높이(글이 생겨도 아래가 밀리지 않는다) */
 
 /* ---- 아래 상태줄 · 경보 띠 ---- */
 #status { display: flex; align-items: center; gap: 16px; padding: 0 12px; background: #fff; border-top: 1px solid var(--line); font-size: 12px; white-space: nowrap; overflow: hidden; }
@@ -77,13 +79,19 @@ label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 #toast { position: absolute; left: 50%; bottom: 76px; transform: translateX(-50%); background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 4px 12px; font-size: 12px; color: var(--ink); z-index: 20; max-width: 760px; }
 #offline { position: absolute; inset: 0; background: rgba(238, 240, 242, .92); display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 600; z-index: 100; }
 #dlg { position: absolute; inset: 0; background: rgba(26, 29, 33, .35); display: flex; align-items: center; justify-content: center; z-index: 50; }
-#dlg .box { background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 16px; width: 420px; max-height: 90%; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
-#dlg h3 { margin: 0; font-size: 14px; }
-.form { display: grid; grid-template-columns: 180px max-content; gap: 8px; align-items: center; }
-.form .row { justify-content: flex-end; grid-column: 1 / -1; }
+/* 창: 높이는 화면 높이 − 80px 까지. 넘치면 내용(.dlg-body)만 안에서 스크롤하고, 아래 버튼 줄(.dlg-foot)은 항상 보인다 */
+#dlg .box { background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 16px; min-width: 320px; max-width: calc(100% - 32px); max-height: calc(100vh - 80px);
+  display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+#dlg h3 { margin: 0; font-size: 14px; flex: none; }
+.dlg-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+.dlg-foot { flex: none; display: flex; justify-content: flex-end; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.form { display: grid; grid-template-columns: 180px max-content; gap: 8px; align-items: center; align-content: start; }
 .form h4 { grid-column: 1 / -1; margin: 4px 0 0; font-size: 12px; color: var(--ink2); font-weight: 600; }
+.form h4:first-child { margin-top: 0; }
 .form input[type=number] { width: 96px; text-align: right; }
-.form input[type=text] { width: 200px; }
+.form input[type=text] { width: 240px; }
+.form2 { display: grid; grid-template-columns: max-content max-content; gap: 16px; align-items: start; }      /* 두 칸짜리 창 */
+.form2 > .form + .form { padding-left: 16px; border-left: 1px solid var(--line); }
 
 /* ---- 사진 칸: 비율을 지켜 칸에 맞춘다(크기는 JS 가 정한다). 남는 자리는 패널 바탕색 ---- */
 .photo-box { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
@@ -114,13 +122,21 @@ label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .step .txt { min-width: 0; flex: 1; }
 .step .sub { font-size: 12px; color: var(--ink2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .step .done { color: var(--ok-ink); flex: none; }
-.step.link { border-top: 1px solid var(--line); border-radius: 0; margin-top: 4px; padding-top: 12px; }
+.step .no.blank, .step.on .no.blank { background: none; }          /* 번호 없는 항목(설정 값 모두 보기): 글 자리와 고른 모양은 단계 항목과 같다 */
+.sep { border-top: 1px solid var(--line); margin: 4px 0; }
 #prep-main { flex: 1; min-width: 0; align-self: stretch; display: flex; min-height: 0; }
 .prep-panel { max-width: 960px; width: 100%; align-self: flex-start; max-height: 100%; overflow-y: auto; }
 .prep-panel.photo { max-width: none; align-self: stretch; overflow: hidden; }
-.split { display: grid; grid-template-columns: minmax(440px, 1fr) 400px; gap: 12px; min-height: 0; }
-.split > .photo-box { min-height: 440px; align-self: stretch; }
-.split > .ctl { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; overflow-y: auto; }
+/* 사진 + 조작 칸: 조작 칸(400px)은 사진 바로 오른쪽(16px). 사진 칸의 폭은 JS(photoSplit)가 "사진이 차지하는 폭"으로 정한다.
+   조작 칸이 화면 높이를 넘치면 그 칸 안에서만 스크롤한다. 남는 자리는 조작 칸 오른쪽(패널 바탕색). */
+.split { display: flex; gap: 16px; align-items: stretch; min-height: 0; min-width: 0; }
+.split > .photo-box { flex: none; width: 440px; }
+.split > .ctl { flex: none; width: 400px; display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; padding-right: 4px; }
+.ctl > * { flex: none; }
+table.ctab { width: 240px; }                                         /* 꼭짓점 자리 표(꼭짓점 · X · Y) */
+table.ctab th { position: static; }
+table.ctab tr { cursor: default; }
+table.ctab tr:hover td { background: none; }
 .grp { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .grp h4 { margin: 0; font-size: 13px; font-weight: 700; }
 .ctl .grp { padding-top: 12px; border-top: 1px solid var(--line); }
@@ -160,11 +176,14 @@ label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .quick .btn { height: 28px; font-size: 12px; padding: 0 8px; }
 #man-right select { width: 160px; }
 
-/* ---- 측정 탭: 왼쪽 "판"(사진 + 순서 표, 남는 폭을 가져간다) / 오른쪽 "샘플"(440~560px) ---- */
-#tab-measure { display: grid; grid-template-columns: minmax(732px, 1fr) minmax(440px, 560px); grid-template-rows: minmax(0, 1fr); }
+/* ---- 측정 탭: 왼쪽 "판"은 내용에 맞춘 폭(판 사진 한 변 + 12 + 순서 표 260 + 안쪽 여백 - JS layoutPlate 가 정한다) /
+        오른쪽 "샘플"(그래프)이 남는 폭을 전부 가져간다(440px 이상) ---- */
+#tab-measure { display: grid; grid-template-columns: max-content minmax(440px, 1fr); grid-template-rows: minmax(0, 1fr); }
+#ms-left { width: 786px; }
 .plate-body { display: flex; gap: 12px; align-items: flex-start; min-width: 0; overflow: hidden; }
 .plate-photo { flex: none; cursor: pointer; }
-.order { flex: 0 1 300px; min-width: 240px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.order { flex: none; width: 260px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.gate { line-height: 16px; min-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }      /* 글이 없어도 한 줄 높이(사진이 밀리지 않게) */
 .order > .fill { flex: 1 1 0; min-height: 0; }
 .tscroll { overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; }
 table.tb { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -186,7 +205,8 @@ table.tb td input.name { height: 24px; width: 96px; }
 .band .cell.now { border-color: var(--dark); color: var(--ink); font-weight: 700; }
 .line1 { min-height: 18px; }
 .vals { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.vals > div { display: flex; flex-direction: column; gap: 4px; }
+.vals > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.vals .small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .val { font-size: 26px; font-weight: 700; line-height: 1.2; }
 .gwrap { position: relative; min-height: 120px; }
 .graph { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -203,10 +223,13 @@ table.tb td input.name { height: 24px; width: 96px; }
 .h4 { margin: 4px 0 0; font-size: 13px; font-weight: 700; }
 .picklist { display: flex; flex-direction: column; gap: 4px; max-height: 40%; overflow-y: auto; }
 .rtable { max-height: 34%; }
-#rs-right { max-height: 100%; overflow-y: auto; }                 /* 내용 높이만큼만(길면 패널 안에서 스크롤) */
+.colwrap { display: flex; flex-direction: column; min-height: 0; min-width: 0; }      /* 칸: 안의 패널은 내용 높이만큼만, 화면을 넘치면 패널 안에서 스크롤 */
+.colwrap > .panel { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
 #rs-right h3 { margin-top: 4px; }
+#rs-right h3:first-child { margin-top: 0; }
+.swatch { display: inline-block; width: 12px; height: 0; border-top: 2px solid var(--ink); margin-right: 4px; vertical-align: middle; flex: none; }   /* 그래프 선 색의 짧은 선 */
 .path { word-break: break-all; }
-.flist { max-height: 180px; overflow-y: auto; font-size: 12px; font-family: Consolas, "맑은 고딕", monospace; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; }
+.flist { max-height: 106px; line-height: 16px; overflow-y: auto; font-size: 12px; font-family: Consolas, "맑은 고딕", monospace; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; }   /* 6줄 */
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; align-items: baseline; }
 
 /* ---- 설정 값 모두 보기 ---- */

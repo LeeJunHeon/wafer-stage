@@ -6,7 +6,7 @@ import pytest
 
 from app.devices import stage as stage_mod
 from app.safety import Rejected
-from tests.conftest import wait_for
+from tests.conftest import FakeClock, wait_for, with_thermometer
 
 
 def start_long_move(ctrl, result):
@@ -95,3 +95,32 @@ def test_estop_without_stage_still_locks_and_turns_k2450_off(make_ctrl):
     ctrl.estop()
     assert ctrl.state.get("estop_locked") is True
     assert ctrl.lab.out_on is False
+
+
+def test_estop_marks_heater_off_at_once_and_leaves_only_the_estop_alarm(make_ctrl):
+    """비상정지는 히트건 감시를 그 순간 "꺼짐"으로 돌린다. 릴레이 끄기 응답을 기다리는 사이에 시간이 흐르고 감시가 돌아도
+    "온도를 3 초 넘게 읽지 못해 히트건을 껐습니다" 경보가 덧붙지 않는다(비상정지 뒤 경보는 비상정지 하나)."""
+    clock = FakeClock()
+    ctrl = make_ctrl(clock=clock, meters=False)
+    with_thermometer(ctrl, clock)
+    ctrl.relay_on(1)
+    assert ctrl.fake_fw.relay[0] is True and ctrl.state.get("heater_on_since") is not None
+    seen = {}
+    orig = ctrl.stage.bang
+
+    def slow_bang():                                              # '!' 를 쓰기 직전: 릴레이는 아직 켜져 있고, 그 사이에 10 초가 흐르고 감시가 돈다
+        clock.advance(10.0)
+        seen.update(since=ctrl.state.get("heater_on_since"), relay=ctrl.fake_fw.relay[0])
+        ctrl.check_heater()
+        return orig()
+
+    ctrl.stage.bang = slow_bang
+    ctrl.estop("시험")
+    assert seen == {"since": None, "relay": True}, "비상정지를 받은 순간 화면의 히트건은 꺼짐이어야 한다"
+    assert [a["code"] for a in ctrl.state.snapshot()["alarms"]] == ["estop"], ctrl.state.snapshot()["alarms"]
+    assert ctrl.fake_fw.relay[0] is False and ctrl.state.get("heater_on_since") is None
+    # 끈 뒤 다시 켜기 대기(10 초)는 비상정지 순간부터 센다
+    ctrl.run_command("estop_release")
+    ctrl.feed_temperature(30.0)
+    ctrl.relay_on(1)
+    assert ctrl.fake_fw.relay[0] is True

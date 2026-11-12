@@ -47,15 +47,15 @@ function buildPrep() {
       h("div", { class: "txt" }, h("div", { class: "t", text: t }), sub), done);
     return { el, sub, done };
   });
-  prep.allItem = h("div", { class: "step link", onclick: () => setStep(7) }, h("div", { class: "txt" }, h("div", { class: "t", text: "설정 값 모두 보기" })));
+  prep.allItem = h("div", { class: "step", onclick: () => setStep(7) }, h("span", { class: "no blank" }), h("div", { class: "txt" }, h("div", { class: "t", text: "설정 값 모두 보기" })));
   prep.fakeFill = busyBtn("가짜 준비 값 채우기", () => api("fake_fill"));
   prep.fakeLoad = busyBtn("가짜 샘플 올리기", () => api("fake_samples", { on: !P().fake_loaded }));
   prep.fakeBox = h("div", { class: "fakebox hidden" }, small("가짜 장비"), prep.fakeFill, prep.fakeLoad);
-  const list = h("div", { class: "panel", id: "prep-list" }, h("h3", { text: "처음 한 번 준비" }), ...prep.items.map((x) => x.el), prep.allItem, prep.fakeBox);
+  const list = h("div", { class: "panel", id: "prep-list" }, h("h3", { text: "처음 한 번 준비" }), ...prep.items.map((x) => x.el), h("div", { class: "sep" }), prep.allItem, prep.fakeBox);
   prep.main = h("div", { id: "prep-main" });
   prep.pages = [buildStep1(), buildStep2(), buildStep3(), buildStep4(), buildStep5(), buildStep6(), buildStep7(),
     typeof buildSettingsPage === "function" ? buildSettingsPage() : null];
-  $("#tab-prep").replaceChildren(list, prep.main);
+  setKids($("#tab-prep"), list, prep.main);
   setStep(0);
 }
 function setStep(i) {
@@ -63,7 +63,7 @@ function setStep(i) {
   prep.step = i;
   prep.items.forEach((x, k) => x.el.classList.toggle("on", k === i));
   prep.allItem.classList.toggle("on", i === 7);
-  prep.main.replaceChildren(prep.pages[i].el);
+  setKids(prep.main, prep.pages[i].el);
   if (prep.pages[i].show) prep.pages[i].show();
   if (S) renderPrep();
 }
@@ -96,9 +96,9 @@ async function readLists() {
   const r = await api("devices");
   if (!r.ok) return;
   const d = r.result;
-  $("#dl-ports").replaceChildren(...d.serial_ports.map((p) => h("option", { value: p })));
-  $("#dl-visa").replaceChildren(...d.visa.map((a) => h("option", { value: a })));
-  $("#dl-cams").replaceChildren(...d.cameras.map((n) => h("option", { value: String(n) })));
+  setKids($("#dl-ports"), ...d.serial_ports.map((p) => h("option", { value: p })));
+  setKids($("#dl-visa"), ...d.visa.map((a) => h("option", { value: a })));
+  setKids($("#dl-cams"), ...d.cameras.map((n) => h("option", { value: String(n) })));
   if (d.note) toast(d.note);
 }
 function renderStep1() {
@@ -106,7 +106,7 @@ function renderStep1() {
   for (const d of DEVS) {
     const dev = S.devices[d.key], p = prep[d.key];
     const cls = { ok: "st-ok", warn: "st-warn", err: "st-err", off: "" }[dotOf(dev)];
-    p.stt.replaceChildren(h("i", { class: "dot " + dotOf(dev) }), h("span", { class: cls, text: dev.state + (dev.state === "오류" && dev.why ? " · " + dev.why : "") }));
+    setKids(p.stt, h("i", { class: "dot " + dotOf(dev) }), h("span", { class: cls, text: dev.state + (dev.state === "오류" && dev.why ? " · " + dev.why : "") }));
     p.resp.textContent = dev.state === "연결" ? dev.info : "";
     p.resp.title = dev.info || "";
     p.btn.textContent = dev.state === "연결" ? "끊기" : "연결";
@@ -177,21 +177,20 @@ function buildStep3() {
   pg.mag = h("div", { class: "mag hidden" }, h("i", { class: "cross-h" }), h("i", { class: "cross-v" }));
   pg.pb.box.append(pg.mag);                                     // 확대창은 사진 위 구석에 띄운다(누르는 자리의 반대쪽)
   pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "3 · 카메라 · 판 영역" }),
-    h("div", { class: "split fill" }, pg.pb.box,
-      h("div", { class: "ctl" },
-        h("div", { class: "grp" }, h("h4", { text: "사진 찍을 때 헤드 자리" }),
-          h("div", { class: "small", text: "헤드가 판을 가리지 않고 헤드 마커가 사진에 보이는 자리로 옮긴 뒤 누르세요." }),
-          pg.jog.el, h("div", { class: "row" }, pg.headSet.b, pg.headSet.w), pg.headTxt),
-        h("div", { class: "grp" }, h("h4", { text: "판 영역" }),
-          h("div", { class: "row" }, pg.take.b, pg.take.w),
-          h("div", { class: "small", text: "사진에서 판에 새겨진 사각형의 꼭짓점을 왼쪽 위부터 시계 방향으로 A · B · C · D 순서로 누르세요. 찍은 점은 끌어서 옮길 수 있습니다." }),
-          pg.list, h("div", { class: "row" }, pg.redo, pg.apply.b, pg.apply.w)))));
+    photoSplit(pg.pb, h("div", {},
+      h("div", { class: "grp" }, h("h4", { text: "사진 찍을 때 헤드 자리" }),
+        h("div", { class: "small", text: "헤드가 판을 가리지 않고 헤드 마커가 사진에 보이는 자리로 옮긴 뒤 누르세요." }),
+        pg.jog.el, h("div", { class: "row" }, pg.headSet.b, pg.headSet.w), pg.headTxt),
+      h("div", { class: "grp" }, h("h4", { text: "판 영역" }),
+        h("div", { class: "row" }, pg.take.b, pg.take.w),
+        h("div", { class: "small", text: "사진에서 판에 새겨진 사각형의 꼭짓점을 왼쪽 위부터 시계 방향으로 A · B · C · D 순서로 누르세요. 찍은 점은 끌어서 옮길 수 있습니다." }),
+        pg.list, h("div", { class: "row" }, pg.redo, pg.apply.b, pg.apply.w)))));
 
   const photo = () => P().photo;
   function toPx(ev) { const ph = photo(); const [fx, fy] = pg.pb.toFrac(ev); return [Math.max(0, Math.min(ph.w - 1, fx * ph.w)), Math.max(0, Math.min(ph.h - 1, fy * ph.h))]; }
   function drawPts() {
     const ph = photo();
-    if (!ph || !pg.pb.w) { pg.ov.replaceChildren(); return; }
+    if (!ph || !pg.pb.w) { setKids(pg.ov); return; }
     pg.pb.svg.setAttribute("viewBox", "0 0 " + ph.w + " " + ph.h);
     const k = ph.w / pg.pb.w;                                   // 화면 1px = 사진 k 픽셀
     const kids = [];
@@ -200,10 +199,17 @@ function buildStep3() {
       kids.push(svgEl("circle", { cx: p[0], cy: p[1], r: 6 * k, fill: "#fff", stroke: "#1F2A37", "stroke-width": 2 * k }));
       kids.push(svgEl("text", { x: p[0] + 10 * k, y: p[1] - 8 * k, "font-size": 14 * k, "font-weight": 700, fill: "#1F2A37", stroke: "#fff", "stroke-width": 3 * k, "paint-order": "stroke", text: CORNER[i] }));
     });
-    pg.ov.replaceChildren(...kids);
+    setKids(pg.ov, ...kids);
   }
   function renderPts() {
     pg.list.textContent = pg.pts.length ? pg.pts.map((p, i) => CORNER[i] + " (" + Math.round(p[0]) + ", " + Math.round(p[1]) + ")").join(" · ") : "아직 누른 점이 없습니다";
+    if (S) syncApply();                                           // 누르는 그 자리에서 바로(서버 상태가 올 때까지 기다리지 않는다)
+  }
+  function syncApply() {                                          // [이대로 정하기] · [다시 누르기] 를 누를 수 있는지와 그 이유
+    const ph = photo(), pl = P().plate;
+    pg.apply.set(!ph ? "사진을 먼저 찍으세요" : pg.pts.length < 4 ? "꼭짓점 " + pg.pts.length + " / 4" : running() ? "측정 중에는 할 수 없습니다" : "");
+    if (pg.pts.length === 4 && pl && !pg.dirty) pg.apply.w.textContent = "정함 · " + fmtWhen(pl.t);
+    pg.redo.disabled = !pg.pts.length;
   }
   function showMag(p) {
     const now = performance.now();
@@ -248,12 +254,10 @@ function buildStep3() {
     }
     pg.headSet.set(whyStage(true, false) || whyCamera());
     const hp = c.photo_head_xy, seen = P().marker_seen;
-    pg.headTxt.replaceChildren(hp ? "정한 자리 X " + f1(hp[0]) + " · Y " + f1(hp[1]) : "아직 정하지 않았습니다",
+    setKids(pg.headTxt, hp ? "정한 자리 X " + f1(hp[0]) + " · Y " + f1(hp[1]) : "아직 정하지 않았습니다",
       hp && seen != null ? h("span", { class: seen ? "st-ok" : "st-warn", text: seen ? " · 마커 보임" : " · 마커 안 보임" }) : "");
     pg.take.set(running() ? "측정 중에는 할 수 없습니다" : whyCamera());
-    pg.apply.set(!ph ? "사진을 먼저 찍으세요" : pg.pts.length < 4 ? "꼭짓점 " + pg.pts.length + " / 4" : running() ? "측정 중에는 할 수 없습니다" : "");
-    if (pg.pts.length === 4 && pl && !pg.dirty) pg.apply.w.textContent = "정함 · " + fmtWhen(pl.t);
-    pg.redo.disabled = !pg.pts.length;
+    syncApply();
     pg.jog.update();
   };
   renderPts();
@@ -267,12 +271,11 @@ function buildStep4() {
   pg.take = busyGate("빈 판 사진 찍기", () => api("empty_take"), "on");
   pg.txt = h("div", {});
   pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "4 · 빈 판 사진" }),
-    h("div", { class: "split fill" }, pg.pb.box,
-      h("div", { class: "ctl" },
-        h("div", { class: "grp" },
-          h("div", { class: "small", text: "판 위의 샘플을 모두 치운 뒤 누르세요. 핀을 맨 위로 올리고 사진 찍을 자리로 가서 한 장 찍습니다. 언제든 다시 찍어 바꿀 수 있습니다." }),
-          h("div", { class: "row" }, pg.take.b, pg.take.w), pg.txt,
-          h("div", { class: "small", text: "빈 판 사진이 있으면 샘플을 더 잘 찾습니다. 없어도 측정할 수 있습니다." })))));
+    photoSplit(pg.pb, h("div", {},
+      h("div", { class: "grp" },
+        h("div", { class: "small", text: "판 위의 샘플을 모두 치운 뒤 누르세요. 핀을 맨 위로 올리고 사진 찍을 자리로 가서 한 장 찍습니다. 언제든 다시 찍어 바꿀 수 있습니다." }),
+        h("div", { class: "row" }, pg.take.b, pg.take.w), pg.txt,
+        h("div", { class: "small", text: "빈 판 사진이 있으면 샘플을 더 잘 찾습니다. 없어도 측정할 수 있습니다." })))));
   pg.render = () => {
     const e = P().empty, pl = P().plate;
     pg.take.set(whyStage(true, true) || whyCamera() || whyHead());
@@ -292,24 +295,25 @@ function buildStep5() {
   pg.set = CORNER.map((n) => busyGate("여기가 " + n, () => api("coord_set", { name: n })));
   pg.whySet = h("div", { class: "why" });
   pg.gotoD = busyGate("D 근처로 가기", () => api("coord_goto_d"));
-  pg.pts = h("div", { class: "small" });
+  pg.cells = CORNER.map(() => [h("td", { class: "num" }), h("td", { class: "num" })]);
+  pg.pts = h("table", { class: "tb ctab" }, h("thead", {}, h("tr", {}, h("th", { text: "꼭짓점" }), h("th", { class: "num", text: "X (mm)" }), h("th", { class: "num", text: "Y (mm)" }))),
+    h("tbody", {}, ...CORNER.map((n, i) => h("tr", {}, h("td", { text: n }), pg.cells[i][0], pg.cells[i][1]))));
   pg.q = h("div", { class: "small" });
   pg.marker = h("div", { class: "small" });
   pg.learn = busyGate("헤드 마커 다시 기억", () => api("marker_learn"), "sm");
   pg.extra = h("div", { class: "exlist" });
   pg.clear = btn("처음부터 다시", () => api("coord_clear"), "sm");
   pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "5 · 좌표 맞추기" }),
-    h("div", { class: "split fill" }, pg.pb.box,
-      h("div", { class: "ctl" },
-        h("div", { class: "grp" },
-          h("div", { class: "small", text: "판 꼭짓점 A · B · C · D 에 핀을 차례로 가져다 대고 누르세요. 조그로 옮기고 핀을 눈으로 꼭짓점 위에 내립니다." }),
-          pg.jog.el, h("div", { class: "row wrap" }, ...pg.set.map((g) => g.b)), pg.whySet,
-          h("div", { class: "row" }, pg.gotoD.b, pg.gotoD.w), pg.pts),
-        h("div", { class: "grp" }, h("h4", { text: "맞춘 정도" }), pg.q),
-        h("div", { class: "grp" }, h("h4", { text: "헤드 마커" }), pg.marker, h("div", { class: "row" }, pg.learn.b, pg.learn.w)),
-        h("div", { class: "grp" }, h("h4", { text: "보정 점" }),
-          h("div", { class: "small", text: "수동 탭 카메라를 '보정' 보기로 두고 판 사진을 눌러 그 자리로 간 뒤, 어긋나 있으면 조그로 맞추고 [지금 자리를 보정에 더하기] 를 누르세요." }),
-          pg.extra, h("div", { class: "row" }, pg.clear)))));
+    photoSplit(pg.pb, h("div", {},
+      h("div", { class: "grp" },
+        h("div", { class: "small", text: "판 꼭짓점 A · B · C · D 에 핀을 차례로 가져다 대고 누르세요. 조그로 옮기고 핀을 눈으로 꼭짓점 위에 내립니다." }),
+        pg.jog.el, h("div", { class: "row wrap" }, ...pg.set.map((g) => g.b)), pg.whySet,
+        h("div", { class: "row" }, pg.gotoD.b, pg.gotoD.w), pg.pts),
+      h("div", { class: "grp" }, h("h4", { text: "맞춘 정도" }), pg.q),
+      h("div", { class: "grp" }, h("h4", { text: "헤드 마커" }), pg.marker, h("div", { class: "row" }, pg.learn.b, pg.learn.w)),
+      h("div", { class: "grp" }, h("h4", { text: "보정 점" }),
+        h("div", { class: "small", text: "수동 탭 카메라를 '보정' 보기로 두고 판 사진을 눌러 그 자리로 간 뒤, 어긋나 있으면 조그로 맞추고 [지금 자리를 보정에 더하기] 를 누르세요." }),
+        pg.extra, h("div", { class: "row" }, pg.clear)))));
   pg.draw = () => {
     const c = S && S.cfg, co = P().coords;
     if (!S || !pg.pb.w) return;
@@ -322,7 +326,7 @@ function buildStep5() {
       kids.push(svgEl("circle", { cx: x, cy: y, r: 11 * k, fill: has ? "#1F2A37" : "#fff", stroke: "#1F2A37", "stroke-width": 1.5 * k }));
       kids.push(svgEl("text", { x, y: y + 4.5 * k, "font-size": 12 * k, "font-weight": 700, "text-anchor": "middle", fill: has ? "#fff" : "#1F2A37", text: n }));
     });
-    pg.ov.replaceChildren(...kids);
+    setKids(pg.ov, ...kids);
   };
   pg.render = () => {
     const co = P().coords || { stage: {}, extra: [] }, pl = P().plate, ph = P().photo, e = P().empty;
@@ -333,10 +337,10 @@ function buildStep5() {
     pg.set.forEach((g) => { g.b.disabled = !!why; });
     pg.whySet.textContent = why || (pl ? "" : "판 영역(준비 3)을 정해야 사진과 이어집니다 · 꼭짓점 자리는 지금 찍어 둘 수 있습니다");
     pg.gotoD.set(whyStage(true, true) || (co.d_guess ? "" : co.stage.D ? "D 를 이미 찍었습니다" : "A · B · C 를 먼저 찍으세요"));
-    pg.pts.textContent = CORNER.map((n) => n + " " + (co.stage[n] ? "X " + f1(co.stage[n][0]) + " · Y " + f1(co.stage[n][1]) : "—")).join("   ");
+    CORNER.forEach((n, i) => { const p = co.stage[n]; pg.cells[i][0].textContent = p ? f1(p[0]) : "—"; pg.cells[i][1].textContent = p ? f1(p[1]) : "—"; });
     const q = co.quality;
     if (q) {
-      pg.q.replaceChildren(
+      setKids(pg.q, 
         h("div", { text: "네 변 " + q.sides.map((v) => v.toFixed(1)).join(" · ") + " mm (판 한 변 " + S.cfg.plate_size_mm + " mm 와 차이 최대 " + q.max_side_err.toFixed(1) + " mm)" }),
         h("div", { text: "모서리 직각 오차 최대 " + q.max_angle_err.toFixed(2) + "°" }),
         q.warn ? h("div", { class: "st-warn", text: "차이가 큽니다 · 꼭짓점을 다시 찍어 보세요 (막지는 않습니다)" }) : null);
@@ -346,7 +350,7 @@ function buildStep5() {
     const sig = JSON.stringify(co.extra);
     if (sig !== pg.exSig) {
       pg.exSig = sig;
-      pg.extra.replaceChildren(...(co.extra.length ? co.extra.map((x, i) => h("div", { class: "row" },
+      setKids(pg.extra, ...(co.extra.length ? co.extra.map((x, i) => h("div", { class: "row" },
         h("span", { class: "grow", text: (i + 1) + " · X " + f1(x.xy[0]) + " · Y " + f1(x.xy[1]) + " · 오차 " + (x.err == null ? "—" : x.err.toFixed(2) + " mm") + " · " + fmtWhen(x.t) }),
         btn("지우기", () => api("coord_remove", { index: i }), "sm"))) : [small("아직 없습니다")]));
     }

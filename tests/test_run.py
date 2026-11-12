@@ -3,6 +3,7 @@
 
 import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -191,8 +192,10 @@ def test_skip_pause_resume_stop_requeue(ready_ctrl):
     ctrl.run_command("run_resume")
     _finish(ctrl, 60)
     assert run.items[ids[0]]["status"] == DONE and run.state == "done", "남은 '할 차례'가 없으면 끝(멈춘 샘플은 요약에 남는다)"
-    names = sorted(p.name for p in folder.glob(run.items[ids[0]]["name"] + "_1.00V_0*.dat"))
-    assert len(names) == 2, "다시 잰 파일은 덮어쓰지 않고 새 이름으로 남는다: %s" % names
+    name = run.items[ids[0]]["name"]
+    assert sorted(p.name for p in folder.glob(name + "_*.dat")) == [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"], "다시 잰 파일도 원래 이름으로"
+    old = [p for p in folder.iterdir() if p.is_dir() and p.name.startswith("이전_")]
+    assert len(old) == 1 and sorted(p.name for p in old[0].iterdir()) == [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"], "건너뛰기 전에 받은 데이터는 이전_ 폴더에 남는다"
     assert ctrl.state.get("run", "summary") == "3개 중 2개 끝남 · 1개 멈춤"
 
 
@@ -208,6 +211,7 @@ def test_estop_during_run(ready_ctrl):
     assert run.items[ids[1]]["status"] == WAIT
     _all_off(ctrl)
     assert ctrl.state.get("pos", "z") == z > 0, "비상정지면 핀을 올리지 않는다"
+    assert [a["code"] for a in ctrl.state.snapshot()["alarms"]] == ["estop"], "비상정지 뒤 경보는 비상정지 하나뿐"
     assert (run.folder / (run.items[ids[0]]["name"] + "_1.00V_0.dat")).stat().st_size > 60, "받은 데이터는 파일로 남는다"
     with pytest.raises(Rejected):
         ctrl.run_command("run_resume")                               # 비상정지를 풀기 전에는 이어서 못 한다
@@ -322,3 +326,74 @@ def test_run_stays_active_until_files_are_saved_and_state_is_published(ready_ctr
     assert ctrl.state.get("run", "summary") == "1개 중 1개 끝남"
     assert json.loads((run.folder / "run.json").read_text(encoding="utf-8"))["state"] == "done"
     assert (run.folder / "summary.csv").is_file()
+
+
+def test_remeasure_moves_old_files_and_keeps_labview_names(ready_ctrl, tmp_path):
+    """같은 기록 안에서 다시 재면: 예전 .dat · merged 는 "이전_<HHMMSS>" 폴더로 가고, 새 파일은 원래 이름(_1 을 붙이지 않는다)으로 쓴다.
+    run.json 에 옮긴 것을 적고, NAS 에는 같은 이름으로 덮어쓴다(예전 것은 PC 의 이전_ 폴더에만)."""
+    nas = tmp_path / "nas"
+    ctrl, ids = _prepare(ready_ctrl, 1, nas_dir=str(nas))
+    run = ctrl.runner
+    ctrl.run_command("run_start")
+    _finish(ctrl)
+    folder, name = run.folder, run.items[ids[0]]["name"]
+    want = [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"]
+    first = {n: (folder / n).read_bytes() for n in want}
+    nas_dir = Path(json.loads((folder / "run.json").read_text(encoding="utf-8"))["nas"]["dir"])
+    assert sorted(p.name for p in nas_dir.iterdir()) == want and all((nas_dir / n).read_bytes() == first[n] for n in want)
+
+    for s in ctrl.world.samples:                                     # 두 번째 측정은 곡선이 달라야 예전 것과 구분된다
+        s["t_up"] += 3.0
+    ctrl.run_command("run_requeue", {"id": ids[0]})
+    ctrl.run_command("run_resume")
+    _finish(ctrl)
+    assert run.folder == folder and run.items[ids[0]]["status"] == DONE
+
+    # PC: 원래 이름 그대로 새 데이터, 예전 것은 이전_<HHMMSS> 폴더에 그대로
+    assert sorted(p.name for p in folder.iterdir() if p.suffix == ".dat") == want, "이름 뒤에 _1 이 붙은 파일이 없어야 한다"
+    second = {n: (folder / n).read_bytes() for n in want}
+    assert all(second[n] != first[n] and second[n] for n in want), "새 데이터로 다시 썼다"
+    old_dirs = [p for p in folder.iterdir() if p.is_dir()]
+    assert len(old_dirs) == 1 and re.match(r"이전_\d{6}$", old_dirs[0].name)
+    assert {p.name: p.read_bytes() for p in old_dirs[0].iterdir()} == first, "예전 파일은 바이트 그대로 옮겨졌다"
+    assert second[want[0]].startswith(b"Temp   Resistance   \r\n") and second[want[0]][len(b"Temp   Resistance   \r\n"):] == second[want[1]]
+
+    # run.json: 옮긴 것을 적는다 · 샘플의 파일 목록은 지금 있는 것만
+    meta = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+    smp = meta["samples"][0]
+    assert sorted(smp["files"]) == want and smp["cycles"][0]["file"] == want[0]
+    assert len(smp["moved"]) == 1 and smp["moved"][0]["to"] == old_dirs[0].name and sorted(smp["moved"][0]["files"]) == want
+
+    # NAS: 같은 이름으로 덮어썼다(이전_ 폴더는 PC 에만)
+    assert sorted(p.name for p in nas_dir.iterdir()) == want
+    assert all((nas_dir / n).read_bytes() == second[n] for n in want)
+    assert meta["nas"]["ok"] is True and meta["nas"]["names"] == {n: n for n in want}
+    assert not ctrl.state.has_alarm("nas")
+
+    # 결과 탭: 새 데이터로 계산하고, 파일 목록에 이전_ 폴더가 보인다
+    from app import results
+    rec = results.load_record(ctrl.cfg.data_path(), "%s/%s" % (folder.parent.name, folder.name))
+    assert rec["samples"][0]["n"] == len(run.items[ids[0]]["points"]) and any(f.startswith(old_dirs[0].name) for f in rec["files"])
+
+
+def test_nas_does_not_overwrite_another_records_file(ready_ctrl, tmp_path):
+    """NAS 폴더(연도/날짜/묶음)에 다른 기록의 같은 이름 파일이 이미 있으면 덮어쓰지 않는다(_1 을 붙이고 주의). 이 기록이 쓴 파일만 덮어쓴다."""
+    nas = tmp_path / "nas"
+    ctrl, ids = _prepare(ready_ctrl, 1, nas_dir=str(nas))
+    run = ctrl.runner
+    name = next(s["name"] for s in ctrl.prep.samples if s["id"] == ids[0])
+    import time as _t
+    other = Path(files.nas_target(str(nas), True, ctrl.cfg["batch_name"], _t.time()))
+    other.mkdir(parents=True)
+    (other / (name + "_1.00V_0.dat")).write_bytes(b"other record")
+    ctrl.run_command("run_start")
+    _finish(ctrl)
+    assert (other / (name + "_1.00V_0.dat")).read_bytes() == b"other record", "다른 기록의 파일은 그대로"
+    assert (other / (name + "_1.00V_0_1.dat")).read_bytes() == (run.folder / (name + "_1.00V_0.dat")).read_bytes()
+    meta = json.loads((run.folder / "run.json").read_text(encoding="utf-8"))
+    assert meta["nas"]["names"][name + "_1.00V_0.dat"] == name + "_1.00V_0_1.dat"
+    assert ctrl.state.has_alarm("nas")
+    # 결과 탭 [다시 복사]도 이 기록이 쓴 이름으로만 덮어쓴다
+    ctrl.run_command("result_nas_copy", {"id": "%s/%s" % (run.folder.parent.name, run.folder.name)})
+    assert (other / (name + "_1.00V_0.dat")).read_bytes() == b"other record"
+    assert sorted(p.name for p in other.iterdir()) == sorted([name + "_1.00V_0.dat", name + "_1.00V_0_1.dat", name + "_1.00V_merged.dat"])

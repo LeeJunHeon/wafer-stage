@@ -199,7 +199,7 @@ class Prep:
 
     def jpeg(self, what, **kw):
         """화면용 그림. what: raw(찍은 원본, 가로 1600 까지) · crop(원본 해상도 조각: x, y, half) · plate(보정한 판 사진) ·
-        empty(보정한 빈 판 사진) · live(지금 카메라의 보정 사진). 없으면 None."""
+        empty(보정한 빈 판 사진). 없으면 None."""
         ph = self.photo
         if what == "raw":
             return None if ph is None else self._jpeg(ph["frame"], 1600)
@@ -215,13 +215,6 @@ class Prep:
             return self._jpeg(self._inner(self.photo_rect()))
         if what == "empty":
             return self._jpeg(self._inner(self.empty_rect()))
-        if what == "live":
-            f = self.c.camera.last_frame()
-            p = self.calib.d.get("plate")
-            if f is None or not p or [f.shape[1], f.shape[0]] != p["size"]:
-                return None
-            H = self.calib.plate_h(self._size_mm())
-            return None if H is None else self._jpeg(geo.rectify(f, H, self._size_mm(), geo.RECT_PPMM / 2.0), None, 80)
         return None
 
     # ------------------------------------------------------------------
@@ -681,6 +674,7 @@ class Prep:
             quality["warn"] = bool(quality["max_side_err"] > float(self.cfg["coord_warn_mm"]) or quality["max_angle_err"] > float(self.cfg["coord_warn_deg"]))
         errs = self.calib.extra_errors()
         w = self.c.world
+        to_plate = self.calib.stage_to_plate(self._size_mm())
         return {
             "steps": self.steps(),
             "origin": dict(cal.get("origin") or {}),
@@ -690,7 +684,8 @@ class Prep:
             "empty": cal.get("empty"),
             "coords": {"stage": dict(stage_pts), "d_guess": self.calib.d_guess(), "quality": quality, "ready": self.calib.coords_ready(),
                        "extra": [dict(e, err=errs[i]) for i, e in enumerate(cal["coords"]["extra"])],
-                       "marker": None if not cal.get("marker") else {"t": cal["marker"]["t"]}},
+                       "marker": None if not cal.get("marker") else {"t": cal["marker"]["t"]},
+                       "to_plate": None if to_plate is None else [[float(v) for v in row] for row in to_plate]},   # 스테이지 X · Y → 판 mm (3×3)
             "last_click": self.last_click,
             "contact": dict(self.contact),
             "pos_block": self.pos_block,

@@ -15,6 +15,8 @@
 
 import csv
 import json
+import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -167,7 +169,7 @@ class Runner:
             if not any(self.items[i]["status"] == WAIT for i in self.order):
                 raise Rejected("남은 샘플이 없습니다. 끝난 샘플을 누르고 [다시 측정 목록에 넣기] 를 하십시오")
             if self.nas is None or not self.nas.is_alive():
-                self._start_nas()
+                self._start_nas(keep=True)
             self._launch()
         return {"n": sum(1 for i in self.order if self.items[i]["status"] == WAIT)}
 
@@ -189,7 +191,8 @@ class Runner:
         return {"pause_after": self.pause_after}
 
     def requeue(self, id):
-        """끝난(또는 실패 · 건너뜀 · 멈춤) 샘플을 다시 측정 목록에 넣는다. [이어서 측정] 이 다시 잰다(파일은 새 이름으로 남는다)."""
+        """끝난(또는 실패 · 건너뜀 · 멈춤) 샘플을 다시 측정 목록에 넣는다. [이어서 측정] 이 다시 잰다.
+        새 데이터를 쓰기 직전에 예전 파일을 "이전_<HHMMSS>" 폴더로 옮기고 원래 이름으로 쓴다(_retire_old)."""
         with self._lock:
             if self.active:
                 raise Rejected("측정 중에는 할 수 없습니다")
@@ -219,12 +222,19 @@ class Runner:
         return {"id": s["id"], "name": s["name"], "status": WAIT, "reason": "", "notes": [], "plate": list(s["plate"]), "xy": list(s["xy"]),
                 "t0": None, "t1": None, "points": [], "cycles": [], "contact": None, "files": [], "sum": None, "peak": None}
 
-    def _start_nas(self):
+    def _start_nas(self, keep=False):
+        """NAS 복사 스레드를 띄운다. keep = 같은 기록을 이어서 한다: 앞 복사기가 NAS 에 쓴 이름을 이어받아(다시 잰 파일은 같은 이름으로 덮어쓴다)
+        지난번에 못 쓴 파일부터 다시 보낸다."""
         c = self.c
         nas_dir = files.nas_target(self.cond.get("nas_dir"), self.cond.get("nas_date_folder"), self.batch, self.t0)
+        old = self.nas if keep else None
         self.nas = None
         if nas_dir:
             self.nas = files.NasCopier(nas_dir, lambda t: c.state.alarm("nas", t, NOTICE, dismiss=True), lambda t: c.logs.app(t, "warn"))
+            if old is not None and old.nas_dir == nas_dir:
+                self.nas.names, self.nas.done, self.nas.pending, self.nas.ok = dict(old.names), list(old.done), list(old.pending), old.ok
+                for local in old.pending:
+                    self.nas.put(local)
             self.nas.start()
 
     def _launch(self):
@@ -476,7 +486,7 @@ class Runner:
         except OSError as e:
             raise RunAbort("파일에 쓰지 못했습니다 · %s" % str(e)[:50])
         if len(it["points"]) < MAX_POINTS:
-            it["points"].append([round(T, 3), R, phase])
+            it["points"].append([float(files.fmt_e(T)), float(files.fmt_e(R)), phase])    # 파일에 쓴 값 그대로 - 측정 때 낸 요약 · 그래프가 파일에서 다시 낸 것과 똑같다
         cy = it["cycles"][-1]
         cy["rows"] += 1
         if phase == 0:
@@ -621,12 +631,14 @@ class Runner:
     _fc = _fm = None
 
     def _open_cycle(self, it, fname, volt, cyc):
+        if self._fm is None:
+            self._retire_old(it, fname, volt)                       # 다시 재는 샘플: 예전 파일을 "이전_<HHMMSS>" 로 옮긴다
         try:
             if self._fm is None:
-                mp, _ch = files.unique_path(str(self.folder / files.merged_name(fname, volt)))
+                mp = self.folder / files.merged_name(fname, volt)
                 self._fm = open(mp, "w", encoding="ascii", newline="")
-                it["files"].append(Path(mp).name)
-            cp, _ch = files.unique_path(str(self.folder / files.cycle_name(fname, volt, cyc)))
+                it["files"].append(mp.name)
+            cp = self.folder / files.cycle_name(fname, volt, cyc)
             self._fc = open(cp, "w", encoding="ascii", newline="")
             self._fc.write(files.HEADER + files.CRLF)
             self._fc.flush()
@@ -635,6 +647,33 @@ class Runner:
         it["files"].append(Path(cp).name)
         it["cycles"].append({"file": Path(cp).name, "rows": 0, "heat_rows": 0})
         return Path(cp)
+
+    def _retire_old(self, it, fname, volt):
+        """새 데이터를 쓰기 직전: 그 샘플의 예전 파일(.dat · merged)을 같은 기록 폴더의 "이전_<HHMMSS>" 로 옮긴다.
+        새 파일은 원래 이름(LabVIEW 규칙 - 뒤에 _1 을 붙이지 않는다)으로 쓴다. 옮긴 것은 run.json 의 샘플 "moved" 에 적는다."""
+        pat = re.compile(re.escape(files.file_stem(fname, volt)) + r"(\d+|merged)\.dat$")
+        names = [n for n in it["files"] if (self.folder / n).is_file()]
+        try:
+            names += sorted(p.name for p in self.folder.iterdir() if p.is_file() and pat.match(p.name) and p.name not in names)
+        except OSError as e:
+            raise RunAbort("저장 폴더를 읽지 못했습니다 · %s" % str(e)[:50])
+        it["files"] = []
+        if not names:
+            return
+        sub = "이전_" + time.strftime("%H%M%S")
+        moved = []
+        try:
+            (self.folder / sub).mkdir(exist_ok=True)
+            for n in names:
+                dst, _ch = files.unique_path(str(self.folder / sub / n))
+                os.replace(str(self.folder / n), dst)
+                moved.append(n)
+        except OSError as e:
+            raise SampleFail("예전 파일을 옮기지 못했습니다 · 다른 프로그램이 그 파일을 열고 있는지 확인하십시오 (%s)" % str(e)[:40])
+        finally:
+            if moved:
+                it.setdefault("moved", []).append({"to": sub, "files": moved, "t": time.time()})
+                self.c.logs.app("샘플 %s 다시 측정 · 예전 파일 %d개를 %s 로 옮김" % (it["name"], len(moved), sub))
 
     def _close_cycle(self, it):
         f, self._fc = self._fc, None
@@ -671,7 +710,8 @@ class Runner:
     def _json(self, state=None):
         nas = None
         if self.nas is not None:
-            nas = {"dir": self.nas.nas_dir, "ok": self.nas.ok, "pending": [Path(p).name for p in self.nas.pending], "done": [Path(p).name for p in self.nas.done]}
+            nas = {"dir": self.nas.nas_dir, "ok": self.nas.ok, "pending": [Path(p).name for p in self.nas.pending], "done": [Path(p).name for p in self.nas.done],
+                   "names": {Path(a).name: os.path.basename(b) for a, b in self.nas.names.items()}}       # PC 파일 이름 → NAS 에 쓴 이름
         elif self.cond.get("nas_dir"):
             nas = {"dir": files.nas_target(self.cond.get("nas_dir"), self.cond.get("nas_date_folder"), self.batch, self.t0), "ok": None, "pending": [], "done": []}
         return {"batch": self.batch, "started": self.t0, "saved": time.time(), "state": state or self.state, "msg": self.msg, "cond": self.cond, "nas": nas,

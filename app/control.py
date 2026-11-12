@@ -260,7 +260,8 @@ class Controller:
     def estop(self, source: str = "화면"):
         """어떤 일 중이든 기다리지 않는다: 세대 올리기 → '!' → (이동이 멈추면) r all 0 → K2450 출력 끄기."""
         t0 = time.monotonic()
-        self.safety.begin_estop()
+        self.safety.begin_estop()                                   # 세대 올림 · 잠금 · 히트건 감시는 이 순간부터 "꺼짐"
+        self.state.set("heater_on_since", None)
         self.runner.on_estop()                                      # 측정도 멈춘다(정리는 측정 스레드가: 히트건 · 출력 · 쿨러 끔, 핀은 그대로)
         with self._plock:
             self._jog_pending = None                                # 대기 중이던 조그를 지운다

@@ -2,7 +2,7 @@
 
   GET  /                     화면(ui/index.html) · /ui/ 아래 정적 파일
   GET  /api/camera/preview.jpg  카메라 미리보기(가로 preview_width 로 줄인 JPEG, 1 초에 한 장 갱신. 없으면 204)
-  GET  /api/img/{raw|crop|plate|empty|live}.jpg  찍은 사진 · 원본 조각 · 보정한 판 사진 · 빈 판 사진 · 지금 카메라의 보정 사진(없으면 204)
+  GET  /api/img/{raw|crop|plate|empty}.jpg  찍은 사진 · 원본 조각 · 보정한 판 사진 · 빈 판 사진(없으면 204)
   GET  /api/run/points?sample=<id>&from=<n>   측정 점(새 점만)
   GET  /api/results          측정 기록 목록 · /api/results/record?id= 기록 하나 · /api/results/points?id=&sample= 점 · POST /api/results/png?id= 그림 저장
   GET  /api/state            상태 한 덩어리
@@ -73,7 +73,7 @@ def create_app(ctrl: Controller) -> FastAPI:
 
     @app.get("/api/img/{what}.jpg")
     async def img(what: str, x: float = 0.0, y: float = 0.0, half: int = 120):
-        """화면용 그림: raw(찍은 원본) · crop(원본 해상도 조각 x, y, half) · plate(보정한 판 사진) · empty(보정한 빈 판 사진) · live(지금 카메라의 보정 사진)."""
+        """화면용 그림: raw(찍은 원본) · crop(원본 해상도 조각 x, y, half) · plate(보정한 판 사진) · empty(보정한 빈 판 사진)."""
         jpg = await asyncio.to_thread(ctrl.prep.jpeg, what, x=x, y=y, half=half)
         if jpg is None:
             return Response(status_code=204)

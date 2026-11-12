@@ -86,10 +86,7 @@ def test_results_from_a_finished_run(ready_ctrl, tmp_path, monkeypatch):
         assert m["t_down"] - 0.5 <= a["t_cool"] < m["t_down"] + 2.5, (a["t_cool"], m["t_down"])
         assert a["hyst"] == round(a["t_heat"] - a["t_cool"], 2) > 0
         assert a["t_max"] >= ctrl.cfg["run_heater_off_c"], "히트건을 끈 뒤 더 오른 구간까지 들어 있다"
-        live = run.items[s["id"]]["sum"]                              # 측정 때 낸 요약과 같다(화면용 점은 온도를 0.001 °C 로, 파일은 유효 숫자 8자리로 둔다)
-        assert a["n"] == live["n"] and abs(a["t_max"] - live["t_max"]) <= 0.01
-        assert all(abs(a[k] - live[k]) <= 1.0 for k in ("t_heat", "t_cool")), "전이 온도는 많아야 이웃 점 하나 차이"
-        assert all(abs(a[k] - live[k]) <= 1e-6 * live[k] for k in ("r_start", "r_peak", "ratio"))
+        assert a == run.items[s["id"]]["sum"], "측정 때 낸 요약과 파일에서 다시 낸 요약이 같다(화면용 점 = 파일에 쓴 값)"
 
     # 점: 파일에서 읽은 것이 측정 때 받은 것과 같다(가열 0 → 냉각 1 한 번만 바뀐다)
     for sid in ids:
@@ -99,7 +96,7 @@ def test_results_from_a_finished_run(ready_ctrl, tmp_path, monkeypatch):
         assert [x[2] for x in got] == [x[2] for x in want]
         phases = [x[2] for x in got]
         assert phases[0] == 0 and phases[-1] == 1 and sum(1 for i in range(1, len(phases)) if phases[i] != phases[i - 1]) == 1
-        assert all(abs(g[0] - w[0]) <= 1e-3 and abs(g[1] - w[1]) <= 1e-6 * w[1] for g, w in zip(got, want))
+        assert got == want, "화면이 받은 점은 파일에 쓴 값 그대로다"
     with pytest.raises(Rejected):
         results.load_points(data, rid, 9999)
 
@@ -181,3 +178,23 @@ def test_settings_table_for_the_all_settings_page(tmp_path):
     verify = {r["key"] for r in rows if r["verify"]}
     assert {"cooler_grid", "plate_size_mm", "pin_long_axis"} <= verify
     assert all(r["choices"] for r in rows if r["kind"] == "choice")
+
+
+def test_repeat_run_graph_gets_every_cycle_and_table_uses_the_first(ready_ctrl, tmp_path):
+    """반복 2회: 그래프용 점은 모든 회차(가열 → 냉각 → 가열 → 냉각), 표(요약)는 첫 회차로 계산한다."""
+    ctrl, ids = _measured(ready_ctrl, tmp_path, n=1, run_repeat=2)
+    assert wait_for(lambda: not ctrl.runner.active, 60), "측정이 끝나지 않았다"
+    run, data = ctrl.runner, ctrl.cfg.data_path()
+    rid = results.list_records(data)[0]["id"]
+    name = run.items[ids[0]]["name"]
+    meta = json.loads((run.folder / "run.json").read_text(encoding="utf-8"))
+    cyc = meta["samples"][0]["cycles"]
+    assert [c["file"] for c in cyc] == [name + "_1.00V_0.dat", name + "_1.00V_1.dat"] and all(c["rows"] > 50 for c in cyc)
+    rec = results.load_record(data, rid)
+    row = rec["samples"][0]
+    assert row["cycles"] == 2 and row["n"] == cyc[0]["rows"], "표는 첫 회차 점으로 계산"
+    assert row["sum"] == analysis.analyze(results.sample_points(run.folder, meta["samples"][0]))
+    p = results.load_points(data, rid, ids[0])
+    assert p["cycles"] == 2 and len(p["points"]) == cyc[0]["rows"] + cyc[1]["rows"]
+    phases = [x[2] for x in p["points"]]
+    assert sum(1 for i in range(1, len(phases)) if phases[i] != phases[i - 1]) == 3, "가열 → 냉각 → 가열 → 냉각"

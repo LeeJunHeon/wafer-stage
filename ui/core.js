@@ -12,11 +12,15 @@ function _fill(e, attrs, kids) {
     else if (v === true) e.setAttribute(k, "");
     else e.setAttribute(k, v);
   }
-  for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(c));
+  e.append(..._kids(kids));
   return e;
 }
+/* 자식 목록: 배열은 펴고, null · undefined · false 는 그리지 않는다("null" 글자가 화면에 나오지 않게). */
+function _kids(kids) { return kids.flat(Infinity).filter((c) => c != null && c !== false).map((c) => (c.nodeType ? c : document.createTextNode(String(c)))); }
 function h(tag, attrs, ...kids) { return _fill(document.createElement(tag), attrs, kids); }
 function svgEl(tag, attrs, ...kids) { return _fill(document.createElementNS("http://www.w3.org/2000/svg", tag), attrs, kids); }
+/* 안의 내용을 통째로 바꾼다. replaceChildren 을 바로 쓰지 않는다(null 을 넘기면 "null" 글자가 된다). */
+function setKids(el, ...kids) { el.replaceChildren(..._kids(kids)); return el; }
 function btn(text, fn, cls) { return h("button", { class: "btn " + (cls || ""), type: "button", text, onclick: fn }); }
 function small(text) { return h("span", { class: "small", text }); }
 
@@ -75,6 +79,13 @@ function toast(msg) {
   toastT = setTimeout(() => t.classList.add("hidden"), 3000);
 }
 
+/* ---------- 창: 제목 · 내용(넘치면 내용만 안에서 스크롤) · 아래에 항상 보이는 버튼 줄. 높이는 화면 높이 − 80px 를 넘지 않는다 ---------- */
+function openDialog(title, body, buttons) {
+  setKids($("#dlg"), h("div", { class: "box" }, h("h3", { text: title }), h("div", { class: "dlg-body" }, body), h("div", { class: "dlg-foot" }, buttons)));
+  $("#dlg").classList.remove("hidden");
+}
+function closeDialog() { $("#dlg").classList.add("hidden"); }
+
 /* ---------- 탭 ---------- */
 const TAB_NAMES = ["prep", "measure", "results", "manual"];
 document.querySelectorAll("#tabs .tab").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
@@ -116,6 +127,20 @@ function fmtClock(epoch) {                                  // 13:47
   const d = new Date(epoch * 1000), p = (n) => String(n).padStart(2, "0");
   return p(d.getHours()) + ":" + p(d.getMinutes());
 }
+function fmtDate(epoch) {                                   // 2026-11-12 09:50
+  if (!epoch) return "";
+  const d = new Date(epoch * 1000), p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+/* 그래프 선과 같은 색의 짧은 선(12px) - 이름 앞에 붙여 어느 선인지 알려 준다 */
+function swatch(color, width) { return h("i", { class: "swatch", style: "border-top-color:" + color + ";border-top-width:" + (width || 2) + "px" }); }
+/* 3×3 호모그래피로 점 하나를 옮긴다(스테이지 X · Y → 판 mm 등). 못 옮기면 null */
+function applyH(H, x, y) {
+  if (!H) return null;
+  const w = H[2][0] * x + H[2][1] * y + H[2][2];
+  if (!isFinite(w) || Math.abs(w) < 1e-12) return null;
+  return [(H[0][0] * x + H[0][1] * y + H[0][2]) / w, (H[1][0] * x + H[1][1] * y + H[1][2]) / w];
+}
 const DOT = { "연결": "ok", "연결 중": "warn", "오류": "err", "끊김": "off" };
 const dotOf = (d) => DOT[d.state] || "off";
 const devOk = (k) => S && S.devices[k].state === "연결";
@@ -142,7 +167,7 @@ function renderStatus() {
   const cool = s.relays.map((r, i) => (r && i + 1 !== hr ? i + 1 : null)).filter(Boolean);
   const unknown = s.relays.every((r) => r == null);
   const port = s.devices.stage.target ? "(" + s.devices.stage.target + ")" : "";
-  $("#status").replaceChildren(
+  setKids($("#status"), 
     dev("stage", "스테이지" + port), dev("k2110", "온도계"), dev("k2450", "저항계"), dev("camera", "카메라"),
     posEl,
     h("span", { class: "item " + (heaterOn ? "st-warn" : "") }, "히트건 " + (heaterOn ? "켜짐" : "꺼짐")),
@@ -155,13 +180,13 @@ function renderAlarms() {
   const sig = JSON.stringify(S.alarms.map((a) => [a.code, a.text, a.level]));
   if (sig === alarmSig) return;
   alarmSig = sig;
-  $("#alarms").replaceChildren(...S.alarms.map((a) => h("div", { class: "alarm " + a.level }, h("span", { class: "grow", text: a.text }),
+  setKids($("#alarms"), ...S.alarms.map((a) => h("div", { class: "alarm " + a.level }, h("span", { class: "grow", text: a.text }),
     (a.code === "estop" || a.code === "reboot") ? btn("비상정지 풀기", () => api("estop_release"), "sm")
       : a.dismiss ? btn("지우기", () => api("alarm_clear", { code: a.code }), "sm") : null)));
 }
 
 /* ====================================================================
-   사진 칸: 비율(ar = 가로 ÷ 세로)을 지켜 칸 안에 맞춘다. 위 · 왼쪽부터 채우고 남는 자리는 패널 바탕색.
+   사진 칸: 비율(ar = 가로 ÷ 세로)을 지켜 칸 안에 맞춘다. 위 · 왼쪽부터 채우고 남는 자리는 패널 바탕색(opts.center 면 칸 가운데).
    svg 덧그림은 사진과 같은 크기(좌표는 쓰는 쪽이 viewBox 로 정한다). toFrac(ev) = 사진 안 위치(0~1).
    ==================================================================== */
 function photoBox(opts) {
@@ -176,13 +201,14 @@ function photoBox(opts) {
     const cw = box.clientWidth, ch = box.clientHeight;
     if (!cw || !ch) return;
     const w = Math.floor(Math.min(cw, ch * pb.ar)), hh = Math.floor(w / pb.ar);
+    if (opts.center) { inner.style.left = Math.floor((cw - w) / 2) + "px"; inner.style.top = Math.floor((ch - hh) / 2) + "px"; }
     if (w === pb.w && hh === pb.h) return;
     pb.w = w; pb.h = hh;
     inner.style.width = w + "px"; inner.style.height = hh + "px";
     if (opts.onfit) opts.onfit(pb);
   };
   new ResizeObserver(pb.fit).observe(box);
-  pb.setAr = (ar) => { if (ar > 0 && Math.abs(ar - pb.ar) > 1e-6) { pb.ar = ar; pb.w = 0; pb.fit(); } };
+  pb.setAr = (ar) => { if (ar > 0 && Math.abs(ar - pb.ar) > 1e-6) { pb.ar = ar; pb.w = 0; if (pb.relayout) pb.relayout(); pb.fit(); } };
   pb.show = (url) => {                                     // url 이 없으면 안내 글만
     if (url) { if (url !== pb.url) { pb.url = url; img.src = url; } inner.classList.remove("hidden"); note.classList.add("hidden"); pb.fit(); }
     else { pb.url = ""; inner.classList.add("hidden"); note.classList.remove("hidden"); }
@@ -190,6 +216,22 @@ function photoBox(opts) {
   pb.setNote = (t) => { note.textContent = t; };
   pb.toFrac = (ev) => { const r = inner.getBoundingClientRect(); return [(ev.clientX - r.left) / Math.max(1, r.width), (ev.clientY - r.top) / Math.max(1, r.height)]; };
   return pb;
+}
+
+/* 사진 + 조작 칸(400px): 조작 칸을 사진 바로 오른쪽(16px)에 붙인다. 사진 칸의 폭을 "사진이 실제로 차지하는 폭"으로 정해
+   큰 창에서도 조작 칸이 사진에서 멀어지지 않는다(남는 자리는 조작 칸 오른쪽). 조작 칸이 넘치면 그 칸 안에서만 스크롤한다. */
+const CTL_W = 400, SPLIT_GAP = 16, PHOTO_MIN_W = 440;
+function photoSplit(pb, ctl) {
+  ctl.classList.add("ctl");
+  const el = h("div", { class: "split fill" }, pb.box, ctl);
+  pb.relayout = () => {
+    const w = el.clientWidth, hh = el.clientHeight;
+    if (!w || !hh) return;
+    const pw = Math.max(Math.min(PHOTO_MIN_W, w - SPLIT_GAP - CTL_W), Math.floor(Math.min(w - SPLIT_GAP - CTL_W, hh * pb.ar)));
+    if (pb.box.style.width !== pw + "px") pb.box.style.width = pw + "px";
+  };
+  new ResizeObserver(pb.relayout).observe(el);
+  return el;
 }
 
 /* ====================================================================

@@ -194,6 +194,16 @@ class Calib:
         except np.linalg.LinAlgError:
             return None
 
+    def stage_to_plate(self, size_mm):
+        """스테이지 X · Y → 판 mm 호모그래피(화면이 지금 핀 자리를 판 사진 위에 그릴 때 쓴다). 없으면 None."""
+        T = self.plate_to_stage(size_mm)
+        if T is None:
+            return None
+        try:
+            return np.linalg.inv(T)
+        except np.linalg.LinAlgError:
+            return None
+
     def head_offset_mm(self, marker_px):
         """지금 본 헤드 마커 픽셀이 기억한 자리와 얼마나 다른가(mm). 마커 기억이 없으면 None."""
         m = self.d.get("marker")
