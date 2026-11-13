@@ -3,6 +3,7 @@
 
 import json
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -218,7 +219,13 @@ def test_estop_during_run(ready_ctrl):
     assert (run.folder / (run.items[ids[0]]["name"] + "_1.00V_0.dat")).stat().st_size > 60, "받은 데이터는 파일로 남는다"
     with pytest.raises(Rejected):
         ctrl.run_command("run_resume")                               # 비상정지를 풀기 전에는 이어서 못 한다
+    assert wait_for(lambda: not ctrl.state.get("estop_hold"), 5), "정지 뒤 2초(측정 시계)가 지나면 해제할 수 있다"
     ctrl.run_command("estop_release")
+    # 해제는 위치와 릴레이 상태를 다시 읽기만 한다: 측정은 중지된 채(스스로 이어지지 않는다) · 히트건 · 쿨러 · K2450 출력은 꺼진 채
+    time.sleep(0.3)
+    assert not run.active and run.state == "stopped" and run.items[ids[0]]["status"] == STOPPED and run.items[ids[1]]["status"] == WAIT
+    _all_off(ctrl)
+    assert ctrl.state.get("pos", "z") == z, "핀도 그 자리"
     ctrl.run_command("run_resume")
     _finish(ctrl, 40)
     assert run.items[ids[1]]["status"] == DONE
@@ -373,7 +380,7 @@ def test_remeasure_moves_old_files_and_keeps_labview_names(ready_ctrl, tmp_path)
     assert meta["nas"]["ok"] is True and meta["nas"]["names"] == {n: n for n in want}
     assert not ctrl.state.has_alarm("nas")
 
-    # 결과 탭: 새 데이터로 계산하고, 파일 목록에 이전_ 폴더가 보인다
+    # 측정 결과 탭: 새 데이터로 계산하고, 파일 목록에 이전_ 폴더가 보인다
     from app import results
     rec = results.load_record(ctrl.cfg.data_path(), "%s/%s" % (folder.parent.name, folder.name))
     assert rec["samples"][0]["n"] == len(run.items[ids[0]]["points"]) and any(f.startswith(old_dirs[0].name) for f in rec["files"])
@@ -396,7 +403,7 @@ def test_nas_does_not_overwrite_another_records_file(ready_ctrl, tmp_path):
     meta = json.loads((run.folder / "run.json").read_text(encoding="utf-8"))
     assert meta["nas"]["names"][name + "_1.00V_0.dat"] == name + "_1.00V_0_1.dat"
     assert ctrl.state.has_alarm("nas")
-    # 결과 탭 [다시 복사]도 이 기록이 쓴 이름으로만 덮어쓴다
+    # 측정 결과 탭 [다시 복사]도 이 기록이 쓴 이름으로만 덮어쓴다
     ctrl.run_command("result_nas_copy", {"id": "%s/%s" % (run.folder.parent.name, run.folder.name)})
     assert (other / (name + "_1.00V_0.dat")).read_bytes() == b"other record"
     assert sorted(p.name for p in other.iterdir()) == sorted([name + "_1.00V_0.dat", name + "_1.00V_0_1.dat", name + "_1.00V_merged.dat"])

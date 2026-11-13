@@ -1,4 +1,4 @@
-"""prep.py - 준비 탭 2~7단계와 사진 · 좌표 · 샘플 찾기. 이동 · 릴레이는 전부 Controller 의 안전 규칙을 지난다.
+"""prep.py - 초기 설정 탭 2~7단계와 사진 · 좌표 · 샘플 찾기. 이동 · 릴레이는 전부 Controller 의 안전 규칙을 지난다.
 
 사진(photo): 마지막으로 찍은 원본 한 장. 판 꼭짓점이 정해져 있으면 보정 사진(판을 위에서 본 정사각형)을 만들어 둔다.
 위치 확인: 촬영 위치에서 찍은 사진마다 헤드 마커를 찾아 기억한 자리와의 차이(mm)를 낸다.
@@ -62,7 +62,7 @@ class Prep:
     def _need_xy(self):
         self.c._need_stage()
         if not (self.c.stage.homed.get("x") and self.c.stage.homed.get("y")):
-            raise Rejected("X · Y 원점 필요 (준비 2)")
+            raise Rejected("X · Y 원점 필요 (초기 설정 2)")
 
     def _xy(self):
         return self.c._mm("x"), self.c._mm("y")
@@ -83,14 +83,14 @@ class Prep:
 
     def capture(self, move=True, need_head=False):
         """사진 한 장. move 면 핀 맨 위 → 촬영 위치로 간 뒤, 이동이 끝나고 새로 들어온 프레임을 쓴다.
-        need_head: 촬영 위치가 정해져 있지 않으면 거절(빈 판 · 샘플 사진). 아니면 지금 자리에서 찍는다(준비 3단계)."""
+        need_head: 촬영 위치가 정해져 있지 않으면 거절(빈 판 · 샘플 사진). 아니면 지금 자리에서 찍는다(초기 설정 3단계)."""
         self._need_camera()
         self.c._no_run("촬영")
         head = self.cfg["photo_head_xy"]
         at_head = False
         if head is None:
             if need_head:
-                raise Rejected("촬영 위치 설정 필요 (준비 3)")
+                raise Rejected("촬영 위치 설정 필요 (초기 설정 3)")
         elif move:
             if not self.c.stage.connected or not all(self.c.stage.homed.get(a) for a in "xyz"):
                 if need_head:
@@ -243,7 +243,7 @@ class Prep:
         return {"marker": self.marker_seen}
 
     def photo_take(self):
-        """준비 3단계 [사진 찍기]: 촬영 위치가 정해져 있고 갈 수 있으면 거기로 가서, 아니면 지금 자리에서 찍는다."""
+        """초기 설정 3단계 [사진 찍기]: 촬영 위치가 정해져 있고 갈 수 있으면 거기로 가서, 아니면 지금 자리에서 찍는다."""
         self.capture(move=True, need_head=False)
         self.publish()
         return {"photo": self._photo_view()}
@@ -338,11 +338,11 @@ class Prep:
         """촬영 위치에서 헤드 마커 가운데 픽셀을 기억하고, X · Y 로 조금 옮겨 보며 "mm 당 픽셀" 2×2 행렬을 잰다."""
         head = self.cfg["photo_head_xy"]
         if head is None:
-            raise Rejected("촬영 위치 설정 필요 (준비 3)")
+            raise Rejected("촬영 위치 설정 필요 (초기 설정 3)")
         self._need_camera()
         self.c._no_run("헤드 마커 기억")
         if not all(self.c.stage.homed.get(a) for a in "xyz"):
-            raise Rejected("세 축 원점 필요 (준비 2)")
+            raise Rejected("세 축 원점 필요 (초기 설정 2)")
         step = float(self.cfg["marker_probe_mm"])
 
         def see(x, y):
@@ -391,7 +391,7 @@ class Prep:
         """판 사진을 누른 자리(판 mm)로 간다(핀 맨 위로 올린 뒤). 샘플 근처를 누르면 샘플 가운데로 붙는다."""
         Hp, Hs = self.calib.plate_h(self._size_mm()), self.calib.stage_h()
         if Hp is None or Hs is None:
-            raise Rejected("준비 3 · 5 필요")
+            raise Rejected("초기 설정 3 · 5 필요")
         px, py = float(x), float(y)
         snapped = None
         best = None
@@ -414,7 +414,7 @@ class Prep:
         if self.last_click is None:
             raise Rejected("판 사진에서 위치 선택 필요")
         if not self.calib.coords_ready():
-            raise Rejected("좌표 보정 필요 (준비 5)")
+            raise Rejected("좌표 보정 필요 (초기 설정 5)")
         self._need_xy()
         self.c._no_run("보정 점 더하기")
         self.calib.add_extra(self.last_click["px"], self._xy())
@@ -436,12 +436,12 @@ class Prep:
     def samples_find(self):
         """[사진 찍고 샘플 찾기]: 핀 맨 위 → 촬영 위치 → 촬영 → 위치 확인 → 샘플 찾기."""
         if not self.calib.d.get("plate"):
-            raise Rejected("판 영역 설정 필요 (준비 3)")
+            raise Rejected("판 영역 설정 필요 (초기 설정 3)")
         t0 = time.monotonic()
         self.capture(move=True, need_head=True)
         cur = self.photo_rect()
         if cur is None:
-            raise Rejected("사진 크기 변경됨 · 준비 3 재설정 필요")
+            raise Rejected("사진 크기 변경됨 · 초기 설정 3 재설정 필요")
         emp = self.empty_rect()
         res = find_mod.find_samples(cur, emp, geo.RECT_PPMM, geo.RECT_MARGIN_MM, log=lambda t: self.c.logs.app("샘플 찾기 · " + t, "detail"))
         if emp is None:
@@ -590,7 +590,7 @@ class Prep:
                 "rect": self.photo_rect() is not None}
 
     def steps(self):
-        """준비 7단계의 끝났는지 + 저장된 값 한 줄."""
+        """초기 설정 7단계의 끝났는지 + 저장된 값 한 줄."""
         c, cal, st = self.cfg, self.calib.d, self.c.state
 
         def when(t):

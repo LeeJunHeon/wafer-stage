@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<title>VO₂ 온도–저항 측정</title>
+<title>VO₂ 자동 측정 프로그램</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/ui/app.css">
@@ -10,15 +10,17 @@
 <body>
 <div id="app">
   <header id="top">
-    <div class="brand">VO₂ 온도–저항 측정</div>
+    <div class="brand">VO₂ 자동 측정 프로그램</div>
+    <span class="brand-sep"></span>
     <nav id="tabs">
-      <button class="tab on" data-tab="prep">준비</button>
-      <button class="tab" data-tab="measure">측정</button>
-      <button class="tab" data-tab="results">결과</button>
-      <button class="tab" data-tab="manual">수동</button>
+      <button class="tab on" type="button" data-tab="prep">초기 설정</button>
+      <button class="tab" type="button" data-tab="measure">자동 측정</button>
+      <button class="tab" type="button" data-tab="results">측정 결과</button>
+      <button class="tab" type="button" data-tab="manual">수동 측정</button>
     </nav>
     <button id="estop" type="button">비상정지<small>Esc</small></button>
   </header>
+  <div id="estop-band" class="hidden">비상정지 중 · 이동 · 릴레이 · 측정 불가</div>
 
   <main id="main">
     <section id="tab-prep" class="pane"></section>
@@ -32,6 +34,8 @@
   <div id="toast" class="hidden"></div>
   <div id="offline" class="hidden">서버 연결 끊김 · 재연결 중</div>
   <div id="dlg" class="hidden"></div>
+  <div id="confirm" class="hidden"></div>
+  <div id="tip" class="hidden"></div>
 </div>
 <script src="/ui/core.js"></script>
 <script src="/ui/jog.js"></script>

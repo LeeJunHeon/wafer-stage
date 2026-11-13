@@ -29,7 +29,7 @@ def test_no_error_replies_are_not_reported_as_errors(make_ctrl):
 def test_visa_list_drops_serial_ports(make_ctrl):
     ctrl = make_ctrl(connect=False)
     assert any(a.startswith("ASRL") for a in ctrl.lab.addrs), "가짜 목록에는 ASRL 이 들어 있다"
-    items = ctrl.list_devices()["visa"]
+    items = [x["value"] for x in ctrl.list_devices()["visa"]]
     assert items and not any(a.upper().startswith("ASRL") for a in items)
     assert "GPIB0::18::INSTR" in items
 

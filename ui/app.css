@@ -1,4 +1,4 @@
-/* 샘플 자동 측정 v3 화면. 기준 크기 1280×740(페이지 스크롤 없음). 글꼴은 Pretendard(오프라인 - ui/fonts). 장식 없음.
+/* VO₂ 자동 측정 프로그램 화면. 기준 크기 1280×740(페이지 스크롤 없음). 글꼴은 Pretendard(오프라인 - ui/fonts). 장식 없음.
    규칙: 간격은 4 · 8 · 12 · 16px 만. 패널 안쪽 12px · 패널 사이 12px. 패널 제목 14px 굵게 · 본문 13px · 설명 12px.
    버튼 · 입력 · 숫자 칸은 창이 커져도 늘어나지 않는다. 늘어나는 것은 사진 · 그래프 · 기록 목록 · 표뿐이다(.fill).
    패널은 내용 높이만큼만(위에서부터 채움). 사진 밖 남는 자리는 패널 바탕색 그대로다. */
@@ -17,17 +17,26 @@ button, input, select { font: inherit; color: inherit; }
 .mono { font-family: Consolas, "맑은 고딕", monospace; }
 .nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
-#app { display: grid; grid-template-rows: 52px minmax(0, 1fr) auto 34px; height: 100vh; min-width: 1280px; position: relative; }
+/* 줄: 위 띠 52 / 비상정지 띠(정지 중에만) / 본문 / 경보 띠(있을 때만) / 상태줄 34. 줄 번호를 정해 둔다(숨긴 줄이 있어도 자리가 바뀌지 않게) */
+#app { display: grid; grid-template-rows: 52px auto minmax(0, 1fr) auto 34px; height: 100vh; min-width: 1280px; position: relative; }
+#top { grid-row: 1; } #estop-band { grid-row: 2; } #main { grid-row: 3; } #alarms { grid-row: 4; } #status { grid-row: 5; }
 
-/* ---- 위 띠 ---- */
+/* ---- 위 띠: 제목 | 세로 구분선 | 메뉴(버튼 모양 - 고른 메뉴는 바탕을 채운다) … 비상정지 ---- */
 #top { display: flex; align-items: center; gap: 16px; padding: 0 12px 0 16px; background: #fff; border-bottom: 1px solid var(--line); }
-.brand { font-size: 15px; font-weight: 700; white-space: nowrap; }
-#tabs { display: flex; gap: 4px; align-self: stretch; }
-.tab { border: 0; border-top: 2px solid transparent; border-bottom: 2px solid transparent; background: none; padding: 0 16px; font-size: 14px; color: var(--ink2); cursor: pointer; }
-.tab.on { font-weight: 700; color: var(--ink); border-bottom-color: var(--dark); }
+.brand { font-size: 15px; font-weight: 700; white-space: nowrap; flex: none; }
+.brand-sep { width: 1px; height: 24px; background: var(--line); flex: none; }
+#tabs { display: flex; gap: 8px; align-items: center; flex: none; }
+.tab { height: 32px; padding: 0 16px; border: 1px solid var(--btn-line); border-radius: 4px; background: #fff; font-size: 14px; color: var(--ink); cursor: pointer; white-space: nowrap; }
+.tab:hover { border-color: var(--dark); }
+.tab.on { background: var(--dark); border-color: var(--dark); color: #fff; font-weight: 700; }
+/* 비상정지 버튼: 평소 = 빨간 [비상정지 Esc] / 정지 중 = 눌린 모양의 [비상정지 중 · 해제](밝은 바탕 · 빨간 테두리 · 안쪽 그림자) */
 #estop { margin-left: auto; width: 200px; height: 40px; background: var(--estop); border: 2px solid var(--estop-line); color: #fff; font-size: 17px; font-weight: 700;
   border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; flex: none; }
 #estop small { font-size: 11px; font-weight: 400; opacity: .85; }
+#estop.locked { background: var(--err-bg); color: var(--err-ink); border-color: var(--estop); font-size: 15px; box-shadow: inset 0 3px 6px rgba(142, 27, 22, .35); }
+#estop.locked.hold { color: #9AA1A9; cursor: not-allowed; }                 /* 정지 직후 2초: 해제를 받지 않는다(꺼진 모양) */
+/* 비상정지 띠: 위 띠 바로 아래(버튼 자리가 움직이지 않게). 정지 중에만 보인다 */
+#estop-band { min-height: 32px; display: flex; align-items: center; justify-content: center; padding: 4px 12px; background: var(--estop); color: #fff; font-weight: 700; font-size: 14px; }
 
 /* ---- 본문: 탭마다 칸(열)을 정한다. 패널은 내용 높이만큼만, 늘어나는 것만 .fill ---- */
 #main { position: relative; min-height: 0; }
@@ -53,9 +62,9 @@ button, input, select { font: inherit; color: inherit; }
 .btn:disabled, .btn.dis { color: #9AA1A9; background: #F5F6F7; cursor: not-allowed; }
 .btn.sm { height: 24px; padding: 0 8px; font-size: 12px; }
 input[type=text], input[type=number], select { height: 32px; padding: 0 8px; border: 1px solid var(--btn-line); border-radius: 4px; background: #fff; min-width: 0; flex: none; }
-input:disabled { background: #F5F6F7; color: #9AA1A9; }
+input:disabled, select:disabled { background: #F5F6F7; color: #9AA1A9; }
 input.num { width: 64px; text-align: right; }
-input.addr { width: 360px; }
+select.addr { width: 360px; }
 input.name { width: 120px; }
 label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 
@@ -83,6 +92,17 @@ label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 #dlg .box { background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 16px; min-width: 320px; max-width: calc(100% - 32px); max-height: calc(100vh - 80px);
   display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
 #dlg h3 { margin: 0; font-size: 14px; flex: none; }
+/* 확인 창(비상정지 해제 하나에만 쓴다): 다른 창 위에 뜬다 */
+#confirm { position: absolute; inset: 0; background: rgba(26, 29, 33, .35); display: flex; align-items: center; justify-content: center; z-index: 60; }
+#confirm .box { background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 16px; min-width: 280px; display: flex; flex-direction: column; gap: 16px; }
+#confirm h3 { margin: 0; font-size: 15px; }
+#confirm .foot { display: flex; justify-content: flex-end; gap: 8px; }
+/* 말풍선(공용): 마우스를 올리고 0.3초 뒤에 뜬다. 자리는 JS 가 화면 안으로 잡는다 */
+#tip { position: fixed; z-index: 80; max-width: 360px; padding: 8px 12px; background: var(--dark); color: #fff; border-radius: 4px; font-size: 12px; line-height: 1.5; white-space: pre-line; pointer-events: none; }
+#tip b { display: block; font-size: 13px; }
+#tip .hint { display: block; margin-top: 4px; opacity: .8; }
+.info { margin-left: 4px; color: var(--ink2); font-size: 12px; cursor: help; }
+.tipped { cursor: help; }
 .dlg-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
 .dlg-foot { flex: none; display: flex; justify-content: flex-end; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 .form { display: grid; grid-template-columns: 180px max-content; gap: 8px; align-items: center; align-content: start; }
@@ -101,7 +121,7 @@ label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .photo-in svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .photo-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 12px; color: var(--ink2); }
 
-/* ---- 이동(조그) 부품: 수동 탭과 준비 단계가 같이 쓴다 ---- */
+/* ---- 이동(조그) 부품: 수동 측정 탭과 초기 설정 단계가 같이 쓴다 ---- */
 .jog { display: flex; flex-direction: column; gap: 8px; }
 .steps { display: flex; gap: 4px; align-items: center; }
 .steps .btn { padding: 0 12px; min-width: 44px; }
@@ -114,7 +134,7 @@ label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .zcol { display: flex; flex-direction: column; gap: 4px; }
 .zcol .btn { width: 128px; height: 36px; padding: 0; }
 
-/* ---- 준비 탭: 왼쪽 단계 목록 260px 고정 · 오른쪽 내용은 최대 960px(사진이 있는 단계는 사진이 남는 폭을 가져간다) ---- */
+/* ---- 초기 설정 탭: 왼쪽 단계 목록 260px 고정 · 오른쪽 내용은 최대 960px(사진이 있는 단계는 사진이 남는 폭을 가져간다) ---- */
 #prep-list { width: 260px; flex: none; gap: 4px; max-height: 100%; overflow-y: auto; }
 .step { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border-radius: 4px; cursor: pointer; border: 1px solid transparent; }
 .step:hover { background: #F5F6F7; }
@@ -160,7 +180,7 @@ table.ctab tr:hover td { background: none; }
 .devrow .resp { font-size: 12px; color: var(--ink2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .devrow .stt { display: flex; align-items: center; gap: 8px; }
 
-/* ---- 수동 탭: 왼쪽(카메라 · 이동) 440~640 / 가운데(수동 측정 · 릴레이 시험) 400 고정 / 오른쪽(직접 명령) 나머지(340 이상) ---- */
+/* ---- 수동 측정 탭: 왼쪽(카메라 · 이동) 440~640 / 가운데(수동 측정 · 릴레이 시험) 400 고정 / 오른쪽(직접 명령) 나머지(340 이상) ---- */
 #tab-manual { display: grid; grid-template-columns: minmax(440px, 640px) 400px minmax(340px, 1fr); grid-template-rows: minmax(0, 1fr); align-items: start; }
 #man-left { align-self: stretch; }
 #man-cam { flex: 0 1 auto; }
@@ -178,7 +198,7 @@ table.ctab tr:hover td { background: none; }
 .quick .btn { height: 28px; font-size: 12px; padding: 0 8px; }
 #man-right select { width: 160px; }
 
-/* ---- 측정 탭: 왼쪽 "판"은 내용에 맞춘 폭(판 사진 한 변 + 12 + 순서 표 260 + 안쪽 여백 - JS layoutPlate 가 정한다) /
+/* ---- 자동 측정 탭: 왼쪽 "판"은 내용에 맞춘 폭(판 사진 한 변 + 12 + 순서 표 260 + 안쪽 여백 - JS layoutPlate 가 정한다) /
         오른쪽 "샘플"(그래프)이 남는 폭을 전부 가져간다(440px 이상) ---- */
 #tab-measure { display: grid; grid-template-columns: max-content minmax(440px, 1fr); grid-template-rows: minmax(0, 1fr); }
 #ms-left { width: 786px; }
@@ -216,7 +236,7 @@ table.tb td input.name { height: 24px; width: 96px; }
 .g-box { flex: 1 1 0; min-height: 0; min-width: 0; overflow: hidden; }
 .g-box svg { display: block; }
 
-/* ---- 결과 탭: 왼쪽 230 / 가운데(그래프 · 표, 늘어남) / 오른쪽 270 ---- */
+/* ---- 측정 결과 탭: 왼쪽 230 / 가운데(그래프 · 표, 늘어남) / 오른쪽 270 ---- */
 #tab-results { display: grid; grid-template-columns: 230px minmax(0, 1fr) 270px; grid-template-rows: minmax(0, 1fr); }
 .reclist { overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; min-height: 80px; }
 .rec { padding: 4px 8px; cursor: pointer; border-bottom: 1px solid #ECEEF0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -243,4 +263,5 @@ td.setval { width: 380px; }
 td.setunit { width: 80px; }
 input.setnum { width: 120px; text-align: right; }
 input.settext { width: 360px; }
+input.settext.withbtn { width: 272px; }                              /* [찾아보기] 가 옆에 붙는 폴더 칸 */
 .vfy { margin-left: 8px; font-size: 12px; }

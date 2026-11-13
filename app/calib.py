@@ -1,4 +1,4 @@
-"""calib.py - 준비 단계에서 정한 보정 값. <데이터 폴더>/calib/calib.json 과 calib/empty_plate.png 에 둔다(settings.json 과 따로).
+"""calib.py - 초기 설정 단계에서 정한 보정 값. <데이터 폴더>/calib/calib.json 과 calib/empty_plate.png 에 둔다(settings.json 과 따로).
 
 언제든 다시 할 수 있고, 다시 하면 덮어쓴다. 값이 없는 단계는 None 이다.
 

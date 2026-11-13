@@ -70,7 +70,8 @@ def test_queued_command_is_discarded_by_generation(make_ctrl):
 
 
 def test_estop_locks_moves_and_relay_on_until_release(make_ctrl):
-    ctrl = make_ctrl()
+    clock = FakeClock()
+    ctrl = make_ctrl(clock=clock)
     ctrl.estop()
     with pytest.raises(Rejected) as e:
         ctrl.jog("x", 1.0)
@@ -80,6 +81,7 @@ def test_estop_locks_moves_and_relay_on_until_release(make_ctrl):
     with pytest.raises(Rejected):
         ctrl.goto(10, 10)
     ctrl.relay_off(2)                                   # 끄기는 된다
+    clock.advance(2.0)                                  # 정지 직후 2초는 해제를 받지 않는다
     ctrl.estop_release()
     assert ctrl.state.get("estop_locked") is False
     assert not ctrl.state.has_alarm("estop")
@@ -125,3 +127,85 @@ def test_estop_marks_heater_off_at_once_and_leaves_only_the_estop_alarm(make_ctr
     ctrl.feed_temperature(30.0)
     ctrl.relay_on(1)
     assert ctrl.fake_fw.relay[0] is True
+
+
+# ---- 해제: 정지 직후 2초는 받지 않는다 · 해제는 위치와 릴레이 상태를 다시 읽기만 한다 ----
+def test_release_is_refused_right_after_estop_and_allowed_after_two_seconds(make_ctrl):
+    """Esc 를 연달아 눌러 바로 풀리지 않게: 정지 뒤 2초 동안은 해제를 거절하고(화면은 state.estop_hold 로 해제 버튼을 꺼 둔다), 지나면 된다."""
+    from fastapi.testclient import TestClient
+    from app.server import create_app
+    clock = FakeClock()
+    ctrl = make_ctrl(clock=clock)
+    assert ctrl.state.get("estop_hold") is False
+    ctrl.estop("시험")
+    assert ctrl.state.get("estop_locked") is True and ctrl.state.get("estop_hold") is True
+    with pytest.raises(Rejected) as e:
+        ctrl.run_command("estop_release")
+    assert str(e.value) == "비상정지 직후 · 2초 뒤 해제 가능"
+    with TestClient(create_app(ctrl)) as c:                           # 서버 길도 같은 글로 거절한다
+        assert c.post("/api/estop/release").json() == {"ok": False, "msg": "비상정지 직후 · 2초 뒤 해제 가능"}
+        clock.advance(1.9)
+        assert c.post("/api/cmd/estop_release", json={}).json()["ok"] is False
+        assert ctrl.state.get("estop_locked") is True and ctrl.state.get("estop_hold") is True, "거절돼도 정지는 그대로"
+        clock.advance(0.2)                                            # 2초가 지났다
+        assert wait_for(lambda: ctrl.state.get("estop_hold") is False, 3), "해제할 수 있게 되면 화면에 알린다"
+        assert ctrl.state.get("estop_locked") is True, "시간이 지났다고 저절로 풀리지 않는다"
+        assert c.post("/api/estop/release").json() == {"ok": True, "result": {"locked": False}}
+    assert ctrl.state.get("estop_locked") is False and not ctrl.state.has_alarm("estop")
+    # 다시 정지하면 2초를 다시 센다
+    ctrl.estop("시험")
+    clock.advance(1.0)
+    ctrl.estop("시험")                                                 # 정지 중에 또 눌렀다: 그때부터 다시 2초
+    clock.advance(1.5)
+    with pytest.raises(Rejected):
+        ctrl.estop_release()
+    clock.advance(0.6)
+    ctrl.estop_release()
+    assert ctrl.state.get("estop_locked") is False
+
+
+def test_after_release_relays_stay_off_and_dropped_moves_do_not_run(make_ctrl):
+    """해제 뒤 상태: 릴레이 · K2450 출력은 꺼진 채 · 대기 중이던 이동(대기 칸의 조그 · 조그의 남은 조각 · 줄 서 있던 이동)은 버려진 채.
+    해제는 st · rs 로 위치와 릴레이 상태를 다시 읽기만 한다."""
+    clock = FakeClock()
+    ctrl = make_ctrl(clock=clock, scale=0.4)
+    fw = ctrl.fake_fw
+    ctrl.relay_on(2)
+    ctrl.relay_on(5)
+    ctrl.k2450.output(True)
+    res = []
+
+    def long_jog():
+        try:
+            ctrl.jog("y", 120.0)                                     # 50 mm 조각 셋: 첫 조각을 가는 중에 멈춘다(남은 조각은 가지 않는다)
+        except Rejected as e:
+            res.append(str(e))
+
+    t = threading.Thread(target=long_jog)
+    t.start()
+    assert wait_for(lambda: ctrl.stage.moving, 5)
+    assert ctrl.jog("y", 30.0) == {"queued": True}                   # 대기 칸에 받아 둔 조그
+    f2 = ctrl.stage.submit("gx 5000", ctrl.safety.generation, stage_mod.is_move_done, 10, kind="move")      # 줄 서 있는 이동
+    ctrl.estop("시험")
+    t.join(10)
+    assert res == ["이동 중단 · 위치 확인 필요"]
+    with pytest.raises(stage_mod.Discarded):
+        f2.result(10)
+    assert wait_for(lambda: not any(fw.relay), 5) and ctrl.lab.out_on is False
+    y = ctrl.state.get("pos", "y")
+    assert 0.0 < y < 50.0
+    n = len(fw.log)
+    clock.advance(2.0)
+    assert ctrl.run_command("estop_release") == {"locked": False}
+    assert set(fw.log[n:]) <= {"st", "rs"} and "st" in fw.log[n:], "해제는 위치와 릴레이 상태를 다시 읽기만 한다: %s" % fw.log[n:]
+    assert wait_for(lambda: not ctrl.stage.moving, 2)
+    import time
+    time.sleep(0.3)                                                  # 버려진 이동이 뒤늦게 나가지 않는지
+    assert not any(c.startswith(("gx", "gy", "gz", "jx", "jy", "jz", "r ")) for c in fw.log[n:]), "버려진 이동 · 릴레이 명령은 살아나지 않는다: %s" % fw.log[n:]
+    assert not any(fw.relay) and all(r is False for r in ctrl.state.get("relays")), "릴레이는 꺼진 채"
+    assert ctrl.lab.out_on is False, "K2450 출력도 꺼진 채"
+    assert ctrl.state.get("heater_on_since") is None and ctrl.state.get("move") is None
+    assert ctrl.state.get("pos", "y") == y and ctrl.state.get("pos", "x") == 0.0, "멈춘 위치 그대로"
+    assert [a["code"] for a in ctrl.state.snapshot()["alarms"]] == [], "해제 뒤 남는 경보 없음"
+    ctrl.jog("x", 1.0)                                               # 풀린 뒤에는 새 명령만 실행된다
+    assert abs(ctrl.state.get("pos", "x") - 1.0) < 0.01 and ctrl.state.get("pos", "y") == y

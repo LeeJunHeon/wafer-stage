@@ -3,6 +3,9 @@
 거절은 Rejected(쉬운 한국어 한 문장). 이동은 한 번에 하나만(이동 잠금) - 여러 단계 이동(Z 올리기 → X · Y)이 다른 이동과 섞이지 않게 한다.
 """
 
+import ntpath
+import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -26,13 +29,22 @@ AXES = "xyz"
 MOTION_WORDS = ("g", "j", "m", "fz", "z", "sp", "home", "x", "y", "rx", "ry", "fx", "fy")   # 직접 명령에서 막는 이동 · 원점 명령
 
 
+CAMERA_SCAN = (0, 1, 2, 3)                                         # 카메라 목록을 만들 때 열어 보는 번호
+
+
 def serial_ports():
-    """시리얼 포트 이름만(설명 · 장비 종류는 보여 주지 않는다). 여는 것은 사람이 고른 하나뿐이다."""
+    """이 컴퓨터의 시리얼 포트 [(이름, 장치 설명)]. 목록만 읽는다 - 포트를 열지 않는다(여는 것은 사람이 고른 하나뿐이다)."""
     try:
         from serial.tools import list_ports
-        return sorted(p.device for p in list_ports.comports())
+        return sorted((str(p.device), str(p.description or "")) for p in list_ports.comports())
     except Exception:                                               # noqa: BLE001
         return []
+
+
+def port_label(name, desc):
+    """선택 상자에 보일 글: "COM5 · Arduino Mega 2560". 설명 끝의 "(COM5)" 는 떼고, 설명이 없으면 이름만."""
+    d = re.sub(r"\s*\(%s\)\s*$" % re.escape(name), "", str(desc or "").strip(), flags=re.I).strip()
+    return name if not d or d.lower() in ("n/a", name.lower()) else "%s · %s" % (name, d)
 
 
 def open_serial(name):
@@ -61,6 +73,9 @@ class Controller:
         self.heater_trip = ""                                       # 안전 규칙이 히트건을 마지막으로 끈 이유
         self._heater_by = None                                      # 지금 보내는 "히트건 켜기"의 주체(수동 · 측정) - 릴레이 상태가 읽히는 순간에 쓴다
         self._heater_why = None                                     # 지금 보내는 "히트건 끄기"의 까닭(로그용)
+        self._folder_picker = None                                  # 폴더 선택 창을 띄우는 함수(창으로 실행했을 때 run.py 가 넘긴다)
+        self._cam_lock = threading.Lock()                           # 카메라 열기(연결 · 목록용 열어 보기)는 한 번에 하나
+        self._scan_lock = threading.Lock()                          # 장비 목록 읽기는 한 번에 하나
         self._motion = threading.Lock()
         self._plock = threading.Lock()                              # 조그 대기 칸 · 현재 이동 종류
         self._cur_kind = None
@@ -74,6 +89,7 @@ class Controller:
         for n in self.cfg.loaded_notes:
             self.logs.app(n, "warn")
             self.state.alarm("config", n, NOTICE)
+        self.state.set("hw", {"find_push_mm": stage_mod.FIND_PULSE / PPMM, "find_gap_mm": stage_mod.FIND_GAP_PULSE / PPMM})
         self.publish_cfg()
         self.prep.publish()
         self.runner.publish()
@@ -83,8 +99,43 @@ class Controller:
     # 연결
     # ------------------------------------------------------------------
     def list_devices(self):
+        """이 컴퓨터의 장비 목록(선택 상자용). 포트 · 측정 장비는 목록만 읽고 열지 않는다.
+        카메라는 0~3 번을 잠깐 열어 보고 열리는 것만 넣는다. 연결 중인 카메라 번호는 열어 보지 않고 그대로 넣는다."""
+        ports = [{"value": n, "label": port_label(n, d)} for n, d in serial_ports()]
         visa, note = meters.list_resources()
-        return {"serial_ports": serial_ports(), "visa": visa, "note": note, "cameras": [0, 1, 2, 3]}
+        cams, closed = [], []
+        c = self.cfg
+        for i in CAMERA_SCAN:
+            with self._cam_lock:                                    # 연결([연결] · 자동 연결)과 겹치지 않게 번호 하나씩
+                if self.camera.connected and str(i) == self.state.get("devices", "camera", "target"):
+                    size = tuple(self.camera.info.get("actual") or (0, 0))
+                else:
+                    size = self.camera.probe(i, c["camera_width"], c["camera_height"], c["camera_fourcc"])
+            if size is None:
+                closed.append(str(i))
+            else:
+                cams.append({"value": i, "label": "%d · %d×%d" % (i, size[0], size[1]) if size[0] and size[1] else str(i)})
+        self.logs.app("장비 목록 · 포트 %d · 측정 장비 %d · 카메라 %s%s" % (
+            len(ports), len(visa), " ".join(str(x["value"]) for x in cams) or "없음", " (열기 실패 %s)" % " ".join(closed) if closed else ""))
+        return {"ports": ports, "visa": [{"value": a, "label": a} for a in visa], "cameras": cams, "note": note}
+
+    def refresh_devices(self):
+        """[새로고침]: 세 목록을 뒤에서 다시 읽는다(카메라를 열어 보느라 몇 초 걸릴 수 있다). 바로 돌아오고 결과는 state.devlist 에 온다."""
+        if not self._scan_lock.acquire(blocking=False):
+            return {"busy": True}                                   # 이미 읽는 중
+        self.state.update("devlist", busy=True)
+
+        def work():
+            try:
+                self.state.update("devlist", busy=False, t=time.time(), **self.list_devices())
+            except Exception as e:                                  # noqa: BLE001 - 목록을 못 읽어도 프로그램은 계속 돈다
+                self.logs.app("장비 목록 읽기 오류 · %s: %s" % (type(e).__name__, e), "error")
+                self.state.update("devlist", busy=False, note="장비 목록 읽기 실패")
+            finally:
+                self._scan_lock.release()
+
+        threading.Thread(target=work, daemon=True, name="device-list").start()
+        return {"busy": True}
 
     def connect_stage(self, port: Optional[str] = None):
         port = (port or self.cfg["stage_port"]).strip()
@@ -264,6 +315,11 @@ class Controller:
         return {"locked": True}
 
     def estop_release(self):
+        """비상정지 해제: 위치와 릴레이 상태를 다시 읽기만 한다. 릴레이 · K2450 출력은 꺼진 채, 버려진 이동은 버려진 채, 측정은 중지된 채로 둔다.
+        정지 직후(ESTOP_HOLD_S)에는 받지 않는다."""
+        why = self.safety.reject_release()
+        if why:
+            raise Rejected(why)
         if self.stage.connected:
             try:
                 self.stage.call("st", None, stage_mod.is_st, 3.0, prio=0)
@@ -417,7 +473,7 @@ class Controller:
         homed = self.stage.homed
         miss = [a.upper() for a in AXES if not homed.get(a)] if z is not None else [a.upper() for a in "xyz" if not homed.get(a)]
         if miss:
-            raise Rejected("%s 원점 필요 (준비 2)" % " · ".join(miss))
+            raise Rejected("%s 원점 필요 (초기 설정 2)" % " · ".join(miss))
         for ax, v in (("x", x), ("y", y)) + ((("z", z),) if z is not None else ()):
             why = self.safety.reject_target(ax, v, True)
             if why:
@@ -449,7 +505,7 @@ class Controller:
     def z_top(self):
         self._need_stage()
         if not self.stage.homed.get("z"):
-            raise Rejected("Z 원점 필요 (준비 2)")
+            raise Rejected("Z 원점 필요 (초기 설정 2)")
         g = self.safety.generation
         why = self.safety.reject_move(False, False)
         if why:
@@ -489,7 +545,7 @@ class Controller:
                 self.stage.find_end(axis, g)
             self.stage.save(g)
             self.stage.read_status(g)
-        self.calib.set_origin(axis, mode)                           # 등록한 때 · 방법(준비 2단계 목록에 보인다)
+        self.calib.set_origin(axis, mode)                           # 등록한 때 · 방법(초기 설정 2단계 목록에 보인다)
         self.prep.clear_pos_check()                                 # 원점을 다시 맞추면 위치 확인 경보가 풀린다
         self.prep.publish()
         return {"homed": dict(self.state.get("homed"))}
@@ -498,7 +554,7 @@ class Controller:
     # 릴레이
     # ------------------------------------------------------------------
     def relay_on(self, n: int):
-        """릴레이 켜기 버튼(수동 탭 · 준비 탭). 히트건이면 "수동" 규칙: 온도계 조건을 보지 않는다."""
+        """릴레이 켜기 버튼(수동 측정 탭 · 초기 설정 탭). 히트건이면 "수동" 규칙: 온도계 조건을 보지 않는다."""
         return self._relay_on(n, BY_MANUAL)
 
     def relay_off(self, n: int):
@@ -680,7 +736,7 @@ class Controller:
         dev = self._need_k2450()
         self._need_stage()
         if not self.stage.homed.get("z"):
-            raise Rejected("Z 원점 필요 (준비 2)")
+            raise Rejected("Z 원점 필요 (초기 설정 2)")
         why = self.safety.reject_move(False, self._heater_on())
         if why:
             raise Rejected(why)
@@ -770,7 +826,7 @@ class Controller:
                     self.logs.app("이동 속도 되돌리기 실패 · %s" % e, "warn")
 
     def contact_find(self):
-        """준비 6 · 수동 탭 [접촉 탐색]: 지금 높이부터 0.05 mm 씩 내리며 찾는다(샘플 위 5 mm 안쪽까지 조그한 뒤)."""
+        """초기 설정 6 · 수동 측정 탭 [접촉 탐색]: 지금 높이부터 0.05 mm 씩 내리며 찾는다(샘플 위 5 mm 안쪽까지 조그한 뒤)."""
         self._no_run("접촉 탐색")
         g = self.safety.generation
         try:
@@ -832,10 +888,11 @@ class Controller:
         idx = c["camera_index"] if index is None else int(index)
         self.state.set_device("camera", "연결 중", "", str(idx))
         try:
-            info = self.camera.open(idx, c["camera_width"], c["camera_height"], c["camera_fourcc"], c["camera_focus_fixed"],
-                                    c["camera_focus_value"], c["preview_width"],
-                                    exposure=c["camera_exposure"] if c["camera_exposure_fixed"] else None,
-                                    wb_k=c["camera_wb_k"] if c["camera_wb_fixed"] else None)
+            with self._cam_lock:                                    # 목록용 열어 보기가 같은 번호를 잡고 있으면 끝날 때까지 기다린다
+                info = self.camera.open(idx, c["camera_width"], c["camera_height"], c["camera_fourcc"], c["camera_focus_fixed"],
+                                        c["camera_focus_value"], c["preview_width"],
+                                        exposure=c["camera_exposure"] if c["camera_exposure_fixed"] else None,
+                                        wb_k=c["camera_wb_k"] if c["camera_wb_fixed"] else None)
         except CameraError as e:
             self.state.set_device("camera", "오류", str(e)[:80], str(idx))
             self.logs.app("카메라 연결 실패 · %s" % e, "warn")
@@ -862,6 +919,26 @@ class Controller:
             self.state.set_device("camera", "오류", "프레임 수신 실패 · USB 확인 필요", str(self.cfg["camera_index"]))
             self.state.alarm("camera_lost", "카메라 연결 끊김 · USB 확인 필요", NOTICE)
             self.logs.app("카메라 끊김 · %s" % text, "warn")
+
+    def set_folder_picker(self, fn):
+        """폴더 선택 창을 띄우는 함수(시작 폴더 → 고른 경로 또는 None)를 받는다. 창으로 실행했을 때만 있다(--no-window 에는 없다)."""
+        self._folder_picker = fn
+        self.state.set("can_pick_folder", fn is not None)
+
+    def pick_folder(self, start: str = ""):
+        """[찾아보기]: 이 컴퓨터의 폴더 선택 창을 띄우고 고른 경로를 돌려준다. 취소하면 path = None. 설정은 바꾸지 않는다(화면이 입력 칸에 넣는다)."""
+        fn = self._folder_picker
+        if fn is None:
+            raise Rejected("폴더 선택 창 사용 불가")
+        start = str(start or "").strip()
+        if start and not (ntpath.isabs(start) or os.path.isabs(start)):   # 상대 경로(데이터 폴더 기본값)는 프로그램 폴더 기준. D:\… · \\NAS\… 는 그대로
+            start = str((config_mod.ROOT / start).resolve())
+        try:
+            path = fn(start)
+        except Exception as e:                                      # noqa: BLE001
+            self.logs.app("폴더 선택 창 오류 · %s: %s" % (type(e).__name__, e), "error")
+            raise Rejected("폴더 선택 창 열기 실패")
+        return {"path": str(path) if path else None}
 
     def _remember(self, **kw):
         """연결에 성공한 포트 · 주소 · 번호를 settings 에 저장한다(자동 연결이 쓴다). 저장 실패는 연결에 영향 없다."""
@@ -907,10 +984,10 @@ class Controller:
         while self._alive:
             t0 = time.monotonic()
             try:
-                self.prep.publish()                                 # 장비 연결 · 원점이 바뀌면 준비 단계 한 줄도 바뀐다(같으면 아무 일도 없다)
+                self.prep.publish()                                 # 장비 연결 · 원점이 바뀌면 초기 설정 단계 한 줄도 바뀐다(같으면 아무 일도 없다)
                 self.runner.publish()
             except Exception as e:                                  # noqa: BLE001 - 화면용 요약이 감시 루프를 죽이지 않는다
-                self.logs.app("준비 상태 요약 오류 · %s: %s" % (type(e).__name__, e), "error")
+                self.logs.app("초기 설정 요약 오류 · %s: %s" % (type(e).__name__, e), "error")
             if self._monitor_on:
                 if self.safety.locked:
                     self._monitor_on = False
@@ -937,6 +1014,7 @@ class Controller:
         while self._alive:
             try:
                 self.check_heater()
+                self.safety.update_hold()                           # 비상정지 직후의 해제 대기가 끝났는지
             except Exception as e:                                  # noqa: BLE001 - 감시는 죽지 않는다. 기록하고 계속
                 self.logs.app("히트건 감시 오류 · %s" % e, "error")
             time.sleep(0.25)
@@ -1001,14 +1079,14 @@ class Controller:
 
 COMMANDS = {
     "connect_stage": "connect_stage", "disconnect_stage": "disconnect_stage",
-    "connect_meter": "connect_meter", "disconnect_meter": "disconnect_meter", "devices": "list_devices",
+    "connect_meter": "connect_meter", "disconnect_meter": "disconnect_meter", "devices_refresh": "refresh_devices", "pick_folder": "pick_folder",
     "connect_camera": "connect_camera", "disconnect_camera": "disconnect_camera", "monitor": "monitor",
     "jog": "jog", "goto": "goto", "z_top": "z_top", "set_origin": "set_origin", "motion_stop": "motion_stop",
     "relay_on": "relay_on", "relay_off": "relay_off", "relays_off": "relays_off",
     "read_temp": "read_temp", "read_resistance": "read_resistance", "raw": "raw",
     "estop_release": "estop_release", "alarm_clear": "alarm_clear",
     "contact_find": "contact_find", "contact_save": "contact_save",
-    # 준비 단계 · 사진 · 좌표 · 샘플(app/prep.py)
+    # 초기 설정 단계 · 사진 · 좌표 · 샘플(app/prep.py)
     "photo_head_set": "prep.photo_head_set", "marker_check": "prep.marker_check", "photo_take": "prep.photo_take", "plate_set": "prep.plate_set",
     "empty_take": "prep.empty_take", "coord_set": "prep.coord_set", "coord_goto_d": "prep.coord_goto_d", "coord_clear": "prep.coord_clear",
     "marker_learn": "prep.marker_learn", "plate_goto": "prep.plate_goto", "coord_add_here": "prep.coord_add_here", "coord_remove": "prep.coord_remove",
@@ -1023,7 +1101,7 @@ COMMANDS = {
 
 
 # 측정 중에도 되는 명령(읽기 · 측정 조작 · 경보 지우기). 그 밖의 명령은 측정 중에 거절한다. 비상정지는 명령 줄을 거치지 않는다.
-RUN_ALLOWED = {"devices", "estop_release", "alarm_clear", "motion_stop", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_requeue",
+RUN_ALLOWED = {"estop_release", "alarm_clear", "motion_stop", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_requeue",
                "sample_rename", "batch_set", "result_open_folder", "result_nas_copy"}
 
 

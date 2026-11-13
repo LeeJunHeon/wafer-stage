@@ -134,6 +134,6 @@ class NasCopier(threading.Thread):
             if local not in self.pending:
                 self.pending.append(local)
             if self.ok is not False:
-                self.warn("NAS 쓰기 실패 · 결과 탭에서 재복사 필요")
+                self.warn("NAS 쓰기 실패 · 측정 결과 탭에서 재복사 필요")
                 self.log("NAS 쓰기 오류 · %s" % e)
             self.ok = False

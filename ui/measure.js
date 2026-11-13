@@ -1,4 +1,4 @@
-/* measure.js - 측정 탭: 판 사진을 보면서 샘플별로 진행을 본다.
+/* measure.js - 자동 측정 탭: 판 사진을 보면서 샘플별로 진행을 본다.
    왼쪽 큰 패널 "판": 보정한 판 사진(정사각형) + 측정 순서 표. 오른쪽 패널 "샘플 <이름>": 진행 띠 · 지금 값 · 그래프.
    점 데이터는 state 에 없다 - /api/run/points 로 새 점만 받아 간다. */
 "use strict";
@@ -168,11 +168,11 @@ function renderButtons() {
     }
     setKids(ms.btns, ...b);
   }
-  /* 준비가 덜 됐으면 [측정 시작] 을 회색으로 두고 빠진 것을 한 줄로(누르면 그 준비 단계로) */
+  /* 초기 설정이 덜 됐으면 [측정 시작] 을 회색으로 두고 빠진 것을 한 줄로(누르면 그 초기 설정 단계로) */
   const gate = run.gate || [];
   const kids = [];
   if (run.state !== "running") {
-    const findWhy = whyStage(true, true) || whyCamera() || whyHead() || (P().plate ? "" : "판 영역 설정 필요 (준비 3)");
+    const findWhy = whyStage(true, true) || whyCamera() || whyHead() || (P().plate ? "" : "판 영역 설정 필요 (초기 설정 3)");
     if (ms.find) ms.find.disabled = !!findWhy;
     const block = gate.length > 0 || (n > 0 && used === 0);
     if (ms.start && n) ms.start.disabled = block;
@@ -289,7 +289,8 @@ function openRunCond() {
     "냉각 끝 온도 (°C)", f.run_cool_end_c, "반복 (회)", f.run_repeat, "측정 간격 (s)", f.run_interval_s);
   const right = h("div", { class: "form" },
     h("h4", { text: "쿨러" }), "쿨러", f.run_cooler_mode, "가열 중 쿨러 켬", f.run_cooler_during_heat,
-    h("h4", { text: "저장" }), h("span", {}, "NAS 폴더", h("br"), small("비우면 PC 에만 저장")), f.nas_dir, "날짜 폴더", f.nas_date_folder);
+    h("h4", { text: "저장" }), h("span", {}, "NAS 폴더", h("br"), small("비우면 PC 에만 저장")),
+    S.can_pick_folder ? h("div", { class: "row" }, f.nas_dir, browseBtn(f.nas_dir)) : f.nas_dir, "날짜 폴더", f.nas_date_folder);
   openDialog("측정 조건", h("div", { class: "form2" }, left, right), [btn("닫기", closeDialog), btn("저장", save, "on")]);
 }
 
@@ -297,7 +298,7 @@ function renderMeasure() {
   const run = R(), ph = P().photo, pl = P().plate, find = P().find;
   if (run.state === "running" && ms.prevState !== "running") ms.sel = null;       // 측정을 시작하거나 이어서 하면 고른 샘플을 풀어 지금 샘플을 따라간다
   ms.prevState = run.state;
-  ms.pb.setNote(pl ? "사진 없음" : "판 영역 설정 필요 (준비 3)");
+  ms.pb.setNote(pl ? "사진 없음" : "판 영역 설정 필요 (초기 설정 3)");
   ms.pb.show(pl && ph && ph.rect ? "/api/img/plate.jpg?v=" + ph.id + "-" + pl.t : "");
   const n = (S.samples || []).length, used = (S.samples || []).filter((s) => s.use).length;
   const offWarn = ph && ph.pos_off_mm != null && ph.pos_off_mm > (S.cfg.pos_warn_mm != null ? S.cfg.pos_warn_mm : 2);       // 헤드 위치 차이는 주의 거리(2 mm)를 넘을 때만 붙인다

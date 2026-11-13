@@ -1,7 +1,8 @@
 """run.py - 시작점.  python run.py (창을 연다) / --no-window (서버만, 브라우저로 접속) / --port (서버 포트)
 
-서버는 127.0.0.1:8000. 기본은 pywebview 창(최대화, 제목 "VO₂ 온도–저항 측정")을 연다. 창을 닫으면 종료 처리
+서버는 127.0.0.1:8000. 기본은 pywebview 창(최대화, 제목 "VO₂ 자동 측정 프로그램")을 연다. 창을 닫으면 종료 처리
 (히트건 · 쿨러 끄기 → K2450 출력 끄기 → 연결 닫기)를 하고 끝난다.
+창으로 실행했을 때만 폴더 선택 창([찾아보기])을 쓸 수 있다 - 창을 만든 뒤 그 함수를 Controller 에 넘긴다(--no-window 에는 없다).
 """
 
 import argparse
@@ -9,11 +10,11 @@ import sys
 import threading
 import time
 
-TITLE = "VO₂ 온도–저항 측정"
+TITLE = "VO₂ 자동 측정 프로그램"
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="샘플 자동 측정 v3")
+    ap = argparse.ArgumentParser(description=TITLE)
     ap.add_argument("--no-window", action="store_true", help="창 없이 서버만 띄운다(브라우저로 http://127.0.0.1:8000 접속)")
     ap.add_argument("--port", type=int, default=8000)
     a = ap.parse_args(argv)
@@ -36,7 +37,7 @@ def main(argv=None):
         print("서버를 시작하지 못했습니다 (포트 %d 가 사용 중일 수 있습니다)" % a.port, flush=True)
         ctrl.shutdown()
         return 1
-    print("샘플 자동 측정 v3 · %s" % url, flush=True)
+    print("%s · %s" % (TITLE, url), flush=True)
     threading.Thread(target=ctrl.auto_connect, daemon=True, name="auto-connect").start()    # 실패해도 프로그램은 뜬다
 
     try:
@@ -45,7 +46,16 @@ def main(argv=None):
                 time.sleep(0.5)
         else:
             import webview
-            webview.create_window(TITLE, url, maximized=True, text_select=True)
+            window = webview.create_window(TITLE, url, maximized=True, text_select=True)
+
+            def pick_folder(start):
+                """이 컴퓨터의 폴더 선택 창. 고른 경로, 취소하면 None."""
+                got = window.create_file_dialog(webview.FileDialog.FOLDER, directory=start)
+                if isinstance(got, (list, tuple)):
+                    got = got[0] if got else None
+                return got or None
+
+            ctrl.set_folder_picker(pick_folder)
             webview.start()                                         # 창을 닫으면 돌아온다
     except KeyboardInterrupt:
         pass

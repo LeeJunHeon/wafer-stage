@@ -1,5 +1,5 @@
-/* manual.js - 수동 탭: 왼쪽(카메라 · 이동) / 가운데(수동 측정 · 릴레이 시험) / 오른쪽(직접 명령).
-   카메라 "실시간" = 실시간 미리보기. "판 사진" = 마지막으로 찍은 판 사진(측정 탭과 같은 사진) + 샘플 윤곽 · 이름 + 지금 핀 자리(십자).
+/* manual.js - 수동 측정 탭: 왼쪽(카메라 · 이동) / 가운데(수동 측정 · 릴레이 시험) / 오른쪽(직접 명령).
+   카메라 "실시간" = 실시간 미리보기. "판 사진" = 마지막으로 찍은 판 사진(자동 측정 탭과 같은 사진) + 샘플 윤곽 · 이름 + 지금 핀 자리(십자).
    실시간 화면을 보정해 보여 주지 않는 까닭: 헤드가 판 위에 있으면 헤드가 판을 가린다. */
 "use strict";
 
@@ -13,9 +13,9 @@ function buildManual() {
   man.pb = photoBox({ ar: 4 / 3, note: "카메라 연결 안 됨", center: true, onfit: () => drawManualOverlay() });      // 사진은 칸 가운데에, 칸이 허락하는 만큼 크게
   man.pb.box.id = "preview-box";
   man.pb.svg.append(man.ov);
-  const setView = (v) => { man.view = v; man.pb.setNote("미리보기 준비 중"); man.pb.show(""); refreshPreview(); renderManual(); };
+  const setView = (v) => { man.view = v; man.pb.setNote("미리보기 대기 중"); man.pb.show(""); refreshPreview(); renderManual(); };
   man.photoInfo = h("span", { class: "small" });
-  man.retake = busyGate("재촬영", () => api("samples_find"), "sm");             // 측정 탭의 [사진 다시 찍기] 와 같다(사진 + 샘플 찾기)
+  man.retake = busyGate("재촬영", () => api("samples_find"), "sm");             // 자동 측정 탭의 [사진 다시 찍기] 와 같다(사진 + 샘플 찾기)
   man.fixRow = h("div", { class: "row hidden" }, man.photoInfo, man.retake.b, man.retake.w);
   man.viewRaw = h("input", { type: "radio", name: "view", checked: true, onchange: () => setView("raw") });
   man.viewFix = h("input", { type: "radio", name: "view", onchange: () => setView("fix") });
@@ -123,8 +123,9 @@ function renderManual() {
   man.cond.textContent = (c.meter_volt != null ? Number(c.meter_volt).toFixed(2) : "—") + " V · " + (c.meter_four_wire ? "4단자" : "2단자") + " · 평균 " + c.meter_avg_count + "회";
   man.mon.classList.toggle("on", !!S.monitor);
   const hp = c.photo_head_xy;
-  man.head.disabled = !hp || running();
-  man.headNote.textContent = hp ? "" : "준비 3 에서 설정";
+  const locked = !!S.estop_locked;                               // 비상정지 중: 이동 · 릴레이 켜기 버튼이 꺼진다(끄기는 된다)
+  man.head.disabled = !hp || running() || locked;
+  man.headNote.textContent = hp ? "" : "초기 설정 3 에서 설정";
   const hr = c.heater_relay || 1;
   man.hLbl.textContent = "히트건 R" + hr;
   const grid = c.cooler_grid || [];
@@ -139,9 +140,10 @@ function renderManual() {
     const on = !!S.relays[n - 1];
     b.classList.toggle("on", on);
     b.textContent = "R" + n + (on ? " 켜짐" : "");
-    b.disabled = busy;
+    b.disabled = busy || (locked && !on);
   }
-  for (const b of [man.hOn, man.hOff, man.readT, man.readR, man.mon, man.go]) b.disabled = busy;
+  for (const b of [man.hOff, man.readT, man.readR]) b.disabled = busy;
+  for (const b of [man.hOn, man.mon, man.go]) b.disabled = busy || locked;
   man.measWhy.textContent = busy ? "측정 중 사용 불가" : "";
   man.measWhy.classList.toggle("hidden", !busy);
   const ct = (S.prep && S.prep.contact) || {};
@@ -154,7 +156,7 @@ function renderManual() {
   if (!hasPlate && man.view === "fix") { man.view = "raw"; man.viewRaw.checked = true; man.pb.show(""); refreshPreview(); }
   const fix = man.view === "fix";
   man.fixRow.classList.toggle("hidden", !fix);
-  if (fix) {                                                     // 판 사진 보기: 마지막으로 찍은 판 사진(측정 탭과 같은 사진)
+  if (fix) {                                                     // 판 사진 보기: 마지막으로 찍은 판 사진(자동 측정 탭과 같은 사진)
     const ph = pr.photo, has = !!(ph && ph.rect);
     man.pb.setAr(1);
     man.pb.setNote("사진 없음");
@@ -162,11 +164,11 @@ function renderManual() {
     man.photoInfo.textContent = has ? "사진 " + fmtClock(ph.t) : "사진 없음";
     man.retake.set(whyStage(true, true) || whyCamera() || whyHead());
   }
-  man.clickGo.disabled = man.view !== "fix" || !ready || busy;
+  man.clickGo.disabled = man.view !== "fix" || !ready || busy || locked;
   if (man.clickGo.disabled) man.clickGo.checked = false;
   man.addHere.set(busy ? "측정 중" : !ready ? "" : pr.last_click ? "" : "판 사진에서 위치 선택 필요");
   man.addHere.b.disabled = busy || !ready || !pr.last_click;
-  man.camNote.textContent = !hasPlate ? "준비 3 · 5 후 사용 가능" : !ready ? "준비 5 후 사용 가능" : fix ? "십자 = 핀 · 원 = 선택 위치" : "";
+  man.camNote.textContent = !hasPlate ? "초기 설정 3 · 5 후 사용 가능" : !ready ? "초기 설정 5 후 사용 가능" : fix ? "십자 = 핀 · 원 = 선택 위치" : "";
   man.camNote.title = man.camNote.textContent;
   drawManualOverlay();
   man.jog.update();
@@ -200,7 +202,7 @@ async function refreshPreview() {
   try {
     const r = await fetch("/api/camera/preview.jpg?t=" + Date.now(), { cache: "no-store" });
     if (man.view !== "raw") return;                              // 받는 사이에 보기를 바꿨다
-    if (r.status !== 200) { man.pb.setNote("미리보기 준비 중"); man.pb.show(""); return; }
+    if (r.status !== 200) { man.pb.setNote("미리보기 대기 중"); man.pb.show(""); return; }
     const url = URL.createObjectURL(await r.blob());
     if (man.view !== "raw") { URL.revokeObjectURL(url); return; }
     man.pb.show(url);

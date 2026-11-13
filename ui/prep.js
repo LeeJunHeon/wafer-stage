@@ -1,13 +1,14 @@
-/* prep.js - 준비 탭: 왼쪽 단계 목록(260px) + 오른쪽 그 단계의 화면. 순서를 강제하지 않는다.
+/* prep.js - 초기 설정 탭: 왼쪽 단계 목록(260px) + 오른쪽 그 단계의 화면. 순서를 강제하지 않는다.
    앞 단계 값이 없어서 못 하는 일은 그 버튼만 회색으로 두고 이유를 한 줄 쓴다(gate). 확인 창은 띄우지 않는다. */
 "use strict";
 
 const STEPS = ["장비 연결", "원점 설정", "카메라 · 판 영역", "빈 판 사진", "좌표 보정", "접촉 높이 설정", "쿨러 배치"];
+/* 장비마다: 저장된 값의 설정 이름(cfg) · 선택 목록(state.devlist 의 ports · visa · cameras) · 연결 · 끊기 */
 const DEVS = [
-  { key: "stage", name: "스테이지", cfg: "stage_port", list: "dl-ports", ph: "COM 번호", conn: (v) => api("connect_stage", { port: v }), off: () => api("disconnect_stage") },
-  { key: "k2110", name: "온도계 K2110", cfg: "k2110_addr", list: "dl-visa", ph: "VISA 주소", conn: (v) => api("connect_meter", { kind: "k2110", addr: v }), off: () => api("disconnect_meter", { kind: "k2110" }) },
-  { key: "k2450", name: "저항계 K2450", cfg: "k2450_addr", list: "dl-visa", ph: "VISA 주소", conn: (v) => api("connect_meter", { kind: "k2450", addr: v }), off: () => api("disconnect_meter", { kind: "k2450" }) },
-  { key: "camera", name: "카메라", cfg: "camera_index", list: "dl-cams", ph: "장치 번호", conn: (v) => api("connect_camera", { index: parseInt(v, 10) }), off: () => api("disconnect_camera") },
+  { key: "stage", name: "스테이지", cfg: "stage_port", list: "ports", conn: (v) => api("connect_stage", { port: v }), off: () => api("disconnect_stage") },
+  { key: "k2110", name: "온도계 K2110", cfg: "k2110_addr", list: "visa", conn: (v) => api("connect_meter", { kind: "k2110", addr: v }), off: () => api("disconnect_meter", { kind: "k2110" }) },
+  { key: "k2450", name: "저항계 K2450", cfg: "k2450_addr", list: "visa", conn: (v) => api("connect_meter", { kind: "k2450", addr: v }), off: () => api("disconnect_meter", { kind: "k2450" }) },
+  { key: "camera", name: "카메라", cfg: "camera_index", list: "cameras", conn: (v) => api("connect_camera", { index: parseInt(v, 10) }), off: () => api("disconnect_camera") },
 ];
 const CORNER = ["A", "B", "C", "D"];
 const prep = { step: 0, pages: [], items: [] };
@@ -31,14 +32,14 @@ const P = () => (S && S.prep) || {};
 const homedAll = () => S && S.homed.x && S.homed.y && S.homed.z;
 function whyStage(needXY, needZ) {
   if (running()) return "측정 중 실행 불가";
-  if (!devOk("stage")) return "스테이지 연결 필요 (준비 1)";
+  if (!devOk("stage")) return "스테이지 연결 필요 (초기 설정 1)";
   if (S.estop_locked) return "비상정지 해제 필요";
-  if (needXY && !(S.homed.x && S.homed.y)) return "X · Y 원점 필요 (준비 2)";
-  if (needZ && !S.homed.z) return "Z 원점 필요 (준비 2)";
+  if (needXY && !(S.homed.x && S.homed.y)) return "X · Y 원점 필요 (초기 설정 2)";
+  if (needZ && !S.homed.z) return "Z 원점 필요 (초기 설정 2)";
   return "";
 }
-const whyCamera = () => (devOk("camera") ? "" : "카메라 연결 필요 (준비 1)");
-const whyHead = () => (S.cfg.photo_head_xy ? "" : "촬영 위치 설정 필요 (준비 3)");
+const whyCamera = () => (devOk("camera") ? "" : "카메라 연결 필요 (초기 설정 1)");
+const whyHead = () => (S.cfg.photo_head_xy ? "" : "촬영 위치 설정 필요 (초기 설정 3)");
 
 function buildPrep() {
   prep.items = STEPS.map((t, i) => {
@@ -48,7 +49,7 @@ function buildPrep() {
     return { el, sub, done };
   });
   prep.allItem = h("div", { class: "step", onclick: () => setStep(7) }, h("span", { class: "no blank" }), h("div", { class: "txt" }, h("div", { class: "t", text: "전체 설정" })));
-  const list = h("div", { class: "panel", id: "prep-list" }, h("h3", { text: "초기 설정" }), ...prep.items.map((x) => x.el), h("div", { class: "sep" }), prep.allItem);
+  const list = h("div", { class: "panel", id: "prep-list" }, h("h3", { text: "설정 단계" }), ...prep.items.map((x) => x.el), h("div", { class: "sep" }), prep.allItem);
   prep.main = h("div", { id: "prep-main" });
   prep.pages = [buildStep1(), buildStep2(), buildStep3(), buildStep4(), buildStep5(), buildStep6(), buildStep7(),
     typeof buildSettingsPage === "function" ? buildSettingsPage() : null];
@@ -66,49 +67,60 @@ function setStep(i) {
 }
 function gotoPrep(i) { setTab("prep"); setStep(i); }
 
-/* ---------- 1 · 장비 연결 ---------- */
+/* ---------- 1 · 장비 연결 ----------
+   장비마다 선택 상자(직접 입력 없음). 목록은 프로그램을 실행한 컴퓨터의 것이고 [새로고침] 하나가 세 목록(포트 · 측정 장비 · 카메라)을 다시 읽는다.
+   읽기는 서버가 뒤에서 한다(state.devlist.busy 동안 버튼은 "읽는 중"). 목록을 읽는다고 포트 · 장비를 열지 않는다(카메라만 0~3 번을 잠깐 열어 본다).
+   여는 것은 [연결] 과 시작 때의 자동 연결뿐이다. */
 function buildStep1() {
   const rows = DEVS.map((d) => {
-    const input = h("input", { type: "text", class: "addr", list: d.list, placeholder: d.ph, spellcheck: "false", oninput: () => { input.dataset.dirty = "1"; } });
+    const sel = h("select", { class: "addr", onchange: () => { sel.dataset.pick = sel.value; } });      // 사람이 고른 값(연결될 때까지 기억)
     const b = btn("연결", async () => {
       b.disabled = true;
-      const r = await (S.devices[d.key].state === "연결" ? d.off() : d.conn(input.value.trim()));
-      if (r.ok) input.dataset.dirty = "";
+      const on = S.devices[d.key].state === "연결";
+      const r = await (on ? d.off() : d.conn(sel.value));
+      if (r.ok && !on) delete sel.dataset.pick;                 // 연결되면 저장된 값을 따라간다
       b.disabled = false;
     });
     const stt = h("span", { class: "stt" }), resp = h("div", { class: "resp" });
-    prep[d.key] = { input, btn: b, stt, resp };
-    return h("div", { class: "devrow" }, h("div", { class: "name", text: d.name }), input, b, h("div", {}, stt, resp));
+    prep[d.key] = { sel, btn: b, stt, resp, sig: "" };
+    return h("div", { class: "devrow" }, h("div", { class: "name", text: d.name }), sel, b, h("div", {}, stt, resp));
   });
   const auto = h("input", { type: "checkbox", onchange: () => putSettings({ auto_connect: auto.checked }) });
   prep.auto = auto;
+  prep.refresh = btn("새로고침", () => refreshDevices(false));
+  prep.listNote = h("div", { class: "why" });
   const el = h("div", { class: "panel prep-panel" }, h("h3", { text: "1 · 장비 연결" }),
-    h("datalist", { id: "dl-ports" }), h("datalist", { id: "dl-visa" }), h("datalist", { id: "dl-cams" }),
     h("div", {}, ...rows),
-    h("div", { class: "row" }, btn("새로 고침", readLists), h("label", { class: "chk" }, auto, "시작 시 자동 연결")));
+    h("div", { class: "row" }, prep.refresh, h("label", { class: "chk" }, auto, "시작 시 자동 연결")), prep.listNote);
   return { el, render: renderStep1 };
 }
-async function readLists() {
-  const r = await api("devices");
-  if (!r.ok) return;
-  const d = r.result;
-  setKids($("#dl-ports"), ...d.serial_ports.map((p) => h("option", { value: p })));
-  setKids($("#dl-visa"), ...d.visa.map((a) => h("option", { value: a })));
-  setKids($("#dl-cams"), ...d.cameras.map((n) => h("option", { value: String(n) })));
-  if (d.note) toast(d.note);
-}
+function refreshDevices(quiet) { return api("devices_refresh", {}, quiet); }
 function renderStep1() {
-  const c = S.cfg || {};
+  const c = S.cfg || {}, dl = S.devlist || {};
+  if (!prep.listAsked && dl.t == null && !dl.busy && !running()) { prep.listAsked = true; refreshDevices(true); }      // 처음 열 때 한 번 읽는다
   for (const d of DEVS) {
-    const dev = S.devices[d.key], p = prep[d.key];
+    const dev = S.devices[d.key], p = prep[d.key], on = dev.state === "연결", going = dev.state === "연결 중";
     const cls = { ok: "st-ok", warn: "st-warn", err: "st-err", off: "" }[dotOf(dev)];
     setKids(p.stt, h("i", { class: "dot " + dotOf(dev) }), h("span", { class: cls, text: dev.state + (dev.state === "오류" && dev.why ? " · " + dev.why : "") }));
-    p.resp.textContent = dev.state === "연결" ? dev.info : "";
-    p.resp.title = dev.info || "";
-    p.btn.textContent = dev.state === "연결" ? "끊기" : "연결";
-    p.btn.disabled = dev.state === "연결 중";
-    if (!p.input.dataset.dirty && document.activeElement !== p.input && c[d.cfg] != null) p.input.value = String(c[d.cfg]);
+    p.resp.textContent = on ? dev.info : "";
+    p.btn.textContent = on ? "끊기" : "연결";
+    p.btn.disabled = going;
+    /* 선택 상자: 목록 + 고른 값. 고른 값(없으면 저장된 값)이 목록에 없으면 "COM5 (없음)" 항목으로 보이고 선택된 채로 둔다 */
+    const saved = c[d.cfg] == null ? "" : String(c[d.cfg]);
+    const want = (on || going) && dev.target ? dev.target : (p.sel.dataset.pick != null ? p.sel.dataset.pick : saved);
+    const opts = (dl[d.list] || []).map((o) => [String(o.value), o.label]);
+    if (!opts.some((o) => o[0] === want)) opts.unshift([want, want === "" ? "선택" : dl.t == null ? want : want + " (없음)"]);
+    const sig = JSON.stringify([opts, want]);
+    if (sig !== p.sig) {                                       // 바뀔 때만 다시 그린다(펼쳐 놓은 목록이 닫히지 않게)
+      p.sig = sig;
+      setKids(p.sel, ...opts.map(([v, t]) => h("option", { value: v, text: t })));
+      p.sel.value = want;
+    }
+    p.sel.disabled = on || going;                              // 연결된 장비는 잠근다(끊어야 바꿀 수 있다)
   }
+  prep.refresh.textContent = dl.busy ? "읽는 중" : "새로고침";
+  prep.refresh.disabled = !!dl.busy || running();
+  prep.listNote.textContent = dl.note || "";
   prep.auto.checked = !!c.auto_connect;
 }
 
@@ -125,6 +137,7 @@ function buildStep2() {
   pg.here = [gate("X 등록", origin("x", "here")), gate("Y 등록", origin("y", "here")), gate("Z 등록", origin("z", "here")), gate("전체 등록", origin("all", "here"))];
   pg.end = [gate("X", origin("x", "end")), gate("Y", origin("y", "end")), gate("Z", origin("z", "end"))];
   pg.whyHere = h("div", { class: "why" }); pg.whyEnd = h("div", { class: "why" });
+  pg.endDesc = h("div", { class: "small" });                     // 끝단 접촉 원점이 하는 일(거리는 서버가 준 실제 값 - state.hw)
   const el = h("div", { class: "panel prep-panel" }, h("h3", { text: "2 · 원점 설정" }),
     h("div", { class: "grp" }, ...rows),
     h("div", { class: "two" },
@@ -133,7 +146,7 @@ function buildStep2() {
         pg.jog.el, h("div", { class: "row wrap" }, ...pg.here.map((g) => g.b)), pg.whyHere),
       h("div", { class: "grp" }, h("h4", { text: "끝단 접촉 원점" }),
         h("div", { class: "small", text: "끝단 접촉 시 소음 발생" }),
-        h("div", { class: "row" }, ...pg.end.map((g) => g.b)), pg.whyEnd)));
+        h("div", { class: "row" }, ...pg.end.map((g) => g.b)), pg.endDesc, pg.whyEnd)));
   pg.el = el;
   pg.render = () => {
     const org = P().origin || {};
@@ -150,6 +163,8 @@ function buildStep2() {
     pg.end[0].b.disabled = pg.end[1].b.disabled = !!whyXY;
     pg.end[2].b.disabled = !!why;
     pg.whyEnd.textContent = why || (whyXY ? whyXY : "");
+    const hw = S.hw || {};
+    pg.endDesc.textContent = hw.find_push_mm == null ? "" : "0 쪽 끝으로 최대 " + hw.find_push_mm + " mm 밀고 " + hw.find_gap_mm + " mm 물러난 위치 = 0 · 끝에서 " + hw.find_push_mm + " mm 안쪽일 때만 사용";
     pg.jog.update();
   };
   return pg;
@@ -276,7 +291,7 @@ function buildStep4() {
     const e = P().empty, pl = P().plate;
     pg.take.set(whyStage(true, true) || whyCamera() || whyHead());
     pg.txt.textContent = e ? "촬영 " + fmtWhen(e.t) : "";
-    pg.pb.setNote(e ? (pl ? "사진을 불러오는 중" : "판 영역 설정 필요 (준비 3)") : "빈 판 사진 없음");
+    pg.pb.setNote(e ? (pl ? "사진을 불러오는 중" : "판 영역 설정 필요 (초기 설정 3)") : "빈 판 사진 없음");
     pg.pb.show(e && pl ? "/api/img/empty.jpg?v=" + e.t + "-" + pl.t : "");
   };
   return pg;
@@ -286,7 +301,7 @@ function buildStep4() {
 function buildStep5() {
   const pg = { jog: jogPart() };
   pg.ov = svgEl("g", {});
-  pg.pb = photoBox({ ar: 1, note: "판 영역 설정 필요 (준비 3)", onfit: () => pg.draw() });
+  pg.pb = photoBox({ ar: 1, note: "판 영역 설정 필요 (초기 설정 3)", onfit: () => pg.draw() });
   pg.pb.svg.append(pg.ov);
   pg.set = CORNER.map((n) => busyGate(n + " 등록", () => api("coord_set", { name: n })));
   pg.whySet = h("div", { class: "why" });
@@ -308,7 +323,7 @@ function buildStep5() {
       h("div", { class: "grp" }, h("h4", { text: "정확도" }), pg.q),
       h("div", { class: "grp" }, h("h4", { text: "헤드 마커" }), pg.marker, h("div", { class: "row" }, pg.learn.b, pg.learn.w)),
       h("div", { class: "grp" }, h("h4", { text: "보정 점" }),
-        h("div", { class: "small", text: "수동 탭 판 사진에서 추가" }),
+        h("div", { class: "small", text: "수동 측정 탭 판 사진에서 추가" }),
         pg.extra, h("div", { class: "row" }, pg.clear)))));
   pg.draw = () => {
     const c = S && S.cfg, co = P().coords;
@@ -327,11 +342,11 @@ function buildStep5() {
   pg.render = () => {
     const co = P().coords || { stage: {}, extra: [] }, pl = P().plate, ph = P().photo, e = P().empty;
     const src = pl && ph && ph.rect ? "/api/img/plate.jpg?v=" + ph.id + "-" + pl.t : pl && e ? "/api/img/empty.jpg?v=" + e.t + "-" + pl.t : "";
-    pg.pb.setNote(pl ? "사진 없음" : "판 영역 설정 필요 (준비 3)");
+    pg.pb.setNote(pl ? "사진 없음" : "판 영역 설정 필요 (초기 설정 3)");
     pg.pb.show(src);
     const why = whyStage(true, false);
     pg.set.forEach((g) => { g.b.disabled = !!why; });
-    pg.whySet.textContent = why || (pl ? "" : "판 영역 설정 필요 (준비 3)");
+    pg.whySet.textContent = why || (pl ? "" : "판 영역 설정 필요 (초기 설정 3)");
     pg.gotoD.set(whyStage(true, true) || (co.d_guess ? "" : co.stage.D ? "D 등록됨" : "A · B · C 등록 필요"));
     CORNER.forEach((n, i) => { const p = co.stage[n]; pg.cells[i][0].textContent = p ? f1(p[0]) : "—"; pg.cells[i][1].textContent = p ? f1(p[1]) : "—"; });
     const q = co.quality;
@@ -358,7 +373,7 @@ function buildStep5() {
 }
 
 /* ---------- 6 · 접촉 높이 찾기 ---------- */
-function contactLine(ct) {                                       // 접촉 찾기의 진행 · 결과 한 줄(준비 6단계 · 수동 탭이 같이 쓴다)
+function contactLine(ct) {                                       // 접촉 찾기의 진행 · 결과 한 줄(초기 설정 6단계 · 수동 측정 탭이 같이 쓴다)
   if (!ct) return "";
   if (ct.active) return "하강 중 · Z " + f3(ct.z) + " mm · " + (ct.text || "");
   if (ct.result) return "접촉 Z " + f2(ct.result.first_z) + " mm · 2단자 " + fmtOhm2(ct.result.r2) + " · 4단자 " + fmtOhm2(ct.result.r4);
@@ -366,7 +381,7 @@ function contactLine(ct) {                                       // 접촉 찾�
   return "";
 }
 function whyContact() {
-  return whyStage(false, true) || (devOk("k2450") ? "" : "저항계 연결 필요 (준비 1)");
+  return whyStage(false, true) || (devOk("k2450") ? "" : "저항계 연결 필요 (초기 설정 1)");
 }
 function buildStep6() {
   const pg = { jog: jogPart() };

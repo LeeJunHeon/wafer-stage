@@ -25,13 +25,17 @@ class State:
             "temp": {"value": None, "time": None},                   # °C · 읽은 시각(epoch)
             "resistance": {"ohm": None, "current": None, "volt": None, "four_wire": None, "time": None},
             "estop_locked": False,
+            "estop_hold": False,                                     # 비상정지 직후(2초): 이 동안은 해제를 받지 않는다 - 화면은 해제 버튼을 꺼 둔다
             "heater_on_since": None,                                 # 히트건을 켠 시각(epoch) · 꺼져 있으면 None
             "alarms": [],
             "busy": "",                                              # 지금 하는 일(이동 중 등)
             "move": None,                                            # 이동 중 정보 {what, target{x,y,z mm}, pending{axis,mm}} - 끝나면 None
             "monitor": False,                                        # 1 초마다 계속 읽기
             "cfg": {},                                               # 화면이 쓰는 설정 일부
-            "prep": None,                                            # 준비 단계 상태(app/prep.py view)
+            "hw": {},                                                # 화면 설명에 쓰는 고정 값(끝단 접촉 원점의 미는 거리 · 물러나는 거리 mm)
+            "devlist": {"busy": False, "t": None, "ports": [], "visa": [], "cameras": [], "note": ""},   # 장비 연결의 선택 목록([새로고침] 이 채운다)
+            "can_pick_folder": False,                                # 폴더 선택 창을 쓸 수 있는가(창으로 실행했을 때만)
+            "prep": None,                                            # 초기 설정 단계 상태(app/prep.py view)
             "samples": [],                                           # 찾은 샘플 목록
             "run": None,                                             # 측정 진행(app/jobs/run.py view). 점 데이터는 넣지 않는다
         }

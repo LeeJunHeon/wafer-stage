@@ -1,5 +1,5 @@
-/* results.js - 결과 탭 3칸: 왼쪽(230px) 측정 기록 · 가운데(늘어남) 그래프 + 표 · 오른쪽(270px) 저장한 파일 · NAS · 측정 조건.
-   기록은 디스크에서 읽는다(/api/results). 그래프는 측정 탭과 같은 부품이고 한 번에 3개까지 넣는다.
+/* results.js - 측정 결과 탭 3칸: 왼쪽(230px) 측정 기록 · 가운데(늘어남) 그래프 + 표 · 오른쪽(270px) 저장한 파일 · NAS · 측정 조건.
+   기록은 디스크에서 읽는다(/api/results). 그래프는 자동 측정 탭과 같은 부품이고 한 번에 3개까지 넣는다.
    그래프에 넣은 샘플은 체크 목록과 표의 이름 앞에 그 선 색의 짧은 선을 붙인다. 반복 측정은 모든 회차를 같은 색으로 그리고, 표는 첫 회차로 계산한다. */
 "use strict";
 
@@ -8,7 +8,7 @@ const rs = { list: [], rec: null, id: null, picks: [], pts: {} };
 function buildResults() {
   rs.listEl = h("div", { class: "reclist fill" });
   rs.samples = h("div", { class: "picklist" });
-  const left = h("div", { class: "panel fill", id: "rs-left" }, h("div", { class: "row" }, h("h3", { text: "측정 기록" }), h("span", { class: "sp" }), btn("새로 고침", loadResults, "sm")),
+  const left = h("div", { class: "panel fill", id: "rs-left" }, h("div", { class: "row" }, h("h3", { text: "측정 기록" }), h("span", { class: "sp" }), btn("새로고침", loadResults, "sm")),
     rs.listEl, h("h4", { class: "h4", text: "샘플 (3개까지)" }), rs.samples);
   rs.graph = rtGraph();
   rs.tbody = h("tbody", {});
@@ -50,7 +50,7 @@ async function pickRecord(id) {
   renderRecord();
   syncResultPoints();
 }
-function openResult(recId) {                                    // 측정 탭 [결과 보기]: 방금 끝난 기록을 골라서 연다
+function openResult(recId) {                                    // 자동 측정 탭 [결과 보기]: 방금 끝난 기록을 골라서 연다
   setTab("results");
   rs.id = null;
   loadResults(true).then(() => { if (recId && rs.list.some((r) => r.id === recId)) pickRecord(recId); else if (rs.list.length) pickRecord(rs.list[0].id); });

@@ -85,7 +85,7 @@ class Runner:
         return self._busy
 
     def gate(self):
-        """측정을 시작하려면 필요한 것 중 빠진 것 [{"text", "step"(준비 단계 번호)}]. 빈 판 사진은 없어도 된다."""
+        """측정을 시작하려면 필요한 것 중 빠진 것 [{"text", "step"(초기 설정 단계 번호)}]. 빈 판 사진은 없어도 된다."""
         c, st, out = self.c, self.c.state, []
         for key, name in (("stage", "스테이지 연결"), ("k2110", "온도계 연결"), ("k2450", "저항계 연결"), ("camera", "카메라 연결")):
             if st.get("devices", key, "state") != "연결":
@@ -128,7 +128,7 @@ class Runner:
             if not used:
                 raise Rejected("측정할 샘플 없음")
             if any(s["xy"] is None for s in used):
-                raise Rejected("샘플 위치 계산 실패 · 좌표 보정 확인 필요 (준비 5)")
+                raise Rejected("샘플 위치 계산 실패 · 좌표 보정 확인 필요 (초기 설정 5)")
             names = [s["name"] for s in used]
             if len(set(names)) != len(names):
                 raise Rejected("샘플 이름 중복 · 이름 수정 필요")

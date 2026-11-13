@@ -1,4 +1,4 @@
-"""결과 탭(app/results.py · app/jobs/analysis.py): 기록 목록 · 기록 하나 · 점 · 전이 온도와 저항 비 · 그림 저장 · NAS 다시 복사 · 서버 길.
+"""측정 결과 탭(app/results.py · app/jobs/analysis.py): 기록 목록 · 기록 하나 · 점 · 전이 온도와 저항 비 · 그림 저장 · NAS 다시 복사 · 서버 길.
 가짜 장비로 2개를 끝까지 재고, 저장된 파일에서 다시 읽은 값이 가짜 모델(tests/fakes/world.py 의 샘플 값)과 맞는지 본다."""
 
 import json

@@ -7,4 +7,4 @@ for (const name of TAB_NAMES) {
   try { m.build(); } catch (e) { console.error(e); toast("화면 생성 실패 · " + name); }
 }
 connectWS();
-fetch("/api/state").then((r) => r.json()).then((s) => { if (!S) { S = s; render(); readLists(); } }).catch(() => {});
+fetch("/api/state").then((r) => r.json()).then((s) => { if (!S) { S = s; render(); } }).catch(() => {});

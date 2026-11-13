@@ -1,5 +1,5 @@
-/* 샘플 자동 측정 v3 화면 - 빌드 없는 JS. 서버가 상태의 주인이고, 화면은 요청만 보낸다(바뀌는 것은 서버 상태가 와야 바뀐다).
-   core.js: 도우미 · 서버 요청 · 비상정지 · 알림 · 탭 · 상태줄 · 경보 띠 · 사진 칸 · 서버 연결. 탭 화면은 TABS 에 등록한다. */
+/* VO₂ 자동 측정 프로그램 화면 - 빌드 없는 JS. 서버가 상태의 주인이고, 화면은 요청만 보낸다(바뀌는 것은 서버 상태가 와야 바뀐다).
+   core.js: 도우미 · 서버 요청 · 비상정지(걸기 · 해제 확인) · 알림 · 말풍선 · 탭 · 상태줄 · 경보 띠 · 사진 칸 · 서버 연결. 탭 화면은 TABS 에 등록한다. */
 "use strict";
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -57,7 +57,11 @@ async function putSettings(patch) {
   } catch (e) { toast("설정 저장 실패"); return false; }
 }
 
-/* ---------- 비상정지: 어디서든 바로(WS 응답을 기다리지 않는다) ---------- */
+/* ---------- 비상정지 ----------
+   거는 쪽: 버튼 pointerdown 즉시 · Esc 즉시(입력 칸 안이어도) · 확인 없음 · WS 응답을 기다리지 않는다. 정지 상태가 아닐 때 Esc 는 언제나 정지.
+   푸는 쪽: 정지 중에는 같은 자리의 버튼이 [비상정지 중 · 해제] 가 된다. 그 버튼이나 Esc → 확인 창 "비상정지 해제?" →
+            [해제] · Enter 로 해제, [취소] · Esc 로 창만 닫는다(정지 유지). 정지 직후 2초(S.estop_hold)는 해제를 받지 않는다(서버도 거절한다).
+   키를 누르고 있어서 생기는 반복 입력(e.repeat)은 무시한다. */
 let lastEstop = 0;
 function estop() {
   const now = performance.now();
@@ -65,9 +69,62 @@ function estop() {
   lastEstop = now;
   fetch("/api/estop", { method: "POST", keepalive: true }).catch(() => {});
 }
-$("#estop").addEventListener("pointerdown", (e) => { e.preventDefault(); estop(); });
+/* "정지 중"은 서버 상태가 살아 있을 때만 믿는다. 상태를 못 받고 있으면(연결 끊김) Esc · 버튼은 해제를 묻지 않고 정지를 보낸다 */
+const stateLive = () => wsOpen && (!lastMsg || Date.now() - lastMsg <= 4000);
+const estopLocked = () => !!(S && S.estop_locked) && stateLive();
+/* 확인 창: 비상정지 해제 하나에만 쓴다(다른 일에는 확인 창을 띄우지 않는다). 다른 창(#dlg) 위에 따로 뜬다 */
+let confirmOk = null;                                         // 확인 창이 떠 있으면 [확인] 때 할 일(없으면 null)
+function openConfirm(title, okText, fn) {
+  let done = false;
+  confirmOk = () => { if (done) return; done = true; closeConfirm(); fn(); };
+  const ok = btn(okText, () => { if (confirmOk) confirmOk(); }, "on");
+  setKids($("#confirm"), h("div", { class: "box" }, h("h3", { text: title }), h("div", { class: "foot" }, btn("취소", closeConfirm), ok)));
+  $("#confirm").classList.remove("hidden");
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();      // 입력 칸에 남은 초점이 Enter 를 가져가지 않게
+}
+function closeConfirm() { confirmOk = null; $("#confirm").classList.add("hidden"); }
+async function releaseEstop() {
+  try {
+    const r = await fetch("/api/estop/release", { method: "POST" });
+    const j = await r.json();
+    if (!j.ok && j.msg) toast(j.msg);                        // 예) 비상정지 직후 · 2초 뒤 해제 가능
+  } catch (e) { toast("서버 전송 실패"); }
+}
+function askRelease() {
+  if (!estopLocked() || S.estop_hold || confirmOk) return;   // 정지 직후 2초는 받지 않는다
+  openConfirm("비상정지 해제?", "해제", releaseEstop);
+}
+$("#estop").addEventListener("pointerdown", (e) => { e.preventDefault(); if (estopLocked()) askRelease(); else estop(); });
 $("#estop").addEventListener("keydown", (e) => { e.preventDefault(); });                 // Enter · Space 로 눌리지 않는다(Esc 가 비상정지)
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); estop(); } }, true);   // 입력 칸 안이어도
+document.addEventListener("keydown", (e) => {                                            // 입력 칸 안이어도(캡처 단계)
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopPropagation();
+    if (e.repeat) return;
+    if (!estopLocked()) { closeConfirm(); estop(); return; }                             // 정지 상태가 아니면 언제나 정지
+    if (confirmOk) closeConfirm(); else askRelease();                                    // 정지 중: 확인 창을 닫거나(정지 유지) 해제를 묻는다
+  } else if (e.key === "Enter" && confirmOk) {
+    if ($("#confirm").contains(document.activeElement)) return;                          // 창 안의 버튼에 초점이 있으면 그 버튼이 눌린다
+    e.preventDefault(); e.stopPropagation();
+    if (!e.repeat) confirmOk();
+  }
+}, true);
+/* 비상정지 버튼 · 위쪽 띠를 서버 상태(estop_locked · estop_hold)에 맞춘다 */
+function renderEstop() {
+  const b = $("#estop"), locked = !!S.estop_locked;
+  if (b.dataset.locked !== String(locked)) {
+    b.dataset.locked = String(locked);
+    b.classList.toggle("locked", locked);
+    setKids(b, ...(locked ? ["비상정지 중 · 해제"] : ["비상정지", h("small", { text: "Esc" })]));
+  }
+  /* 정지 직후 2초: 해제 버튼을 꺼 둔다(흐린 글 · 눌러도 askRelease 가 받지 않는다). disabled 속성은 쓰지 않는다 -
+     비상정지 버튼이 눌리지 않는 상태로 남는 일이 없게(상태가 끊기면 이 버튼은 다시 정지를 보낸다) */
+  b.classList.toggle("hold", locked && !!S.estop_hold);
+  const a = S.alarms.find((x) => x.code === "estop");
+  const band = $("#estop-band");
+  if (a && band.textContent !== a.text) band.textContent = a.text;
+  band.classList.toggle("hidden", !locked);
+  if (!locked && confirmOk) closeConfirm();                  // 다른 길로 풀렸으면 확인 창을 닫는다
+}
 
 /* ---------- 알림(쌓이지 않는다) ---------- */
 let toastT = null;
@@ -85,6 +142,47 @@ function openDialog(title, body, buttons) {
   $("#dlg").classList.remove("hidden");
 }
 function closeDialog() { $("#dlg").classList.add("hidden"); }
+
+/* ---------- 말풍선(공용): tip(el, 내용) - 마우스를 올리고 0.3초 뒤에 뜨고, 떠나면 닫힌다. 화면 밖으로 나가지 않는다.
+   내용 = 글, 또는 {title, text, hint}, 또는 그것을 돌려주는 함수. 브라우저 기본 title 은 쓰지 않는다(느리고 작다). ---------- */
+let tipT = null, tipFor = null;
+function hideTip() { clearTimeout(tipT); tipT = null; tipFor = null; $("#tip").classList.add("hidden"); }
+function showTip(el, content) {
+  const c = typeof content === "function" ? content() : content;
+  if (!c) return;
+  const o = typeof c === "string" ? { text: c } : c, t = $("#tip");
+  setKids(t, o.title ? h("b", { text: o.title }) : null, o.text || "", o.hint ? h("span", { class: "hint", text: o.hint }) : null);
+  t.style.left = "0px"; t.style.top = "0px";
+  t.classList.remove("hidden");
+  const r = el.getBoundingClientRect(), w = t.offsetWidth, hh = t.offsetHeight;
+  const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+  const x = Math.max(8, Math.min(r.left, vw - w - 8));       // 오른쪽 · 왼쪽 끝을 넘지 않는다
+  let y = r.bottom + 4;
+  if (y + hh > vh - 8) y = Math.max(8, r.top - hh - 4);      // 아래에 자리가 없으면 위에
+  t.style.left = Math.round(x) + "px"; t.style.top = Math.round(y) + "px";
+}
+function tip(el, content) {
+  el.classList.add("tipped");
+  el.addEventListener("mouseenter", () => { clearTimeout(tipT); tipFor = el; tipT = setTimeout(() => { if (tipFor === el && el.isConnected) showTip(el, content); }, 300); });
+  el.addEventListener("mouseleave", () => { if (tipFor === el) hideTip(); });
+  return el;
+}
+document.addEventListener("pointerdown", hideTip, true);
+document.addEventListener("scroll", hideTip, true);
+
+/* ---------- [찾아보기]: 이 컴퓨터의 폴더 선택 창을 띄우고 고른 경로를 입력 칸에 넣는다. 취소하면 그대로.
+   창으로 실행했을 때만 쓸 수 있다(S.can_pick_folder) - 쓸 수 없으면 쓰는 쪽이 버튼을 숨긴다. ---------- */
+function browseBtn(input, cls) {
+  const b = btn("찾아보기", async () => {
+    if (b.dataset.busy) return;
+    b.dataset.busy = "1";
+    try {
+      const r = await api("pick_folder", { start: input.value });
+      if (r.ok && r.result.path) { input.value = r.result.path; input.dispatchEvent(new Event("change")); }
+    } finally { b.dataset.busy = ""; }
+  }, cls);
+  return b;
+}
 
 /* ---------- 탭 ---------- */
 const TAB_NAMES = ["prep", "measure", "results", "manual"];
@@ -176,12 +274,12 @@ function renderStatus() {
 }
 let alarmSig = "";
 function renderAlarms() {
-  const sig = JSON.stringify(S.alarms.map((a) => [a.code, a.text, a.level]));
+  const list = S.alarms.filter((a) => a.code !== "estop");   // 비상정지는 위쪽 띠와 버튼이 알린다(같은 상태를 두 곳에 보여 주지 않는다). 해제도 위 버튼 하나로
+  const sig = JSON.stringify(list.map((a) => [a.code, a.text, a.level]));
   if (sig === alarmSig) return;
   alarmSig = sig;
-  setKids($("#alarms"), ...S.alarms.map((a) => h("div", { class: "alarm " + a.level }, h("span", { class: "grow", text: a.text }),
-    (a.code === "estop" || a.code === "reboot") ? btn("비상정지 해제", () => api("estop_release"), "sm")
-      : a.dismiss ? btn("지우기", () => api("alarm_clear", { code: a.code }), "sm") : null)));
+  setKids($("#alarms"), ...list.map((a) => h("div", { class: "alarm " + a.level }, h("span", { class: "grow", text: a.text }),
+    a.dismiss ? btn("지우기", () => api("alarm_clear", { code: a.code }), "sm") : null)));
 }
 
 /* ====================================================================
@@ -198,7 +296,9 @@ function photoBox(opts) {
   const box = h("div", { class: "photo-box " + (opts.cls || "") }, inner);
   const pb = { box, inner, img, svg, note, ar: opts.ar || 1, w: 0, h: 0, url: "" };
   pb.fit = () => {
-    const cw = box.clientWidth, ch = box.clientHeight;
+    /* 칸의 실제 크기(소수)를 내림해서 쓴다. clientHeight 는 반올림이라 실제보다 클 수 있고, 그러면 상자의 아래 테두리 한 줄이 칸 밖으로 나가 잘린다.
+       상자 크기(w × hh)는 테두리를 포함한다(box-sizing: border-box). */
+    const rc = box.getBoundingClientRect(), cw = Math.floor(rc.width), ch = Math.floor(rc.height);
     if (!cw || !ch) return;
     const w = Math.floor(Math.min(cw, ch * pb.ar)), hh = Math.floor(w / pb.ar);
     if (opts.center) { inner.style.left = Math.floor((cw - w) / 2) + "px"; inner.style.top = Math.floor((ch - hh) / 2) + "px"; }
@@ -249,7 +349,7 @@ function renderTab() {
   try { m.render(); } catch (e) { console.error(e); toast("화면 표시 실패 · " + String(e && e.message ? e.message : e).slice(0, 60)); }
 }
 function render() {
-  renderStatus(); renderAlarms(); renderTab();
+  renderEstop(); renderStatus(); renderAlarms(); renderTab();
 }
 function showOffline(on) { $("#offline").classList.toggle("hidden", !on); }
 function connectWS() {

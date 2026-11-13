@@ -1,4 +1,4 @@
-/* jog.js - 이동(조그) 부품. 수동 탭의 이동 패널과 준비 단계가 같은 코드를 쓴다.
+/* jog.js - 이동(조그) 부품. 수동 측정 탭의 이동 패널과 초기 설정 단계가 같은 코드를 쓴다.
    jogPart() → {el, update()}. 한 번 누르면 이동 거리만큼 움직인다(이동 중에 누르면 서버가 대기 칸에 받아 둔다).
    X · Y 십자 가운데의 [정지] 는 이동만 멈춘다(잠그지 않는다 - 비상정지와 다르다). 명령 줄을 거치지 않는 /api/stop 으로 바로 보낸다. */
 "use strict";
@@ -36,11 +36,12 @@ function jogPart() {
       h("div", { class: "zcol" }, ...moveBtns.slice(4))),
     why);
   function update() {
-    const block = running() ? "측정 중 사용 불가" : "";       // 서버도 거절한다 - 화면은 이유만 미리 보여 준다
+    const run = running() ? "측정 중 사용 불가" : "";         // 서버도 거절한다 - 화면은 이유만 미리 보여 준다
+    const block = run || (S.estop_locked ? "비상정지 해제 필요" : "");      // 비상정지 중에는 이동 버튼이 모두 꺼진다
     moveBtns.forEach((b) => { b.disabled = !!block; });
-    stopBtn.disabled = !!block || !devOk("stage");               // 스테이지가 연결돼 있으면 항상 누를 수 있다(측정 중에는 꺼진다)
+    stopBtn.disabled = !!run || !devOk("stage");                 // 스테이지가 연결돼 있으면 항상 누를 수 있다(측정 중에는 꺼진다)
     stopBtn.classList.toggle("moving", !stopBtn.disabled && !!(S && S.move));     // 이동 중에는 빨강 테두리
-    stopBtn.title = block ? "측정 중 · 측정 중지 또는 비상정지 사용" : !devOk("stage") ? "스테이지 연결 필요 (준비 1)" : "";
+    stopBtn.title = run ? "측정 중 · 측정 중지 또는 비상정지 사용" : !devOk("stage") ? "스테이지 연결 필요 (초기 설정 1)" : "";
     why.textContent = block;
     why.classList.toggle("hidden", !block);
   }

@@ -1,4 +1,4 @@
-"""시험 공통 준비: 가짜 장비(tests/fakes/)와 임시 데이터 폴더만 쓴다. 실제 포트 · VISA · 카메라는 열지 않는다.
+"""시험 공통 설정: 가짜 장비(tests/fakes/)와 임시 데이터 폴더만 쓴다. 실제 포트 · VISA · 카메라는 열지 않는다.
 
 프로그램(app/)에는 가짜 장비가 없다. 시험이 Controller 의 "장비를 꽂는 자리"에 가짜를 꽂는다:
   open_port(스테이지 포트 여는 함수) → FakeV11 · meters.RM_FACTORY → 가짜 VISA(Lab) · camera.open_capture → 가짜 카메라 · clock · sleep → 시간 배율.
@@ -90,7 +90,7 @@ def build_ctrl(cfg, clock=None, scale=0.05, time_scale=1.0):
 
 
 def fill_prep(ctrl):
-    """준비 2~7단계를 하나씩 하지 않고 가짜 세계의 참값으로 준비 값을 채운다(원점 · 촬영 위치 · 판 영역 · 빈 판 사진 · 좌표 · 헤드 마커 · 접촉 높이 · 쿨러)."""
+    """초기 설정 2~7단계를 하나씩 하지 않고 가짜 세계의 참값으로 초기 설정 값을 채운다(원점 · 촬영 위치 · 판 영역 · 빈 판 사진 · 좌표 · 헤드 마커 · 접촉 높이 · 쿨러)."""
     p, w = ctrl.prep, ctrl.world
     p.calib.set_origin("xyz", "here")
     ctrl._remember(photo_head_xy=[5.0, 125.0], contact_z_mm=round(w.plate_z - 0.6, 3))
@@ -114,7 +114,7 @@ def fill_prep(ctrl):
 @pytest.fixture
 def make_ctrl(tmp_path, monkeypatch):
     made = []
-    monkeypatch.setattr(control_mod, "serial_ports", lambda: ["COM5"])       # 포트 목록: 실제 포트를 훑지 않는다
+    monkeypatch.setattr(control_mod, "serial_ports", lambda: [("COM5", "Arduino Mega 2560 (COM5)")])     # 포트 목록: 실제 포트를 훑지 않는다
 
     def make(clock=None, scale=0.05, connect=True, meters=True, camera=False, time_scale=1.0, **cfg_over):
         cfg = Config(tmp_path / "settings.json").load()
@@ -138,7 +138,7 @@ def make_ctrl(tmp_path, monkeypatch):
 
 @pytest.fixture
 def ready_ctrl(make_ctrl):
-    """준비가 끝난 가짜 장비: 카메라 1280×960 · 준비 값(판 영역 · 빈 판 사진 · 좌표 · 헤드 마커 · 접촉 높이)을 채운 상태."""
+    """초기 설정이 끝난 가짜 장비: 카메라 1280×960 · 초기 설정 값(판 영역 · 빈 판 사진 · 좌표 · 헤드 마커 · 접촉 높이)을 채운 상태."""
     def make(**kw):
         opts = dict(scale=0.02, camera=True, camera_width=1280, camera_height=960)
         opts.update(kw)

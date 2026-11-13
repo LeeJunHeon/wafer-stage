@@ -91,6 +91,28 @@ class Camera:
         self.log("카메라 %d 번 열기 실패 · %s" % (index, ", ".join(errors)))
         raise CameraError("카메라 %d 번 열기 실패 · 번호와 USB 확인 필요" % index)
 
+    def probe(self, index, width, height, fourcc="MJPG"):
+        """목록용: index 번 카메라를 잠깐 열어 보고 닫는다. 열리면 (가로, 세로) - 설정의 해상도 · 포맷을 요청했을 때 잡히는 크기 - 안 열리면 None.
+        연결 중인 카메라에는 쓰지 않는다(부르는 쪽이 그 번호를 건너뛴다)."""
+        code = cv2.VideoWriter_fourcc(*fourcc) if len(fourcc) == 4 else 0
+        for _name, flag in BACKENDS:
+            try:
+                cap = self.open_capture(int(index), flag)
+            except Exception:                                       # noqa: BLE001 - 이 백엔드로는 못 연다: 다음 백엔드
+                continue
+            if cap is None or not cap.isOpened():
+                self._release(cap)
+                continue
+            try:
+                if code:
+                    cap.set(cv2.CAP_PROP_FOURCC, code)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(width))
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
+                return int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            finally:
+                self._release(cap)
+        return None
+
     @staticmethod
     def _release(cap):
         try:

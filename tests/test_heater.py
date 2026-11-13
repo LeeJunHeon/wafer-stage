@@ -179,13 +179,15 @@ def test_xy_moves_refused_while_heater_on_but_z_allowed(make_ctrl):
 
 
 def test_estop_locks_heater_for_manual_too(make_ctrl):
-    ctrl = make_ctrl(meters=False)
+    clock = FakeClock()
+    ctrl = make_ctrl(clock=clock, meters=False)
     ctrl.relay_on(1)
     ctrl.estop("시험")
     assert ctrl.fake_fw.relay[0] is False and _log(ctrl, "히트건 끔 · 비상정지")
     with pytest.raises(Rejected) as e:
         ctrl.relay_on(1)
     assert str(e.value) == "비상정지 상태"
+    clock.advance(2.0)                                               # 정지 직후 2초는 해제를 받지 않는다
     ctrl.run_command("estop_release")
     ctrl.relay_on(1)
     assert ctrl.fake_fw.relay[0] is True

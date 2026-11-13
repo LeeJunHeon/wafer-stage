@@ -1,5 +1,7 @@
-/* settings.js - "전체 설정"(준비 탭 왼쪽 목록 맨 아래): settings 전체를 묶음별 표(이름 · 값 · 단위)로 보여 주고 고친다.
-   값을 바꾸면 바로 저장한다(서버가 검증 - 못 쓰는 값이면 이유를 알려 주고 되돌린다). "실장비 확인 필요" 항목에는 그 표시를 한다. */
+/* settings.js - "전체 설정"(초기 설정 탭 왼쪽 목록 맨 아래): settings 전체를 묶음별 표(이름 · 값 · 단위)로 보여 주고 고친다.
+   값을 바꾸면 바로 저장한다(서버가 검증 - 못 쓰는 값이면 이유를 알려 주고 되돌린다). "실장비 확인 필요" 항목에는 그 표시를 한다.
+   항목 이름(ⓘ)에 마우스를 올리면 설명 말풍선(뜻 · 언제 바꾸는지 · 단위 · 기본값)이 뜬다 - 설명은 서버의 설정 정의(app/config.py ITEMS)에서 온다.
+   폴더 항목(데이터 폴더 · NAS 폴더)에는 [찾아보기] 가 붙는다(창으로 실행했을 때만 보인다). */
 "use strict";
 
 const stg = { items: [], rows: {} };
@@ -35,9 +37,12 @@ function settingRow(it) {
     input = h("input", { type: "text", class: "settext mono", spellcheck: "false", value: it.value == null ? "" : JSON.stringify(it.value), placeholder: it.kind === "xy" ? "없음 또는 [X, Y]" : "",
       onchange: () => { const t = input.value.trim(); if (t === "" && it.kind === "xy") { save(null); return; } try { save(JSON.parse(t)); } catch (e) { toast("형식 오류 · 예 " + JSON.stringify(it.default)); loadSettingsPage(); } } });
   } else input = h("input", { type: "text", class: "settext", spellcheck: "false", value: it.value == null ? "" : it.value, onchange: () => save(input.value) });
-  stg.rows[it.key] = { it, input };
-  return h("tr", {}, h("td", { class: "setname" }, it.label, it.verify ? h("span", { class: "st-warn vfy", text: "실장비 확인 필요" }) : null),
-    h("td", { class: "setval" }, input), h("td", { class: "setunit small", text: it.unit || "" }));
+  const browse = it.folder ? browseBtn(input) : null;            // 고르면 입력 칸에 넣고 바로 저장한다(change)
+  stg.rows[it.key] = { it, input, browse };
+  const label = h("span", {}, it.label, h("span", { class: "info", text: "ⓘ" }));
+  tip(label, { title: it.label, text: it.desc || "", hint: it.hint || "" });
+  return h("tr", {}, h("td", { class: "setname" }, label, it.verify ? h("span", { class: "st-warn vfy", text: "실장비 확인 필요" }) : null),
+    h("td", { class: "setval" }, browse ? h("div", { class: "row" }, input, browse) : input), h("td", { class: "setunit small", text: it.unit || "" }));
 }
 function renderSettingsPage() {
   if (!S || !S.cfg) return;
@@ -50,5 +55,12 @@ function renderSettingsPage() {
     else r.input.value = v == null ? "" : v;
   }
   const lock = running();
-  for (const r of Object.values(stg.rows)) r.input.disabled = lock;
+  for (const r of Object.values(stg.rows)) {
+    r.input.disabled = lock;
+    if (r.browse) {                                              // [찾아보기] 는 창으로 실행했을 때만 보인다(그때만 입력 칸을 줄여 자리를 낸다)
+      r.browse.disabled = lock;
+      r.browse.classList.toggle("hidden", !S.can_pick_folder);
+      r.input.classList.toggle("withbtn", !!S.can_pick_folder);
+    }
+  }
 }

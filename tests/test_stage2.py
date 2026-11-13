@@ -254,7 +254,7 @@ def test_ui_files_are_served(make_ctrl):
     ctrl = make_ctrl(connect=False)
     with TestClient(create_app(ctrl)) as c:
         page = c.get("/")
-        assert page.status_code == 200 and "VO₂ 온도–저항 측정" in page.text
+        assert page.status_code == 200 and "VO₂ 자동 측정 프로그램" in page.text and "초기 설정" in page.text and "수동 측정" in page.text
         for url in ("/ui/app.js", "/ui/app.css", "/ui/fonts/PretendardVariable.woff2"):
             assert c.get(url).status_code == 200, url
 

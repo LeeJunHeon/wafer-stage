@@ -20,6 +20,8 @@ PPMM = 160.0                                       # 모든 축 160 펄스 = 1 m
 FW_DEFAULT_SPEED = (6000, 40000, 300)              # 펌웨어 v · a · b 기본값
 JOG_MAX_PULSE = 8000                               # jx/jy/jz 한 번에 최대(50 mm)
 FIND_MAX_PULSE = 1600                              # fz 탐색 최대
+FIND_PULSE = 800                                   # 끝단 접촉 원점(fz)에서 0 쪽 끝으로 미는 거리: 800 펄스 = 5 mm (펌웨어 HOME_SEARCH_DEFAULT 와 같다)
+FIND_GAP_PULSE = 320                               # 끝에 닿은 뒤 물러나는 거리: 320 펄스 = 2 mm (펌웨어 HOME_GAP). 물러난 위치가 0 이다
 POLL_S = 0.5                                       # 쉬는 동안 st 주기(통신 감시 신호도 된다)
 RS_POLL_S = 2.0
 LINE_TIMEOUT_S = 3.0
@@ -519,8 +521,8 @@ class Stage:
         cur = self.pos.get(axis) or 0
         self.call("g%s %d" % (axis, int(pulse)), gen, is_move_done, time_limit_s(int(pulse) - cur, *self.speed), kind="move", pulses=int(pulse) - cur)
 
-    def find_end(self, axis, gen, search_pulse=800):
-        """끝단까지 밀어서 원점 잡기(fz). 끝나면 st 줄까지 받는다."""
+    def find_end(self, axis, gen, search_pulse=FIND_PULSE):
+        """끝단까지 밀어서 원점 잡기(fz): 0 쪽 끝으로 search_pulse 만큼 밀고 FIND_GAP_PULSE 만큼 물러난 위치가 0. 끝나면 st 줄까지 받는다."""
         n = max(1, min(FIND_MAX_PULSE, int(search_pulse)))
         state = {"ok": False}
 
@@ -530,7 +532,7 @@ class Stage:
                 return False
             return state["ok"] and is_st(ln)
 
-        limit = n / 300.0 + 0.5 + 320 / 300.0 + 5.0
+        limit = n / 300.0 + 0.5 + FIND_GAP_PULSE / 300.0 + 5.0
         self.call("fz %s %d" % (axis, n), gen, done, limit, kind="move")
 
     def set_here(self, axis, gen):

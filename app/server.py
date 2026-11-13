@@ -9,7 +9,7 @@
   WS   /ws                   상태를 보내고(바뀔 때마다 + 1 초마다) 명령을 받는다: {"id", "cmd", "args"} → {"id", "ok", "msg" | "result"}
   POST /api/estop            비상정지(WS 의 {"cmd":"estop"} 과 같은 길 - 검사 없이 바로)
   POST /api/stop             이동 정지(WS · /api/cmd 의 motion_stop 과 같은 길 - 명령 줄을 거치지 않고 새 스레드에서 바로). 잠그지 않는다
-  POST /api/estop/release    비상정지 풀기
+  POST /api/estop/release    비상정지 해제(정지 뒤 2초 동안은 거절). 위치와 릴레이 상태를 다시 읽기만 한다
   POST /api/cmd/{name}       WS 와 같은 명령(시험 · 도구용)
   GET  /api/settings         설정 표 · PUT /api/settings  바꿀 값 {key: value}
 비상정지와 이동 정지는 명령 줄에 서지 않고 새 스레드에서 바로 처리한다.
@@ -66,7 +66,7 @@ def create_app(ctrl: Controller) -> FastAPI:
         yield
         await asyncio.to_thread(ctrl.shutdown)
 
-    app = FastAPI(title="샘플 자동 측정 v3", lifespan=lifespan)
+    app = FastAPI(title="VO₂ 자동 측정 프로그램", lifespan=lifespan)
     app.state.ctrl = ctrl
 
     async def run(cmd, args):
@@ -104,7 +104,7 @@ def create_app(ctrl: Controller) -> FastAPI:
         """측정 중인(또는 이번 측정에서 잰) 샘플의 점 [온도, 저항, 단계] 중 from 번째부터. 점 데이터는 state 에 넣지 않는다."""
         return ctrl.runner.points(sample, frm)
 
-    # ---- 결과 탭: 저장된 측정 기록 ----
+    # ---- 측정 결과 탭: 저장된 측정 기록 ----
     async def _res(fn, *args):
         try:
             return await asyncio.to_thread(fn, ctrl.cfg.data_path(), *args)

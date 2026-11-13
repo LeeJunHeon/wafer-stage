@@ -2,6 +2,7 @@
 
  1. 비상정지: 기다리지 않고 즉시 '!'. 명령을 받은 순간 세대 번호를 잡고, 쓰기 직전에 다시 비교해서 다르면 쓰지 않는다.
  2. 비상정지 뒤에는 이동 · 릴레이 켜기를 막는다. 사람이 풀면 st 로 위치를 다시 읽고 풀린다(원점을 강제로 다시 잡게 하지 않는다).
+    정지 직후 ESTOP_HOLD_S(2초) 동안은 해제를 받지 않는다(Esc 를 연달아 눌러 바로 풀리지 않게).
  3. 히트건(R1): 켠 주체를 구분한다 - "수동"(릴레이 켜기 버튼) / "측정"(측정 작업).
     공통: 온도 값이 들어오고 있으면 차단 온도 이상에서 못 켜고, 켜진 동안 차단 온도에 닿으면 끈다 · 최대 켜짐 시간이 지나면 끈다 ·
           켜진 동안 X · Y 이동 거절 · 비상정지 잠금.
@@ -24,6 +25,8 @@ from app.config import Config
 
 
 BY_MANUAL, BY_RUN = "수동", "측정"                # 히트건을 켠 주체
+ESTOP_HOLD_S = 2.0                                # 비상정지 직후 이 시간 동안은 해제를 받지 않는다
+ESTOP_TEXT = "비상정지 중 · 이동 · 릴레이 · 측정 불가"      # 화면 맨 위 띠에 보이는 글(경보 code "estop")
 TRIP_MAX_C, TRIP_NO_TEMP, TRIP_MAX_ON = "차단 온도", "온도 못 읽음", "최대 켜짐 시간"      # 안전 규칙이 히트건을 끄는 까닭
 
 
@@ -38,6 +41,7 @@ class Safety:
         self.clock = clock
         self._lock = threading.Lock()
         self.generation = 0
+        self.estop_t: Optional[float] = None            # 마지막으로 비상정지를 받은 시각(clock)
         self.heater_on_t: Optional[float] = None        # 히트건을 켠 시각(clock)
         self.heater_by: Optional[str] = None            # 켠 주체(BY_MANUAL · BY_RUN). 꺼져 있으면 None
         self.last_temp_t: Optional[float] = None        # 마지막으로 온도를 읽은 시각
@@ -53,11 +57,31 @@ class Safety:
         with self._lock:
             self.generation += 1
             g = self.generation
+            self.estop_t = self.clock()                   # 해제는 이 시각에서 ESTOP_HOLD_S 뒤부터
             if self.heater_on_t is not None:              # 히트건은 비상정지가 끈다(r all 0) - 감시는 이 순간부터 꺼진 것으로 본다.
                 self.heater_turned_off()                  # 끄기 응답을 기다리는 동안 "온도를 못 읽어 껐습니다" 경보가 덧붙지 않게
+        self.state.set("estop_hold", True)
         self.state.set("estop_locked", True)
-        self.state.alarm("estop", "비상정지 상태", ALARM)
+        self.state.alarm("estop", ESTOP_TEXT, ALARM)
         return g
+
+    def release_wait(self, now: Optional[float] = None) -> float:
+        """해제까지 더 기다려야 하는 시간(초). 0 이면 해제할 수 있다."""
+        if self.estop_t is None:
+            return 0.0
+        now = self.clock() if now is None else now
+        return max(0.0, ESTOP_HOLD_S - (now - self.estop_t))
+
+    def reject_release(self, now: Optional[float] = None) -> Optional[str]:
+        """비상정지 해제 판정: 정지 직후에는 받지 않는다."""
+        if self.release_wait(now) > 0:
+            return "비상정지 직후 · %g초 뒤 해제 가능" % ESTOP_HOLD_S
+        return None
+
+    def update_hold(self, now: Optional[float] = None):
+        """해제 대기 시간이 지났으면 화면에 알린다(state.estop_hold - 화면은 그동안 해제 버튼을 꺼 둔다). 감시 스레드가 부른다."""
+        if self.state.get("estop_hold") and self.release_wait(now) <= 0:
+            self.state.set("estop_hold", False)
 
     def cancel_pending(self) -> int:
         """이동 정지: 세대를 올려 줄 서 있던 명령과 여러 걸음 이동의 남은 걸음을 버리게 한다. 잠그지 않는다(비상정지와 다르다)."""
@@ -70,6 +94,7 @@ class Safety:
         with self._lock:
             self.generation += 1                          # 풀기 전의 낡은 명령이 살아나지 않게
         self.state.set("estop_locked", False)
+        self.state.set("estop_hold", False)
         self.state.clear_alarm("estop", "reboot")
 
     @property
@@ -153,4 +178,4 @@ class Safety:
         return None
 
 
-__all__ = ["Safety", "Rejected", "ALARM", "NOTICE", "BY_MANUAL", "BY_RUN", "TRIP_MAX_C", "TRIP_NO_TEMP", "TRIP_MAX_ON"]
+__all__ = ["Safety", "Rejected", "ALARM", "NOTICE", "BY_MANUAL", "BY_RUN", "TRIP_MAX_C", "TRIP_NO_TEMP", "TRIP_MAX_ON", "ESTOP_HOLD_S", "ESTOP_TEXT"]
