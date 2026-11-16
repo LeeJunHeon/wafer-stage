@@ -277,7 +277,9 @@ function openRunCond() {
   const f = { meter_volt: num("meter_volt", "0.01"), meter_four_wire: chk("meter_four_wire"), meter_avg_count: num("meter_avg_count", "1"), meter_nplc: num("meter_nplc", "0.01"), meter_ilim_a: num("meter_ilim_a"),
     run_start_c: num("run_start_c", "1"), run_heater_off_c: num("run_heater_off_c", "1"), run_cool_end_c: num("run_cool_end_c", "1"), run_repeat: num("run_repeat", "1"), run_interval_s: num("run_interval_s", "0.1"),
     run_cooler_mode: h("select", {}, ...[["zone", "샘플 아래 구역"], ["all", "전체"], ["none", "사용 안 함"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_cooler_mode === v }))),
-    run_cooler_during_heat: chk("run_cooler_during_heat"), nas_dir: h("input", { type: "text", value: c.nas_dir || "", spellcheck: "false" }), nas_date_folder: chk("nas_date_folder") };
+    run_cooler_during_heat: chk("run_cooler_during_heat"),
+    contact_mode: h("select", {}, ...[["fixed", "고정 높이"], ["search", "전기 탐색"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.contact_mode === v }))),
+    nas_dir: h("input", { type: "text", value: c.nas_dir || "", spellcheck: "false" }), nas_date_folder: chk("nas_date_folder") };
   const save = async () => {
     const patch = {};
     for (const [k, e] of Object.entries(f)) patch[k] = e.type === "checkbox" ? e.checked : e.type === "number" ? (["meter_avg_count", "run_repeat"].includes(k) ? parseInt(e.value, 10) : parseFloat(e.value)) : e.value;
@@ -289,6 +291,7 @@ function openRunCond() {
     "냉각 끝 온도 (°C)", f.run_cool_end_c, "반복 (회)", f.run_repeat, "측정 간격 (s)", f.run_interval_s);
   const right = h("div", { class: "form" },
     h("h4", { text: "쿨러" }), "쿨러", f.run_cooler_mode, "가열 중 쿨러 켬", f.run_cooler_during_heat,
+    h("h4", { text: "접촉" }), "접촉 방식", f.contact_mode,
     h("h4", { text: "저장" }), h("span", {}, "NAS 폴더", h("br"), small("비우면 PC 에만 저장")),
     S.can_pick_folder ? h("div", { class: "row" }, f.nas_dir, browseBtn(f.nas_dir)) : f.nas_dir, "날짜 폴더", f.nas_date_folder);
   openDialog("측정 조건", h("div", { class: "form2" }, left, right), [btn("닫기", closeDialog), btn("저장", save, "on")]);

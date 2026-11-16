@@ -33,7 +33,7 @@ function settingRow(it) {
   else if (it.kind === "int" || it.kind === "float" || it.kind === "optfloat") {
     input = h("input", { type: "number", class: "setnum", step: "any", value: it.value == null ? "" : it.value, placeholder: it.kind === "optfloat" ? "없음" : "",
       onchange: () => { const t = input.value.trim(); if (t === "") { if (it.kind === "optfloat") save(null); else loadSettingsPage(); return; } const v = Number(t); if (!isFinite(v)) { toast("숫자 입력 필요"); loadSettingsPage(); return; } save(v); } });
-  } else if (it.kind === "grid" || it.kind === "xy") {
+  } else if (it.kind === "grid" || it.kind === "xy" || it.kind === "list") {              // JSON 글로 고친다(쿨러 배치 · 촬영 위치 · 사용 안 할 포트)
     input = h("input", { type: "text", class: "settext mono", spellcheck: "false", value: it.value == null ? "" : JSON.stringify(it.value), placeholder: it.kind === "xy" ? "없음 또는 [X, Y]" : "",
       onchange: () => { const t = input.value.trim(); if (t === "" && it.kind === "xy") { save(null); return; } try { save(JSON.parse(t)); } catch (e) { toast("형식 오류 · 예 " + JSON.stringify(it.default)); loadSettingsPage(); } } });
   } else input = h("input", { type: "text", class: "settext", spellcheck: "false", value: it.value == null ? "" : it.value, onchange: () => save(input.value) });
@@ -51,7 +51,7 @@ function renderSettingsPage() {
     if (document.activeElement === r.input || JSON.stringify(v) === JSON.stringify(r.it.value)) continue;
     r.it.value = v;
     if (r.it.kind === "bool") r.input.checked = !!v;
-    else if (r.it.kind === "grid" || r.it.kind === "xy") r.input.value = v == null ? "" : JSON.stringify(v);
+    else if (r.it.kind === "grid" || r.it.kind === "xy" || r.it.kind === "list") r.input.value = v == null ? "" : JSON.stringify(v);
     else r.input.value = v == null ? "" : v;
   }
   const lock = running();

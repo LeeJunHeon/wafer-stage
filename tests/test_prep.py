@@ -6,7 +6,7 @@ import pytest
 
 from app import contact as contact_mod
 from app.safety import Rejected
-from tests.conftest import wait_for
+from tests.conftest import SEARCH, wait_for
 
 W, H = 1280, 960
 
@@ -233,7 +233,7 @@ def _max_z_sent(ctrl):
 
 
 def test_contact_on_sample(ready_ctrl):
-    ctrl = ready_ctrl()
+    ctrl = ready_ctrl(**SEARCH)
     surf = _over_sample(ctrl, 2)
     r = ctrl.run_command("contact_find")
     assert abs(r["first_z"] - surf) <= 0.05, "닿은 높이가 실제 표면과 0.05 mm 안"
@@ -246,7 +246,7 @@ def test_contact_on_sample(ready_ctrl):
 
 
 def test_contact_two_pins_first_needs_more_descent(ready_ctrl):
-    ctrl = ready_ctrl()
+    ctrl = ready_ctrl(**SEARCH)
     ctrl.world.samples[0]["lag4"] = 0.1                              # 감지 핀 두 개는 0.1 mm 더 내려가야 닿는다
     surf = _over_sample(ctrl, 0)
     r = ctrl.run_command("contact_find")
@@ -256,7 +256,7 @@ def test_contact_two_pins_first_needs_more_descent(ready_ctrl):
 
 
 def test_contact_metal_plate_is_short(ready_ctrl):
-    ctrl = ready_ctrl()
+    ctrl = ready_ctrl(**SEARCH)
     w = ctrl.world
     x, y = w.plate_to_stage(20.0, 20.0)                              # 샘플이 없는 판 위
     ctrl.goto(x, y, w.plate_z - 1.0)
@@ -269,7 +269,7 @@ def test_contact_metal_plate_is_short(ready_ctrl):
 
 
 def test_contact_nothing_within_search_distance(ready_ctrl):
-    ctrl = ready_ctrl(contact_search_mm=1.0)
+    ctrl = ready_ctrl(**dict(SEARCH, contact_search_mm=1.0))
     w = ctrl.world
     x, y = w.sample_stage(1)
     z0 = w.sample_surface_z(1) - 3.0                                 # 표면이 찾기 거리(1 mm)보다 멀다
@@ -282,7 +282,7 @@ def test_contact_nothing_within_search_distance(ready_ctrl):
 
 
 def test_contact_height_mode_never_goes_below_limit(ready_ctrl):
-    ctrl = ready_ctrl()
+    ctrl = ready_ctrl(**SEARCH)
     w = ctrl.world
     x, y = w.sample_stage(3)
     surf = w.sample_surface_z(3)
@@ -299,7 +299,7 @@ def test_contact_height_mode_never_goes_below_limit(ready_ctrl):
 
 
 def test_contact_estop_stops_descent_and_turns_output_off(ready_ctrl):
-    ctrl = ready_ctrl()
+    ctrl = ready_ctrl(**SEARCH)
     surf = _over_sample(ctrl, 4, above=3.0)
     ctrl.lab.read_dt = 0.05                                          # 찾는 데 몇 초 걸리게
     import threading
@@ -323,7 +323,7 @@ def test_contact_estop_stops_descent_and_turns_output_off(ready_ctrl):
 
 
 def test_contact_needs_k2450(ready_ctrl):
-    ctrl = ready_ctrl()
+    ctrl = ready_ctrl(**SEARCH)
     _over_sample(ctrl, 0)
     ctrl.disconnect_meter("k2450")
     n = len(ctrl.fake_fw.log)

@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.safety import Rejected
 from app.server import create_app
-from tests.conftest import wait_for
+from tests.conftest import SEARCH, wait_for
 
 PPMM = 160
 
@@ -141,7 +141,7 @@ def test_stop_is_refused_during_a_run(ready_ctrl):
 
 
 def test_stop_during_contact_search_turns_output_off_and_keeps_pin(ready_ctrl):
-    ctrl = ready_ctrl()
+    ctrl = ready_ctrl(**SEARCH)
     w = ctrl.world
     x, y = w.sample_stage(4)
     surf = w.sample_surface_z(4)

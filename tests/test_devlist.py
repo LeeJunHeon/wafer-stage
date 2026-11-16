@@ -42,7 +42,7 @@ def test_device_lists_are_read_without_opening_ports_or_meters(make_ctrl):
     ctrl = make_ctrl(connect=False)
     op = ctrl.camera.open_capture = Opener({1, 2})
     d = ctrl.list_devices()
-    assert d["ports"] == [{"value": "COM5", "label": "COM5 · Arduino Mega 2560"}]
+    assert d["ports"] == [{"value": "COM5", "label": "COM5 · Arduino Mega 2560", "blocked": False}]
     assert ctrl.fake_fw is None and not ctrl.stage.connected, "목록을 읽는다고 포트를 열지 않는다"
     assert [x["value"] for x in d["visa"]] == [ctrl.cfg["k2110_addr"], ctrl.cfg["k2450_addr"]] and d["note"] == ""
     assert ctrl.lab.opened == [], "목록을 읽는다고 측정 장비를 열지 않는다"

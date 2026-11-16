@@ -12,7 +12,7 @@ from app import results
 from app.jobs import analysis
 from app.safety import Rejected
 from app.server import create_app
-from tests.conftest import wait_for
+from tests.conftest import SEARCH, wait_for
 
 FAST = 200.0
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -23,7 +23,7 @@ def _sig(x):
 
 
 def _measured(ready_ctrl, tmp_path, n=2, **cfg):
-    ctrl = ready_ctrl(time_scale=FAST, **cfg)
+    ctrl = ready_ctrl(time_scale=FAST, **dict(SEARCH, **cfg))                    # 전기 탐색으로 접촉(고정 높이로는 일부 샘플만 닿는다)
     ctrl.run_command("samples_find")
     use = [s for s in ctrl.prep.samples if s["use"]]
     for s in use[n:]:

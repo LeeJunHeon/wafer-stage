@@ -168,12 +168,9 @@ def create_app(ctrl: Controller) -> FastAPI:
         if ctrl.run_active():                                      # 측정이 쓰는 값이 도중에 바뀌지 않게
             return JSONResponse({"ok": False, "msg": "측정 중 실행 불가"}, status_code=409)
         try:
-            ctrl.cfg.update(patch)
-            ctrl.cfg.save()
-        except ConfigError as e:
+            await asyncio.to_thread(ctrl.update_settings, patch)   # 값 검증 + 조합 검사(config.problems) + 저장
+        except (ConfigError, Rejected) as e:
             return JSONResponse({"ok": False, "msg": str(e)}, status_code=400)
-        ctrl.publish_cfg()
-        ctrl.prep.on_settings()
         return {"ok": True}
 
     @app.websocket("/ws")

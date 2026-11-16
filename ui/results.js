@@ -83,8 +83,9 @@ function resultTitle() {                                          // 그림으�
 }
 const COND_ROWS = [["meter_volt", "측정 전압", "V"], ["meter_four_wire", "4단자", ""], ["meter_avg_count", "평균", "회"], ["meter_nplc", "NPLC", ""], ["meter_ilim_a", "전류 한도", "A"],
   ["run_start_c", "시작 온도", "°C"], ["run_heater_off_c", "가열 끝 온도", "°C"], ["run_cool_end_c", "냉각 끝 온도", "°C"], ["run_repeat", "반복", "회"], ["run_interval_s", "측정 간격", "s"],
-  ["run_cooler_mode", "쿨러", ""], ["run_cooler_during_heat", "가열 중 쿨러", ""], ["contact_z_mm", "접촉 높이", "mm"]];
+  ["run_cooler_mode", "쿨러", ""], ["run_cooler_during_heat", "가열 중 쿨러", ""], ["contact_mode", "접촉 방식", ""], ["contact_z_mm", "접촉 높이", "mm"]];
 const COOLER_NAMES = { zone: "샘플 아래 구역", all: "전체", none: "사용 안 함" };
+const CONTACT_NAMES = { fixed: "고정 높이", search: "전기 탐색" };
 function renderRecord() {
   const rec = rs.rec;
   rs.save.disabled = !rec || !rs.picks.length;
@@ -118,6 +119,7 @@ function renderRecord() {
     let v = c[k];
     if (typeof v === "boolean") v = v ? "켬" : "끔";
     else if (k === "run_cooler_mode") v = COOLER_NAMES[v] || v;
+    else if (k === "contact_mode") v = CONTACT_NAMES[v] || v;
     return [h("span", { class: "small", text: name }), h("span", { text: v + (unit ? " " + unit : "") })];
   })));
   drawResultGraph();

@@ -2,7 +2,9 @@
 
 샘플 하나의 순서
   1. 이동  : 히트건이 꺼졌는지 확인 → 핀 맨 위(Z 0, st 로 확인) → 샘플 가운데로 X · Y.
-  2. 접촉  : 저장한 접촉 높이 − 0.3 mm 까지 내린 뒤 전기로 확인하며 내린다. 실패(안 닿음 · 금속 판 · 4단자)면 핀을 올리고 이 샘플은 "실패", 다음 샘플로.
+  2. 접촉  : 접촉 방식(contact_mode)에 따라
+             고정 높이(기본) - 저장한 접촉 높이까지 정확히 내리고 끝낸다. 내린 뒤 저항을 한 번 재서 기록만 한다(판정 없음 · 실패 없음).
+             전기 탐색(선택) - 저장한 접촉 높이 − 0.3 mm 까지 내린 뒤 전기로 확인하며 내린다. 실패(안 닿음 · 금속 판 · 4단자)면 핀을 올리고 이 샘플은 "실패".
   3. 냉각  : 쿨러를 켠다. 온도가 시작 온도보다 높으면 내려갈 때까지 기다린다(기록하지 않는다).
   4. 가열  : K2450 출력을 켜고 기록 시작. 히트건을 **한 번** 켜고, 가열 끝 온도에 닿으면 **한 번** 끈다(그 사이에 다시 켜거나 끄지 않는다 - 자주 켜고 끄면 연기가 난다).
   5. 냉각  : 냉각 끝 온도 아래로 내려갈 때까지 기록한다(히트건을 끈 뒤 더 오르는 구간도 그대로 기록).
@@ -21,6 +23,7 @@ import threading
 import time
 from pathlib import Path
 
+from app import config as config_mod
 from app import contact as contact_mod
 from app.devices import meters
 from app.jobs import analysis, files
@@ -33,7 +36,8 @@ WAIT, NOW, DONE, FAIL, SKIPPED, STOPPED, OUT = "대기", "측정 중", "완료",
 T_MISS_N = 3                                      # 온도를 이만큼 연속으로 못 읽으면 측정을 멈춘다(열전대 끊김)
 MAX_POINTS = 200000
 COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "meter_ilim_a", "run_start_c", "run_heater_off_c", "run_cool_end_c",
-             "run_repeat", "run_interval_s", "run_cooler_mode", "run_cooler_during_heat", "contact_z_mm", "run_no_rise_s", "run_no_rise_c",
+             "run_repeat", "run_interval_s", "run_cooler_mode", "run_cooler_during_heat", "contact_mode", "contact_fixed_read", "contact_z_mm",
+             "run_no_rise_s", "run_no_rise_c",
              "run_fast_rise_c_s", "run_stall_s", "run_stall_c", "run_phase_limit_s", "run_open_n", "contact_open_a", "nas_dir", "nas_date_folder",
              "heater_max_c", "heater_max_on_s", "plate_size_mm", "cooler_grid")
 
@@ -77,6 +81,7 @@ class Runner:
         self.msg = ""
         self._coolers = []
         self._t_miss = 0
+        self._slow_warned = False                   # 읽기 한 회차가 온도 못 읽음 허용 시간을 넘었다는 경보(측정마다 한 번)
 
     # ------------------------------------------------------------------
     @property
@@ -85,9 +90,10 @@ class Runner:
         return self._busy
 
     def gate(self):
-        """측정을 시작하려면 필요한 것 중 빠진 것 [{"text", "step"(초기 설정 단계 번호)}]. 빈 판 사진은 없어도 된다."""
+        """측정을 시작하려면 필요한 것 중 빠진 것 [{"text", "step"(초기 설정 단계 번호)}]. 빈 판 사진은 없어도 된다.
+        카메라는 요구하지 않는다 - 측정 · 재개는 카메라를 쓰지 않는다(촬영 · 샘플 검출 · 헤드 위치 확인만 쓴다)."""
         c, st, out = self.c, self.c.state, []
-        for key, name in (("stage", "스테이지 연결"), ("k2110", "온도계 연결"), ("k2450", "저항계 연결"), ("camera", "카메라 연결")):
+        for key, name in (("stage", "스테이지 연결"), ("k2110", "온도계 연결"), ("k2450", "저항계 연결")):
             if st.get("devices", key, "state") != "연결":
                 out.append({"text": name, "step": 1})
         if c.safety.locked:
@@ -132,24 +138,30 @@ class Runner:
             names = [s["name"] for s in used]
             if len(set(names)) != len(names):
                 raise Rejected("샘플 이름 중복 · 이름 수정 필요")
-            self.cond = {k: c.cfg[k] for k in COND_KEYS}
-            if float(self.cond["run_heater_off_c"]) >= float(self.cond["heater_max_c"]):
-                raise Rejected("가열 끝 온도 %g °C 는 차단 온도 %g °C 미만 필요" % (self.cond["run_heater_off_c"], self.cond["heater_max_c"]))
-            self.batch = str(c.cfg["batch_name"])
-            self.t0 = time.time()
-            lt = time.localtime(self.t0)
-            self.folder = c.cfg.data_path() / time.strftime("%Y-%m-%d", lt) / ("%s_%s" % (time.strftime("%H%M%S", lt), self.batch))
+            bad = config_mod.problems(c.cfg.values)                 # 설정 조합 검사(저장 때와 같은 함수): 문제가 있으면 시작하지 않는다
+            if bad:
+                raise Rejected(bad[0])
+            c.k2450_begin_run()                                     # 연속 측정을 끄고 K2450 사용권을 얻는다(측정이 끝나면 _main 이 놓는다)
             try:
-                self.folder.mkdir(parents=True, exist_ok=True)
-                jpg = c.prep.jpeg("plate")
-                if jpg:
-                    (self.folder / "plate.jpg").write_bytes(jpg)
-            except OSError as e:
-                raise Rejected("저장 폴더 생성 실패 · %s" % str(e)[:50])
-            self.items = {s["id"]: self._new_item(s) for s in used}
-            self.order = [s["id"] for s in used]
-            self._start_nas()
-            self._launch()
+                self.cond = {k: c.cfg[k] for k in COND_KEYS}
+                self.batch = str(c.cfg["batch_name"])
+                self.t0 = time.time()
+                lt = time.localtime(self.t0)
+                self.folder = c.cfg.data_path() / time.strftime("%Y-%m-%d", lt) / ("%s_%s" % (time.strftime("%H%M%S", lt), self.batch))
+                try:
+                    self.folder.mkdir(parents=True, exist_ok=True)
+                    jpg = c.prep.jpeg("plate")
+                    if jpg:
+                        (self.folder / "plate.jpg").write_bytes(jpg)
+                except OSError as e:
+                    raise Rejected("저장 폴더 생성 실패 · %s" % str(e)[:50])
+                self.items = {s["id"]: self._new_item(s) for s in used}
+                self.order = [s["id"] for s in used]
+                self._start_nas()
+                self._launch()
+            except BaseException:
+                c.k2450_end_run()
+                raise
         return {"folder": str(self.folder), "n": len(self.order)}
 
     def resume(self):
@@ -168,9 +180,17 @@ class Runner:
                     self.order.append(s["id"])
             if not any(self.items[i]["status"] == WAIT for i in self.order):
                 raise Rejected("남은 샘플 없음")
-            if self.nas is None or not self.nas.is_alive():
-                self._start_nas(keep=True)
-            self._launch()
+            bad = config_mod.problems(dict(self.c.cfg.values, **self.cond))    # 이 측정이 쓰는 조건(cond) + 지금의 안전 설정으로 다시 검사한다
+            if bad:
+                raise Rejected(bad[0])
+            self.c.k2450_begin_run()
+            try:
+                if self.nas is None or not self.nas.is_alive():
+                    self._start_nas(keep=True)
+                self._launch()
+            except BaseException:
+                self.c.k2450_end_run()
+                raise
         return {"n": sum(1 for i in self.order if self.items[i]["status"] == WAIT)}
 
     def stop(self):
@@ -239,6 +259,7 @@ class Runner:
 
     def _launch(self):
         self._stop = self._skip = self._estop = False
+        self._slow_warned = False
         self.msg = ""
         self._busy = True
         self.state = "running"
@@ -302,9 +323,11 @@ class Runner:
                 n = self.counts()
                 c.logs.app("측정 %s · 완료 %d · 실패 %d · 남음 %d" % ("완료" if final == "done" else "중지", n[DONE], n[FAIL], n[WAIT]))
             finally:
-                # 순서: 파일 저장 · NAS 복사 → 끝난 상태를 화면에 보냄 → "측정 중이 아님". 그 사이에 새 측정이 시작돼 같은 기록에 섞여 쓰지 않게 한다.
+                # 순서: 파일 저장 · NAS 복사 → 끝난 상태를 화면에 보냄 → K2450 사용권 놓음 → "측정 중이 아님".
+                # 그 사이에 새 측정이 시작돼 같은 기록에 섞여 쓰지 않게 한다.
                 self.state = final
                 self.publish()
+                c.k2450_end_run()
                 self._busy = False
 
     def _one(self, it, g):
@@ -373,14 +396,18 @@ class Runner:
         c.goto(it["xy"][0], it["xy"][1])
         # ---- 2 접촉 ----
         self._check(g)
-        self._set(1, "접촉 탐색")
-        try:
-            res = c.contact_descend("height", cd["contact_z_mm"], g)
-        except contact_mod.ContactFail as e:
-            if e.code == "inst":
-                raise RunAbort(str(e))
-            raise SampleFail(contact_mod.FAIL_TEXT.get(e.code, str(e)))
-        it["contact"] = {k: res[k] for k in ("first_z", "final_z", "r2", "r4")}
+        if cd.get("contact_mode", "fixed") == "search":             # 전기 탐색(선택): 전기로 확인하며 내린다. 실패하면 이 샘플만 실패
+            self._set(1, "접촉 탐색")
+            try:
+                res = c.contact_descend("height", cd["contact_z_mm"], g)
+            except contact_mod.ContactFail as e:
+                if e.code == "inst":
+                    raise RunAbort(str(e))
+                raise SampleFail(contact_mod.FAIL_TEXT.get(e.code, str(e)))
+            it["contact"] = dict({k: res[k] for k in ("first_z", "final_z", "r2", "r4")}, mode="search")
+        else:                                                       # 고정 높이(기본): 저장한 접촉 높이까지만 내린다. 저항은 기록만(판정 없음)
+            self._set(1, "접촉 높이로 하강")
+            it["contact"] = c.contact_fixed(cd["contact_z_mm"], g, read=bool(cd.get("contact_fixed_read", True)), meter=cd)
         # ---- 3 냉각(시작 전) ----
         self._check(g)
         self._coolers = self._coolers_for(it)
@@ -493,6 +520,20 @@ class Runner:
             it["notes"].append("전류 한도 도달")
             c.state.alarm("ilim", "%s · 전류 한도 도달" % it["name"], NOTICE, dismiss=True)
 
+    def _note_cycle(self, it, t_prev, t_now):
+        """실제 한 회차(앞 회차 시작 → 이번 회차 시작: 읽기 + 측정 간격)가 온도 못 읽음 허용 시간을 넘으면 경보 한 번(측정마다).
+        이렇게 되면 안전 감시가 히트건을 꺼서 "가열 끝 온도 미도달" 이 된다 - 원인(측정 간격 · 읽기 시간)을 글에 적는다."""
+        if t_prev is None or self._slow_warned:
+            return
+        c = self.c
+        dt, stale = t_now - t_prev, float(c.cfg["temp_stale_s"])
+        if dt > stale:
+            self._slow_warned = True
+            it["notes"].append("읽기 회차 지연")
+            c.state.alarm("run_slow", "읽기 한 회차 %.1f초 · 허용 %g초 초과 · 측정 간격과 평균 횟수 확인" % (dt, stale), ALARM, dismiss=True)
+            c.logs.app("샘플 %s · 읽기 한 회차 %.2f초 · 온도 못 읽음 허용 %g초 초과(측정 간격 %g초 · NPLC %g · 평균 %d회)" % (
+                it["name"], dt, stale, self.cond["run_interval_s"], self.cond["meter_nplc"], self.cond["meter_avg_count"]), "warn")
+
     def _heat(self, it, g, T_start, off_c):
         """가열: 히트건을 켠 채 끄는 온도에 닿을 때까지 기록한다. 닿으면 True, 안전 규칙(최대 켜짐 시간 등)이 먼저 껐으면 False."""
         c, cd = self.c, self.cond
@@ -502,9 +543,12 @@ class Runner:
         on_t0 = on_T0 = None
         prev = None
         st = it.setdefault("_st", {"low": 0, "open_warned": False, "trip_warned": False, "fast_warned": False})
+        t_prev = None
         while True:
             self._check(g)
             t_it = c.clock()
+            self._note_cycle(it, t_prev, t_it)
+            t_prev = t_it
             T = self._read_temp()
             cur, R, trip = self._read_r()
             now = c.clock()
@@ -545,9 +589,12 @@ class Runner:
         t0 = c.clock()
         best = best_t = None
         st = it.setdefault("_st", {"low": 0, "open_warned": False, "trip_warned": False, "fast_warned": False})
+        t_prev = None
         while True:
             self._check(g)
             t_it = c.clock()
+            self._note_cycle(it, t_prev, t_it)
+            t_prev = t_it
             T = self._read_temp()
             cur = R = None
             trip = False

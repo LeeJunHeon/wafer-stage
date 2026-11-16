@@ -108,12 +108,12 @@ function renderStep1() {
     /* 선택 상자: 목록 + 고른 값. 고른 값(없으면 저장된 값)이 목록에 없으면 "COM5 (없음)" 항목으로 보이고 선택된 채로 둔다 */
     const saved = c[d.cfg] == null ? "" : String(c[d.cfg]);
     const want = (on || going) && dev.target ? dev.target : (p.sel.dataset.pick != null ? p.sel.dataset.pick : saved);
-    const opts = (dl[d.list] || []).map((o) => [String(o.value), o.label]);
-    if (!opts.some((o) => o[0] === want)) opts.unshift([want, want === "" ? "선택" : dl.t == null ? want : want + " (없음)"]);
+    const opts = (dl[d.list] || []).map((o) => [String(o.value), o.label, !!o.blocked]);      // blocked = 사용 안 할 포트("COM4 · … (사용 안 함)") - 보이지만 고를 수 없다
+    if (!opts.some((o) => o[0] === want)) opts.unshift([want, want === "" ? "선택" : dl.t == null ? want : want + " (없음)", false]);
     const sig = JSON.stringify([opts, want]);
     if (sig !== p.sig) {                                       // 바뀔 때만 다시 그린다(펼쳐 놓은 목록이 닫히지 않게)
       p.sig = sig;
-      setKids(p.sel, ...opts.map(([v, t]) => h("option", { value: v, text: t })));
+      setKids(p.sel, ...opts.map(([v, t, off]) => h("option", { value: v, text: t, disabled: off })));
       p.sel.value = want;
     }
     p.sel.disabled = on || going;                              // 연결된 장비는 잠근다(끊어야 바꿀 수 있다)
@@ -383,27 +383,56 @@ function contactLine(ct) {                                       // 접촉 찾�
 function whyContact() {
   return whyStage(false, true) || (devOk("k2450") ? "" : "저항계 연결 필요 (초기 설정 1)");
 }
+/* 기본(접촉 방식 = 고정 높이): 핀을 작은 단위로 내리고 올려 샘플에 댄 뒤 [현재 높이로 저장]. 측정은 그 높이까지만 내린다.
+   전기 탐색을 고른 때(접촉 방식 = 전기 탐색)에만 [접촉 탐색] · [높이 저장] 이 보인다. 맨 아래에 저장된 높이 · 접촉 방식 · 수동 Z 하강 한도를 보인다. */
+const FINE_STEPS = [0.01, 0.05, 0.1, 1];                          // 핀 미세 이동 단위(mm). 실제 이동은 펄스 단위(0.00625 mm)로 맞춰진다
+const CONTACT_MODES = { fixed: "고정 높이", search: "전기 탐색" };
 function buildStep6() {
-  const pg = { jog: jogPart() };
-  pg.find = busyGate("접촉 탐색", () => api("contact_find"), "on");
+  const pg = { jog: jogPart(), fine: 0.1 };
+  const fineBtns = FINE_STEPS.map((v) => btn(String(v), () => { pg.fine = v; syncFine(); }));
+  function syncFine() { fineBtns.forEach((b, i) => b.classList.toggle("on", pg.fine === FINE_STEPS[i])); }
+  syncFine();
+  pg.zDown = btn("Z 하강", () => api("jog", { axis: "z", mm: pg.fine }));
+  pg.zUp = btn("Z 상승", () => api("jog", { axis: "z", mm: -pg.fine }));
+  pg.zNow = h("span", {});
+  pg.whyFine = h("div", { class: "why" });
+  pg.saveHere = busyGate("현재 높이로 저장", () => api("contact_save_here"), "on");
+  pg.find = busyGate("접촉 탐색", () => api("contact_find"));
   pg.line = h("div", {});
   pg.save = busyGate("높이 저장", () => api("contact_save"));
-  pg.saved = h("div", {});
+  pg.search = h("div", { class: "grp" }, h("h4", { text: "전기 탐색" }),
+    h("div", { class: "small", text: "핀을 샘플 가까이 내린 후 누름" }),
+    h("div", { class: "row" }, pg.find.b, pg.find.w), pg.line,
+    h("div", { class: "row" }, pg.save.b, pg.save.w));
+  pg.saved = h("div", {}); pg.mode = h("div", { class: "small" }); pg.floor = h("div", { class: "small" });
   pg.el = h("div", { class: "panel prep-panel" }, h("h3", { text: "6 · 접촉 높이 설정" }),
-    h("div", { class: "grp" },
-      h("div", { class: "small", text: "핀을 샘플 위 5 mm 이내로 내린 후 누름" }),
-      pg.jog.el,
-      h("div", { class: "row" }, pg.find.b, pg.find.w), pg.line,
-      h("div", { class: "row" }, pg.save.b, pg.save.w)),
-    h("div", { class: "grp" }, pg.saved));
+    h("div", { class: "two" },
+      h("div", { class: "grp" }, h("h4", { text: "샘플 위로 이동" }), pg.jog.el),
+      h("div", { class: "grp" }, h("h4", { text: "핀 높이 조정" }),
+        h("div", { class: "small", text: "핀을 조금씩 내려 샘플에 댄 후 저장" }),
+        h("div", { class: "steps" }, small("이동 거리"), ...fineBtns, small("mm")),
+        h("div", { class: "row" }, pg.zDown, pg.zUp, pg.zNow), pg.whyFine,
+        h("div", { class: "row" }, pg.saveHere.b, pg.saveHere.w),
+        pg.search)),
+    h("div", { class: "grp" }, pg.saved, pg.mode, pg.floor));
   pg.render = () => {
-    const ct = P().contact || {};
-    pg.find.set(ct.active ? "탐색 중" : whyContact());
-    pg.line.textContent = contactLine(ct);
-    pg.line.className = ct.fail && !ct.active ? "st-warn" : "";
-    pg.save.set(running() ? "측정 중 실행 불가" : ct.result && !ct.active ? "" : "[접촉 탐색] 필요");
-    const z = S.cfg.contact_z_mm;
+    const ct = P().contact || {}, c = S.cfg, why = whyStage(false, true);
+    pg.zDown.disabled = pg.zUp.disabled = !!why;
+    pg.whyFine.textContent = why;
+    pg.zNow.textContent = S.pos.z == null ? "" : "현재 Z " + f3(S.pos.z) + " mm";
+    pg.saveHere.set(why || (S.move ? "이동 중" : ""));
+    const search = c.contact_mode === "search";                  // [접촉 탐색] 은 전기 탐색을 고른 때에만 보인다
+    pg.search.classList.toggle("hidden", !search);
+    if (search) {
+      pg.find.set(ct.active ? "탐색 중" : whyContact());
+      pg.line.textContent = contactLine(ct);
+      pg.line.className = ct.fail && !ct.active ? "st-warn" : "";
+      pg.save.set(running() ? "측정 중 실행 불가" : ct.result && !ct.active ? "" : "[접촉 탐색] 필요");
+    }
+    const z = c.contact_z_mm, zf = P().z_floor || {};
     pg.saved.textContent = z == null ? "접촉 높이 없음" : "접촉 높이 Z " + f2(z) + " mm";
+    pg.mode.textContent = "접촉 방식 " + (CONTACT_MODES[c.contact_mode] || c.contact_mode);
+    pg.floor.textContent = zf.mode === "off" || !zf.mode ? "Z 하강 한도 끔" : zf.mm != null ? "Z 하강 한도 " + f2(zf.mm) + " mm" : zf.why;
     pg.jog.update();
   };
   return pg;

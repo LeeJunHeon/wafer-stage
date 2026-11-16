@@ -202,7 +202,14 @@ def test_heater_limits_are_settings_and_apply_at_once(make_ctrl, tmp_path):
         keys = {r["key"] for r in c.get("/api/settings").json()}
         assert {"heater_max_c", "heater_max_on_s", "temp_stale_s", "run_no_rise_s", "run_no_rise_c", "run_fast_rise_c_s"} <= keys
         assert "heater_min_off_s" not in keys and "heater_min_off_s" not in BY_KEY, "다시 켜기 대기 설정은 없앴다"
-        assert c.put("/api/settings", json={"heater_max_c": 50, "heater_max_on_s": 5, "temp_stale_s": 1}).json() == {"ok": True}
+        # 이 세 값만 바꾸면 다른 설정과 맞지 않는다(가열 끝 온도 85 °C ≥ 차단 50 °C 등) → 조합 검사가 이유와 함께 거절한다
+        r = c.put("/api/settings", json={"heater_max_c": 50, "heater_max_on_s": 5, "temp_stale_s": 1})
+        assert r.status_code == 400 and r.json()["msg"] == "가열 끝 온도 85 °C · 차단 온도 50 °C 미만 필요"
+        assert ctrl.cfg["heater_max_c"] == 110.0, "거절되면 하나도 바뀌지 않는다"
+        # 맞는 조합으로 같이 바꾼다(가열 끝 온도 · 무반응 시간 · 읽기 시간도 함께 줄인다)
+        patch = {"heater_max_c": 50, "heater_max_on_s": 5, "temp_stale_s": 1, "run_heater_off_c": 45, "run_no_rise_s": 3,
+                 "run_interval_s": 0.05, "meter_avg_count": 1, "meter_nplc": 0.1, "temp_read_s": 0.05, "read_overhead_s": 0.05}
+        assert c.put("/api/settings", json=patch).json() == {"ok": True}
         # 차단 온도 50 °C
         ctrl.relay_on(1)
         ctrl.feed_temperature(49.0)

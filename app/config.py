@@ -21,7 +21,7 @@ DEFAULT_PATH = ROOT / "settings.json"
 class Item:
     key: str
     default: Any
-    kind: str                       # str | int | float | bool | grid | xy(비어 있을 수 있는 [x, y] mm) | optfloat(비어 있을 수 있는 숫자) | choice
+    kind: str                       # str | int | float | bool | grid | xy(비어 있을 수 있는 [x, y] mm) | optfloat(비어 있을 수 있는 숫자) | choice | list(글자 목록)
     label: str                      # 화면에 보일 한국어 이름(뜻이 바로 보이게)
     unit: str = ""
     min: Optional[float] = None
@@ -48,7 +48,9 @@ ITEMS = (
        Item("data_dir", "../data_v3", "str", "데이터 폴더", folder=True,
             desc="측정 기록 · 로그 · 초기 설정 값을 저장하는 폴더\n상대 경로는 프로그램 폴더 기준 · 변경 후 재시작 필요"),
        Item("auto_connect", True, "bool", "시작 시 자동 연결",                          # 저장된 포트 · 주소 하나씩만 연다(찾아다니지 않는다)
-            desc="시작할 때 저장된 포트 · 주소로 연결\n장비 없이 화면만 볼 때 끔"))
+            desc="시작할 때 저장된 포트 · 주소로 연결\n장비 없이 화면만 볼 때 끔"),
+       Item("blocked_ports", ["COM4"], "list", "사용 안 할 포트",                       # COM4 = LabVIEW 용 Uno. 열면 그 장비가 재시작한다
+            desc="스테이지로 열지 않는 포트 · 다른 장비가 쓰는 포트\n선택 상자에서 고를 수 없고 연결도 거절"))
     + _g("카메라",                                                                        # 실장비 기본값(v2 운용값): 장치 1 · 4080×3060 · MJPG · 노출 −5 · 화이트밸런스 5000 K · 초점 고정
          Item("camera_index", 1, "int", "카메라 번호", "번", 0, 9,                     # 0 번은 노트북 내장 카메라
               desc="카메라 장치 번호 · 0 은 보통 내장 카메라\n초기 설정 1 에서 선택 · 연결되면 자동 저장"),
@@ -92,7 +94,14 @@ ITEMS = (
          Item("approach_mm", 2.0, "float", "저속 하강 거리", "mm", 0, 20,
               desc="접촉 탐색 시작 높이보다 이만큼 위부터 핀 하강 속도로 하강"),
          Item("watchdog_ms", 2000, "int", "통신 감시 시간", "ms", 500, 60000,
-              desc="프로그램 신호가 이 시간 동안 없으면 보드가 릴레이 차단\n보통 변경 안 함 · 스테이지 재연결 후 적용"))
+              desc="프로그램 신호가 이 시간 동안 없으면 보드가 릴레이 차단\n보통 변경 안 함 · 스테이지 재연결 후 적용"),
+         # 수동 Z 하강 한도: 실제로 몇 mm 까지 내려도 되는지 아직 모른다 → 기능은 있고 기본은 끔. 측정의 접촉 단계 · 접촉 탐색은 자기 한도를 따로 쓴다
+         Item("z_floor_mode", "off", "choice", "Z 하강 한도", choices=(("off", "끔"), ("contact", "접촉 높이 기준"), ("fixed", "고정 값")),
+              desc="수동 이동이 한도 아래로 가는 명령을 거절\n실장비에서 값을 확인한 뒤 켬 · 접촉 높이를 정할 때는 끔"),
+         Item("z_floor_margin_mm", 0.3, "float", "Z 한도 여유", "mm", 0, 10,
+              desc="접촉 높이 기준일 때 한도 = 접촉 높이 − 이 값\n수동 이동으로 핀이 샘플에 닿지 않게 함"),
+         Item("z_floor_mm", None, "optfloat", "Z 한도 고정 값", "mm", 0, 100, verify=True,
+              desc="고정 값일 때 수동으로 내릴 수 있는 가장 낮은 Z\n실장비에서 확인한 높이 입력"))
     + _g("히트건 안전",
          Item("heater_relay", 1, "int", "히트건 릴레이", "번", 1, 10,
               desc="히트건이 연결된 릴레이 번호\n배선을 바꿨을 때만 변경"),
@@ -128,17 +137,21 @@ ITEMS = (
               desc="촬영 때 헤드 마커가 등록 위치와 이만큼 다르면 주의"),
          Item("pos_block_mm", 10.0, "float", "헤드 위치 경보 거리", "mm", 0.5, 100,
               desc="헤드 마커가 등록 위치와 이만큼 다르면 경보 · 측정 시작 차단\n원점 재설정 또는 좌표 재보정으로 해제"))
-    + _g("접촉 탐색",                                                                     # v2 에서 실장비로 쓰던 값 그대로
+    + _g("접촉",                                                                          # 기본은 고정 높이. 전기 탐색(v2 방식)은 접촉 판정 기준이 정해진 뒤에 쓴다
+         Item("contact_mode", "fixed", "choice", "접촉 방식", choices=(("fixed", "고정 높이"), ("search", "전기 탐색")),
+              desc="고정 높이는 접촉 높이까지만 하강 · 전기 탐색은 전류를 보며 더 하강\n접촉 판정 기준을 정한 뒤 전기 탐색으로 변경"),
+         Item("contact_fixed_read", True, "bool", "접촉 후 저항 기록",
+              desc="고정 높이로 내린 뒤 저항을 한 번 재서 기록 · 판정 없음\n끄면 재지 않음"),
          Item("contact_z_mm", None, "optfloat", "접촉 높이", "mm", 0, 100,
-              desc="핀이 샘플에 닿는 Z 높이\n초기 설정 6 [높이 저장] 으로 저장 · 샘플 두께가 바뀌면 재설정"),
+              desc="핀이 샘플에 닿는 Z 높이\n초기 설정 6 에서 저장 · 샘플 두께가 바뀌면 재설정"),
          Item("contact_volt", 0.1, "float", "접촉 확인 전압", "V", 0.01, 5,
               desc="접촉을 확인할 때 거는 전압\n실장비에서 확인된 값 · 보통 변경 안 함"),
          Item("contact_ilim_a", 1e-4, "float", "접촉 확인 전류 한도", "A", 1e-8, 1.0,
               desc="접촉을 확인할 때 전류 한도 · 금속 판에 닿으면 이 한도에 걸림\n보통 변경 안 함"),
          Item("contact_nplc", 0.1, "float", "접촉 확인 NPLC", "", 0.01, 10,
               desc="접촉 확인 한 번의 적분 시간 · 작을수록 빠름\n보통 변경 안 함"),
-         Item("contact_step_mm", 0.025, "float", "하강 간격", "mm", 0.00625, 1,
-              desc="접촉을 확인하며 핀을 내리는 간격\n1 펄스는 0.00625 mm"),
+         Item("contact_step_mm", 0.1, "float", "하강 간격", "mm", 0.00625, 0.5,
+              desc="전기 탐색에서 한 번에 내리는 최대 거리 · 펄스 단위로 내림\n작을수록 느리고 정밀 · 최소 1 펄스 0.00625 mm"),
          Item("contact_start_above_mm", 0.3, "float", "저장 높이 위 시작", "mm", 0, 10,
               desc="측정 때 접촉 높이보다 이만큼 위에서 확인 시작\n샘플 높이 편차가 크면 늘림"),
          Item("contact_max_below_mm", 0.5, "float", "저장 높이 아래 한도", "mm", 0, 5,
@@ -149,10 +162,16 @@ ITEMS = (
               desc="첫 접촉 뒤 더 누르는 거리 · 네 핀이 모두 닿게 함"),
          Item("contact_short_ohm", 1000.0, "float", "금속 판 판정 저항", "Ω", 0.1, 1e9,
               desc="2단자 저항이 이 값보다 작으면 금속 판 접촉으로 판정\n샘플 저항이 매우 낮을 때 낮춤"),
-         Item("contact_search_mm", 5.0, "float", "탐색 거리", "mm", 0.1, 20,
-              desc="[접촉 탐색] 이 현재 높이부터 내려가는 최대 거리"),
-         Item("contact_search_step_mm", 0.05, "float", "탐색 간격", "mm", 0.00625, 1,
-              desc="[접촉 탐색] 에서 핀을 내리는 간격"),
+         Item("contact_search_mm", 1.0, "float", "탐색 거리", "mm", 0.1, 20,
+              desc="[접촉 탐색] 이 현재 높이부터 내려가는 최대 거리\n핀을 샘플 가까이 내린 뒤 탐색"),
+         Item("contact_search_step_mm", 0.1, "float", "탐색 간격", "mm", 0.00625, 0.5,
+              desc="[접촉 탐색] 의 첫 하강에서 한 번에 내리는 최대 거리\n하강 간격 이상으로 설정"),
+         Item("contact_search_back_mm", 0.3, "float", "탐색 되돌림 거리", "mm", 0, 5,
+              desc="[접촉 탐색] 에서 닿은 뒤 이만큼 올렸다가 하강 간격으로 다시 확인\n탐색 간격 × 접촉 확인 횟수 이상으로 설정"),
+         Item("contact_four_min_ratio", 0.1, "float", "4단자 최소 비율", "", 0, 1,
+              desc="4단자 저항이 2단자의 이 비율보다 작으면 감지 핀 미접촉으로 판정"),
+         Item("contact_max_reads", 2000, "int", "탐색 읽기 상한", "번", 10, 100000,
+              desc="한 번의 탐색에서 읽는 최대 횟수 · 넘으면 미접촉으로 종료"),
          Item("contact_open_a", 1e-9, "float", "미접촉 판정 전류", "A", 1e-13, 1e-3,
               desc="전류가 이 값보다 작으면 미접촉으로 판정\n측정 중 핀 떨어짐 판정에도 사용"))
     + _g("측정 조건",
@@ -197,6 +216,17 @@ ITEMS = (
               desc="가열 · 냉각 한 단계가 이 시간을 넘으면 그 샘플 실패"),
          Item("run_open_n", 5, "int", "핀 떨어짐 판정 횟수", "번", 1, 100,
               desc="측정 중 전류가 미접촉 판정 전류보다 작은 일이 이 횟수 연속이면 주의"))
+    + _g("읽기 시간 검사",                                                                # 측정 간격 + 읽기 시간이 온도 못 읽음 허용 시간보다 충분히 짧은지(problems)
+         Item("stale_use_ratio", 0.7, "float", "허용 시간 사용 비율", "", 0.1, 1,
+              desc="읽기 한 회차 예상이 온도 못 읽음 허용 시간 × 이 값 미만 필요\n넘으면 히트건이 꺼져 가열 끝 온도 미도달"),
+         Item("line_hz", 60, "int", "전원 주파수", "Hz", 50, 60,
+              desc="적분 시간 계산의 기준 · 1 PLC = 1 ÷ 전원 주파수\n국내는 60"),
+         Item("meter_conv_factor", 3.0, "float", "저항 읽기 변환 배수", "", 1, 5, verify=True,
+              desc="저항 한 번 읽을 때의 적분 횟수 · 자동 영점 켬은 3번\n읽기 시간 예상에만 사용"),
+         Item("read_overhead_s", 0.1, "float", "저항 읽기 통신 여유", "s", 0, 5, verify=True,
+              desc="저항 한 번 읽을 때 통신과 범위 단계에 드는 시간\n읽기 시간 예상에만 사용 · visa.log 로 확인"),
+         Item("temp_read_s", 0.3, "float", "온도 읽기 시간", "s", 0.01, 10, verify=True,
+              desc="온도 한 번 읽는 데 걸리는 시간\n읽기 시간 예상에만 사용 · visa.log 로 확인"))
     + _g("저장",
          Item("nas_dir", "", "str", "NAS 폴더", folder=True,
               desc="측정 파일(.dat)을 복사할 NAS 폴더\n비우면 PC 에만 저장"),
@@ -231,6 +261,10 @@ def check(item: Item, value: Any) -> Any:
         if value not in [c[0] for c in item.choices]:
             raise ConfigError("%s: %s 중 하나 필요" % (name, " · ".join(c[1] for c in item.choices)))
         return value
+    if item.kind == "list":
+        if not isinstance(value, list) or not all(isinstance(s, str) and s.strip() for s in value):
+            raise ConfigError("%s: 글자 목록 필요 · 예 [\"COM4\"]" % name)
+        return [s.strip() for s in value]
     if item.kind == "optfloat" and value is None:
         return None
     if item.kind == "xy":
@@ -261,7 +295,7 @@ def _show(item: Item, v) -> str:
         return "켬" if v else "끔"
     if item.kind == "choice":
         return dict(item.choices).get(v, str(v))
-    if item.kind in ("grid", "xy"):
+    if item.kind in ("grid", "xy", "list"):
         return json.dumps(v, ensure_ascii=False)
     if item.kind in ("int", "float", "optfloat"):
         return "%g" % v
@@ -277,6 +311,61 @@ def hint(item: Item) -> str:
     if item.min is not None and item.max is not None:
         parts.append("범위 %g~%g" % (item.min, item.max))
     return " · ".join(parts)
+
+
+def problems(v: dict) -> list:
+    """설정 조합 검사: 값 하나하나는 맞아도 같이 쓰면 안 되는 조합을 찾는다. 문제마다 사람이 읽는 한 줄. 없으면 [].
+    설정 저장(PUT)과 측정 시작 · 재개가 이 함수 하나를 쓴다(app/control.py update_settings · app/jobs/run.py start · resume)."""
+    out = []
+    # ---- 온도 ----
+    if not float(v["run_heater_off_c"]) < float(v["heater_max_c"]):
+        out.append("가열 끝 온도 %g °C · 차단 온도 %g °C 미만 필요" % (v["run_heater_off_c"], v["heater_max_c"]))
+    if not float(v["run_cool_end_c"]) < float(v["run_heater_off_c"]):
+        out.append("냉각 끝 온도 %g °C · 가열 끝 온도 %g °C 미만 필요" % (v["run_cool_end_c"], v["run_heater_off_c"]))
+    if not float(v["run_start_c"]) < float(v["run_heater_off_c"]):
+        out.append("시작 온도 %g °C · 가열 끝 온도 %g °C 미만 필요" % (v["run_start_c"], v["run_heater_off_c"]))
+    if not float(v["run_no_rise_s"]) < float(v["heater_max_on_s"]):
+        out.append("가열 무반응 시간 %g초 · 히트건 최대 켜짐 시간 %g초 미만 필요" % (v["run_no_rise_s"], v["heater_max_on_s"]))
+    # ---- 읽기 시간: 측정 중 온도는 측정 간격마다 읽는다. 한 회차가 온도 못 읽음 허용 시간에 가까우면 안전 감시가 히트건을 꺼서
+    #      모든 샘플이 "가열 끝 온도 미도달" 이 된다 → 측정 간격 + 온도 읽기 + 저항 읽기 예상 < 허용 시간 × 사용 비율 ----
+    cycle = cycle_time_s(v)
+    limit = float(v["temp_stale_s"]) * float(v["stale_use_ratio"])
+    if not cycle < limit:
+        out.append("읽기 한 회차 예상 %.2f초 · %.2f초 미만 필요 · 측정 간격과 평균 횟수 확인" % (cycle, limit))
+    # ---- 접촉 값들의 크기 관계 ----
+    if float(v["contact_step_mm"]) > float(v["contact_search_step_mm"]):
+        out.append("하강 간격 %g mm · 탐색 간격 %g mm 이하 필요" % (v["contact_step_mm"], v["contact_search_step_mm"]))
+    if float(v["contact_search_step_mm"]) > float(v["contact_search_mm"]):
+        out.append("탐색 간격 %g mm · 탐색 거리 %g mm 이하 필요" % (v["contact_search_step_mm"], v["contact_search_mm"]))
+    if float(v["contact_overdrive_mm"]) > float(v["contact_max_below_mm"]):
+        out.append("더 누르는 거리 %g mm · 저장 높이 아래 한도 %g mm 이하 필요" % (v["contact_overdrive_mm"], v["contact_max_below_mm"]))
+    need_back = int(v["contact_confirm_n"]) * float(v["contact_search_step_mm"])
+    if float(v["contact_search_back_mm"]) < need_back - 1e-9:
+        out.append("탐색 되돌림 거리 %g mm · 탐색 간격 × 확인 횟수 %g mm 이상 필요" % (v["contact_search_back_mm"], need_back))
+    if not float(v["contact_open_a"]) < float(v["contact_ilim_a"]):
+        out.append("미접촉 판정 전류 %g A · 접촉 확인 전류 한도 %g A 미만 필요" % (v["contact_open_a"], v["contact_ilim_a"]))
+    # ---- Z 하강 한도 · 포트 ----
+    if v["z_floor_mode"] == "fixed":
+        if v["z_floor_mm"] is None:
+            out.append("Z 하강 한도 고정 값 필요")
+        elif float(v["z_floor_mm"]) > float(v["z_max_mm"]):
+            out.append("Z 한도 고정 값 %g mm · Z 가동 범위 %g mm 이하 필요" % (v["z_floor_mm"], v["z_max_mm"]))
+    if port_blocked(v["stage_port"], v["blocked_ports"]):
+        out.append("스테이지 포트 %s · 사용 안 할 포트에 포함됨" % v["stage_port"])
+    return out
+
+
+def cycle_time_s(v: dict) -> float:
+    """측정 한 회차(온도 한 번 + 저항 한 번 + 측정 간격)의 예상 시간(초). 저항 읽기 시간의 근거는 meters.read_time_s."""
+    from app.devices.meters import read_time_s
+    r = read_time_s(v["meter_nplc"], v["meter_avg_count"], v["line_hz"], v["meter_conv_factor"], v["read_overhead_s"])
+    return float(v["run_interval_s"]) + float(v["temp_read_s"]) + r
+
+
+def port_blocked(port, blocked) -> bool:
+    """사용 안 할 포트인가(대소문자 구분 없이)."""
+    p = str(port or "").strip().upper()
+    return bool(p) and p in [str(b).strip().upper() for b in (blocked or [])]
 
 
 def defaults() -> dict:
@@ -332,15 +421,19 @@ class Config:
     def __getitem__(self, key: str):
         return self.values[key]
 
-    def update(self, patch: dict):
-        """전부 검증을 통과해야 바뀐다(일부만 바뀌지 않는다)."""
+    def checked(self, patch: dict) -> dict:
+        """patch 의 값을 하나하나 검증해 돌려준다(형 변환 후). 아무것도 바꾸지 않는다. 못 쓰는 값이면 ConfigError."""
         new = {}
         for k, v in patch.items():
             item = BY_KEY.get(k)
             if item is None:
                 raise ConfigError("알 수 없는 설정: %s" % k)
             new[k] = check(item, v)
-        self.values.update(new)
+        return new
+
+    def update(self, patch: dict):
+        """전부 검증을 통과해야 바뀐다(일부만 바뀌지 않는다). 조합 검사(problems)는 Controller.update_settings 가 한다."""
+        self.values.update(self.checked(patch))
 
     def data_path(self) -> Path:
         p = Path(self.values["data_dir"])

@@ -328,7 +328,10 @@ class FakeV11:
         elif c == "rs":
             self._rs()
         elif c == "wd":
-            v = int(num(1, -1)) if len(tok) > 1 else -1
+            if len(tok) < 2 or not (tok[1].isdigit() and len(tok[1]) <= 6):      # 펌웨어 wdCmd 와 같다: 값이 없거나 숫자가 아니면 지금 값만 찍는다
+                self._emit("  통신 감시 %dms (wd <ms>, 0 = 끔)" % self.wd_ms)
+                return
+            v = int(tok[1])
             if v < 0 or v > 600000:
                 self._emit("  [거부] wd 는 0~600000 ms")
             else:

@@ -26,7 +26,41 @@ from app.safety import BY_MANUAL, BY_RUN, TRIP_MAX_C, TRIP_MAX_ON, TRIP_NO_TEMP,
 from app.state import ALARM, NOTICE, State
 
 AXES = "xyz"
-MOTION_WORDS = ("g", "j", "m", "fz", "z", "sp", "home", "x", "y", "rx", "ry", "fx", "fy")   # 직접 명령에서 막는 이동 · 원점 명령
+# K2450 을 쓰는 쪽(사용권 - 한 번에 하나). 거절 글 "저항계 사용 중 · <누가>" 에 그대로 쓴다
+USE_CONTACT, USE_ONCE, USE_MONITOR, USE_RUN, USE_RAW = "접촉 탐색", "1회 측정", "연속 측정", "자동 측정", "직접 명령"
+
+# 스테이지 직접 명령은 **허용 목록**이다(막을 명령을 적는 방식은 빠진 명령이 그대로 통과한다).
+# 펌웨어 V11(firmware/stage_v11/stage_v11.ino handleLine)의 명령을 하나씩 확인해 "읽기만 하는 것" 만 골랐다. 값이 붙으면 거절한다(한 낱말만).
+#   st   printST()                      파싱용 상태 한 줄 - 아무것도 바꾸지 않는다
+#   p    printStatus() + printWiring()  사람용 상태 · 배선 표 - 바꾸지 않는다
+#   rs   printRS()                      릴레이 상태 한 줄 - 바꾸지 않는다
+#   wd   wdCmd() 값 없이                 지금 통신 감시 시간만 찍는다(값을 주면 감시 시간을 바꾼다 - wd 0 은 감시를 끈다)
+#   ?    모르는 명령 → 도움말            명령 목록을 찍는다 - 바꾸지 않는다
+# 허용하지 않는 것과 까닭:
+#   이동      fz home gx gy gz g mx my mz jx jy jz x y x1 x2 rx ry fx fy   (x1 · x2 는 X 모터 하나만 움직여 갠트리를 튼다)
+#   원점 · 위치 z zx zy zz sp forget save                                   (원점을 몰래 바꾸거나 EEPROM 을 쓴다)
+#   릴레이    r <n> <1|0> · r all 0                                         (안전 규칙 3 을 돌아간다 - 버튼을 쓴다)
+#   파라미터  v a b w e                                                     (v · a · b 는 값이 없으면 상태만 찍지만 p 가 같은 것을 보여 준다.
+#                                                                           w 는 값이 없으면 0 으로 바꾼다. e 1 은 모터를 풀고 원점을 지운다)
+#   '!' 는 지금처럼 비상정지로 처리한다.
+STAGE_RAW_OK = ("st", "p", "rs", "wd", "?")
+RAW_STAGE_NO = "직접 명령은 읽기만 가능 · 이동 · 원점 · 릴레이 · 설정은 버튼 사용"
+# 측정 장비 직접 명령은 조회(…?)만. 조회 모양이어도 장비를 움직이는 것은 뺀다(머리글 앞부분으로 가린다):
+#   MEAS…?  기능 · 범위를 다시 설정하고 잰다(K2110 은 열전대 설정이 풀린다)   *TST? · *CAL?  자가 시험 · 교정
+#   K2450 의 READ? · INIT 는 소스를 써서 재는 동작이다 - 재는 것은 [1회 측정] 버튼으로 한다
+METER_RAW_NO_HEAD = {"k2450": ("MEAS", "READ", "INIT", "*TST", "*CAL"), "k2110": ("MEAS", "INIT", "*TST", "*CAL")}
+RAW_METER_NO = "직접 명령은 조회만 가능 · 출력과 설정은 버튼 사용"
+
+
+def meter_raw_ok(target, line) -> bool:
+    """측정 장비 직접 명령이 조회인가: 한 줄에 명령 하나(';' 로 잇지 않는다) · 머리글(첫 낱말)이 '?' 로 끝난다 · 장비를 움직이는 조회가 아니다."""
+    line = str(line).strip()
+    if not line or ";" in line:
+        return False
+    head = line.split()[0].upper()
+    if not head.endswith("?"):
+        return False
+    return not head.lstrip(":").startswith(METER_RAW_NO_HEAD.get(target, ()))
 
 
 CAMERA_SCAN = (0, 1, 2, 3)                                         # 카메라 목록을 만들 때 열어 보는 번호
@@ -75,6 +109,8 @@ class Controller:
         self._heater_why = None                                     # 지금 보내는 "히트건 끄기"의 까닭(로그용)
         self._folder_picker = None                                  # 폴더 선택 창을 띄우는 함수(창으로 실행했을 때 run.py 가 넘긴다)
         self._cam_lock = threading.Lock()                           # 카메라 열기(연결 · 목록용 열어 보기)는 한 번에 하나
+        self._k2450_cv = threading.Condition()                      # K2450 사용권(한 번에 한 기능)
+        self._k2450_user = None                                     # 지금 K2450 을 쓰는 쪽(USE_*). 없으면 None
         self._scan_lock = threading.Lock()                          # 장비 목록 읽기는 한 번에 하나
         self._motion = threading.Lock()
         self._plock = threading.Lock()                              # 조그 대기 칸 · 현재 이동 종류
@@ -101,7 +137,9 @@ class Controller:
     def list_devices(self):
         """이 컴퓨터의 장비 목록(선택 상자용). 포트 · 측정 장비는 목록만 읽고 열지 않는다.
         카메라는 0~3 번을 잠깐 열어 보고 열리는 것만 넣는다. 연결 중인 카메라 번호는 열어 보지 않고 그대로 넣는다."""
-        ports = [{"value": n, "label": port_label(n, d)} for n, d in serial_ports()]
+        blocked = self.cfg["blocked_ports"]                         # 사용 안 할 포트: 목록에는 보이지만 고를 수 없다(화면이 꺼 둔다)
+        ports = [{"value": n, "label": port_label(n, d) + (" (사용 안 함)" if config_mod.port_blocked(n, blocked) else ""),
+                  "blocked": config_mod.port_blocked(n, blocked)} for n, d in serial_ports()]
         visa, note = meters.list_resources()
         cams, closed = [], []
         c = self.cfg
@@ -143,6 +181,11 @@ class Controller:
             raise Rejected("스테이지 포트 선택 필요")
         if self.stage.connected:
             raise Rejected("스테이지 이미 연결됨")
+        if config_mod.port_blocked(port, self.cfg["blocked_ports"]):   # 다른 장비가 쓰는 포트(열면 그 장비가 재시작한다): [연결] · 자동 연결 모두 열지 않는다
+            why = "%s 사용 안 함 · 다른 포트 선택 필요" % port
+            self.state.set_device("stage", "오류", why, port)
+            self.logs.app("스테이지 연결 거절 · %s 는 사용 안 할 포트" % port, "warn")
+            raise Rejected(why)
         self.state.set_device("stage", "연결 중", "", port)
         try:
             speed = (self.cfg["move_speed_pps"], self.cfg["move_accel_pps2"], self.cfg["move_start_pps"])
@@ -459,6 +502,10 @@ class Controller:
             why = self.safety.reject_target(axis, cur + pulses / PPMM, True)
             if why:
                 raise Rejected(why)
+        if axis == "z" and pulses > 0:                              # 수동 Z 하강 한도(켜져 있을 때만): 한도 아래로 가는 조그는 통째로 거절한다
+            why = self.safety.reject_z_down(None if cur is None else cur + pulses / PPMM, bool(self.stage.homed.get("z")))
+            if why:
+                raise Rejected(why)
         tgt = {a: self._mm(a) for a in AXES}
         if tgt[axis] is not None:
             tgt[axis] = round(tgt[axis] + pulses / PPMM, 3)
@@ -476,6 +523,10 @@ class Controller:
             raise Rejected("%s 원점 필요 (초기 설정 2)" % " · ".join(miss))
         for ax, v in (("x", x), ("y", y)) + ((("z", z),) if z is not None else ()):
             why = self.safety.reject_target(ax, v, True)
+            if why:
+                raise Rejected(why)
+        if z is not None and z > 0:                                 # 수동 Z 하강 한도: 움직이기 전에 명령 전체를 거절한다(측정은 Z 값을 주지 않는다)
+            why = self.safety.reject_z_down(z, True)
             if why:
                 raise Rejected(why)
         g = self.safety.generation
@@ -666,11 +717,15 @@ class Controller:
         return {"temp": v, "note": "" if v is not None else "값 없음 · 열전대 확인 필요"}
 
     def read_resistance(self):
-        dev = self.k2450
-        if dev is None or not dev.is_open:
-            raise Rejected("저항계 연결 안 됨")
+        """[1회 측정]. 다른 쪽(접촉 탐색 · 자동 측정 …)이 K2450 을 쓰고 있으면 거절한다."""
+        dev = self._need_k2450()
         self._no_run("저항 측정")                                   # 측정이 K2450 을 쓰는 중이다(설정을 바꾸면 안 된다)
-        c = self.cfg
+        with self._use_k2450(USE_ONCE):
+            return self._measure_r(dev)
+
+    def _measure_r(self, dev, meter=None):
+        """저항 한 번(설정 → 출력 켜기 → 읽기 → 출력 끄기)을 재서 화면 상태에 올린다. 사용권을 가진 쪽만 부른다. meter = 측정 조건(없으면 지금 설정)."""
+        c = meter or self.cfg
         try:
             r = dev.measure_once(c["meter_volt"], c["meter_ilim_a"], c["meter_four_wire"], c["meter_nplc"], c["meter_avg_count"])
         except meters.VisaError as e:
@@ -678,6 +733,55 @@ class Controller:
             raise Rejected(str(e))
         self.state.update("resistance", ohm=r["ohm"], current=r["current"], volt=r["volt"], four_wire=r["four_wire"], time=time.time())
         return r
+
+    # ------------------------------------------------------------------
+    # K2450 사용권: 한 번에 한 기능만
+    # ------------------------------------------------------------------
+    def _k2450_acquire(self, who, stop_monitor=False):
+        """K2450 사용권을 얻는다. 쓰는 쪽은 접촉 탐색 · 1회 측정 · 연속 측정 · 자동 측정 · 직접 명령 중 하나(USE_*)이고, 여러 번 읽는 작업 전체를 감싼다
+        (장비 객체의 lock 은 명령 한 줄 · 읽기 한 번만 지킨다 - 그 사이에 다른 기능이 끼어 설정을 바꾸는 것은 못 막는다).
+        다른 쪽이 쓰고 있으면 "저항계 사용 중 · <누가>" 로 거절한다. 연속 측정만은 한 회차가 짧으므로 끝나기를 기다렸다가 얻는다.
+        stop_monitor = 연속 측정을 먼저 끈다(접촉 · 측정 시작)."""
+        with self._k2450_cv:
+            t_end = time.monotonic() + 2.0 * meters.VISA_TIMEOUT_MS / 1000.0     # 연속 측정의 한 회차(읽기 한 번)가 끝나기를 기다리는 한도
+            while self._k2450_user == USE_MONITOR and time.monotonic() < t_end:
+                self._k2450_cv.wait(0.05)
+            if self._k2450_user is not None:
+                raise Rejected("저항계 사용 중 · %s" % self._k2450_user)
+            self._k2450_user = who
+        if stop_monitor and self._monitor_on:                       # 사용권을 얻은 뒤에 끈다(거절됐는데 연속 측정만 꺼지는 일이 없게). 그 사이 루프는 사용권을 못 얻어 건너뛴다
+            self._monitor_on = False
+            self.state.set("monitor", False)
+            self.logs.app("연속 측정 끔 · %s 시작" % who)
+
+    def _k2450_try(self, who) -> bool:
+        """기다리지 않고 사용권을 얻어 본다(연속 측정 루프용). 다른 쪽이 쓰고 있으면 False."""
+        with self._k2450_cv:
+            if self._k2450_user is not None:
+                return False
+            self._k2450_user = who
+            return True
+
+    def _k2450_release(self, who):
+        with self._k2450_cv:
+            if self._k2450_user == who:
+                self._k2450_user = None
+            self._k2450_cv.notify_all()
+
+    def k2450_begin_run(self):
+        """측정 시작 · 재개: 연속 측정을 끄고 K2450 사용권("자동 측정")을 얻는다. 다른 기능이 쓰는 중이면 거절한다."""
+        self._k2450_acquire(USE_RUN, stop_monitor=True)
+
+    def k2450_end_run(self):
+        self._k2450_release(USE_RUN)
+
+    @contextmanager
+    def _use_k2450(self, who, stop_monitor=False):
+        self._k2450_acquire(who, stop_monitor)
+        try:
+            yield
+        finally:
+            self._k2450_release(who)
 
     # ------------------------------------------------------------------
     # 측정 중 막기 · 경보 지우기
@@ -708,7 +812,7 @@ class Controller:
         raise Rejected("원인 해결 후 해제됨")
 
     # ------------------------------------------------------------------
-    # 전기로 접촉 찾기 (app/contact.py - v2 방식 그대로)
+    # 접촉: 고정 높이(기본 · contact_fixed) / 전기 탐색(선택 · app/contact.py - v2 방식)
     # ------------------------------------------------------------------
     def _need_k2450(self):
         dev = self.k2450
@@ -731,8 +835,9 @@ class Controller:
         return False
 
     def contact_descend(self, mode: str, z_ref, g, lock: bool = True):
-        """전기로 접촉을 확인하며 핀을 내린다. mode "height"(z_ref = 저장한 접촉 높이) · "search"(z_ref = 지금 Z).
-        반환 {first_z, final_z, r2, r4}. 실패는 ContactFail(핀을 맨 위로 올리고 출력을 끈 뒤). 비상정지면 Rejected(핀은 그대로, 출력만 끔)."""
+        """전기로 접촉을 확인하며 핀을 내린다("전기 탐색"). mode "height"(z_ref = 저장한 접촉 높이) · "search"(z_ref = 지금 Z).
+        반환 {first_z, final_z, r2, r4}. 실패는 ContactFail(핀을 맨 위로 올리고 출력을 끈 뒤). 비상정지면 Rejected(핀은 그대로, 출력만 끔).
+        부르는 쪽이 K2450 사용권을 갖고 있어야 한다(contact_find = "접촉 탐색" · 측정 작업 = "자동 측정")."""
         dev = self._need_k2450()
         self._need_stage()
         if not self.stage.homed.get("z"):
@@ -763,7 +868,7 @@ class Controller:
                     dev.output(True)
                 except meters.VisaError as e:
                     raise contact_mod.ContactFail("저항계 설정 오류 · %s" % str(e)[:40], "inst")
-                z_end = self._probe_down(g, z_start, floor, sense)
+                z_end = self._probe_down(g, z_start, floor, sense, st["max_down"])
             res = {"mode": mode, "first_z": round(st["first_z"], 4), "final_z": round(z_end, 4), "r2": st["r2"], "r4": st["r4"],
                    "x": self._mm("x"), "y": self._mm("y"), "t": time.time()}
             pc.update(result=res, text="샘플에 닿음")
@@ -785,13 +890,10 @@ class Controller:
             pc["active"] = False
             self.prep.publish()
 
-    def _probe_down(self, g, z_start, floor, sense):
-        """z_start 까지 내린 뒤(마지막 approach_mm 는 느리게) 멈출 때마다 sense(z) 가 정한 만큼 움직인다. 한도(floor) 아래로는 내리지 않는다.
-        이동은 펄스 단위 절대 이동(gz)이라 0.025 mm(4 펄스) 간격이 흔들리지 않는다. 반환: 마지막 Z(mm)."""
-        floor_p = int(float(floor) * PPMM + 1e-6)
-        start_p = stage_mod.mm_to_pulse(z_start)
-        if not 0 < start_p <= floor_p:
-            raise Rejected("접촉 탐색 범위 오류 · Z %.2f ~ %.2f mm" % (z_start, floor))
+    @contextmanager
+    def _approach(self, g, start_p):
+        """핀을 start_p(펄스)까지 내린다: 마지막 approach_mm 는 핀 하강 속도(slow_speed_pps)로. with 블록 안은 그 느린 속도 그대로이고, 나올 때 속도를 되돌린다.
+        핀이 이미 start_p 보다 낮으면 움직이지 않고 거절한다(올렸다 내리지 않는다)."""
         cur_p = self.stage.read_status(g)["pos"]["z"]
         if cur_p > start_p:
             raise Rejected("핀이 시작 높이 Z %.2f mm 보다 낮음 · 핀 상승 필요" % (start_p / PPMM))
@@ -803,21 +905,7 @@ class Controller:
             self.stage.set_v(min(normal, int(self.cfg["slow_speed_pps"])), g)
             if start_p > pre_p:
                 self.stage.goto("z", start_p, g)
-            zp = start_p
-            while True:
-                dz = sense(zp / PPMM)
-                if not self.safety.gen_ok(g):                       # 재는 동안 비상정지가 왔으면 다음 걸음을 보내지 않는다
-                    raise stage_mod.Discarded("정지로 취소됨")
-                if dz is None:
-                    return zp / PPMM
-                dp = stage_mod.mm_to_pulse(dz)
-                if dp == 0:
-                    continue
-                np_ = max(0, zp + dp)
-                if np_ > floor_p:                                   # sense 가 이미 막지만 한 번 더(한도 아래로는 절대 내리지 않는다)
-                    raise contact_mod.ContactFail("미접촉 · Z %.2f mm" % (floor_p / PPMM), "none")
-                self.stage.goto("z", np_, g)
-                zp = np_
+            yield
         finally:
             if self.stage.connected:
                 try:
@@ -825,18 +913,78 @@ class Controller:
                 except StageError as e:
                     self.logs.app("이동 속도 되돌리기 실패 · %s" % e, "warn")
 
+    def _probe_down(self, g, z_start, floor, sense, max_down):
+        """z_start 까지 내린 뒤(마지막 approach_mm 는 느리게) 멈출 때마다 sense(z) 가 정한 만큼 움직인다. 반환: 마지막 Z(mm).
+        이동은 펄스 단위 절대 이동(gz)이라 간격이 흔들리지 않는다. 걸음마다 두 가지를 직접 확인한다(sense 가 이미 지키지만 한 번 더):
+          · 아래로 가는 한 걸음이 지금 단계의 간격 max_down() 을 넘지 않는다 - 넘는 요청은 움직이지 않고 실패(ContactFail "step")
+          · 한도(floor) 아래로는 절대 내리지 않는다"""
+        floor_p = int(float(floor) * PPMM + 1e-6)
+        start_p = stage_mod.mm_to_pulse(z_start)
+        if not 0 < start_p <= floor_p:
+            raise Rejected("접촉 탐색 범위 오류 · Z %.2f ~ %.2f mm" % (z_start, floor))
+        with self._approach(g, start_p):
+            zp = start_p
+            while True:
+                dz = sense(zp / PPMM)
+                if not self.safety.gen_ok(g):                       # 재는 동안 비상정지 · 이동 정지가 왔으면 다음 걸음을 보내지 않는다
+                    raise stage_mod.Discarded("정지로 취소됨")
+                if dz is None:
+                    return zp / PPMM
+                dp = stage_mod.mm_to_pulse(dz)
+                if dp == 0:
+                    continue
+                if dp > stage_mod.mm_to_pulse(max_down()):
+                    raise contact_mod.ContactFail("하강 간격 초과 · %.3f mm 요청" % dz, "step")
+                np_ = max(0, zp + dp)
+                if np_ > floor_p:
+                    raise contact_mod.ContactFail("미접촉 · Z %.2f mm" % (floor_p / PPMM), "none")
+                self.stage.goto("z", np_, g)
+                zp = np_
+
+    def contact_fixed(self, z_mm, g, read: bool = True, meter=None, lock: bool = True):
+        """고정 높이 접촉(접촉 방식의 기본): Z 를 저장한 접촉 높이까지 정확히 내리고 끝낸다. 전기 판단으로 더 내리거나 실패시키지 않는다.
+        read = 내린 뒤 K2450 으로 저항을 한 번 재서 기록만 한다(판정 없음 - 못 재도 실패로 만들지 않는다). meter = 그때 쓸 측정 조건.
+        반환 {mode "fixed", z, ohm, current, tripped, four_wire, volt}. 부르는 쪽(측정 작업)이 K2450 사용권을 갖고 있어야 한다."""
+        self._need_stage()
+        if z_mm is None:
+            raise Rejected("접촉 높이 필요 (초기 설정 6)")
+        if not self.stage.homed.get("z"):
+            raise Rejected("Z 원점 필요 (초기 설정 2)")
+        why = self.safety.reject_move(False, self._heater_on()) or self.safety.reject_target("z", float(z_mm), True)
+        if why:
+            raise Rejected(why)
+        target_p = stage_mod.mm_to_pulse(z_mm)
+        with self._moving("접촉 높이로 하강 중", {"x": self._mm("x"), "y": self._mm("y"), "z": round(target_p / PPMM, 3)}, lock=lock):
+            with self._approach(g, target_p):
+                pass
+        res = {"mode": "fixed", "z": round(target_p / PPMM, 4), "ohm": None, "current": None, "tripped": None, "four_wire": None, "volt": None}
+        dev = self.k2450
+        if read and dev is not None and dev.is_open:
+            try:
+                r = self._measure_r(dev, meter)
+                res.update(ohm=r["ohm"], current=r["current"], tripped=r["tripped"], four_wire=r["four_wire"], volt=r["volt"])
+            except Rejected as e:                                   # 기록용 읽기다 - 못 재도 접촉 단계를 실패로 만들지 않는다(장비가 고장이면 가열 단계가 멈춘다)
+                self.logs.app("접촉 후 저항 기록 실패 · %s" % e, "warn")
+        self.logs.app("접촉 · 고정 높이 Z %.3f%s" % (res["z"], " · %s" % _ohm(res["ohm"]) if res["ohm"] else ""))
+        return res
+
     def contact_find(self):
-        """초기 설정 6 · 수동 측정 탭 [접촉 탐색]: 지금 높이부터 0.05 mm 씩 내리며 찾는다(샘플 위 5 mm 안쪽까지 조그한 뒤)."""
+        """초기 설정 6 · 수동 측정 탭 [접촉 탐색]: 지금 높이부터 탐색 간격씩 내리며 찾는다. 접촉 방식이 전기 탐색일 때만 쓴다.
+        연속 측정을 먼저 끄고 K2450 사용권을 얻는다(탐색 도중 다른 기능이 K2450 설정을 바꾸면 "안 닿음" 으로 읽고 한도까지 내려간다)."""
         self._no_run("접촉 탐색")
+        if self.cfg["contact_mode"] != "search":
+            raise Rejected("접촉 방식 고정 높이 · 전기 탐색 선택 필요")
+        self._need_k2450()
         g = self.safety.generation
-        try:
-            res = self.contact_descend("search", self._mm("z") or 0.0, g)
-        except contact_mod.ContactFail as e:
-            raise Rejected("%s · 핀 상승 완료" % e)
+        with self._use_k2450(USE_CONTACT, stop_monitor=True):
+            try:
+                res = self.contact_descend("search", self._mm("z") or 0.0, g)
+            except contact_mod.ContactFail as e:
+                raise Rejected("%s · 핀 상승 완료" % e)
         return {k: res[k] for k in ("first_z", "final_z", "r2", "r4")}
 
     def contact_save(self):
-        """[이 높이로 저장]: 마지막으로 찾은 첫 접촉 높이를 접촉 높이(contact_z_mm)로 저장한다."""
+        """[높이 저장]: 마지막으로 찾은 첫 접촉 높이를 접촉 높이(contact_z_mm)로 저장한다(전기 탐색)."""
         self._no_run("접촉 높이 저장")
         res = self.prep.contact.get("result")
         if not res:
@@ -846,25 +994,41 @@ class Controller:
         self.prep.publish()
         return {"contact_z_mm": self.cfg["contact_z_mm"]}
 
+    def contact_save_here(self):
+        """[현재 높이로 저장]: 지금 Z 를 접촉 높이(contact_z_mm)로 저장한다(how = "수동"). 핀을 손으로 조금씩 내려 샘플에 댄 뒤 누른다."""
+        self._no_run("접촉 높이 저장")
+        self._need_stage()
+        if not self.stage.homed.get("z"):
+            raise Rejected("Z 원점 필요 (초기 설정 2)")
+        if self.stage.moving or self.state.get("move") is not None:
+            raise Rejected("이동 중")
+        try:
+            z = self.stage.read_status(None)["pos"]["z"] / PPMM    # 화면 값이 아니라 지금 st 로 읽은 위치
+        except StageError as e:
+            raise Rejected("위치 읽기 실패 · %s" % e)
+        if z <= 0:
+            raise Rejected("핀이 맨 위 · 샘플에 닿는 높이로 내린 후 저장")
+        self._remember(contact_z_mm=round(z, 3))
+        self.calib.set_contact({"r2": None, "r4": None, "how": "수동"})
+        self.prep.publish()
+        self.logs.app("접촉 높이 저장 · 수동 · Z %.3f" % z)
+        return {"contact_z_mm": self.cfg["contact_z_mm"]}
+
     def raw(self, target: str, line: str):
+        """직접 명령. 스테이지는 허용 목록(읽기 전용 - STAGE_RAW_OK)만, 측정 장비는 조회(…?)만 보낸다. '!' 는 비상정지."""
         line = str(line).strip()
         if not line:
             raise Rejected("명령 입력 필요")
         if target == "stage":
             self._need_stage()
             tok = line.split()
-            head = tok[0].lower()
-            if head == "!":
+            if tok[0] == "!":
                 self.estop("직접 명령")
                 return {"reply": "비상정지"}
-            if self.safety.locked and head not in ("st", "p", "rs", "w"):
-                raise Rejected("비상정지 상태")
-            if head == "r" and len(tok) >= 3 and tok[2] == "1":
-                raise Rejected("릴레이는 버튼 사용")
-            if head in MOTION_WORDS or head[:1] in ("g", "j", "m") and len(head) == 2:
-                raise Rejected("이동은 버튼 사용")
+            if len(tok) != 1 or tok[0].lower() not in STAGE_RAW_OK:
+                raise Rejected(RAW_STAGE_NO)
             try:
-                lines = self.stage.raw(line, self.safety.generation)
+                lines = self.stage.raw(tok[0].lower(), None)        # 읽기 전용이라 세대와 무관하다(비상정지 중에도 된다)
             except StageError as e:
                 raise Rejected(str(e))
             return {"reply": "\n".join(lines)}
@@ -872,7 +1036,12 @@ class Controller:
             dev = getattr(self, target)
             if dev is None or not dev.is_open:
                 raise Rejected("장비 연결 안 됨")
+            if not meter_raw_ok(target, line):
+                raise Rejected(RAW_METER_NO)
             try:
+                if target == "k2450":                               # 접촉 탐색 · 측정이 쓰는 중에는 조회도 끼어들지 않는다
+                    with self._use_k2450(USE_RAW):
+                        return {"reply": dev.raw(line)}
                 return {"reply": dev.raw(line)}
             except meters.VisaError as e:
                 raise Rejected(str(e))
@@ -940,6 +1109,34 @@ class Controller:
             raise Rejected("폴더 선택 창 열기 실패")
         return {"path": str(path) if path else None}
 
+    def update_settings(self, patch: dict):
+        """설정 바꾸기(전체 설정 · 조건 창 - PUT /api/settings). 측정 중에는 거절한다(측정이 쓰는 값이 도중에 바뀌지 않게).
+        값 하나하나의 검증(ConfigError) + 조합 검사(config.problems)를 통과해야 저장한다. 조합 검사는 "이번 변경으로 새로 생기는 문제" 만 거절한다 -
+        예전 파일에 이미 있던 문제 때문에 다른 값을 못 고치는 일이 없게(그 문제는 측정 시작이 막는다)."""
+        if self.run_active():
+            raise Rejected("측정 중 실행 불가")
+        old = dict(self.cfg.values)
+        new = self.cfg.checked(patch)
+        heater_changed = "heater_relay" in new and new["heater_relay"] != old["heater_relay"]
+        if heater_changed and any(r for r in self.state.get("relays")):
+            raise Rejected("릴레이 모두 끈 뒤 변경")                 # 켜진 릴레이의 뜻(히트건 ↔ 쿨러)이 도중에 바뀌면 안전 감시가 엉뚱한 릴레이를 본다
+        before = set(config_mod.problems(old))
+        bad = [t for t in config_mod.problems(dict(old, **new)) if t not in before]
+        if bad:
+            raise Rejected(bad[0])
+        self.cfg.values.update(new)
+        self.cfg.save()
+        self.publish_cfg()
+        self.prep.on_settings()
+        if heater_changed:
+            self.logs.app("히트건 릴레이 변경 · R%d → R%d" % (old["heater_relay"], new["heater_relay"]))
+            if self.stage.connected:
+                try:
+                    self.stage.read_relays()                        # rs 를 다시 읽어 안전 감시가 새 번호의 릴레이를 기준으로 보게 한다
+                except StageError as e:
+                    self.logs.app("릴레이 상태 읽기 실패 · %s" % e, "warn")
+        return {}
+
     def _remember(self, **kw):
         """연결에 성공한 포트 · 주소 · 번호를 settings 에 저장한다(자동 연결이 쓴다). 저장 실패는 연결에 영향 없다."""
         try:
@@ -976,6 +1173,7 @@ class Controller:
                 raise Rejected("비상정지 상태")
             if self.k2450 is None and self.k2110 is None:
                 raise Rejected("온도계 또는 저항계 연결 필요")
+            self._no_run("연속 측정")                               # 측정 작업 중에는 켜지 않는다(측정 시작이 꺼 둔다)
         self._monitor_on = on
         self.state.set("monitor", on)
         return {"monitor": on}
@@ -992,13 +1190,15 @@ class Controller:
                 if self.safety.locked:
                     self._monitor_on = False
                     self.state.set("monitor", False)
-                elif self.k2450 is not None and self.k2450.is_open:
-                    try:
-                        self.read_resistance()
+                elif self.k2450 is not None and self.k2450.is_open and self._k2450_try(USE_MONITOR):
+                    try:                                            # 사용권을 못 얻으면(다른 기능이 K2450 을 쓰는 중) 이 회차는 건너뛴다 - 오류로 끄지 않는다
+                        self._measure_r(self.k2450)
                     except Rejected as e:
                         self._monitor_on = False
                         self.state.set("monitor", False)
                         self.state.alarm("monitor", "연속 측정 중지 · %s" % e, NOTICE)
+                    finally:
+                        self._k2450_release(USE_MONITOR)
             time.sleep(max(0.05, 1.0 - (time.monotonic() - t0)))
 
     # ------------------------------------------------------------------
@@ -1085,7 +1285,7 @@ COMMANDS = {
     "relay_on": "relay_on", "relay_off": "relay_off", "relays_off": "relays_off",
     "read_temp": "read_temp", "read_resistance": "read_resistance", "raw": "raw",
     "estop_release": "estop_release", "alarm_clear": "alarm_clear",
-    "contact_find": "contact_find", "contact_save": "contact_save",
+    "contact_find": "contact_find", "contact_save": "contact_save", "contact_save_here": "contact_save_here",
     # 초기 설정 단계 · 사진 · 좌표 · 샘플(app/prep.py)
     "photo_head_set": "prep.photo_head_set", "marker_check": "prep.marker_check", "photo_take": "prep.photo_take", "plate_set": "prep.plate_set",
     "empty_take": "prep.empty_take", "coord_set": "prep.coord_set", "coord_goto_d": "prep.coord_goto_d", "coord_clear": "prep.coord_clear",

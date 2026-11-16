@@ -20,6 +20,11 @@ from tests.fakes.fake_v11 import FakeV11
 from tests.fakes.world import World
 
 
+# 전기 탐색을 시험할 때 명시하는 설정: 접촉 방식의 기본은 고정 높이이고, 탐색 간격의 기본값도 0.1 mm 로 크다.
+# 탐색의 정밀도(표면 ± 0.05 mm)를 보는 시험은 v2 에서 쓰던 촘촘한 간격을 직접 준다.
+SEARCH = dict(contact_mode="search", contact_step_mm=0.025, contact_search_step_mm=0.05, contact_search_mm=5.0)
+
+
 class FakeClock:
     """안전 규칙의 시간을 시험이 직접 건너뛰게 한다."""
 

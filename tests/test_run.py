@@ -14,13 +14,15 @@ from app.jobs import files
 from app.jobs.run import DONE, FAIL, SKIPPED, STOPPED, WAIT
 from app.safety import Rejected
 from app.server import create_app
-from tests.conftest import wait_for
+from tests.conftest import SEARCH, wait_for
 
 FAST = 200.0
 
 
 def _prepare(ready_ctrl, n=2, time_scale=FAST, **cfg):
-    ctrl = ready_ctrl(time_scale=time_scale, **cfg)
+    """이 파일의 측정 시험은 전기 탐색으로 접촉한다고 명시한다(샘플마다 표면 높이가 달라 고정 높이로는 일부만 닿는다).
+    고정 높이(기본)는 tests/test_contact_mode.py 가 따로 본다."""
+    ctrl = ready_ctrl(time_scale=time_scale, **dict(SEARCH, **cfg))
     ctrl.run_command("samples_find")
     use = [s for s in ctrl.prep.samples if s["use"]]
     for s in use[n:]:
@@ -251,7 +253,7 @@ def test_contact_failure_goes_to_next_sample(ready_ctrl):
 # 안전 한계
 # ---------------------------------------------------------------------------
 def test_max_on_time_moves_on_to_cooling(ready_ctrl):
-    ctrl, ids = _prepare(ready_ctrl, 1, heater_max_on_s=20.0)        # 20 초로는 85 °C 에 못 닿는다
+    ctrl, ids = _prepare(ready_ctrl, 1, heater_max_on_s=20.0, run_no_rise_s=10.0)    # 20 초로는 85 °C 에 못 닿는다(무반응 시간은 최대 켜짐 시간보다 짧아야 한다)
     n0 = len(ctrl.fake_fw.log)
     ctrl.run_command("run_start")
     _finish(ctrl)

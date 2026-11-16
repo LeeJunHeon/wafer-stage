@@ -10,6 +10,7 @@
     수동은 온도계가 없거나 온도를 못 읽어도 켤 수 있고, 온도를 못 읽는다고 끄지 않는다.
  4. 자동 X · Y 이동 전에는 Z 를 맨 위로 올리고 st 로 Z=0 을 확인한다(control 이 순서를 지키고, 여기서는 Z 가 확인됐는지 판정한다).
  5. 원점이 있는 축은 가동 범위 밖으로 가는 명령을 거절한다.
+    수동 Z 하강 한도(z_floor_mode, 기본 끔)가 켜져 있으면 수동 조그 · 좌표 이동이 한도 아래로 가는 명령을 거절한다.
  6. 통신 감시 · 종료 처리는 control 이 한다(여기에는 판정만).
  7. 경보는 state.alarms 한 곳에만 쌓는다.
 
@@ -121,6 +122,37 @@ class Safety:
         hi = float(self.cfg["%s_max_mm" % axis])
         if target_mm < -1e-9 or target_mm > hi + 1e-9:
             return "%s 가동 범위 0~%g mm 초과" % (axis.upper(), hi)
+        return None
+
+    # ---- 수동 Z 하강 한도(기본 끔) ----
+    def z_floor(self):
+        """수동 Z 하강 한도 (한도 mm | None, 한도를 못 정하는 까닭). 끔이면 (None, "").
+        접촉 높이 기준 = 접촉 높이 − z_floor_margin_mm · 고정 값 = z_floor_mm. 측정의 접촉 단계와 접촉 탐색은 이 한도와 별개다(자기 한도가 있다)."""
+        mode = self.cfg["z_floor_mode"]
+        if mode == "off":
+            return None, ""
+        if mode == "contact":
+            cz = self.cfg["contact_z_mm"]
+            if cz is None:
+                return None, "Z 하강 한도 계산 불가 · 접촉 높이 필요"
+            return max(0.0, float(cz) - float(self.cfg["z_floor_margin_mm"])), ""
+        fz = self.cfg["z_floor_mm"]
+        if fz is None:
+            return None, "Z 하강 한도 고정 값 필요"
+        return float(fz), ""
+
+    def reject_z_down(self, target_mm: Optional[float], homed: bool) -> Optional[str]:
+        """수동으로 Z 를 내리는 명령(조그 · 좌표 이동)의 판정. 한도가 켜져 있으면 한도 아래로 가는 명령 **전체**를 거절한다(한도까지만 가지 않는다).
+        한도를 정할 수 없거나(접촉 높이 없음 · 고정 값 없음) Z 원점이 없어 위치를 모르면 내리는 명령을 거절한다 - 켜 둔 한도를 말없이 건너뛰지 않는다."""
+        if self.cfg["z_floor_mode"] == "off":
+            return None
+        floor, why = self.z_floor()
+        if floor is None:
+            return why
+        if not homed or target_mm is None:
+            return "Z 원점 필요 · Z 하강 한도 사용 중"
+        if float(target_mm) > floor + 1e-9:
+            return "Z 하강 한도 %.2f mm" % floor
         return None
 
     def z_is_top(self, z_pulse) -> bool:

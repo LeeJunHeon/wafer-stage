@@ -4,7 +4,8 @@
 "use strict";
 
 const man = {};
-const QUICK = { k2450: ["*IDN?", "SYST:ERR?", ":READ?"], k2110: ["*IDN?", "SYST:ERR?", ":READ?"], stage: ["st", "rs", "p"] };
+/* 직접 명령의 빠른 버튼: 서버가 받는 것만 둔다(스테이지 = 읽기 전용 허용 목록 · 측정 장비 = 조회만. K2450 의 READ? 는 재는 동작이라 [1회 측정] 을 쓴다) */
+const QUICK = { k2450: ["*IDN?", "SYST:ERR?", ":OUTP?"], k2110: ["*IDN?", "SYST:ERR?", "READ?"], stage: ["st", "rs", "p"] };
 
 function buildManual() {
   /* 왼쪽: 카메라 · 이동 */
@@ -84,7 +85,7 @@ function buildManual() {
   man.quick = () => setKids(man.quickBox, ...QUICK[man.target.value].map((q) => btn(q, () => { man.line.value = q; sendRaw(); })));
   man.quick();
   const cmd = h("div", { class: "panel", id: "man-right" }, h("h3", { text: "직접 명령" }), h("div", { class: "row" }, man.target), man.quickBox,
-    h("div", { class: "row" }, man.line, btn("전송", sendRaw)), man.log, h("div", { class: "small", text: "이동 · 릴레이는 버튼 사용" }));
+    h("div", { class: "row" }, man.line, btn("전송", sendRaw)), man.log, h("div", { class: "small", text: "읽기 · 조회만 가능" }));
   setKids($("#tab-manual"), left, mid, cmd);
 }
 function logLine(cls, text) {
@@ -147,6 +148,9 @@ function renderManual() {
   man.measWhy.textContent = busy ? "측정 중 사용 불가" : "";
   man.measWhy.classList.toggle("hidden", !busy);
   const ct = (S.prep && S.prep.contact) || {};
+  const search = c.contact_mode === "search";                    // [접촉 탐색] 은 접촉 방식이 전기 탐색일 때만 보인다
+  man.contact.b.classList.toggle("hidden", !search);
+  man.contactLine.classList.toggle("hidden", !search);
   man.contact.b.disabled = !!(ct.active || whyContact());
   man.contact.b.title = whyContact();
   man.contactLine.textContent = contactLine(ct) || (whyContact() && !busy ? whyContact() : "");

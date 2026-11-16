@@ -647,9 +647,15 @@ class Prep:
                        "to_plate": None if to_plate is None else [[float(v) for v in row] for row in to_plate]},   # 스테이지 X · Y → 판 mm (3×3)
             "last_click": self.last_click,
             "contact": dict(self.contact),
+            "z_floor": self._z_floor_view(),
             "pos_block": self.pos_block,
             "find": self.find_info,
         }
+
+    def _z_floor_view(self):
+        """수동 Z 하강 한도(초기 설정 6 화면에 보인다): 방식 · 한도 mm(없으면 None) · 한도를 못 정하는 까닭."""
+        floor, why = self.c.safety.z_floor()
+        return {"mode": self.cfg["z_floor_mode"], "mm": None if floor is None else round(floor, 3), "why": why}
 
     def publish(self):
         self.c.state.set("prep", self.view())

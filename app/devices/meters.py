@@ -40,6 +40,19 @@ def _rm():
         raise VisaUnavailable() from e
 
 
+def read_time_s(nplc, avg_count, line_hz=60.0, conv_factor=3.0, overhead_s=0.1):
+    """K2450 저항 한 번 읽기(read_step: :READ? + 한도 걸림 조회)의 예상 시간(초). 설정 조합 검사(config.problems)가 쓴다.
+    근거 - K2450.configure 가 거는 설정 기준:
+      · 적분 시간 = NPLC ÷ 전원 주파수. 60 Hz 에서 1 PLC = 16.7 ms.
+      · 평균은 반복 평균(:SENS:CURR:AVER:TCON REP)이라 읽기 한 번에 변환을 평균 횟수만큼 한다.
+      · 자동 영점은 *RST 뒤 켜져 있다(configure 는 :SENS:AZER:ONCE 로 한 번 새로 잡을 뿐 끄지 않는다)
+        → 변환마다 신호 · 기준 · 영점을 재는 것으로 보고 conv_factor = 3 (넉넉하게 잡은 값).
+      · overhead_s = :READ? 와 :SOUR:VOLT:ILIM:TRIP? 두 번의 통신 + 범위 단계가 바뀔 때의 :SENS:CURR:RANG 쓰기.
+    conv_factor · overhead_s 는 실장비에서 재 보지 않은 값이다(설정에 "실장비 확인 필요") - visa.log 의 읽기 시간으로 맞춘다.
+    기본값: 10 × 1 ÷ 60 × 3 + 0.1 = 0.6 초."""
+    return max(1, int(avg_count)) * float(nplc) / float(line_hz) * float(conv_factor) + float(overhead_s)
+
+
 def visa_kind(addr):
     """VISA 주소의 연결 방식. GPIB0::18::INSTR → GPIB · USB0::… → USB · TCPIP… → LAN · ASRL… → 시리얼."""
     a = str(addr or "").strip().upper()
