@@ -118,3 +118,29 @@ def test_pick_folder_needs_a_window_and_returns_the_chosen_path(make_ctrl):
         assert c.post("/api/cmd/pick_folder", json={"start": "../data_v3"}).json() == {"ok": True, "result": {"path": None}}
     assert seen[0] == r"D:\data" and os.path.isabs(seen[1]) and seen[1].endswith("data_v3"), "상대 경로는 프로그램 폴더 기준으로 바꿔 넘긴다"
     assert ctrl.cfg["nas_dir"] == "", "고르기만 하고 설정은 바꾸지 않는다(화면이 입력 칸에 넣는다)"
+
+
+class SerialException(IOError):
+    """pyserial 의 SerialException 모양(원래 OS 오류를 글 안에 넣는다)."""
+
+
+@pytest.mark.parametrize("exc,text", [
+    (SerialException("could not open port 'COM5': FileNotFoundError(2, '지정된 파일을 찾을 수 없습니다.', None, 2)"), "COM5 없음 · USB 연결 확인"),
+    (SerialException("could not open port 'COM5': PermissionError(13, '액세스가 거부되었습니다.', None, 5)"), "COM5 사용 중 · 다른 프로그램 종료 필요"),
+    (FileNotFoundError(2, "No such file"), "COM5 없음 · USB 연결 확인"),
+    (PermissionError(13, "Access is denied"), "COM5 사용 중 · 다른 프로그램 종료 필요"),
+    (SerialException("could not configure port: OSError(22, '매개 변수가 틀립니다.', None, 87)"), "COM5 열기 실패"),
+])
+def test_port_open_failure_is_one_korean_line_and_the_full_error_is_logged(make_ctrl, exc, text):
+    """포트를 못 열 때 화면에는 한글 한 줄(잘린 영어 예외가 아니다), 원래 예외 전체는 프로그램 로그에."""
+    ctrl = make_ctrl(connect=False)
+
+    def open_port(name):
+        raise exc
+    ctrl.stage.open_port = open_port
+    with pytest.raises(Rejected) as e:
+        ctrl.connect_stage("COM5")
+    assert str(e.value) == text
+    assert ctrl.state.get("devices", "stage", "state") == "오류" and ctrl.state.get("devices", "stage", "why") == text
+    full = "%s: %s" % (type(exc).__name__, exc)
+    assert [ln for ln in ctrl.logs.recent if "스테이지 연결 실패 · " + text in ln and full in ln], "원래 예외 전체는 로그에"

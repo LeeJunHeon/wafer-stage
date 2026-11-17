@@ -34,6 +34,11 @@ def merged_name(file_name, volt):
     return "%smerged.dat" % file_stem(file_name, volt)
 
 
+def control_name(file_name, volt):
+    """가열 제어 기록(점마다 경과 · 온도 · 저항 · 목표 온도 · 열선 · 송풍). LabVIEW 파일이 아니다 - NAS 에는 보내지 않는다."""
+    return "%scontrol.csv" % file_stem(file_name, volt)
+
+
 def fmt_e(x):
     """LabVIEW %.7E 형식: 가수 소수 7자리, 지수는 부호를 붙이고 0 을 채우지 않는다(E+1 · E-1 · E+0)."""
     m, e = ("%.7E" % float(x)).split("E")

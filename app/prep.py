@@ -579,25 +579,27 @@ class Prep:
     # 7 · 쿨러 구역
     # ------------------------------------------------------------------
     def cooler_only(self, n):
-        """쿨러 릴레이 하나만 켠다(다른 쿨러는 끈다). n 이 0 이면 쿨러를 모두 끈다."""
+        """[켜 보기]: 쿨러 릴레이(cooler_relays) 하나만 켠다(다른 쿨러는 끈다). n 이 0 이면 쿨러를 모두 끈다.
+        송풍 · 열선 · 미배정 릴레이는 여기서 켜지도 끄지도 않는다."""
         n = int(n)
         self.c._need_stage()
         self.c._no_run("쿨러 시험")
-        heater = int(self.cfg["heater_relay"])
-        if n != 0 and (n == heater or not 1 <= n <= 10):
-            raise Rejected("쿨러 릴레이 번호 아님")
-        for i, on in enumerate(self.c.stage.relays, 1):
-            if on and i != heater and i != n:
+        cool = [int(x) for x in self.cfg["cooler_relays"]]
+        if n != 0 and n not in cool:
+            raise Rejected("R%d · 쿨러 릴레이 아님" % n)
+        for i in cool:
+            if i != n and self.c.stage.relays[i - 1] is not False:
                 self.c.relay_off(i)
         if n:
             self.c.relay_on(n)
         return {"relays": list(self.c.state.get("relays"))}
 
     def cooler_save(self, grid):
+        """쿨러 배치 저장(초기 설정 7): 칸마다 쿨러 릴레이 하나 · 같은 릴레이를 여러 칸에 써도 된다. 쿨러 릴레이 밖의 번호는 거절한다
+        (설정을 바꾸는 길 하나 - Controller.update_settings 의 값 검증 + 조합 검사)."""
         from app import config as config_mod
         try:
-            self.cfg.update({"cooler_grid": grid})
-            self.cfg.save()
+            self.c.update_settings({"cooler_grid": grid})
         except config_mod.ConfigError as e:
             raise Rejected(str(e))
         self.calib.set_cooler()
@@ -637,7 +639,7 @@ class Prep:
         ready = self.calib.coords_ready()
         n_ex = len(cal["coords"]["extra"])
         n_c = sum(1 for n in CORNERS if n in cal["coords"]["stage"])
-        co_text = ("4점%s · %s" % (" + 보정 %d점" % n_ex if n_ex else "", when(cal["coords"].get("t")))) if ready else ("꼭짓점 %d / 4" % n_c if n_c else "")
+        co_text = ("4점%s · %s" % (" + 보정 %d점" % n_ex if n_ex else "", when(cal["coords"].get("t")))) if ready else ("꼭짓점 %d / 4" % n_c if n_c else "보정 없음")
         cz = c["contact_z_mm"]
         ct = cal.get("contact")
         cool = cal.get("cooler")
@@ -648,8 +650,8 @@ class Prep:
             {"done": bool(emp) and not self._empty_unreadable(),
              "text": ("읽기 실패 · 재촬영 필요" if self._empty_unreadable() else "촬영 · %s" % when(emp["t"])) if emp else "없어도 측정 가능"},
             {"done": ready, "text": co_text},
-            {"done": cz is not None, "text": ("Z %.2f mm · %s" % (cz, when(ct["t"] if ct else None))) if cz is not None else ""},
-            {"done": bool(cool), "text": "설정 완료 · %s" % when(cool["t"]) if cool else "번호순 기본값"},
+            {"done": cz is not None, "text": ("Z %.2f mm · %s" % (cz, when(ct["t"] if ct else None))) if cz is not None else "높이 없음"},
+            {"done": bool(cool), "text": "설정 완료 · %s" % when(cool["t"]) if cool else "기본 배치 · 확인 필요"},
         ]
 
     def view(self):

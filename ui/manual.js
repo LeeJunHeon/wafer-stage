@@ -1,29 +1,32 @@
-/* manual.js - 수동 측정 탭: 왼쪽(카메라 · 이동) / 가운데(수동 측정 · 릴레이 시험) / 오른쪽(직접 명령).
+/* manual.js - 수동 제어 탭: 2열. 왼쪽 = 카메라 · 이동 / 오른쪽 = 수동 측정 · 릴레이 시험 · 직접 명령(맨 아래, 작게).
    카메라 "실시간" = 실시간 미리보기. "판 사진" = 마지막으로 찍은 판 사진(자동 측정 탭과 같은 사진) + 샘플 윤곽 · 이름 + 지금 핀 자리(십자).
-   실시간 화면을 보정해 보여 주지 않는 까닭: 헤드가 판 위에 있으면 헤드가 판을 가린다. */
+   실시간 화면을 보정해 보여 주지 않는 까닭: 헤드가 판 위에 있으면 헤드가 판을 가린다.
+   장비가 연결되지 않았으면 그 장비가 필요한 버튼을 끄고 이유를 한 줄 보인다(서버도 거절한다 - 화면은 미리 알려 준다).
+   히트건 = 송풍 + 열선. [켜기] 는 서버가 열선 → 송풍 순서로 켠다 · [끄기] 는 열선을 끄고 송풍은 heater_fan_after_s 뒤에 끈다. */
 "use strict";
 
 const man = {};
 /* 직접 명령의 빠른 버튼: 서버가 받는 것만 둔다(스테이지 = 읽기 전용 허용 목록 · 측정 장비 = 조회만. K2450 의 READ? 는 재는 동작이라 [1회 측정] 을 쓴다) */
 const QUICK = { k2450: ["*IDN?", "SYST:ERR?", ":OUTP?"], k2110: ["*IDN?", "SYST:ERR?", "READ?"], stage: ["st", "rs", "p"] };
+const NEED = { stage: "스테이지 연결 필요", k2110: "온도계 연결 필요", k2450: "저항계 연결 필요" };
 
 function buildManual() {
-  /* 왼쪽: 카메라 · 이동 */
+  /* ---- 왼쪽: 카메라 ---- */
   man.view = "raw";
   man.ov = svgEl("g", {});
-  man.pb = photoBox({ ar: 4 / 3, note: "카메라 연결 안 됨", center: true, onfit: () => drawManualOverlay() });      // 사진은 칸 가운데에, 칸이 허락하는 만큼 크게
+  man.pb = photoBox({ ar: 4 / 3, note: "카메라 연결 안 됨", center: true, cls: "fill", onfit: () => drawManualOverlay() });     // 칸이 허락하는 만큼 크게
   man.pb.box.id = "preview-box";
   man.pb.svg.append(man.ov);
   const setView = (v) => { man.view = v; man.pb.setNote("미리보기 대기 중"); man.pb.show(""); refreshPreview(); renderManual(); };
   man.photoInfo = h("span", { class: "small" });
-  man.retake = busyGate("재촬영", () => api("samples_find"), "sm");             // 자동 측정 탭의 [사진 다시 찍기] 와 같다(사진 + 샘플 찾기)
-  man.fixRow = h("div", { class: "row hidden" }, man.photoInfo, man.retake.b, man.retake.w);
+  man.retake = busyGate("재촬영", () => api("samples_find"), "sm");             // 자동 측정 탭의 재촬영과 같다(사진 + 샘플 검출)
+  man.fixPart = h("span", { class: "row hidden" }, man.photoInfo, man.retake.b, man.retake.w);
   man.viewRaw = h("input", { type: "radio", name: "view", checked: true, onchange: () => setView("raw") });
   man.viewFix = h("input", { type: "radio", name: "view", onchange: () => setView("fix") });
   man.clickGo = h("input", { type: "checkbox" });
   man.addHere = busyGate("보정 점 추가", () => api("coord_add_here"), "sm");
-  man.camNote = h("div", { class: "why line" });
-  man.pb.inner.addEventListener("click", (ev) => {                 // 판 사진 보기에서 사진을 누르면 그 자리로 간다(핀을 맨 위로 올린 뒤)
+  man.camNote = h("span", { class: "why nowrap" });
+  man.pb.inner.addEventListener("click", (ev) => {                 // 판 사진 보기에서 사진을 누르면 그 위치로 이동(핀을 맨 위로 올린 뒤)
     if (man.view !== "fix" || !man.clickGo.checked || running() || !man.pb.url) return;      // 사진이 없는 빈 상자는 누를 수 없다
     const [fx, fy] = man.pb.toFrac(ev), sz = S.cfg.plate_size_mm;
     if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
@@ -32,10 +35,10 @@ function buildManual() {
   const camPanel = h("div", { class: "panel", id: "man-cam" },
     h("div", { class: "row" }, h("h3", { text: "카메라" }), h("span", { class: "sp" }),
       h("label", { class: "chk" }, man.viewRaw, "실시간"), h("label", { class: "chk" }, man.viewFix, "판 사진")),
-    man.pb.box, man.fixRow,
-    h("div", { class: "row wrap" }, h("label", { class: "chk" }, man.clickGo, "클릭 이동"), man.addHere.b),
-    man.camNote);
+    man.pb.box,
+    h("div", { class: "row" }, man.fixPart, h("label", { class: "chk" }, man.clickGo, "클릭 이동"), man.addHere.b, man.camNote));
 
+  /* ---- 왼쪽: 이동(조그 · 촬영 위치 · 좌표 이동을 옆으로 놓아 높이를 줄인다 - 카메라가 그만큼 커진다) ---- */
   man.jog = jogPart();
   const goInput = (ph) => h("input", { type: "number", class: "num", step: "any", placeholder: ph });
   man.gx = goInput("X"); man.gy = goInput("Y"); man.gz = goInput("Z");
@@ -46,47 +49,60 @@ function buildManual() {
     if (isNaN(x) || isNaN(y)) { toast("X · Y 입력 필요"); return; }
     api("goto", z == null || isNaN(z) ? { x, y } : { x, y, z });
   });
-  const movePanel = h("div", { class: "panel", id: "man-move" }, h("h3", { text: "이동" }), man.jog.el,
-    h("div", { class: "row" }, man.head, man.headNote),
-    h("div", { class: "row" }, small("좌표 이동"), "X", man.gx, "Y", man.gy, "Z", man.gz, man.go));
+  man.moveWhy = h("div", { class: "why hidden" });
+  const movePanel = h("div", { class: "panel", id: "man-move" }, h("h3", { text: "이동" }),
+    h("div", { class: "move-body" }, man.jog.el,
+      h("div", { class: "move-side" },
+        h("div", { class: "row" }, man.head, man.headNote),
+        small("좌표 이동"),
+        h("div", { class: "row" }, "X", man.gx, "Y", man.gy),
+        h("div", { class: "row" }, "Z", man.gz, man.go))),
+    man.moveWhy);
   const left = h("div", { class: "col", id: "man-left" }, camPanel, movePanel);
 
-  /* 가운데: 수동 측정 · 릴레이 시험 */
+  /* ---- 오른쪽: 수동 측정 ---- */
   man.temp = h("div", { class: "big", text: "—" });
   man.ohm = h("div", { class: "big", text: "—" });
   man.cond = h("div", { class: "small" });
   man.mon = btn("연속 측정", () => api("monitor", { on: !S.monitor }));
   man.readT = btn("1회 측정", () => api("read_temp"));
   man.readR = btn("1회 측정", () => api("read_resistance"));
+  man.condBtn = btn("조건", openCond);
   man.measWhy = h("div", { class: "why hidden" });
   man.contact = busyGate("접촉 탐색", () => api("contact_find"));
   man.contactLine = h("div", { class: "small" });
   const measure = h("div", { class: "panel" }, h("h3", { text: "수동 측정" }),
     h("div", { class: "reading" }, h("span", { class: "lbl", text: "온도 · K2110" }), man.temp, man.readT),
-    h("div", { class: "reading" }, h("span", { class: "lbl", text: "저항 · K2450" }), man.ohm, man.readR),
-    h("div", { class: "row" }, man.cond, h("span", { class: "sp" }), btn("조건", openCond)),
-    h("div", { class: "row" }, man.mon, man.contact.b), man.contactLine, man.measWhy);
-  man.hOn = btn("켜기", () => api("relay_on", { n: S.cfg.heater_relay }));
-  man.hOff = btn("끄기", () => api("relay_off", { n: S.cfg.heater_relay }));
-  man.hLbl = h("span", { class: "lbl small" });
-  man.grid = h("div", { class: "relays" });
-  man.gridSig = "";
-  const relay = h("div", { class: "panel" }, h("h3", { text: "릴레이 시험" }),
-    h("div", { class: "row" }, man.hLbl, man.hOn, man.hOff), h("div", { class: "small", text: "잦은 ON/OFF 금지" }),
-    man.grid,
-    h("div", { class: "row" }, btn("전체 끄기", () => api("relays_off"))));
-  const mid = h("div", { class: "col", id: "man-mid" }, measure, relay);
+    h("div", { class: "reading" }, h("span", { class: "lbl", text: "저항 · K2450" }), man.ohm, man.readR, man.mon),
+    h("div", { class: "row" }, man.cond, h("span", { class: "sp" }), man.contact.b, man.condBtn), man.contactLine, man.measWhy);
 
-  /* 오른쪽: 직접 명령 */
+  /* ---- 오른쪽: 릴레이 시험(히트건 줄 · 쿨러 줄). 송풍 · 열선 · 미배정 릴레이는 개별 버튼으로 두지 않는다 ---- */
+  man.hOn = btn("켜기", () => api("heater_on"));
+  man.hEl = btn("열선 끄기", () => api("heater_element", { on: !(S.heater && S.heater.element) }));
+  man.hOff = btn("끄기", () => api("heater_off"));
+  man.hState = h("span", { class: "small nowrap" });
+  man.coolBox = h("span", { class: "relays" });
+  man.coolSig = "";
+  man.allOff = btn("전체 끄기", () => api("relays_off"));
+  man.relWhy = h("div", { class: "why hidden" });
+  const relay = h("div", { class: "panel" }, h("h3", { text: "릴레이 시험" }),
+    h("div", { class: "row" }, h("span", { class: "lbl small", text: "히트건" }), man.hOn, man.hEl, man.hOff, man.hState),
+    h("div", { class: "small", text: "켜는 순서: 열선 → 송풍(자동)" }),
+    h("div", { class: "row" }, h("span", { class: "lbl small", text: "쿨러" }), man.coolBox, h("span", { class: "sp" }), man.allOff),
+    man.relWhy);
+
+  /* ---- 오른쪽 맨 아래: 직접 명령(작게 - 결과는 최근 몇 줄만 보이는 상자, 넘치면 그 안에서만 스크롤) ---- */
   man.target = h("select", { onchange: () => { man.quick(); } }, h("option", { value: "k2450", text: "저항계 K2450" }), h("option", { value: "k2110", text: "온도계 K2110" }), h("option", { value: "stage", text: "스테이지" }));
-  man.quickBox = h("div", { class: "quick" });
+  man.quickBox = h("span", { class: "quick" });
   man.line = h("input", { type: "text", class: "grow mono", spellcheck: "false", placeholder: "한 줄 입력", onkeydown: (e) => { if (e.key === "Enter") sendRaw(); } });
-  man.log = h("div", { id: "cmd-log", class: "fill" });
+  man.log = h("div", { id: "cmd-log" });
   man.quick = () => setKids(man.quickBox, ...QUICK[man.target.value].map((q) => btn(q, () => { man.line.value = q; sendRaw(); })));
   man.quick();
-  const cmd = h("div", { class: "panel", id: "man-right" }, h("h3", { text: "직접 명령" }), h("div", { class: "row" }, man.target), man.quickBox,
-    h("div", { class: "row" }, man.line, btn("전송", sendRaw)), man.log, h("div", { class: "small", text: "읽기 · 조회만 가능" }));
-  setKids($("#tab-manual"), left, mid, cmd);
+  const cmd = h("div", { class: "panel", id: "man-cmd" },
+    h("div", { class: "row" }, h("h3", { text: "직접 명령" }), small("읽기 · 조회만 가능"), h("span", { class: "sp" }), man.target),
+    h("div", { class: "row" }, man.quickBox, man.line, btn("전송", sendRaw)), man.log);
+  const right = h("div", { class: "col", id: "man-right" }, measure, relay, cmd);
+  setKids($("#tab-manual"), left, right);
 }
 function logLine(cls, text) {
   const t = new Date();
@@ -117,49 +133,76 @@ function openCond() {
   openDialog("저항 측정 조건", h("div", { class: "form" }, "측정 전압 (V)", volt, "4단자", four, "평균 횟수", avg, "NPLC", nplc, "전류 한도 (A)", ilim),
     [btn("닫기", closeDialog), btn("저장", save, "on")]);
 }
+/* 이유 한 줄(.why): 비어 있으면 숨긴다 */
+function setWhy(el, text) { el.textContent = text || ""; el.classList.toggle("hidden", !text); }
+/* 히트건 상태 한 줄: 송풍 · 열선 · 송풍을 끄기까지 남은 초 */
+function heaterText(ht) {
+  if (ht.fan == null && ht.element == null) return "—";
+  if (ht.element) return "송풍 " + (ht.fan ? "켜짐" : "꺼짐") + " · 열선 켜짐";
+  if (ht.fan) return ht.fan_off_at ? "열선 꺼짐 · 송풍 " + Math.max(0, Math.ceil(ht.fan_off_at - Date.now() / 1000)) + "초 뒤 끔" : "송풍 켜짐 · 열선 꺼짐";
+  return "꺼짐";
+}
 function renderManual() {
   const c = S.cfg || {};
+  const busy = running(), locked = !!S.estop_locked;              // 측정 중 · 비상정지 중: 이동 · 릴레이 켜기가 꺼진다(끄기는 된다)
+  const stage = devOk("stage"), tOk = devOk("k2110"), rOk = devOk("k2450");
   man.temp.textContent = S.temp.value == null ? "—" : S.temp.value.toFixed(1) + " °C";
   man.ohm.textContent = fmtOhm(S.resistance.ohm);
   man.cond.textContent = (c.meter_volt != null ? Number(c.meter_volt).toFixed(2) : "—") + " V · " + (c.meter_four_wire ? "4단자" : "2단자") + " · 평균 " + c.meter_avg_count + "회";
   man.mon.classList.toggle("on", !!S.monitor);
+
+  /* 이동: 스테이지 연결 필요 */
   const hp = c.photo_head_xy;
-  const locked = !!S.estop_locked;                               // 비상정지 중: 이동 · 릴레이 켜기 버튼이 꺼진다(끄기는 된다)
-  man.head.disabled = !hp || running() || locked;
+  man.head.disabled = !hp || busy || locked || !stage;
   man.headNote.textContent = hp ? "" : "초기 설정 3 에서 설정";
-  const hr = c.heater_relay || 1;
-  man.hLbl.textContent = "히트건 R" + hr;
-  const grid = c.cooler_grid || [];
-  const sig = JSON.stringify(grid);
-  if (sig !== man.gridSig) {
-    man.gridSig = sig;
-    man.cells = {};
-    setKids(man.grid, ...grid.flat().map((n) => { const b = btn("R" + n, () => api(S.relays[n - 1] ? "relay_off" : "relay_on", { n })); man.cells[n] = b; return b; }));
-  }
-  const busy = running();
-  for (const [n, b] of Object.entries(man.cells || {})) {
-    const on = !!S.relays[n - 1];
-    b.classList.toggle("on", on);
-    b.textContent = "R" + n + (on ? " 켜짐" : "");
-    b.disabled = busy || (locked && !on);
-  }
-  for (const b of [man.hOff, man.readT, man.readR]) b.disabled = busy;
-  for (const b of [man.hOn, man.mon, man.go]) b.disabled = busy || locked;
-  man.measWhy.textContent = busy ? "측정 중 사용 불가" : "";
-  man.measWhy.classList.toggle("hidden", !busy);
+  man.go.disabled = busy || locked || !stage;
+  setWhy(man.moveWhy, "");                                        // 이동 패드의 이유 한 줄(jogPart)이 스테이지 · 측정 · 비상정지를 알린다
+
+  /* 수동 측정: 온도 1회 = 온도계 · 저항 1회 · 연속 측정 = 저항계 */
+  man.readT.disabled = busy || !tOk;
+  man.readR.disabled = busy || !rOk;
+  man.mon.disabled = busy || (!S.monitor && (locked || !rOk));
+  man.condBtn.disabled = busy;
+  const miss = [!tOk ? NEED.k2110 : "", !rOk ? NEED.k2450 : ""].filter(Boolean);
+  setWhy(man.measWhy, busy ? "측정 중 사용 불가" : miss.join(" · "));
   const ct = (S.prep && S.prep.contact) || {};
   const search = c.contact_mode === "search";                    // [접촉 탐색] 은 접촉 방식이 전기 탐색일 때만 보인다
   man.contact.b.classList.toggle("hidden", !search);
   man.contactLine.classList.toggle("hidden", !search);
   man.contact.b.disabled = !!(ct.active || whyContact());
-  man.contact.b.title = whyContact();
   man.contactLine.textContent = contactLine(ct) || (whyContact() && !busy ? whyContact() : "");
+
+  /* 릴레이 시험: 스테이지 연결 필요. 히트건 줄 · 쿨러 줄(cooler_relays 만) */
+  const ht = S.heater || {}, hOn = !!(ht.fan || ht.element);
+  const relayBlock = busy ? "측정 중 사용 불가" : !stage ? NEED.stage : locked ? "비상정지 해제 필요" : "";
+  man.hOn.disabled = !!relayBlock || !!ht.element;
+  man.hEl.textContent = ht.element ? "열선 끄기" : "열선 켜기";
+  man.hEl.disabled = busy || !stage || !ht.fan || (!ht.element && locked);        // 송풍이 켜진 동안만(끄기는 비상정지 중에도)
+  man.hOff.disabled = busy || !stage || !hOn;
+  man.hState.textContent = heaterText(ht);
+  man.hState.className = "small nowrap" + (hOn ? " st-warn" : "");
+  const cool = c.cooler_relays || [];
+  const sig = JSON.stringify(cool);
+  if (sig !== man.coolSig) {
+    man.coolSig = sig;
+    man.cells = {};
+    setKids(man.coolBox, ...cool.map((n) => { const b = btn("R" + n, () => api(S.relays[n - 1] ? "relay_off" : "relay_on", { n })); man.cells[n] = b; return b; }));
+  }
+  for (const [n, b] of Object.entries(man.cells || {})) {
+    const on = !!S.relays[n - 1];
+    b.classList.toggle("on", on);
+    b.textContent = "R" + n + (on ? " 켜짐" : "");
+    b.disabled = busy || !stage || (locked && !on);
+  }
+  man.allOff.disabled = busy || !stage;
+  setWhy(man.relWhy, relayBlock);
+
   /* 카메라: 판 사진 보기 · 눌러서 이동 · 보정 점 추가 */
   const pr = S.prep || {}, hasPlate = !!pr.plate, ready = !!(pr.coords && pr.coords.ready);
   man.viewFix.disabled = !hasPlate;
   if (!hasPlate && man.view === "fix") { man.view = "raw"; man.viewRaw.checked = true; man.pb.show(""); refreshPreview(); }
   const fix = man.view === "fix";
-  man.fixRow.classList.toggle("hidden", !fix);
+  man.fixPart.classList.toggle("hidden", !fix);
   if (fix) {                                                     // 판 사진 보기: 마지막으로 찍은 판 사진(자동 측정 탭과 같은 사진)
     const ph = pr.photo, has = !!(ph && ph.rect);
     man.pb.setAr(1);
@@ -168,12 +211,11 @@ function renderManual() {
     man.photoInfo.textContent = has ? "사진 " + fmtClock(ph.t) : "사진 없음";
     man.retake.set(whyStage(true, true) || whyCamera() || whyHead());
   }
-  man.clickGo.disabled = man.view !== "fix" || !ready || busy || locked;
+  man.clickGo.disabled = !fix || !ready || busy || locked || !stage;
   if (man.clickGo.disabled) man.clickGo.checked = false;
-  man.addHere.set(busy ? "측정 중" : !ready ? "" : pr.last_click ? "" : "판 사진에서 위치 선택 필요");
-  man.addHere.b.disabled = busy || !ready || !pr.last_click;
-  man.camNote.textContent = !hasPlate ? "초기 설정 3 · 5 후 사용 가능" : !ready ? "초기 설정 5 후 사용 가능" : fix ? "십자 = 핀 · 원 = 선택 위치" : "";
-  man.camNote.title = man.camNote.textContent;
+  man.addHere.b.disabled = busy || !ready || !pr.last_click || !stage;
+  man.camNote.textContent = !hasPlate ? "초기 설정 3 · 5 후 사용 가능" : !ready ? "초기 설정 5 후 사용 가능" : !stage && fix ? NEED.stage
+    : fix && !pr.last_click ? "판 사진에서 위치 선택 필요" : fix ? "십자 = 핀 · 원 = 선택 위치" : "";
   drawManualOverlay();
   man.jog.update();
 }
@@ -188,8 +230,8 @@ function drawManualOverlay() {
     kids.push(svgEl("text", { x: s.plate[0], y: Math.min(...s.outline.map((p) => p[1])) - 4 * k, "font-size": 12 * k, "text-anchor": "middle", fill: "#1F2329", stroke: "#FFFFFF", "stroke-width": 3 * k, "paint-order": "stroke", text: s.name }));
   }
   const lc = pr.last_click;
-  if (lc) halo("circle", { cx: lc.plate[0], cy: lc.plate[1], r: 6 * k }, 1.5);                 // 누른 자리 = 동그라미
-  /* 지금 핀 자리 = 십자: 스테이지 X · Y 를 좌표 변환으로 판 위로 옮긴다. 변환이 없거나 핀이 판 밖이면 그리지 않는다 */
+  if (lc) halo("circle", { cx: lc.plate[0], cy: lc.plate[1], r: 6 * k }, 1.5);                 // 누른 위치 = 동그라미
+  /* 지금 핀 위치 = 십자: 스테이지 X · Y 를 좌표 변환으로 판 위로 옮긴다. 변환이 없거나 핀이 판 밖이면 그리지 않는다 */
   const pin = S.pos && S.pos.x != null && S.pos.y != null ? applyH(pr.coords && pr.coords.to_plate, S.pos.x, S.pos.y) : null;
   if (pin && pin[0] >= 0 && pin[0] <= sz && pin[1] >= 0 && pin[1] <= sz) {
     const [x, y] = pin, r = 9 * k;

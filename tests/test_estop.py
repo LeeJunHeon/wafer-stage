@@ -105,14 +105,14 @@ def test_estop_marks_heater_off_at_once_and_leaves_only_the_estop_alarm(make_ctr
     clock = FakeClock()
     ctrl = make_ctrl(clock=clock, meters=False)
     with_thermometer(ctrl, clock)
-    ctrl.relay_on(1)
-    assert ctrl.fake_fw.relay[0] is True and ctrl.state.get("heater_on_since") is not None
+    ctrl.runner.heater.on()                                       # 측정 쪽 규칙(온도를 못 읽으면 끈다)으로 켠다
+    assert ctrl.fake_fw.relay[9] is True and ctrl.state.get("heater_on_since") is not None
     seen = {}
     orig = ctrl.stage.bang
 
     def slow_bang():                                              # '!' 를 쓰기 직전: 릴레이는 아직 켜져 있고, 그 사이에 10 초가 흐르고 감시가 돈다
         clock.advance(10.0)
-        seen.update(since=ctrl.state.get("heater_on_since"), relay=ctrl.fake_fw.relay[0])
+        seen.update(since=ctrl.state.get("heater_on_since"), relay=ctrl.fake_fw.relay[9])
         ctrl.check_heater()
         return orig()
 
@@ -120,13 +120,13 @@ def test_estop_marks_heater_off_at_once_and_leaves_only_the_estop_alarm(make_ctr
     ctrl.estop("시험")
     assert seen == {"since": None, "relay": True}, "비상정지를 받은 순간 화면의 히트건은 꺼짐이어야 한다"
     assert alarm_codes(ctrl) == ["estop"], alarm_lines(ctrl)
-    assert ctrl.fake_fw.relay[0] is False and ctrl.state.get("heater_on_since") is None
+    assert not any(ctrl.fake_fw.relay) and ctrl.state.get("heater_on_since") is None, "송풍 · 열선 모두 바로 꺼진다"
     assert [ln for ln in ctrl.logs.recent if "히트건 끔 · 비상정지" in ln], "끈 까닭이 프로그램 로그에 남는다"
     # 비상정지를 풀면 바로 다시 켤 수 있다(다시 켜기 대기는 없다)
     ctrl.run_command("estop_release")
     ctrl.feed_temperature(30.0)
-    ctrl.relay_on(1)
-    assert ctrl.fake_fw.relay[0] is True
+    ctrl.run_command("heater_on")
+    assert ctrl.fake_fw.relay[0] is True and ctrl.fake_fw.relay[9] is True
 
 
 # ---- 해제: 정지 직후 2초는 받지 않는다 · 해제는 위치와 릴레이 상태를 다시 읽기만 한다 ----
@@ -171,7 +171,7 @@ def test_after_release_relays_stay_off_and_dropped_moves_do_not_run(make_ctrl):
     ctrl = make_ctrl(clock=clock, scale=0.4)
     fw = ctrl.fake_fw
     ctrl.relay_on(2)
-    ctrl.relay_on(5)
+    ctrl.relay_on(4)
     ctrl.k2450.output(True)
     res = []
 

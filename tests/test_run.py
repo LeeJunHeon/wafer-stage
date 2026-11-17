@@ -18,12 +18,15 @@ from app.server import create_app
 from tests.conftest import SEARCH, alarm_codes, alarm_lines, wait_for
 
 FAST = 200.0
+# 가열은 기본(가열 속도 제어)으로 하되 가열 속도를 높여 시험 시간을 줄인다(85 − 30 °C 를 20 °C/분 = 165 초).
+# 기본 가열 속도(3 °C/분)로 끝까지 재는 것은 tests/test_heat_control.py 가 따로 본다.
+RAMP = dict(run_heat_rate_c_min=20.0)
 
 
 def _prepare(ready_ctrl, n=2, time_scale=FAST, **cfg):
     """이 파일의 측정 시험은 전기 탐색으로 접촉한다고 명시한다(샘플마다 표면 높이가 달라 고정 높이로는 일부만 닿는다).
     고정 높이(기본)는 tests/test_contact_mode.py 가 따로 본다."""
-    ctrl = ready_ctrl(time_scale=time_scale, **dict(SEARCH, **cfg))
+    ctrl = ready_ctrl(time_scale=time_scale, **dict(SEARCH, **dict(RAMP, **cfg)))
     ctrl.run_command("samples_find")
     use = [s for s in ctrl.prep.samples if s["use"]]
     for s in use[n:]:
@@ -40,8 +43,22 @@ def _relay_cmds(ctrl, start=0):
 
 
 def _all_off(ctrl):
+    """측정이 끝난 뒤: K2450 출력 · 열선 · 쿨러는 꺼져 있고, 송풍은 열선을 끈 뒤 heater_fan_after_s 에 꺼진다."""
+    fw = ctrl.fake_fw
     assert ctrl.lab.out_on is False, "K2450 출력이 꺼져 있어야 한다"
-    assert not any(ctrl.fake_fw.relay), "히트건 · 쿨러가 모두 꺼져 있어야 한다"
+    assert not fw.relay[ctrl.cfg["heater_element_relay"] - 1], "열선은 바로 꺼진다"
+    assert not any(fw.relay[n - 1] for n in ctrl.cfg["cooler_relays"]), "쿨러가 모두 꺼져 있어야 한다"
+    assert wait_for(lambda: not any(fw.relay), 10), "송풍도 heater_fan_after_s 뒤 꺼져야 한다: %s" % fw.relay
+
+
+def _heater_on_seqs(cmds):
+    """릴레이 명령 중 히트건 켜기 순서(열선 r 10 1 → 송풍 r 1 1)의 수. 송풍 켜기는 언제나 열선을 켠 바로 뒤여야 한다."""
+    n = 0
+    for i, c in enumerate(cmds):
+        if c == "r 1 1":
+            assert i > 0 and cmds[i - 1] == "r 10 1", "송풍은 열선 바로 뒤에만 켠다: %s" % cmds[max(0, i - 3):i + 1]
+            n += 1
+    return n
 
 
 # ---------------------------------------------------------------------------
@@ -69,19 +86,23 @@ def test_run_two_samples_to_the_end(ready_ctrl, tmp_path):
     for sid in ids:
         seq = [st for cur, st in stages if cur == sid]
         assert [s for s in seq if s != 2] == [0, 1, 3, 4, 5], seq
-    # 히트건은 샘플마다 정확히 한 번 켜지고 한 번 꺼진다 · 쿨러는 샘플 자리에 맞는 릴레이
+    # 히트건: 샘플마다 켜기 순서(열선 → 송풍) 한 번 · 송풍 끄기 한 번. 가열 속도 제어라 그 사이 열선은 여러 번 켜고 끈다
     cmds = _relay_cmds(ctrl, n0)
-    assert cmds.count("r 1 1") == 2 and cmds.count("r 1 0") == 2
-    grid = ctrl.cfg["cooler_grid"]
+    _all_off(ctrl)
+    cmds = _relay_cmds(ctrl, n0)
+    assert _heater_on_seqs(cmds) == 2 and cmds.count("r 1 0") == 2
+    assert cmds.count("r 10 1") > 2 and cmds.count("r 10 0") == cmds.count("r 10 1"), "가열 속도 제어: 송풍을 켜 둔 채 열선만 켜고 끈다"
+    # 쿨러는 샘플 위치에 맞는 릴레이
+    grid, cool = ctrl.cfg["cooler_grid"], ctrl.cfg["cooler_relays"]
+    on = [c for c in cmds if c.endswith(" 1") and int(c.split()[1]) in cool]
     for k, sid in enumerate(ids):
         s = next(x for x in ctrl.prep.samples if x["id"] == sid)
         cell = ctrl.cfg["plate_size_mm"] / 3.0
         want = grid[int(s["plate"][1] // cell)][int(s["plate"][0] // cell)]
         assert want == ctrl.world.zone_relay(min(range(9), key=lambda i: abs(ctrl.world.samples[i]["px"] - s["plate"][0]) + abs(ctrl.world.samples[i]["py"] - s["plate"][1])))
-        on = [c for c in cmds if c.endswith(" 1") and c != "r 1 1"]
         assert on[k] == "r %d 1" % want, "샘플 %d 의 쿨러 릴레이" % sid
-    assert set(c for c in cmds if c.endswith(" 1")) - {"r 1 1"} == set(on), "다른 쿨러는 켜지 않는다"
-    _all_off(ctrl)
+    assert len(on) == 2, "다른 쿨러는 켜지 않는다: %s" % on
+    assert not [c for c in cmds if c.endswith(" 1") and int(c.split()[1]) not in cool + [1, 10]], "미배정 릴레이는 켜지 않는다"
     assert ctrl.state.get("pos", "z") == 0.0, "끝나면 핀이 맨 위"
     # 파일 이름과 바이트 단위 형식
     folder = run.folder
@@ -96,6 +117,13 @@ def test_run_two_samples_to_the_end(ready_ctrl, tmp_path):
         assert body.endswith(b"\r\n") and b"\n" not in body.replace(b"\r\n", b""), "줄끝은 전부 CRLF"
         lines = body.decode("ascii").split("\r\n")[:-1]
         assert len(lines) == len(run.items[sid]["points"]) > 50
+        # 가열 제어 기록(control.csv): 점마다 한 줄 · 가열 점에는 목표 온도 · 열선 · 송풍
+        ctl = (folder / ("%s_1.00V_control.csv" % name)).read_text(encoding="utf-8-sig").splitlines()
+        assert ctl[0] == "회차,단계,경과(s),온도(°C),저항(Ω),목표 온도(°C),열선,송풍" and len(ctl) - 1 == len(lines)
+        heat = [r.split(",") for r in ctl[1:] if r.split(",")[1] == "가열"]
+        assert len(heat) == run.items[sid]["cycles"][0]["heat_rows"] and all(r[5] and r[7] == "1" for r in heat), "가열 중에는 목표 온도 · 송풍 켜짐"
+        assert {r[6] for r in heat} == {"0", "1"}, "열선은 켜졌다 꺼졌다 한다"
+        assert [r[3] + "\t" + r[4] for r in (x.split(",") for x in ctl[1:])] == lines, "control.csv 의 온도 · 저항 = .dat 의 줄"
         for ln in lines:
             assert re.match(r"^\d\.\d{7}E[+-]\d+\t\d\.\d{7}E[+-]\d+$", ln), ln     # LabVIEW %.7E · 탭 · 지수에 0 을 채우지 않음
         t0, r0 = lines[0].split("\t")
@@ -107,6 +135,7 @@ def test_run_two_samples_to_the_end(ready_ctrl, tmp_path):
     assert sorted(p.name for p in nas_dirs[0].iterdir()) == sorted(p.name for p in folder.glob("*.dat"))
     meta = json.loads((folder / "run.json").read_text(encoding="utf-8"))
     assert meta["state"] == "done" and len(meta["samples"]) == 2 and meta["cond"]["run_heater_off_c"] == 85.0 and meta["nas"]["ok"] is True
+    assert meta["cond"]["run_heat_mode"] == "ramp" and meta["cond"]["heater_element_relay"] == 10 and meta["cond"]["run_heat_rate_c_min"] == 20.0
     assert (folder / "plate.jpg").stat().st_size > 1000 and (folder / "summary.csv").read_text(encoding="utf-8-sig").count("\n") == 3
     # 점은 state 에 없고 points() 로 받는다
     assert "points" not in json.dumps(ctrl.state.snapshot()["run"])
@@ -115,7 +144,7 @@ def test_run_two_samples_to_the_end(ready_ctrl, tmp_path):
     it = run.items[ids[0]]
     assert it["cycles"][0]["heat_rows"] > 10 and it["contact"]["r4"] > 1e5
     peak = max(pt[0] for pt in it["points"])
-    assert 85.0 <= peak < 95.0, "85 °C 에서 끄고, 끈 뒤 더 오른 구간도 기록한다 (최고 %.1f)" % peak
+    assert 85.0 <= peak < 95.0, "85 °C 에서 열선을 끄고, 끈 뒤 더 오른 구간도 기록한다 (최고 %.1f)" % peak
     assert it["points"][-1][0] < 30.0
 
 
@@ -202,7 +231,8 @@ def test_skip_pause_resume_stop_requeue(ready_ctrl):
     name = run.items[ids[0]]["name"]
     assert sorted(p.name for p in folder.glob(name + "_*.dat")) == [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"], "다시 잰 파일도 원래 이름으로"
     old = [p for p in folder.iterdir() if p.is_dir() and p.name.startswith("이전_")]
-    assert len(old) == 1 and sorted(p.name for p in old[0].iterdir()) == [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"], "건너뛰기 전에 받은 데이터는 이전_ 폴더에 남는다"
+    assert len(old) == 1 and sorted(p.name for p in old[0].iterdir()) == [name + "_1.00V_0.dat", name + "_1.00V_control.csv", name + "_1.00V_merged.dat"], \
+        "건너뛰기 전에 받은 데이터(가열 제어 기록 포함)는 이전_ 폴더에 남는다"
     assert ctrl.state.get("run", "summary") == "3개 중 2개 완료 · 중지 1"
 
 
@@ -243,11 +273,16 @@ def _burn(stop):
 
 
 def test_estop_under_cpu_load_leaves_only_the_estop_alarm(ready_ctrl):
-    """같은 프로세스에 CPU 스레드 2개를 띄운 채 배율 60 으로 가열하다 비상정지 → 경보는 비상정지 하나뿐.
+    """같은 프로세스에 CPU 스레드 2개를 띄운 채 배율 60 으로 가열하다 비상정지 → 비상정지가 새로 만든 경보는 비상정지 하나뿐.
+    비상정지 직전 경보 목록과 직후를 비교한다: 부하가 심하면 비상정지 전에 안전 감시가 (맞게) 온도 경보를 낼 수 있고, 그것은 비상정지가 만든 것이 아니다.
     예전: temp_stale_s 3 초가 배율 60 에서 실제 0.05 초라, 부하로 한 회차가 실제 0.2~0.8 초 걸리면 안전 감시가 (맞게) "온도 측정 실패 · 히트건 차단"
     (+ run_slow) 을 비상정지보다 먼저 냈다. 지금은 시험 장치가 그런 창을 실제 시간 1 초(상한 안에서)로 정한다(conftest.real_time_windows).
     부하는 가열을 시작한 뒤에 띄운다 - 실제 시간 창이 문제 되는 것은 히트건이 켜진 동안이다."""
-    ctrl = ready_ctrl(time_scale=60.0, run_heater_off_c=100.0)        # 가열 구간을 길게(부하로 느려진 회차가 가열 중에 두 번 이상 오게)
+    # 가열 구간을 길게(부하로 느려진 회차가 측정 중에 두 번 이상 오게). 부하로 온도를 실제 1 초 넘게 못 읽으면 안전 감시가 (맞게) 열선을 끄고
+    # 냉각으로 넘어간다 - 그래도 비상정지 때까지 측정이 이어지게 냉각 끝 온도를 낮추고 냉각 정체 판정을 길게 한다(한 단계 한도까지 냉각)
+    # 통신 감시(watchdog_ms)는 시험용 보드에서 배율 없는 실제 시간이다. CPU 스레드가 GIL 을 잡아 시리얼 일꾼이 2 초 넘게 못 돌면 보드가 (맞게)
+    # "통신 끊김 · 릴레이 차단" 을 낸다 - 시험 장치의 실제 시간 창이므로 이 시험에서는 넓힌다(conftest 의 시간 창 원칙과 같다)
+    ctrl = ready_ctrl(time_scale=60.0, run_heater_off_c=100.0, run_cool_end_c=5.0, run_stall_s=3000.0, watchdog_ms=20000)
     assert ctrl.cfg["temp_stale_s"] == 60.0 and ctrl.cfg["heater_max_on_s"] == 240.0
     ctrl.run_command("samples_find")
     x1, y1 = ctrl.world.sample_stage(1)                              # 표면 13.35 mm - 고정 높이(13.4 mm)로 닿는 샘플 하나
@@ -265,8 +300,9 @@ def test_estop_under_cpu_load_leaves_only_the_estop_alarm(ready_ctrl):
         n0 = len(run.items[sid]["points"])
         for t in load:
             t.start()
-        assert wait_for(lambda: run.stage == 3 and len(run.items[sid]["points"]) >= n0 + 2, 30), \
-            "부하 아래 가열 중 두 회차 · 단계 %s · %s" % (run.stage, alarm_lines(ctrl))
+        assert wait_for(lambda: run.active and len(run.items[sid]["points"]) >= n0 + 2, 30), \
+            "부하 아래 두 회차 · 단계 %s · %s · %s" % (run.stage, alarm_lines(ctrl), [(i["status"], i["reason"]) for i in run.items.values()])      # 부하로 안전 감시가 열선을 껐으면 냉각 단계일 수 있다(비상정지는 같다)
+        before = set(alarm_codes(ctrl))                              # 부하로 실제 1 초 넘게 온도를 못 읽으면 안전 감시가 (맞게) 경보를 이미 냈을 수 있다
         ctrl.estop("시험")
         assert wait_for(lambda: not run.active, 30)
     finally:
@@ -275,7 +311,8 @@ def test_estop_under_cpu_load_leaves_only_the_estop_alarm(ready_ctrl):
             if t.ident is not None:                                  # 띄운 스레드만 기다린다
                 t.join()
     assert run.items[sid]["status"] == STOPPED and run.items[sid]["reason"] == "비상정지"
-    assert alarm_codes(ctrl) == ["estop"], "비상정지 뒤 경보는 비상정지 하나뿐: %s" % alarm_lines(ctrl)
+    new = set(alarm_codes(ctrl)) - before
+    assert new == {"estop"}, "비상정지가 새로 만든 경보는 비상정지 하나뿐 · 직전 %s · 지금 %s" % (sorted(before), alarm_lines(ctrl))
     _all_off(ctrl)
 
 
@@ -299,16 +336,17 @@ def test_contact_failure_goes_to_next_sample(ready_ctrl):
 # 안전 한계
 # ---------------------------------------------------------------------------
 def test_max_on_time_moves_on_to_cooling(ready_ctrl):
-    ctrl, ids = _prepare(ready_ctrl, 1, heater_max_on_s=20.0, run_no_rise_s=10.0)    # 20 초로는 85 °C 에 못 닿는다(무반응 시간은 최대 켜짐 시간보다 짧아야 한다)
+    ctrl, ids = _prepare(ready_ctrl, 1, run_heat_mode="full", heater_max_on_s=20.0, run_no_rise_s=10.0)   # 열선을 계속 켜는 방식 · 20 초로는 85 °C 에 못 닿는다
     n0 = len(ctrl.fake_fw.log)
     ctrl.run_command("run_start")
     _finish(ctrl)
     it = ctrl.runner.items[ids[0]]
     assert it["status"] == DONE and "가열 끝 온도 미도달" in it["notes"]
     assert max(p[0] for p in it["points"]) < 85.0 and it["points"][-1][2] == 1, "냉각으로 넘어가 끝까지 기록한다"
-    cmds = _relay_cmds(ctrl, n0)
-    assert cmds.count("r 1 1") == 1 and cmds.count("r 1 0") == 1
     _all_off(ctrl)
+    cmds = _relay_cmds(ctrl, n0)
+    assert _heater_on_seqs(cmds) == 1 and cmds.count("r 10 1") == 1 and cmds.count("r 10 0") == 1 and cmds.count("r 1 0") == 1, cmds
+    assert any("히트건 끔 · 최대 켜짐 시간" in ln for ln in ctrl.logs.recent)
 
 
 def test_no_temperature_rise_fails_sample(ready_ctrl):
@@ -325,12 +363,20 @@ def test_no_temperature_rise_fails_sample(ready_ctrl):
 
 
 def test_phase_time_limit_fails_sample(ready_ctrl):
-    ctrl, ids = _prepare(ready_ctrl, 1, run_phase_limit_s=30.0, run_stall_s=3000.0)   # 식히는 데 30 초로는 모자란다
+    # 식히는 데 30 초로는 모자란다. 가열은 계속 가열(30 초 안에 85 °C 에 닿는다 - 가열 속도 제어는 예상 가열 시간이 한도를 넘어 시작이 거절된다)
+    ctrl, ids = _prepare(ready_ctrl, 1, run_heat_mode="full", run_phase_limit_s=30.0, run_stall_s=3000.0)
     ctrl.run_command("run_start")
     _finish(ctrl)
-    it = ctrl.runner.items[ids[0]]
+    run = ctrl.runner
+    it = run.items[ids[0]]
     assert it["status"] == FAIL and "초과" in it["reason"]
-    assert len(it["points"]) > 20, "그때까지 받은 데이터는 남는다"
+    # 그때까지 받은 데이터는 남는다: 받은 점 수(컴퓨터 속도에 따라 다르다)가 있고, 파일의 줄과 하나하나 같다
+    n = len(it["points"])
+    assert n > 0 and it["cycles"][0]["rows"] == n
+    cyc = (run.folder / (it["name"] + "_1.00V_0.dat")).read_bytes().decode("ascii").split("\r\n")
+    mer = (run.folder / (it["name"] + "_1.00V_merged.dat")).read_bytes().decode("ascii").split("\r\n")
+    assert cyc[0] == files.HEADER and cyc[-1] == "" and mer[-1] == "" and cyc[1:] == mer
+    assert [files.data_line(t, r) for t, r, _ph in it["points"]] == cyc[1:-1], "화면 점 = 파일 줄"
     _all_off(ctrl)
     assert ctrl.state.get("pos", "z") == 0.0
 
@@ -355,7 +401,8 @@ def test_instrument_error_stops_whole_run(ready_ctrl):
     assert run.state == "stopped" and run.items[ids[0]]["status"] == FAIL and run.items[ids[1]]["status"] == WAIT
     a = next(a for a in ctrl.state.get("alarms") if a["code"] == "run")
     assert a["level"] == "경보"
-    assert not ctrl.fake_fw.relay[0], "히트건은 꺼져 있다"
+    assert not ctrl.fake_fw.relay[9], "열선은 꺼져 있다"
+    assert wait_for(lambda: not ctrl.fake_fw.relay[0], 10), "송풍도 뒤에 꺼진다"
     assert ctrl.state.get("pos", "z") == 0.0
 
 
@@ -396,7 +443,8 @@ def test_remeasure_moves_old_files_and_keeps_labview_names(ready_ctrl, tmp_path)
     _finish(ctrl)
     folder, name = run.folder, run.items[ids[0]]["name"]
     want = [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"]
-    first = {n: (folder / n).read_bytes() for n in want}
+    ctl = name + "_1.00V_control.csv"                                # 가열 제어 기록(PC 에만 - NAS 에는 .dat 만)
+    first = {n: (folder / n).read_bytes() for n in want + [ctl]}
     nas_dir = Path(json.loads((folder / "run.json").read_text(encoding="utf-8"))["nas"]["dir"])
     assert sorted(p.name for p in nas_dir.iterdir()) == want and all((nas_dir / n).read_bytes() == first[n] for n in want)
 
@@ -409,8 +457,9 @@ def test_remeasure_moves_old_files_and_keeps_labview_names(ready_ctrl, tmp_path)
 
     # PC: 원래 이름 그대로 새 데이터, 예전 것은 이전_<HHMMSS> 폴더에 그대로
     assert sorted(p.name for p in folder.iterdir() if p.suffix == ".dat") == want, "이름 뒤에 _1 이 붙은 파일이 없어야 한다"
-    second = {n: (folder / n).read_bytes() for n in want}
-    assert all(second[n] != first[n] and second[n] for n in want), "새 데이터로 다시 썼다"
+    assert sorted(p.name for p in folder.iterdir() if p.suffix == ".csv") == sorted([ctl, "summary.csv"])
+    second = {n: (folder / n).read_bytes() for n in want + [ctl]}
+    assert all(second[n] != first[n] and second[n] for n in want + [ctl]), "새 데이터로 다시 썼다"
     old_dirs = [p for p in folder.iterdir() if p.is_dir()]
     assert len(old_dirs) == 1 and re.match(r"이전_\d{6}$", old_dirs[0].name)
     assert {p.name: p.read_bytes() for p in old_dirs[0].iterdir()} == first, "예전 파일은 바이트 그대로 옮겨졌다"
@@ -419,8 +468,8 @@ def test_remeasure_moves_old_files_and_keeps_labview_names(ready_ctrl, tmp_path)
     # run.json: 옮긴 것을 적는다 · 샘플의 파일 목록은 지금 있는 것만
     meta = json.loads((folder / "run.json").read_text(encoding="utf-8"))
     smp = meta["samples"][0]
-    assert sorted(smp["files"]) == want and smp["cycles"][0]["file"] == want[0]
-    assert len(smp["moved"]) == 1 and smp["moved"][0]["to"] == old_dirs[0].name and sorted(smp["moved"][0]["files"]) == want
+    assert sorted(smp["files"]) == sorted(want + [ctl]) and smp["cycles"][0]["file"] == want[0]
+    assert len(smp["moved"]) == 1 and smp["moved"][0]["to"] == old_dirs[0].name and sorted(smp["moved"][0]["files"]) == sorted(want + [ctl])
 
     # NAS: 같은 이름으로 덮어썼다(이전_ 폴더는 PC 에만)
     assert sorted(p.name for p in nas_dir.iterdir()) == want
@@ -472,7 +521,7 @@ def test_fast_rise_is_only_a_notice_and_changed_limits_apply_to_the_next_run(rea
         al = [a for a in ctrl.state.get("alarms") if a["code"] == "fast_rise"]
         assert len(al) == 1 and al[0]["level"] == "주의" and "온도 급상승" in al[0]["text"]
         cmds = _relay_cmds(ctrl, n0)
-        assert cmds.count("r 1 1") == 1 and cmds.count("r 1 0") == 1, "빠르게 올라도 히트건은 끄지 않는다(한 번 켜고 가열 끝 온도에서 한 번 끈다)"
+        assert _heater_on_seqs(cmds) == 1, "빠르게 올라도 안전 규칙이 열선을 끄지 않는다(켜기 순서 한 번 · 그 뒤는 가열 속도 제어)"
         assert it["status"] == DONE and max(p[0] for p in it["points"]) >= 85.0 and "가열 끝 온도 미도달" not in it["notes"]
         assert not ctrl.state.has_alarm("heater")
 

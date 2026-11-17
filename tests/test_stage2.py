@@ -243,7 +243,7 @@ def test_new_settings_defaults_and_validation(tmp_path):
 def test_state_publishes_cfg_for_the_screen(make_ctrl):
     ctrl = make_ctrl(connect=False)
     c = ctrl.state.get("cfg")
-    assert c["heater_max_c"] == 110.0 and c["watchdog_ms"] == 2000 and c["cooler_grid"][0] == [2, 3, 4]
+    assert c["heater_max_c"] == 110.0 and c["watchdog_ms"] == 2000 and c["cooler_grid"][0] == [2, 2, 2]
     with TestClient(create_app(ctrl)) as cl:
         assert cl.put("/api/settings", json={"heater_max_c": 100}).json()["ok"]
         assert ctrl.state.get("cfg", "heater_max_c") == 100.0
@@ -254,7 +254,7 @@ def test_ui_files_are_served(make_ctrl):
     ctrl = make_ctrl(connect=False)
     with TestClient(create_app(ctrl)) as c:
         page = c.get("/")
-        assert page.status_code == 200 and "VO₂ 자동 측정 프로그램" in page.text and "초기 설정" in page.text and "수동 측정" in page.text
+        assert page.status_code == 200 and "VO₂ 자동 측정 프로그램" in page.text and "초기 설정" in page.text and "수동 제어" in page.text
         for url in ("/ui/app.js", "/ui/app.css", "/ui/fonts/PretendardVariable.woff2"):
             assert c.get(url).status_code == 200, url
 

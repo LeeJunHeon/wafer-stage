@@ -110,6 +110,14 @@ function drawPlate() {
   setKids(ms.ov, ...kids);
 }
 
+/* 가열 중 한 줄: 목표 온도 · 열선 상태(가열 속도 제어). 계속 가열이면 열선 상태만. 가열 중이 아니면 "" */
+function heatLine(run) {
+  const ht = run.heat;
+  if (!ht || run.stage !== 3) return "";
+  const el = "열선 " + (ht.element ? "켜짐" : "꺼짐");
+  return ht.mode === "ramp" ? "목표 " + Number(ht.sp).toFixed(1) + " °C · " + el : (run.line ? run.line + " · " : "") + el;
+}
+
 function progText(row, s, brief) {                               // brief: 덧붙는 글(주의 한 줄)을 뺀다
   const st = row.status;
   if (st === "완료") return "완료 · " + fmtDur(row.dur) + (!brief && row.notes.length ? " · " + row.notes[0] : "");
@@ -221,7 +229,7 @@ function renderSample() {
     if (run.state !== "running" && ["완료", "실패", "건너뜀", "중지"].includes(row.status)) b.push(btn("재측정", () => api("run_requeue", { id })));
     setKids(ms.act, ...b);
   }
-  if (isNow) { setBand(run.stage, run.frac); ms.line.textContent = run.line || ""; }
+  if (isNow) { setBand(run.stage, run.frac); ms.line.textContent = heatLine(run) || run.line || ""; }
   else {
     setBand(row.status === "완료" ? 6 : -1, 0);
     ms.line.textContent = row.status === "제외" && s ? (s.weak ? "미확인 샘플 · 확인 후 [포함]" : s.small ? "핀보다 작음" : "") : row.notes.join(" · ");
@@ -278,6 +286,8 @@ function openRunCond() {
     run_start_c: num("run_start_c", "1"), run_heater_off_c: num("run_heater_off_c", "1"), run_cool_end_c: num("run_cool_end_c", "1"), run_repeat: num("run_repeat", "1"), run_interval_s: num("run_interval_s", "0.1"),
     run_cooler_mode: h("select", {}, ...[["zone", "샘플 아래 구역"], ["all", "전체"], ["none", "사용 안 함"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_cooler_mode === v }))),
     run_cooler_during_heat: chk("run_cooler_during_heat"),
+    run_heat_mode: h("select", {}, ...[["ramp", "가열 속도 제어"], ["full", "계속 가열"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_heat_mode === v }))),
+    run_heat_rate_c_min: num("run_heat_rate_c_min", "0.1"), run_fan_during_cool: chk("run_fan_during_cool"),
     contact_mode: h("select", {}, ...[["fixed", "고정 높이"], ["search", "전기 탐색"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.contact_mode === v }))),
     nas_dir: h("input", { type: "text", value: c.nas_dir || "", spellcheck: "false" }), nas_date_folder: chk("nas_date_folder") };
   const save = async () => {
@@ -290,6 +300,7 @@ function openRunCond() {
     h("h4", { text: "온도" }), "시작 온도 (°C)", f.run_start_c, "가열 끝 온도 (°C)", f.run_heater_off_c,
     "냉각 끝 온도 (°C)", f.run_cool_end_c, "반복 (회)", f.run_repeat, "측정 간격 (s)", f.run_interval_s);
   const right = h("div", { class: "form" },
+    h("h4", { text: "가열" }), "가열 방식", f.run_heat_mode, "가열 속도 (°C/분)", f.run_heat_rate_c_min, "냉각 중 송풍", f.run_fan_during_cool,
     h("h4", { text: "쿨러" }), "쿨러", f.run_cooler_mode, "가열 중 쿨러 켬", f.run_cooler_during_heat,
     h("h4", { text: "접촉" }), "접촉 방식", f.contact_mode,
     h("h4", { text: "저장" }), h("span", {}, "NAS 폴더", h("br"), small("비우면 PC 에만 저장")),

@@ -74,13 +74,16 @@ def test_defaults_without_file(tmp_path):
     cfg = Config(tmp_path / "none.json").load()
     assert cfg.values == defaults()
     assert cfg["stage_port"] == "COM5" and cfg["heater_max_c"] == 110.0 and cfg["heater_max_on_s"] == 180.0
-    assert cfg["cooler_grid"] == [[2, 3, 4], [5, 6, 7], [8, 9, 10]]
+    assert cfg["cooler_grid"] == [[2, 2, 2], [3, 3, 3], [4, 4, 4]] and cfg["cooler_relays"] == [2, 3, 4]
+    assert (cfg["heater_fan_relay"], cfg["heater_element_relay"]) == (1, 10)
     assert cfg["x_max_mm"] == 247.6 and cfg["y_max_mm"] == 247.8 and cfg["z_max_mm"] == 45.0
 
 
 @pytest.mark.parametrize("key,bad", [
     ("x_max_mm", -1), ("x_max_mm", "abc"), ("heater_max_c", 1e9), ("stage_port", 5), ("meter_four_wire", "yes"),
-    ("meter_avg_count", 0), ("cooler_grid", [[2, 3, 4], [5, 6, 7], [8, 9, 9]]), ("cooler_grid", [[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
+    ("meter_avg_count", 0), ("cooler_grid", [[2, 3, 4], [5, 6, 7], [8, 9]]), ("cooler_grid", [[0, 2, 3], [2, 2, 2], [3, 3, 3]]),
+    ("cooler_grid", [[2, 2, 2], [3, 3, 3], [4, 4, 11]]), ("cooler_relays", [2, 2, 3]), ("cooler_relays", []), ("cooler_relays", [2, 11]),
+    ("heater_element_relay", 0), ("heater_fan_relay", 11),
     ("no_such_key", 1),
 ])
 def test_invalid_values_are_rejected(tmp_path, key, bad):

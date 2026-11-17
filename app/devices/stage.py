@@ -115,6 +115,22 @@ def parse_banner_version(line):
     return m.group(1).upper() if m else None
 
 
+def port_open_text(port, exc):
+    """포트를 못 열었을 때 화면에 보일 한 줄. pyserial 은 SerialException 안에 원래 OS 오류를 글로 넣는다
+    ("could not open port 'COM5': FileNotFoundError(2, …)") - 예외 사슬의 형과 글을 같이 본다."""
+    kinds, texts, e = [], [], exc
+    while e is not None and len(kinds) < 5:
+        kinds.append(e)
+        texts.append("%s %s" % (type(e).__name__, e))
+        e = e.__cause__ or e.__context__
+    text = " ".join(texts)
+    if any(isinstance(k, FileNotFoundError) for k in kinds) or "FileNotFoundError" in text:
+        return "%s 없음 · USB 연결 확인" % port
+    if any(isinstance(k, PermissionError) for k in kinds) or "PermissionError" in text or "Access is denied" in text:
+        return "%s 사용 중 · 다른 프로그램 종료 필요" % port
+    return "%s 열기 실패" % port
+
+
 def mm_to_pulse(mm):
     return int(round(float(mm) * PPMM))
 
@@ -186,7 +202,9 @@ class Stage:
         try:
             ser = self.open_port(port_name)
         except Exception as e:                                      # noqa: BLE001
-            raise StageIOError("포트 열기 실패 · %s · %s" % (port_name, str(e)[:50]))
+            err = StageIOError(port_open_text(port_name, e))        # 화면은 한글 한 줄 · 원래 예외 전체는 detail(로그)
+            err.detail = "%s: %s" % (type(e).__name__, e)
+            raise err from e
         self.ser = ser
         self._rbuf = b""
         self.banner_lines = []

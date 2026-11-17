@@ -59,7 +59,9 @@ def _pick(ctrl, n):
 def test_default_is_fixed_height_and_run_goes_exactly_to_the_saved_height(ready_ctrl):
     """기본(고정 높이): 접촉 단계는 저장한 접촉 높이까지만 내린다. 전기 판단으로 더 내리지도, 안 닿았다고 실패시키지도 않는다.
     내린 뒤 잰 저항은 run.json 의 샘플 contact 에 기록만 한다."""
-    ctrl = ready_ctrl(time_scale=FAST, run_heater_off_c=40.0, run_cool_end_c=36.0)      # 접촉 단계를 보는 시험: 가열 · 냉각 구간은 짧게
+    # 접촉 단계를 보는 시험: 가열 · 냉각 구간은 짧게. 핀이 안 닿아 열전대가 공기 온도를 재므로 열선을 계속 켠다(계속 가열) -
+    # 가열 속도 제어로는 열선을 켜고 끄는 동안 공기 온도가 거의 안 올라 "온도 상승 없음" 이 된다(접촉과 상관없는 일)
+    ctrl = ready_ctrl(time_scale=FAST, run_heater_off_c=40.0, run_cool_end_c=36.0, run_heat_mode="full")
     assert ctrl.cfg["contact_mode"] == "fixed" and ctrl.cfg["contact_fixed_read"] is True
     cz = ctrl.cfg["contact_z_mm"]                                    # 13.4 mm: 표면이 13.5 mm 인 샘플에는 닿지 않는 높이
     ctrl.run_command("samples_find")

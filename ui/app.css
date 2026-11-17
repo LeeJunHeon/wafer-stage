@@ -121,7 +121,7 @@ label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .photo-in svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .photo-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 12px; color: var(--ink2); }
 
-/* ---- 이동(조그) 부품: 수동 측정 탭과 초기 설정 단계가 같이 쓴다 ---- */
+/* ---- 이동(조그) 부품: 수동 제어 탭과 초기 설정 단계가 같이 쓴다 ---- */
 .jog { display: flex; flex-direction: column; gap: 8px; }
 .steps { display: flex; gap: 4px; align-items: center; }
 .steps .btn { padding: 0 12px; min-width: 44px; }
@@ -180,23 +180,28 @@ table.ctab tr:hover td { background: none; }
 .devrow .resp { font-size: 12px; color: var(--ink2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .devrow .stt { display: flex; align-items: center; gap: 8px; }
 
-/* ---- 수동 측정 탭: 왼쪽(카메라 · 이동) 440~640 / 가운데(수동 측정 · 릴레이 시험) 400 고정 / 오른쪽(직접 명령) 나머지(340 이상) ---- */
-#tab-manual { display: grid; grid-template-columns: minmax(440px, 640px) 400px minmax(340px, 1fr); grid-template-rows: minmax(0, 1fr); align-items: start; }
+/* ---- 수동 제어 탭: 2열. 왼쪽(카메라 · 이동) 남는 폭 전부(520 이상) / 오른쪽(수동 측정 · 릴레이 시험 · 직접 명령) 460~600.
+   카메라 사진은 왼쪽 열의 남는 높이를 다 쓴다(이동 패널은 조그 옆에 좌표 이동을 놓아 낮게). 오른쪽 열이 넘치면 그 열 안에서만 스크롤 ---- */
+#tab-manual { display: grid; grid-template-columns: minmax(520px, 1fr) minmax(460px, 600px); grid-template-rows: minmax(0, 1fr); align-items: start; }
 #man-left { align-self: stretch; }
-#man-cam { flex: 0 1 auto; }
+#man-cam { flex: 1 1 0; min-height: 0; }
 #man-move { flex: none; }
-#preview-box { aspect-ratio: 4 / 3; width: 100%; flex: 0 1 auto; min-height: 120px; }
+#preview-box { min-height: 160px; }
+.move-body { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.move-side { display: flex; flex-direction: column; gap: 8px; }
+#man-right { align-self: stretch; overflow-y: auto; }
 .big { font-size: 22px; font-weight: 700; width: 150px; flex: none; }
 .reading { display: flex; align-items: center; gap: 12px; }
-.reading .lbl { width: 88px; color: var(--ink2); font-size: 12px; flex: none; }
+.reading .lbl, #man-right .lbl { width: 88px; color: var(--ink2); font-size: 12px; flex: none; }
 .relays { display: grid; grid-template-columns: repeat(3, 96px); gap: 4px; }
 .relays .btn { width: 96px; height: 40px; padding: 0; }
-#man-right { align-self: stretch; }
-#cmd-log { overflow-y: auto; background: #F7F8F9; border: 1px solid var(--line); border-radius: 4px; padding: 8px; font-family: Consolas, "맑은 고딕", monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+#man-right .relays { display: flex; flex-wrap: wrap; }
+#cmd-log { height: 88px; flex: none; overflow-y: auto; background: #F7F8F9; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font-family: Consolas, "맑은 고딕", monospace; font-size: 12px; line-height: 16px; white-space: pre-wrap; word-break: break-all; }   /* 최근 5줄 */
 #cmd-log .tx { color: var(--ink2); } #cmd-log .rx { color: var(--ink); } #cmd-log .er { color: var(--err-ink); }
-.quick { display: flex; flex-wrap: wrap; gap: 4px; }
+.quick { display: flex; flex-wrap: nowrap; gap: 4px; flex: none; }
 .quick .btn { height: 28px; font-size: 12px; padding: 0 8px; }
-#man-right select { width: 160px; }
+#man-cmd select { width: 160px; }
+#man-cmd input::placeholder { font-family: "Pretendard", "맑은 고딕", "Malgun Gothic", sans-serif; }     /* 안내 글은 화면 글꼴(고정폭이면 한글 자간이 벌어진다) */
 
 /* ---- 자동 측정 탭: 왼쪽 "판"은 내용에 맞춘 폭(판 사진 한 변 + 12 + 순서 표 260 + 안쪽 여백 - JS layoutPlate 가 정한다) /
         오른쪽 "샘플"(그래프)이 남는 폭을 전부 가져간다(440px 이상) ---- */
@@ -241,6 +246,7 @@ table.tb td input.name { height: 24px; width: 96px; }
 .reclist { overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; min-height: 80px; }
 .rec { padding: 4px 8px; cursor: pointer; border-bottom: 1px solid #ECEEF0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rec:hover { background: #F7F8F9; }
+.reclist .empty { padding: 8px; }                                   /* 기록이 없을 때 안내 글이 테두리에 붙지 않게 */
 .rec.on { background: #E9EDF1; font-weight: 600; }
 .h4 { margin: 4px 0 0; font-size: 13px; font-weight: 700; }
 .picklist { display: flex; flex-direction: column; gap: 4px; max-height: 40%; overflow-y: auto; }

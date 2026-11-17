@@ -21,7 +21,8 @@ DEFAULT_PATH = ROOT / "settings.json"
 class Item:
     key: str
     default: Any
-    kind: str                       # str | int | float | bool | grid | xy(비어 있을 수 있는 [x, y] mm) | optfloat(비어 있을 수 있는 숫자) | choice | list(글자 목록)
+    kind: str                       # str | int | float | bool | grid(3×3 릴레이 번호) | ints(릴레이 번호 목록) | xy(비어 있을 수 있는 [x, y] mm) |
+                                    # optfloat(비어 있을 수 있는 숫자) | choice | list(글자 목록)
     label: str                      # 화면에 보일 한국어 이름(뜻이 바로 보이게)
     unit: str = ""
     min: Optional[float] = None
@@ -102,19 +103,47 @@ ITEMS = (
               desc="접촉 높이 기준일 때 한도 = 접촉 높이 − 이 값\n수동 이동으로 핀이 샘플에 닿지 않게 함"),
          Item("z_floor_mm", None, "optfloat", "Z 한도 고정 값", "mm", 0, 100, verify=True,
               desc="고정 값일 때 수동으로 내릴 수 있는 가장 낮은 Z\n실장비에서 확인한 높이 입력"))
+    + _g("릴레이",                                                                        # 릴레이 역할. 그 밖의 릴레이는 미배정(켜는 길이 없다)
+         Item("heater_fan_relay", 1, "int", "송풍 릴레이", "번", 1, 10,
+              desc="히트건 송풍(바람) 릴레이 번호\n배선을 바꿨을 때만 변경 · 릴레이 모두 끈 뒤 변경 가능"),
+         Item("heater_element_relay", 10, "int", "열선 릴레이", "번", 1, 10,
+              desc="히트건 열선 릴레이 번호 · 켤 때 열선 먼저\n배선을 바꿨을 때만 변경 · 릴레이 모두 끈 뒤 변경 가능"),
+         Item("cooler_relays", [2, 3, 4], "ints", "쿨러 릴레이",
+              desc="쿨러 묶음 릴레이 번호 목록 · 하나에 쿨러 여러 개\n배선을 바꿨을 때만 변경 · 송풍 · 열선과 겹치면 안 됨"),
+         # 쿨러 3x3 자리 배치(판을 위에서 본 칸 → 쿨러 릴레이 번호). 같은 릴레이를 여러 칸에 써도 된다. 초기 설정 7 에서 정한다
+         Item("cooler_grid", [[2, 2, 2], [3, 3, 3], [4, 4, 4]], "grid", "쿨러 배치", verify=True,
+              desc="판을 위에서 본 3×3 칸마다 쿨러 릴레이 번호 · 중복 가능\n초기 설정 7 에서 켜 보고 설정"))
     + _g("히트건 안전",
-         Item("heater_relay", 1, "int", "히트건 릴레이", "번", 1, 10,
-              desc="히트건이 연결된 릴레이 번호\n배선을 바꿨을 때만 변경"),
          Item("heater_max_c", 110.0, "float", "히트건 차단 온도", "°C", 30, 300,
-              desc="이 온도 이상이면 히트건을 켜지 않고 켜져 있으면 끔\n가열 끝 온도보다 높게 설정"),
-         Item("heater_max_on_s", 180.0, "float", "히트건 최대 켜짐 시간", "s", 1, 3600,
-              desc="히트건을 한 번에 켜 두는 최대 시간 · 지나면 끔\n가열이 이 시간 안에 끝나지 않을 때 늘림"),
+              desc="이 온도 이상이면 열선을 켜지 않고 켜져 있으면 끔\n가열 끝 온도보다 높게 설정"),
+         Item("heater_max_on_s", 180.0, "float", "열선 연속 최대 시간", "s", 1, 3600,
+              desc="열선을 끊김 없이 켜 두는 최대 시간 · 지나면 열선 끔\n가열 단계 전체 시간은 한 단계 시간 한도가 봄"),
          Item("temp_stale_s", 3.0, "float", "온도 못 읽음 허용 시간", "s", 0.5, 60,
-              desc="측정 중 온도를 이 시간 넘게 못 읽으면 히트건 끔\n수동으로 켠 히트건에는 적용 안 함"))
+              desc="측정 중 온도를 이 시간 넘게 못 읽으면 열선 끔\n수동으로 켠 히트건에는 적용 안 함"),
+         Item("heater_start_gap_s", 1.0, "float", "열선 후 송풍 대기", "s", 0, 10, verify=True,
+              desc="히트건을 켤 때 열선을 켜고 송풍을 켜기까지 대기\n히트건이 켜기 순서 오류를 내면 늘림"),
+         Item("heater_fan_after_s", 30.0, "float", "열선 끈 뒤 송풍", "s", 0, 600, verify=True,
+              desc="히트건을 끌 때 열선을 끄고 송풍을 더 켜 두는 시간 · 열선 식힘\n열선이 뜨거운 채 멈추면 늘림"))
+    + _g("가열 제어",                                                                      # 측정 중 가열: 송풍을 켜 둔 채 열선을 켜고 꺼서 가열 속도를 따른다
+         Item("run_heat_mode", "ramp", "choice", "가열 방식", choices=(("ramp", "가열 속도 제어"), ("full", "계속 가열")),
+              desc="가열 속도 제어는 목표선을 따라 열선을 켜고 끔\n계속 가열은 가열 끝 온도까지 열선을 켜 둠"),
+         Item("run_heat_rate_c_min", 3.0, "float", "가열 속도", "°C/분", 0.1, 60, verify=True,
+              desc="가열 속도 제어의 목표선 기울기 · 목표 = 시작 온도 + 속도 × 경과\n느릴수록 온도계 지연 오차가 작음"),
+         Item("heater_band_c", 0.5, "float", "목표 아래 허용 폭", "°C", 0, 20, verify=True,
+              desc="온도가 목표 − 이 값보다 낮으면 열선 켬 · 목표보다 높으면 끔\n열선이 너무 자주 바뀌면 늘림 · 0 보다 커야 함"),
+         Item("heater_min_on_s", 2.0, "float", "열선 최소 켜짐", "s", 0, 60, verify=True,
+              desc="가열 속도 제어에서 열선을 켠 뒤 끄기까지 최소 시간\n릴레이가 너무 자주 바뀌면 늘림"),
+         Item("heater_min_off_s", 2.0, "float", "열선 최소 꺼짐", "s", 0, 60, verify=True,
+              desc="가열 속도 제어에서 열선을 끈 뒤 다시 켜기까지 최소 시간\n릴레이가 너무 자주 바뀌면 늘림"),
+         Item("run_heat_hold_s", 0.0, "float", "가열 끝 유지 시간", "s", 0, 3600, verify=True,
+              desc="가열 끝 온도에 닿은 뒤 그 온도로 유지하는 시간 · 가열 속도 제어만\n0 이면 닿는 즉시 냉각"),
+         Item("run_fan_during_cool", True, "bool", "냉각 중 송풍",
+              desc="가열 뒤 냉각하는 동안 송풍을 켜 둠\n끄면 열선 끈 뒤 송풍 시간이 지나면 끔"))
     + _g("쿨러",
-         # 쿨러 3x3 자리 배치(판을 위에서 본 칸 → 릴레이 번호). 초기 설정 7 에서 정한다
-         Item("cooler_grid", [[2, 3, 4], [5, 6, 7], [8, 9, 10]], "grid", "쿨러 배치", verify=True,
-              desc="판을 위에서 본 3×3 칸마다 쿨러 릴레이 번호\n초기 설정 7 에서 설정"))
+         Item("run_cooler_mode", "zone", "choice", "쿨러", choices=(("zone", "샘플 아래 구역"), ("all", "전체"), ("none", "사용 안 함")),
+              desc="측정 때 켜는 쿨러\n샘플 아래 구역은 초기 설정 7 의 배치 사용"),
+         Item("run_cooler_during_heat", True, "bool", "가열 중 쿨러 켬",
+              desc="가열 중에도 쿨러를 켠 채로 둠\n끄면 가열하는 동안 쿨러 끔"))
     + _g("판 · 핀",
          Item("plate_size_mm", 154.0, "float", "판 사각형 한 변", "mm", 10, 400, verify=True,
               desc="판에 새겨진 사각형의 한 변 길이 · 좌표의 기준\n판을 바꿨을 때 실측 값으로 변경"),
@@ -188,26 +217,22 @@ ITEMS = (
          Item("run_start_c", 30.0, "float", "시작 온도", "°C", -20, 200,
               desc="가열 전에 이 온도까지 냉각한 뒤 기록 시작"),
          Item("run_heater_off_c", 85.0, "float", "가열 끝 온도", "°C", 0, 250,
-              desc="이 온도에 닿으면 히트건 끔\n히트건 차단 온도보다 낮게 설정"),
+              desc="이 온도에 닿으면 열선 끔 · 가열 속도 제어의 목표 상한\n히트건 차단 온도보다 낮게 설정"),
          Item("run_cool_end_c", 30.0, "float", "냉각 끝 온도", "°C", -20, 200,
               desc="이 온도까지 냉각하면 그 샘플 측정 완료"),
          Item("run_repeat", 1, "int", "반복", "회", 1, 20,
               desc="샘플마다 가열 · 냉각을 반복하는 횟수\n회차마다 파일 하나"),
          Item("run_interval_s", 1.0, "float", "측정 간격", "s", 0.05, 60,
               desc="온도와 저항을 읽는 간격"),
-         Item("run_cooler_mode", "zone", "choice", "쿨러", choices=(("zone", "샘플 아래 구역"), ("all", "전체"), ("none", "사용 안 함")),
-              desc="측정 때 켜는 쿨러\n샘플 아래 구역은 초기 설정 7 의 배치 사용"),
-         Item("run_cooler_during_heat", True, "bool", "가열 중 쿨러 켬",
-              desc="가열 중에도 쿨러를 켠 채로 둠\n끄면 가열하는 동안 쿨러 끔"),
          Item("batch_name", "1", "str", "묶음",
               desc="묶음 이름 · 기록 폴더와 샘플 기본 이름에 사용"))
     + _g("측정 한계",                                                                     # v2 backend/rt.py 에서 쓰던 값
          Item("run_no_rise_s", 45.0, "float", "가열 무반응 시간", "s", 1, 600,
-              desc="히트건을 켜고 이 시간 동안 온도가 안 오르면 그 샘플 실패\n오른 정도는 가열 무반응 기준으로 판정"),
+              desc="열선이 켜져 있던 시간이 이만큼 쌓여도 안 오르면 그 샘플 실패\n오른 정도는 가열 무반응 기준으로 판정"),
          Item("run_no_rise_c", 0.5, "float", "가열 무반응 기준", "°C", 0.05, 20,
               desc="가열 무반응 시간 동안 이만큼도 안 오르면 실패"),
          Item("run_fast_rise_c_s", 5.0, "float", "빠른 가열 주의", "°C/s", 0.5, 100,
-              desc="1초에 이보다 빨리 오르면 주의 한 번 · 히트건은 끄지 않음"),
+              desc="1초에 이보다 빨리 오르면 주의 한 번 · 열선은 끄지 않음"),
          Item("run_stall_s", 180.0, "float", "냉각 정체 시간", "s", 5, 3600,
               desc="냉각 중 이 시간 동안 온도가 안 내려가면 그 단계를 정상 종료\n내려간 정도는 냉각 정체 기준으로 판정"),
          Item("run_stall_c", 0.3, "float", "냉각 정체 기준", "°C", 0.05, 20,
@@ -236,6 +261,20 @@ ITEMS = (
 BY_KEY = {i.key: i for i in ITEMS}
 
 
+N_RELAY = 10                                       # 보드의 릴레이 수(펌웨어 V11 · R1~R10)
+ROLE_KEYS = ("heater_fan_relay", "heater_element_relay", "cooler_relays")      # 릴레이 역할(릴레이가 하나라도 켜져 있으면 바꾸지 못한다)
+
+
+def _relay_no(n) -> bool:
+    return isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= N_RELAY
+
+
+def default_grid(coolers):
+    """쿨러 배치 기본값: 판의 줄(위 → 아래)마다 쿨러 릴레이를 차례로. 쿨러 릴레이가 기본값 [2, 3, 4] 면 ITEMS 의 기본값과 같다."""
+    cs = [int(n) for n in coolers]
+    return [[cs[r % len(cs)]] * 3 for r in range(3)]
+
+
 class ConfigError(ValueError):
     """잘못된 설정 값. 문구는 사람이 읽는 한국어 한 문장이다."""
 
@@ -251,12 +290,16 @@ def check(item: Item, value: Any) -> Any:
         if not isinstance(value, bool):
             raise ConfigError("%s: 켬/끔 값 필요" % name)
         return value
-    if item.kind == "grid":
-        ok = isinstance(value, list) and len(value) == 3 and all(isinstance(r, list) and len(r) == 3 for r in value)
+    if item.kind == "grid":                       # 칸마다 릴레이 번호. 같은 번호를 여러 칸에 써도 된다(쿨러 하나가 여러 칸을 맡는다)
+        ok = isinstance(value, list) and len(value) == 3 and all(isinstance(r, list) and len(r) == 3 for r in value)   # 쿨러 릴레이인지는 problems() 가 본다
         nums = [n for r in value for n in r] if ok else []
-        if not ok or not all(isinstance(n, int) and not isinstance(n, bool) and 2 <= n <= 10 for n in nums) or len(set(nums)) != 9:
-            raise ConfigError("%s: 3×3 칸에 릴레이 번호 2~10 중복 없이 입력 필요" % name)
-        return [list(r) for r in value]
+        if not ok or not all(_relay_no(n) for n in nums):
+            raise ConfigError("%s: 3×3 칸에 릴레이 번호 1~%d 입력 필요" % (name, N_RELAY))
+        return [[int(n) for n in r] for r in value]
+    if item.kind == "ints":
+        if not isinstance(value, list) or not 1 <= len(value) <= N_RELAY or not all(_relay_no(n) for n in value) or len(set(value)) != len(value):
+            raise ConfigError("%s: 릴레이 번호 1~%d 목록 필요 · 중복 없이 · 예 [2, 3, 4]" % (name, N_RELAY))
+        return [int(n) for n in value]
     if item.kind == "choice":
         if value not in [c[0] for c in item.choices]:
             raise ConfigError("%s: %s 중 하나 필요" % (name, " · ".join(c[1] for c in item.choices)))
@@ -295,7 +338,7 @@ def _show(item: Item, v) -> str:
         return "켬" if v else "끔"
     if item.kind == "choice":
         return dict(item.choices).get(v, str(v))
-    if item.kind in ("grid", "xy", "list"):
+    if item.kind in ("grid", "ints", "xy", "list"):
         return json.dumps(v, ensure_ascii=False)
     if item.kind in ("int", "float", "optfloat"):
         return "%g" % v
@@ -325,7 +368,18 @@ def problems(v: dict) -> list:
     if not float(v["run_start_c"]) < float(v["run_heater_off_c"]):
         out.append("시작 온도 %g °C · 가열 끝 온도 %g °C 미만 필요" % (v["run_start_c"], v["run_heater_off_c"]))
     if not float(v["run_no_rise_s"]) < float(v["heater_max_on_s"]):
-        out.append("가열 무반응 시간 %g초 · 히트건 최대 켜짐 시간 %g초 미만 필요" % (v["run_no_rise_s"], v["heater_max_on_s"]))
+        out.append("가열 무반응 시간 %g초 · 열선 연속 최대 시간 %g초 미만 필요" % (v["run_no_rise_s"], v["heater_max_on_s"]))
+    # ---- 가열 제어: 예상 가열 시간이 한 단계 시간 한도 안 · 최소 켜짐 < 연속 최대 · 허용 폭 > 0 ----
+    if v["run_heat_mode"] == "ramp":
+        heat_s = heat_time_s(v)
+        if not heat_s < float(v["run_phase_limit_s"]):
+            out.append("예상 가열 시간 %.0f초 · 한 단계 시간 한도 %g초 미만 필요 · 가열 속도 확인" % (heat_s, v["run_phase_limit_s"]))
+    if not float(v["heater_min_on_s"]) < float(v["heater_max_on_s"]):
+        out.append("열선 최소 켜짐 %g초 · 열선 연속 최대 시간 %g초 미만 필요" % (v["heater_min_on_s"], v["heater_max_on_s"]))
+    if not float(v["heater_band_c"]) > 0:
+        out.append("목표 아래 허용 폭 %g °C · 0 보다 커야 함" % v["heater_band_c"])
+    # ---- 릴레이 역할: 송풍 · 열선 · 쿨러가 서로 겹치지 않는다 · 쿨러 배치는 쿨러 릴레이만 ----
+    out += role_problems(v)
     # ---- 읽기 시간: 측정 중 온도는 측정 간격마다 읽는다. 한 회차가 온도 못 읽음 허용 시간에 가까우면 안전 감시가 히트건을 꺼서
     #      모든 샘플이 "가열 끝 온도 미도달" 이 된다 → 측정 간격 + 온도 읽기 + 저항 읽기 예상 < 허용 시간 × 사용 비율 ----
     cycle = cycle_time_s(v)
@@ -355,6 +409,27 @@ def problems(v: dict) -> list:
     return out
 
 
+def role_problems(v: dict) -> list:
+    """릴레이 역할이 겹치는지 · 쿨러 배치가 쿨러 릴레이만 쓰는지. 문제마다 한 줄."""
+    out = []
+    fan, el, cool = int(v["heater_fan_relay"]), int(v["heater_element_relay"]), [int(n) for n in v["cooler_relays"]]
+    if fan == el:
+        out.append("송풍 · 열선 릴레이 R%d 겹침" % fan)
+    for n, what in ((fan, "송풍"), (el, "열선")):
+        if n in cool:
+            out.append("R%d %s · 쿨러 릴레이와 겹침" % (n, what))
+    bad = sorted({int(n) for r in v["cooler_grid"] for n in r} - set(cool))
+    if bad:
+        out.append("쿨러 배치 %s · 쿨러 릴레이 아님" % " · ".join("R%d" % n for n in bad))
+    return out
+
+
+def heat_time_s(v: dict) -> float:
+    """가열 속도 제어의 예상 가열 시간(초) = (가열 끝 온도 − 시작 온도) ÷ 가열 속도 + 유지 시간."""
+    span = max(0.0, float(v["run_heater_off_c"]) - float(v["run_start_c"]))
+    return span / float(v["run_heat_rate_c_min"]) * 60.0 + float(v["run_heat_hold_s"])
+
+
 def cycle_time_s(v: dict) -> float:
     """측정 한 회차(온도 한 번 + 저항 한 번 + 측정 간격)의 예상 시간(초). 저항 읽기 시간의 근거는 meters.read_time_s."""
     from app.devices.meters import read_time_s
@@ -377,11 +452,15 @@ class Config:
         self.path = Path(path) if path else DEFAULT_PATH
         self.values = defaults()
         self.loaded_notes = []                       # 읽을 때 무시한 값(화면 · 로그용)
+        self.migrated = []                           # 예전 설정을 지금 규칙으로 옮긴 것(로그 한 줄씩 - 경보는 띄우지 않는다)
+        self.cooler_reset = False                    # 쿨러 배치를 기본값으로 되돌렸다 → 초기 설정 7 미완료(Controller 가 calib 을 지운다)
 
     # ---- 읽기 · 쓰기 ----
     def load(self):
         self.values = defaults()
         self.loaded_notes = []
+        self.migrated = []
+        self.cooler_reset = False
         if not self.path.exists():
             return self
         try:
@@ -399,8 +478,33 @@ class Config:
             try:
                 self.values[k] = check(item, v)
             except ConfigError as e:
+                if k == "cooler_grid":                # 못 쓰는 쿨러 배치는 _migrate 가 기본값으로 되돌리고 로그에 적는다
+                    self.cooler_reset = True
+                    continue
                 self.loaded_notes.append("%s · 기본값 사용" % e)
+        self._migrate(raw)
         return self
+
+    def _migrate(self, raw):
+        """예전 settings.json 을 지금 규칙으로 옮긴다(로그 한 줄씩 · migrated). 릴레이 배선 변경(송풍 · 열선 · 쿨러 3묶음) 때문이다.
+          · heater_relay(히트건 릴레이 하나)는 버린다 - 지금은 송풍 · 열선 릴레이 둘이다.
+          · 송풍 · 열선 · 쿨러 릴레이가 서로 겹치면 셋 다 기본값으로 - 겹친 채로는 쿨러 버튼이 열선을 켤 수 있다.
+          · 쿨러 배치가 쿨러 릴레이 밖의 번호를 쓰면 기본 배치로 되돌리고 초기 설정 7 을 미완료로 한다(cooler_reset)."""
+        v = self.values
+        if "heater_relay" in raw:
+            self.migrated.append("예전 설정 heater_relay R%s 버림 · 송풍 R%d · 열선 R%d 사용" % (raw["heater_relay"], v["heater_fan_relay"], v["heater_element_relay"]))
+        fan, el, cool = v["heater_fan_relay"], v["heater_element_relay"], v["cooler_relays"]
+        if fan == el or fan in cool or el in cool:
+            for k in ROLE_KEYS:
+                v[k] = copy.deepcopy(BY_KEY[k].default)
+            self.migrated.append("릴레이 역할 겹침 · 송풍 R%d · 열선 R%d · 쿨러 %s 기본값 사용" % (
+                v["heater_fan_relay"], v["heater_element_relay"], json.dumps(v["cooler_relays"])))
+        cool = v["cooler_relays"]
+        if self.cooler_reset or any(n not in cool for r in v["cooler_grid"] for n in r):
+            v["cooler_grid"] = default_grid(cool)
+            self.cooler_reset = True
+            self.migrated.append("쿨러 배치 %s · 쿨러 릴레이 %s 밖 번호 · 기본 배치 사용 · 초기 설정 7 확인 필요" % (
+                json.dumps(raw.get("cooler_grid"), ensure_ascii=False), json.dumps(cool)))
 
     def save(self):
         """원자적으로 쓴다(임시 파일 → 바꿔치기)."""

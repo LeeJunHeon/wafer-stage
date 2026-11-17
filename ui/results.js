@@ -37,7 +37,7 @@ async function loadResults(keep) {
 }
 function renderRecList() {
   setKids(rs.listEl, ...(rs.list.length ? rs.list.map((r) => h("div", { class: "rec" + (r.id === rs.id ? " on" : ""), onclick: () => pickRecord(r.id) },
-    fmtWhen(r.started) + " · 묶음 " + r.batch + " · " + r.n + "개")) : [small("측정 기록 없음")]));
+    fmtWhen(r.started) + " · 묶음 " + r.batch + " · " + r.n + "개")) : [h("div", { class: "small empty", text: "측정 기록 없음" })]));
 }
 async function pickRecord(id) {
   rs.id = id; rs.rec = null; rs.picks = []; rs.pts = {};
@@ -83,15 +83,17 @@ function resultTitle() {                                          // 그림으�
 }
 const COND_ROWS = [["meter_volt", "측정 전압", "V"], ["meter_four_wire", "4단자", ""], ["meter_avg_count", "평균", "회"], ["meter_nplc", "NPLC", ""], ["meter_ilim_a", "전류 한도", "A"],
   ["run_start_c", "시작 온도", "°C"], ["run_heater_off_c", "가열 끝 온도", "°C"], ["run_cool_end_c", "냉각 끝 온도", "°C"], ["run_repeat", "반복", "회"], ["run_interval_s", "측정 간격", "s"],
+  ["run_heat_mode", "가열 방식", ""], ["run_heat_rate_c_min", "가열 속도", "°C/분"], ["run_fan_during_cool", "냉각 중 송풍", ""],
   ["run_cooler_mode", "쿨러", ""], ["run_cooler_during_heat", "가열 중 쿨러", ""], ["contact_mode", "접촉 방식", ""], ["contact_z_mm", "접촉 높이", "mm"]];
 const COOLER_NAMES = { zone: "샘플 아래 구역", all: "전체", none: "사용 안 함" };
 const CONTACT_NAMES = { fixed: "고정 높이", search: "전기 탐색" };
+const HEAT_NAMES = { ramp: "가열 속도 제어", full: "계속 가열" };
 function renderRecord() {
   const rec = rs.rec;
   rs.save.disabled = !rec || !rs.picks.length;
   rs.note.textContent = "전이 온도 = 저항이 가장 빨리 변하는 온도" + (rec && rec.samples.some((s) => s.cycles > 1) ? " · 반복 측정은 첫 회차 기준" : "");
   if (!rec) {
-    setKids(rs.samples, small(rs.list.length ? "기록 선택" : ""));
+    setKids(rs.samples, small("기록 선택 시 표시"));
     setKids(rs.tbody); setKids(rs.files, small("—")); setKids(rs.nas, small("—")); setKids(rs.cond, small("—"));
     rs.graph.set([]); rs.saved.textContent = "";
     return;
@@ -120,6 +122,7 @@ function renderRecord() {
     if (typeof v === "boolean") v = v ? "켬" : "끔";
     else if (k === "run_cooler_mode") v = COOLER_NAMES[v] || v;
     else if (k === "contact_mode") v = CONTACT_NAMES[v] || v;
+    else if (k === "run_heat_mode") v = HEAT_NAMES[v] || v;
     return [h("span", { class: "small", text: name }), h("span", { text: v + (unit ? " " + unit : "") })];
   })));
   drawResultGraph();

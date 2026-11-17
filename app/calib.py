@@ -132,6 +132,14 @@ class Calib:
             self.d["cooler"] = {"t": time.time()}
         self.save()
 
+    def clear_cooler(self):
+        """쿨러 배치를 기본값으로 되돌렸다(예전 설정 이행): 초기 설정 7 을 미완료로."""
+        with self._lock:
+            if self.d.get("cooler") is None:
+                return
+            self.d["cooler"] = None
+        self.save()
+
     # ---- 변환 ----
     def plate_h(self, size_mm):
         """사진 → 판 mm. 판 꼭짓점이 없으면 None."""

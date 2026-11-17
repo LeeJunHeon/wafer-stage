@@ -72,8 +72,10 @@ def test_stop_drops_remaining_steps_and_pending_jog(make_ctrl):
     assert not any(c.startswith(("gx", "gy", "gz", "jx", "jy", "jz")) for c in fw.log[n:]), "남은 걸음(gy)은 나가지 않는다: %s" % fw.log[n:]
     assert ctrl.state.get("pos", "y") == 0.0
     # 대기 칸에 받아 둔 조그도 버린다
+    n_before = len(fw.log)
     t, out = _move_in_thread(lambda: ctrl.jog("y", 100.0))
-    assert wait_for(lambda: ctrl.stage.moving, 5)
+    assert wait_for(lambda: ctrl.stage.moving and any(c.startswith("jy") for c in fw.log[n_before:]), 5), \
+        "첫 조각 jy 가 보드 기록에 남은 뒤에 기록 길이를 잰다(그 전에 재면 첫 조각이 '나가면 안 되는 명령' 으로 잡힌다)"
     assert ctrl.jog("y", 50.0) == {"queued": True}
     assert ctrl.state.get("move", "pending") == {"axis": "y", "mm": 50.0}
     n = len(fw.log)
@@ -87,7 +89,7 @@ def test_stop_drops_remaining_steps_and_pending_jog(make_ctrl):
 def test_stop_leaves_heater_coolers_and_k2450_output_as_they_are(make_ctrl):
     ctrl = make_ctrl(scale=0.4)
     fw = ctrl.fake_fw
-    ctrl.relay_on(1)                                                 # 히트건(수동)
+    ctrl.run_command("heater_on")                                    # 히트건(수동): 열선 → 송풍
     ctrl.relay_on(3)                                                 # 쿨러
     ctrl.k2450.output(True)
     since = ctrl.state.get("heater_on_since")
@@ -97,7 +99,7 @@ def test_stop_leaves_heater_coolers_and_k2450_output_as_they_are(make_ctrl):
     ctrl.motion_stop("시험")
     t.join(10)
     assert 0.0 < ctrl.state.get("pos", "z") < 30.0
-    assert fw.relay[0] is True and fw.relay[2] is True, "히트건 · 쿨러는 그대로 켜져 있다"
+    assert fw.relay[0] is True and fw.relay[9] is True and fw.relay[2] is True, "히트건(송풍 · 열선) · 쿨러는 그대로 켜져 있다"
     assert ctrl.state.get("heater_on_since") == since and ctrl.state.get("relays")[0] is True
     assert ctrl.lab.out_on is True, "K2450 출력도 그대로"
     assert not any(c.startswith("r ") for c in fw.log[n:]), "정지는 릴레이 명령을 보내지 않는다: %s" % fw.log[n:]

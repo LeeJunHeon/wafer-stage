@@ -260,15 +260,16 @@ function renderStatus() {
   } else {
     posEl = h("span", { class: "item" }, "핀 X " + f2(pos.x) + " Y " + f2(pos.y) + " Z " + f2(pos.z) + " mm");
   }
-  const heaterOn = s.heater_on_since != null;
-  const hr = (c.heater_relay || 1);
-  const cool = s.relays.map((r, i) => (r && i + 1 !== hr ? i + 1 : null)).filter(Boolean);
-  const unknown = s.relays.every((r) => r == null);
+  /* 히트건: 꺼짐 / 송풍(바람만 · 열선 끈 뒤 식히는 중) / 가열(열선 켜짐). 쿨러: 켜진 쿨러 릴레이 번호 */
+  const ht = s.heater || {}, unknown = s.relays.every((r) => r == null);
+  const heaterTxt = unknown ? "—" : ht.element ? "가열" : ht.fan ? "송풍" : "꺼짐";
+  const heaterOn = !!(ht.element || ht.fan);
+  const cool = (c.cooler_relays || []).filter((n) => s.relays[n - 1]);
   const port = s.devices.stage.target ? "(" + s.devices.stage.target + ")" : "";
   setKids($("#status"), 
     dev("stage", "스테이지" + port), dev("k2110", "온도계"), dev("k2450", "저항계"), dev("camera", "카메라"),
     posEl,
-    h("span", { class: "item " + (heaterOn ? "st-warn" : "") }, "히트건 " + (heaterOn ? "켜짐" : "꺼짐")),
+    h("span", { class: "item " + (heaterOn ? "st-warn" : "") }, "히트건 " + heaterTxt),
     h("span", { class: "item" }, "쿨러 " + (unknown ? "—" : cool.length ? "켜짐 " + cool.join("·") : "꺼짐")),
     h("span", { class: "safety" }, "차단 " + (c.heater_max_c != null ? c.heater_max_c : 110) + " °C · 통신 감시 " + ((c.watchdog_ms || 2000) / 1000) + "초"));
 }

@@ -182,7 +182,7 @@ class FakeV11:
             self.px = self.py = self.pz = 0
         self.dirty = False
         self.hx = self.hy = self.hz = (self.eeprom == "restored")
-        self.relay = [False] * N_RELAY
+        self._set_relays([False] * N_RELAY)
         self.v, self.a, self.b = 6000, 40000, 300
         self.wd_ms = 0
         self.wd_tripped = False
@@ -215,7 +215,7 @@ class FakeV11:
         self.saved = (0, 0, 0)
         self.hx = self.hy = self.hz = bool(homed)
         self.dirty = False
-        self.relay = [False] * N_RELAY
+        self._set_relays([False] * N_RELAY)
         self.v, self.a, self.b = 6000, 40000, 300
 
     def _banner(self):
@@ -225,6 +225,13 @@ class FakeV11:
                     "unsaved": "  EEPROM: save 하지 않고 꺼짐 → 위치 불신",
                     "none": "  EEPROM: 기록 없음"}.get(self.eeprom, "  EEPROM: 기록 없음"))
         self._status()
+
+    on_relay = None                                         # 시험: 릴레이가 바뀔 때마다 부를 함수(릴레이 목록) - 시험용 히트건이 본다
+
+    def _set_relays(self, relays):
+        self.relay = list(relays)
+        if self.on_relay is not None:
+            self.on_relay(list(self.relay))
 
     def _rs(self):
         self._emit("RS " + " ".join("R%d=%d" % (i + 1, 1 if on else 0) for i, on in enumerate(self.relay)))
@@ -302,7 +309,7 @@ class FakeV11:
             return
         if (time.monotonic() - self.last_rx) * 1000.0 <= self.wd_ms:
             return
-        self.relay = [False] * N_RELAY
+        self._set_relays([False] * N_RELAY)
         self.wd_tripped = True
         self._emit("  [!] 통신 끊김 · 릴레이 전부 꺼짐")
         self._rs()
@@ -432,7 +439,7 @@ class FakeV11:
             if on:
                 self._emit("  [거부] r all 은 0 만 (켜기는 하나씩)")
                 return
-            self.relay = [False] * N_RELAY
+            self._set_relays([False] * N_RELAY)
             self._emit("  릴레이 전부 꺼짐")
             self._rs()
             return
@@ -440,7 +447,9 @@ class FakeV11:
         if not 1 <= n <= N_RELAY:
             self._emit("  [거부] 릴레이 번호는 1~10")
             return
-        self.relay[n - 1] = on
+        r = list(self.relay)
+        r[n - 1] = on
+        self._set_relays(r)
         self._emit("  릴레이 R%d %s" % (n, "켜짐" if on else "꺼짐"))
         self._rs()
 

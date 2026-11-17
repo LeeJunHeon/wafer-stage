@@ -333,7 +333,7 @@ def test_contact_needs_k2450(ready_ctrl):
 
 
 def test_pin_position_can_be_drawn_on_the_plate_photo(ready_ctrl):
-    """수동 측정 탭 "보정" 보기: 화면은 state.prep.coords.to_plate(스테이지 X · Y → 판 mm)로 지금 핀 자리를 판 사진 위에 그린다.
+    """수동 제어 탭 "보정" 보기: 화면은 state.prep.coords.to_plate(스테이지 X · Y → 판 mm)로 지금 핀 자리를 판 사진 위에 그린다.
     샘플의 스테이지 자리를 이 변환으로 옮기면 그 샘플의 판 자리가 나와야 한다. 좌표를 지우면 변환도 없다."""
     ctrl = ready_ctrl()
     ctrl.run_command("samples_find")

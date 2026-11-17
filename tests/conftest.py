@@ -16,6 +16,7 @@ from app.devices import meters
 from app.devices.stage import PPMM
 from tests.fakes import fake_visa
 from tests.fakes.fake_camera import open_fake
+from tests.fakes.fake_heatgun import FakeHeatGun
 from tests.fakes.fake_v11 import FakeV11
 from tests.fakes.world import World
 
@@ -36,6 +37,11 @@ class FakeClock:
 
     def advance(self, s):
         self.t += s
+
+    def sleep(self, s):
+        """기다림 = 시계를 그만큼 건너뛴다(실제로는 기다리지 않는다)."""
+        self.advance(max(0.0, float(s)))
+        time.sleep(0)
 
 
 def wait_for(fn, timeout=5.0, step=0.02):
@@ -113,13 +119,15 @@ def build_ctrl(cfg, clock=None, scale=0.05, time_scale=1.0):
     k = float(time_scale)
     base = (lambda: time.monotonic() * k) if k != 1.0 else time.monotonic        # 가짜 열 모델의 시계
     sleep = (lambda s: time.sleep(s / k)) if k != 1.0 else time.sleep
+    if hasattr(clock, "advance"):                                   # FakeClock(시험이 시간을 직접 건너뛰는 시계): 기다림(히트건 켜기 대기 등)도 그 시계를 건너뛴다
+        sleep = clock.sleep
     world = World()
     box = {"fw": None, "ctrl": None}
     fw = lambda: box["fw"]                                          # noqa: E731
-    heater = int(cfg["heater_relay"]) - 1
+    gun = FakeHeatGun(world.fan_relay, world.element_relay, clock=clock or base)     # 배선은 세계가 정한다(설정을 바꿔도 전선은 그대로)
     lab = fake_visa.Lab(clock=base, sleep=sleep, world=world,
-                        heater_fn=lambda: bool(fw() and fw().relay[heater]),
-                        cooler_fn=lambda: bool(fw() and any(r for i, r in enumerate(fw().relay) if i != heater)),
+                        heater_fn=gun.heating,
+                        cooler_fn=lambda: bool(fw() and any(fw().relay[n - 1] for n in world.cooler_relays)),
                         relays_fn=lambda: [i + 1 for i, r in enumerate(fw().relay) if r] if fw() else [],
                         pos_fn=lambda: (fw().true_xy() + (fw().real["z"] / PPMM,)) if fw() else None)
     lab.read_dt = 0.02                                              # 가짜 읽기 시간(실장비는 길다)
@@ -128,13 +136,15 @@ def build_ctrl(cfg, clock=None, scale=0.05, time_scale=1.0):
 
     def open_port(name):                                            # 스테이지 포트 여는 자리: 열 때마다 새 가짜 보드
         box["fw"] = FakeV11(time_scale=scale, homed=True)
+        box["fw"].on_relay = gun.update                             # 히트건은 보드의 릴레이를 따라간다
+        gun.update(box["fw"].relay)
         box["ctrl"].fake_fw = box["fw"]
         return box["fw"]
 
     ctrl = Controller(cfg, clock=clock or base, sleep=sleep, open_port=open_port)
     box["ctrl"] = ctrl
     ctrl.camera.open_capture = open_fake(lambda: fw().true_xy() if fw() else (0.0, 0.0), world=world)
-    ctrl.fake_fw, ctrl.lab, ctrl.world = None, lab, world            # 시험이 가짜 장비를 들여다보는 손잡이(프로그램은 쓰지 않는다)
+    ctrl.fake_fw, ctrl.lab, ctrl.world, ctrl.heatgun = None, lab, world, gun     # 시험이 가짜 장비를 들여다보는 손잡이(프로그램은 쓰지 않는다)
     return ctrl
 
 
@@ -184,6 +194,10 @@ def make_ctrl(tmp_path, monkeypatch):
     for c in made:
         c.shutdown()
     fake_visa.uninstall()
+    # 히트건을 쓴 모든 시험에 공통: 시험용 히트건에 인터락 오류(송풍 먼저 → 열선)도, 송풍 단독 켜짐도 한 번도 없어야 한다
+    bad = ["%s" % p for c in made for p in c.heatgun.problems()]
+    if bad:
+        pytest.fail("시험용 히트건 켜는 순서 문제: %s" % bad)
 
 
 @pytest.fixture

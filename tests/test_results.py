@@ -15,6 +15,7 @@ from app.server import create_app
 from tests.conftest import SEARCH, wait_for
 
 FAST = 200.0
+RAMP = dict(run_heat_rate_c_min=20.0)                                         # 가열 속도 제어(기본)를 빠르게(tests/test_run.py 와 같다)
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
 
@@ -23,13 +24,27 @@ def _sig(x):
 
 
 def _measured(ready_ctrl, tmp_path, n=2, **cfg):
-    ctrl = ready_ctrl(time_scale=FAST, **dict(SEARCH, **cfg))                    # 전기 탐색으로 접촉(고정 높이로는 일부 샘플만 닿는다)
+    ctrl = ready_ctrl(time_scale=FAST, **dict(SEARCH, **dict(RAMP, **cfg)))      # 전기 탐색으로 접촉(고정 높이로는 일부 샘플만 닿는다)
     ctrl.run_command("samples_find")
     use = [s for s in ctrl.prep.samples if s["use"]]
     for s in use[n:]:
         ctrl.run_command("sample_use", {"id": s["id"], "use": False})
     ctrl.run_command("run_start")
     return ctrl, [s["id"] for s in use[:n]]
+
+
+def _allowance(ctrl, folder, name, phase, t_model):
+    """전이 온도 허용 폭을 실제로 기록된 점에서 정한다(고정 숫자가 아니다 - 컴퓨터가 느리면 점 사이 간격이 벌어진다).
+    control.csv(첫 회차 · 그 단계)에서 모델 전이 온도 ± 5 °C 안의 점들로:
+      step = 이웃한 두 점의 온도 차 최댓값(전이가 점 사이 어디든 있을 수 있다)
+      lag  = 온도계 지연(lab.tau_sensor) × 그 구간의 가장 빠른 온도 변화율 - 온도계는 샘플보다 늦게 따라간다
+    반환 (lag, step)."""
+    rows = [r.split(",") for r in (folder / ("%s_1.00V_control.csv" % name)).read_text(encoding="utf-8-sig").splitlines()[1:]]
+    pts = [(float(r[2]), float(r[3])) for r in rows if r[0] == "1" and r[1] == phase]
+    near = [i for i in range(1, len(pts)) if min(abs(pts[i][1] - t_model), abs(pts[i - 1][1] - t_model)) <= 5.0]
+    step = max(abs(pts[i][1] - pts[i - 1][1]) for i in near)
+    rate = max(abs(pts[i][1] - pts[i - 1][1]) / max(1e-9, pts[i][0] - pts[i - 1][0]) for i in near)
+    return ctrl.lab.tau_sensor * rate, step
 
 
 def _model(ctrl, sid):
@@ -76,16 +91,21 @@ def test_results_from_a_finished_run(ready_ctrl, tmp_path, monkeypatch):
     rec = results.load_record(data, rid)
     assert [s["id"] for s in rec["samples"]] == ids and all(s["status"] == "완료" for s in rec["samples"])
     assert {"run.json", "summary.csv", "plate.jpg"} <= set(rec["files"])
+    assert all("%s_1.00V_control.csv" % run.items[i]["name"] in rec["files"] for i in ids), "가열 제어 기록도 저장 파일 목록에 보인다"
     assert rec["cond"]["run_heater_off_c"] == ctrl.cfg["run_heater_off_c"] and rec["nas"]["ok"] is True
     for s in rec["samples"]:
         m, a = _model(ctrl, s["id"]), s["sum"]
         assert abs(a["ratio"] - m["r_hi"] / m["r_lo"]) < 0.02 * m["r_hi"] / m["r_lo"], "저항 비"
         assert abs(a["r_peak"] - m["r_lo"]) < 0.01 * m["r_lo"], "최고 온도 저항 = 금속 쪽 저항"
-        # 온도계는 샘플보다 늦게 따라간다 → 가열 때는 모델보다 조금 낮게, 냉각 때는 조금 높게 보인다(2.5 °C 안)
-        assert m["t_up"] - 2.5 < a["t_heat"] <= m["t_up"] + 0.5, (a["t_heat"], m["t_up"])
-        assert m["t_down"] - 0.5 <= a["t_cool"] < m["t_down"] + 2.5, (a["t_cool"], m["t_down"])
+        # 온도계는 샘플보다 늦게 따라간다 → 가열 때는 모델보다 조금 낮게, 냉각 때는 조금 높게 보인다.
+        # 허용 폭 = 기록된 점에서 계산한 지연(lag) + 점 간격(step) + 모델 곡선 폭에서 오는 0.5 °C(점이 촘촘하고 지연이 없을 때의 오차 - test_analysis_matches_model_curve)
+        name = run.items[s["id"]]["name"]
+        lag, step = _allowance(ctrl, run.folder, name, "가열", m["t_up"])
+        assert m["t_up"] - lag - step - 0.5 < a["t_heat"] <= m["t_up"] + step + 0.5, (a["t_heat"], m["t_up"], lag, step)
+        lag, step = _allowance(ctrl, run.folder, name, "냉각", m["t_down"])
+        assert m["t_down"] - step - 0.5 <= a["t_cool"] < m["t_down"] + lag + step + 0.5, (a["t_cool"], m["t_down"], lag, step)
         assert a["hyst"] == round(a["t_heat"] - a["t_cool"], 2) > 0
-        assert a["t_max"] >= ctrl.cfg["run_heater_off_c"], "히트건을 끈 뒤 더 오른 구간까지 들어 있다"
+        assert a["t_max"] >= ctrl.cfg["run_heater_off_c"], "열선을 끈 뒤 더 오른 구간까지 들어 있다"
         assert a == run.items[s["id"]]["sum"], "측정 때 낸 요약과 파일에서 다시 낸 요약이 같다(화면용 점 = 파일에 쓴 값)"
 
     # 점: 파일에서 읽은 것이 측정 때 받은 것과 같다(가열 0 → 냉각 1 한 번만 바뀐다)

@@ -160,13 +160,18 @@ def test_read_time_estimate_and_default_settings_pass():
     ({"run_heater_off_c": 110.0}, "가열 끝 온도 110 °C · 차단 온도 110 °C 미만 필요"),
     ({"run_cool_end_c": 85.0}, "냉각 끝 온도 85 °C · 가열 끝 온도 85 °C 미만 필요"),
     ({"run_start_c": 90.0}, "시작 온도 90 °C · 가열 끝 온도 85 °C 미만 필요"),
-    ({"run_no_rise_s": 180.0}, "가열 무반응 시간 180초 · 히트건 최대 켜짐 시간 180초 미만 필요"),
+    ({"run_no_rise_s": 180.0}, "가열 무반응 시간 180초 · 열선 연속 최대 시간 180초 미만 필요"),
     ({"contact_step_mm": 0.2}, "하강 간격 0.2 mm · 탐색 간격 0.1 mm 이하 필요"),
     ({"contact_search_mm": 0.1, "contact_search_step_mm": 0.2, "contact_search_back_mm": 0.4}, "탐색 간격 0.2 mm · 탐색 거리 0.1 mm 이하 필요"),
     ({"contact_overdrive_mm": 0.6}, "더 누르는 거리 0.6 mm · 저장 높이 아래 한도 0.5 mm 이하 필요"),
     ({"contact_search_back_mm": 0.1}, "탐색 되돌림 거리 0.1 mm · 탐색 간격 × 확인 횟수 0.2 mm 이상 필요"),
     ({"contact_open_a": 1e-3, "contact_ilim_a": 1e-4}, "미접촉 판정 전류 0.001 A · 접촉 확인 전류 한도 0.0001 A 미만 필요"),
     ({"stage_port": "com4"}, "스테이지 포트 com4 · 사용 안 할 포트에 포함됨"),
+    ({"run_heat_rate_c_min": 1.0}, "예상 가열 시간 3300초 · 한 단계 시간 한도 1800초 미만 필요 · 가열 속도 확인"),
+    ({"run_heat_rate_c_min": 2.0, "run_heat_hold_s": 300.0}, "예상 가열 시간 1950초 · 한 단계 시간 한도 1800초 미만 필요 · 가열 속도 확인"),
+    ({"heater_max_on_s": 50.0, "heater_min_on_s": 50.0}, "열선 최소 켜짐 50초 · 열선 연속 최대 시간 50초 미만 필요"),
+    ({"heater_band_c": 0}, "목표 아래 허용 폭 0 °C · 0 보다 커야 함"),
+    ({"cooler_grid": [[2, 2, 2], [3, 3, 3], [4, 4, 5]]}, "쿨러 배치 R5 · 쿨러 릴레이 아님"),
 ])
 def test_settings_save_rejects_bad_combinations_with_the_reason(make_ctrl, patch, msg):
     ctrl = make_ctrl(connect=False)
@@ -228,35 +233,43 @@ def test_slow_reading_cycle_raises_one_alarm_with_the_cause(ready_ctrl):
 
 
 # ---------------------------------------------------------------------------
-# 6. 히트건 릴레이 번호 변경
+# 6. 릴레이 역할(송풍 · 열선 · 쿨러) 변경
 # ---------------------------------------------------------------------------
-def test_heater_relay_cannot_change_while_any_relay_is_on(make_ctrl):
+def test_relay_roles_cannot_change_while_any_relay_is_on(make_ctrl):
     clock = FakeClock()
     ctrl = make_ctrl(clock=clock, meters=False)
     fw = ctrl.fake_fw
     with TestClient(create_app(ctrl)) as c:
         ctrl.relay_on(3)                                             # 쿨러 하나만 켜져 있어도
-        r = c.put("/api/settings", json={"heater_relay": 2})
-        assert r.status_code == 400 and r.json()["msg"] == "릴레이 모두 끈 뒤 변경" and ctrl.cfg["heater_relay"] == 1
-        ctrl.relay_on(1)
-        assert c.put("/api/settings", json={"heater_relay": 1, "batch_name": "3"}).json() == {"ok": True}, "번호가 그대로면 상관없다"
-        assert c.put("/api/settings", json={"heater_relay": 3}).status_code == 400
+        for patch in ({"heater_fan_relay": 5}, {"heater_element_relay": 6}, {"cooler_relays": [2, 3, 4, 7]}):
+            r = c.put("/api/settings", json=patch)
+            assert r.status_code == 400 and r.json()["msg"] == "릴레이 모두 끈 뒤 변경", patch
+        assert (ctrl.cfg["heater_fan_relay"], ctrl.cfg["heater_element_relay"], ctrl.cfg["cooler_relays"]) == (1, 10, [2, 3, 4])
+        assert c.put("/api/settings", json={"heater_fan_relay": 1, "batch_name": "3"}).json() == {"ok": True}, "번호가 그대로면 상관없다"
         ctrl.relays_off()
+        # 역할이 겹치면 거절(조합 검사)
+        for patch, msg in (({"heater_element_relay": 2}, "R2 열선 · 쿨러 릴레이와 겹침"), ({"heater_fan_relay": 10}, "송풍 · 열선 릴레이 R10 겹침"),
+                           ({"cooler_relays": [2, 3]}, "쿨러 배치 R4 · 쿨러 릴레이 아님")):
+            r = c.put("/api/settings", json=patch)
+            assert r.status_code == 400 and r.json()["msg"] == msg, (patch, r.json())
         n = len(fw.log)
-        assert c.put("/api/settings", json={"heater_relay": 3}).json() == {"ok": True}
+        assert c.put("/api/settings", json={"cooler_relays": [2, 3, 4, 7], "heater_element_relay": 5}).json() == {"ok": True}
         assert "rs" in fw.log[n:], "바뀌면 릴레이 상태를 다시 읽는다"
-        assert ctrl.cfg["heater_relay"] == 3 and ctrl.state.get("cfg", "heater_relay") == 3
-        # 안전 감시는 새 번호(R3)를 히트건으로 본다: 최대 켜짐 시간 · X · Y 이동 거절
-        ctrl.relay_on(1)
-        assert ctrl.state.get("heater_on_since") is None, "예전 번호(R1)는 이제 히트건이 아니다"
-        ctrl.jog("x", 1.0)
-        ctrl.relay_on(3)
-        assert ctrl.state.get("heater_on_since") is not None
+        assert ctrl.state.get("cfg", "heater_element_relay") == 5 and ctrl.state.get("cfg", "cooler_relays") == [2, 3, 4, 7]
+        assert [ln for ln in ctrl.logs.recent if "릴레이 역할 변경 · " in ln and "열선 릴레이 10 → 5" in ln]
+        # 새 역할 기준: R7 은 쿨러로 켜진다 · R10 은 이제 미배정 · 열선은 R5(배선도 옮겼다 - 시험용 히트건도 R5 를 본다)
+        ctrl.relay_on(7)
+        assert _why(ctrl.relay_on, 10) == "R10 미배정 · 쿨러 릴레이 아님"
+        assert _why(ctrl.relay_on, 5) == "히트건 릴레이 · 히트건 버튼 사용"
+        ctrl.relays_off()
+        ctrl.heatgun.el_n = 5
+        n = len(fw.log)
+        ctrl.run_command("heater_on")
+        assert [x for x in fw.log[n:] if x.startswith("r ")] == ["r 5 1", "r 1 1"]
         assert _why(ctrl.jog, "x", 1.0) == "히트건 켜짐 · X · Y 이동 불가"
         clock.advance(181.0)
         ctrl.check_heater()
-        assert fw.relay[2] is False and fw.relay[0] is True, "최대 켜짐 시간이 지나면 새 히트건(R3)을 끈다"
-        assert [ln for ln in ctrl.logs.recent if "히트건 릴레이 변경 · R1 → R3" in ln]
+        assert fw.relay[4] is False and fw.relay[0] is True, "열선 연속 최대 시간이 지나면 새 열선(R5)을 끈다 · 송풍은 뒤에"
 
 
 # ---------------------------------------------------------------------------

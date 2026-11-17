@@ -323,7 +323,7 @@ function buildStep5() {
       h("div", { class: "grp" }, h("h4", { text: "정확도" }), pg.q),
       h("div", { class: "grp" }, h("h4", { text: "헤드 마커" }), pg.marker, h("div", { class: "row" }, pg.learn.b, pg.learn.w)),
       h("div", { class: "grp" }, h("h4", { text: "보정 점" }),
-        h("div", { class: "small", text: "수동 측정 탭 판 사진에서 추가" }),
+        h("div", { class: "small", text: "수동 제어 탭 판 사진에서 추가" }),
         pg.extra, h("div", { class: "row" }, pg.clear)))));
   pg.draw = () => {
     const c = S && S.cfg, co = P().coords;
@@ -373,7 +373,7 @@ function buildStep5() {
 }
 
 /* ---------- 6 · 접촉 높이 찾기 ---------- */
-function contactLine(ct) {                                       // 접촉 찾기의 진행 · 결과 한 줄(초기 설정 6단계 · 수동 측정 탭이 같이 쓴다)
+function contactLine(ct) {                                       // 접촉 찾기의 진행 · 결과 한 줄(초기 설정 6단계 · 수동 제어 탭이 같이 쓴다)
   if (!ct) return "";
   if (ct.active) return "하강 중 · Z " + f3(ct.z) + " mm · " + (ct.text || "");
   if (ct.result) return "접촉 Z " + f2(ct.result.first_z) + " mm · 2단자 " + fmtOhm2(ct.result.r2) + " · 4단자 " + fmtOhm2(ct.result.r4);
@@ -438,9 +438,11 @@ function buildStep6() {
   return pg;
 }
 
-/* ---------- 7 · 쿨러 구역 확인 ---------- */
+/* ---------- 7 · 쿨러 배치: 쿨러 릴레이(cooler_relays)를 하나씩 켜 보고 냉각되는 칸을 고른다 ----------
+   칸마다 쿨러 릴레이 하나(같은 릴레이를 여러 칸에 써도 된다 - 릴레이 하나에 쿨러 여러 개). 칸을 누르면 지금 켜 본 릴레이가 그 칸에 들어가고 바로 저장한다.
+   송풍 · 열선 · 미배정 릴레이는 여기 나오지 않는다. */
 function buildStep7() {
-  const pg = { grid: null, base: "", sel: null };
+  const pg = { grid: null, base: "", relSig: "" };
   pg.cells = [];
   pg.gridEl = h("div", { class: "cgrid" });
   for (let i = 0; i < 9; i++) {
@@ -449,49 +451,50 @@ function buildStep7() {
   }
   pg.relBtns = {};
   pg.relBox = h("div", { class: "relays" });
-  for (let n = 2; n <= 10; n++) {
-    const b = btn("R" + n, async () => { const r = await api("cooler_only", { n: S.relays[n - 1] ? 0 : n }); if (r.ok) pg.sel = n; });
-    pg.relBtns[n] = b; pg.relBox.append(b);
-  }
   pg.note = h("div", {});
   pg.why = h("div", { class: "why" });
   pg.off = btn("전체 끄기", () => api("cooler_only", { n: 0 }));
   pg.el = h("div", { class: "panel prep-panel" }, h("h3", { text: "7 · 쿨러 배치" }),
-    h("div", { class: "small", text: "릴레이를 켜고 냉각되는 칸 선택" }),
+    h("div", { class: "small", text: "쿨러 릴레이를 켜 보고 냉각되는 칸 선택" }),
     h("div", { class: "two" },
-      h("div", { class: "grp" }, h("h4", { text: "릴레이" }), pg.relBox, h("div", { class: "row" }, pg.off), pg.why),
+      h("div", { class: "grp" }, h("h4", { text: "켜 보기" }), pg.relBox, h("div", { class: "row" }, pg.off), pg.why),
       h("div", { class: "grp" }, h("h4", { text: "판 (왼쪽 위 = A)" }), pg.gridEl, pg.note)));
+  const coolers = () => S.cfg.cooler_relays || [];
   async function put(i) {
     const on = onRelay();
-    if (on == null) { toast("릴레이 켜기 필요"); return; }
+    if (on == null) { toast("쿨러 릴레이 켜기 필요"); return; }
     const g = pg.grid.slice();
-    const prev = g.indexOf(on);
-    if (prev >= 0) g[prev] = null;                               // 그 릴레이가 다른 칸에 있었으면 거기서 빠진다
-    g[i] = on;                                                   // 이 칸에 있던 릴레이는 빠진다(자리 없음)
+    g[i] = on;                                                   // 같은 릴레이를 여러 칸에 둘 수 있다
     pg.grid = g;
-    if (g.every((v) => v != null)) {
-      const r = await api("cooler_save", { grid: [g.slice(0, 3), g.slice(3, 6), g.slice(6, 9)] });
-      if (r.ok) toast("쿨러 배치 저장 완료");
-    }
+    const r = await api("cooler_save", { grid: [g.slice(0, 3), g.slice(3, 6), g.slice(6, 9)] });
+    if (r.ok) toast("쿨러 배치 저장 완료");
     pg.render();
   }
-  function onRelay() {
-    const hr = S.cfg.heater_relay;
-    for (let n = 2; n <= 10; n++) if (n !== hr && S.relays[n - 1]) return n;
+  function onRelay() {                                           // 지금 켜 본 쿨러 릴레이(하나만 켜진다)
+    for (const n of coolers()) if (S.relays[n - 1]) return n;
     return null;
   }
   pg.render = () => {
     const sig = JSON.stringify(S.cfg.cooler_grid);
     if (sig !== pg.base || !pg.grid) { pg.base = sig; pg.grid = S.cfg.cooler_grid.flat(); }      // 저장된 배치가 바뀌면 거기서 다시 시작
+    const rs = JSON.stringify(coolers());
+    if (rs !== pg.relSig) {                                      // 쿨러 릴레이 목록(전체 설정)이 바뀌면 버튼을 다시 만든다
+      pg.relSig = rs;
+      pg.relBtns = {};
+      setKids(pg.relBox, ...coolers().map((n) => {
+        const b = btn("R" + n, () => api("cooler_only", { n: S.relays[n - 1] ? 0 : n }));
+        pg.relBtns[n] = b; return b;
+      }));
+    }
     const on = onRelay(), why = whyStage(false, false);
     pg.cells.forEach((b, i) => { const n = pg.grid[i]; b.textContent = n == null ? "—" : "R" + n; b.classList.toggle("on", n != null && n === on); b.disabled = !!why; });
-    for (let n = 2; n <= 10; n++) { const b = pg.relBtns[n]; b.classList.toggle("on", n === on); b.textContent = "R" + n + (n === on ? " 켜짐" : ""); b.disabled = !!why || n === S.cfg.heater_relay; }
+    for (const [n, b] of Object.entries(pg.relBtns)) { const k = Number(n); b.classList.toggle("on", k === on); b.textContent = "R" + k + (k === on ? " 켜짐" : ""); b.disabled = !!why; }
     pg.off.disabled = !!why;
     pg.why.textContent = why;
-    const miss = [];
-    for (let n = 2; n <= 10; n++) if (n !== S.cfg.heater_relay && pg.grid.indexOf(n) < 0) miss.push("R" + n);
-    pg.note.textContent = miss.length ? "남은 릴레이: " + miss.join(" · ") : "저장된 배치";
-    pg.note.className = miss.length ? "st-warn" : "small";
+    const unused = coolers().filter((n) => pg.grid.indexOf(n) < 0).map((n) => "R" + n);
+    const saved = !!((P().steps || [])[6] || {}).done;
+    pg.note.textContent = unused.length ? "배치에 없는 릴레이: " + unused.join(" · ") : saved ? "저장된 배치" : "기본 배치 · 확인 필요";
+    pg.note.className = unused.length || !saved ? "st-warn" : "small";
   };
   return pg;
 }

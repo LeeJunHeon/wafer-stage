@@ -3,11 +3,14 @@
  1. 비상정지: 기다리지 않고 즉시 '!'. 명령을 받은 순간 세대 번호를 잡고, 쓰기 직전에 다시 비교해서 다르면 쓰지 않는다.
  2. 비상정지 뒤에는 이동 · 릴레이 켜기를 막는다. 사람이 풀면 st 로 위치를 다시 읽고 풀린다(원점을 강제로 다시 잡게 하지 않는다).
     정지 직후 ESTOP_HOLD_S(2초) 동안은 해제를 받지 않는다(Esc 를 연달아 눌러 바로 풀리지 않게).
- 3. 히트건(R1): 켠 주체를 구분한다 - "수동"(릴레이 켜기 버튼) / "측정"(측정 작업).
-    공통: 온도 값이 들어오고 있으면 차단 온도 이상에서 못 켜고, 켜진 동안 차단 온도에 닿으면 끈다 · 최대 켜짐 시간이 지나면 끈다 ·
-          켜진 동안 X · Y 이동 거절 · 비상정지 잠금.
+ 3. 히트건(송풍 heater_fan_relay + 열선 heater_element_relay): 켠 주체를 구분한다 - "수동"(히트건 버튼) / "측정"(측정 작업).
+    "히트건 켜짐" = 송풍 또는 열선이 켜짐. 켜진 동안 X · Y 이동 거절 · 비상정지 잠금.
+    아래 판정은 **열선**을 본다(열을 내는 것은 열선이다 - 송풍만 켜진 것은 바람뿐):
+    공통: 온도 값이 들어오고 있으면 차단 온도 이상에서 열선을 못 켜고, 켜진 동안 차단 온도에 닿으면 끈다 ·
+          열선 연속 최대 시간(heater_max_on_s)이 지나면 끈다.
     측정만: 온도를 읽을 수 있을 때만 켠다 · 켜진 동안 온도를 못 읽으면(temp_stale_s) 끈다.
     수동은 온도계가 없거나 온도를 못 읽어도 켤 수 있고, 온도를 못 읽는다고 끄지 않는다.
+    켜고 끄는 순서(열선 → 송풍 · 열선 끔 → 송풍은 뒤에)는 control 이 한 곳에서 정한다(Controller.heater_*).
  4. 자동 X · Y 이동 전에는 Z 를 맨 위로 올리고 st 로 Z=0 을 확인한다(control 이 순서를 지키고, 여기서는 Z 가 확인됐는지 판정한다).
  5. 원점이 있는 축은 가동 범위 밖으로 가는 명령을 거절한다.
     수동 Z 하강 한도(z_floor_mode, 기본 끔)가 켜져 있으면 수동 조그 · 좌표 이동이 한도 아래로 가는 명령을 거절한다.
@@ -28,7 +31,7 @@ from app.config import Config
 BY_MANUAL, BY_RUN = "수동", "측정"                # 히트건을 켠 주체
 ESTOP_HOLD_S = 2.0                                # 비상정지 직후 이 시간 동안은 해제를 받지 않는다
 ESTOP_TEXT = "비상정지 중 · 이동 · 릴레이 · 측정 불가"      # 화면 맨 위 띠에 보이는 글(경보 code "estop")
-TRIP_MAX_C, TRIP_NO_TEMP, TRIP_MAX_ON = "차단 온도", "온도 못 읽음", "최대 켜짐 시간"      # 안전 규칙이 히트건을 끄는 까닭
+TRIP_MAX_C, TRIP_NO_TEMP, TRIP_MAX_ON = "차단 온도", "온도 못 읽음", "최대 켜짐 시간"      # 안전 규칙이 열선을 끄는 까닭
 
 
 class Rejected(Exception):
@@ -43,8 +46,8 @@ class Safety:
         self._lock = threading.Lock()
         self.generation = 0
         self.estop_t: Optional[float] = None            # 마지막으로 비상정지를 받은 시각(clock)
-        self.heater_on_t: Optional[float] = None        # 히트건을 켠 시각(clock)
-        self.heater_by: Optional[str] = None            # 켠 주체(BY_MANUAL · BY_RUN). 꺼져 있으면 None
+        self.element_on_t: Optional[float] = None       # 열선을 켠 시각(clock) - 연속으로 켜진 시간의 시작. 꺼져 있으면 None
+        self.heater_by: Optional[str] = None            # 히트건(송풍 또는 열선)을 켠 주체(BY_MANUAL · BY_RUN). 둘 다 꺼지면 None
         self.last_temp_t: Optional[float] = None        # 마지막으로 온도를 읽은 시각
         self.last_temp: Optional[float] = None
 
@@ -59,8 +62,9 @@ class Safety:
             self.generation += 1
             g = self.generation
             self.estop_t = self.clock()                   # 해제는 이 시각에서 ESTOP_HOLD_S 뒤부터
-            if self.heater_on_t is not None:              # 히트건은 비상정지가 끈다(r all 0) - 감시는 이 순간부터 꺼진 것으로 본다.
-                self.heater_turned_off()                  # 끄기 응답을 기다리는 동안 "온도를 못 읽어 껐습니다" 경보가 덧붙지 않게
+            if self.element_on_t is not None:             # 히트건은 비상정지가 끈다(r all 0) - 감시는 이 순간부터 꺼진 것으로 본다.
+                self.element_turned_off()                 # 끄기 응답을 기다리는 동안 "온도를 못 읽어 껐습니다" 경보가 덧붙지 않게
+            self.heater_by = None
         self.state.set("estop_hold", True)
         self.state.set("estop_locked", True)
         self.state.alarm("estop", ESTOP_TEXT, ALARM)
@@ -170,7 +174,7 @@ class Safety:
         return self.last_temp_t is not None and (now - self.last_temp_t) <= float(self.cfg["temp_stale_s"])
 
     def reject_heater_on(self, by: str, thermometer_ok: bool, now: Optional[float] = None) -> Optional[str]:
-        """by = 켜려는 주체. 측정(BY_RUN)은 온도를 읽을 수 있어야 켠다. 수동(BY_MANUAL)은 온도계 조건을 보지 않는다.
+        """열선 켜기 판정. by = 켜려는 주체. 측정(BY_RUN)은 온도를 읽을 수 있어야 켠다. 수동(BY_MANUAL)은 온도계 조건을 보지 않는다.
         둘 다: 온도 값이 들어오고 있고 그 값이 차단 온도 이상이면 켜지 않는다."""
         now = self.clock() if now is None else now
         r = self.reject_relay_on()
@@ -183,30 +187,35 @@ class Safety:
             return "온도 %.0f °C · 차단 온도 %g °C 이상" % (self.last_temp, self.cfg["heater_max_c"])
         return None
 
-    def heater_turned_on(self, by: str = BY_RUN, now: Optional[float] = None):
-        """by 를 모르면(릴레이가 켜진 것만 읽혔을 때) 측정 쪽 규칙(더 엄한 쪽)으로 본다."""
-        self.heater_on_t = self.clock() if now is None else now
-        self.heater_by = by
+    def element_turned_on(self, by: str = BY_RUN, now: Optional[float] = None):
+        """열선이 켜졌다(릴레이 상태에서 읽었다). by 를 모르면(릴레이가 켜진 것만 읽혔을 때) 측정 쪽 규칙(더 엄한 쪽)으로 본다."""
+        self.element_on_t = self.clock() if now is None else now
+        if self.heater_by is None or by == BY_RUN:
+            self.heater_by = by
 
-    def heater_turned_off(self):
-        self.heater_on_t = None
+    def element_turned_off(self):
+        self.element_on_t = None
+
+    def heater_released(self):
+        """송풍 · 열선이 모두 꺼졌다: 켠 주체를 잊는다."""
+        self.element_on_t = None
         self.heater_by = None
 
     def heater_trip(self, now: Optional[float] = None):
-        """켜진 동안 매번 부른다. 꺼야 하면 (까닭, 경보 문구), 괜찮으면 None.
-        까닭 = TRIP_MAX_C(차단 온도) · TRIP_NO_TEMP(온도 못 읽음 - 측정이 켰을 때만) · TRIP_MAX_ON(최대 켜짐 시간)."""
-        if self.heater_on_t is None:
+        """열선이 켜진 동안 매번 부른다. 꺼야 하면 (까닭, 경보 문구), 괜찮으면 None.
+        까닭 = TRIP_MAX_C(차단 온도) · TRIP_NO_TEMP(온도 못 읽음 - 측정이 켰을 때만) · TRIP_MAX_ON(열선 연속 최대 시간)."""
+        if self.element_on_t is None:
             return None
         now = self.clock() if now is None else now
-        if self.last_temp is not None and self.last_temp_t is not None and self.last_temp_t >= self.heater_on_t - 1e-9 \
+        if self.last_temp is not None and self.last_temp_t is not None and self.last_temp_t >= self.element_on_t - 1e-9 \
                 and self.last_temp >= float(self.cfg["heater_max_c"]):
             return TRIP_MAX_C, "온도 %.0f °C 도달 · 히트건 차단" % self.last_temp
         if self.heater_by != BY_MANUAL:                              # 수동으로 켰을 때는 온도를 못 읽어도 끄지 않는다
-            since = max(self.heater_on_t, self.last_temp_t if self.last_temp_t is not None else -1e18)
+            since = max(self.element_on_t, self.last_temp_t if self.last_temp_t is not None else -1e18)
             if now - since > float(self.cfg["temp_stale_s"]):
                 return TRIP_NO_TEMP, "온도 측정 실패 · 히트건 차단"
-        if now - self.heater_on_t >= float(self.cfg["heater_max_on_s"]):
-            return TRIP_MAX_ON, "히트건 %g초 가동 · 차단" % self.cfg["heater_max_on_s"]
+        if now - self.element_on_t >= float(self.cfg["heater_max_on_s"]):
+            return TRIP_MAX_ON, "열선 %g초 연속 가동 · 차단" % self.cfg["heater_max_on_s"]
         return None
 
 
