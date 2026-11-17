@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.safety import Rejected
 from app.server import create_app
-from tests.conftest import SEARCH, wait_for
+from tests.conftest import SEARCH, alarm_lines, wait_for
 
 PPMM = 160
 
@@ -52,7 +52,7 @@ def test_stop_during_long_goto_halts_before_target_and_does_not_lock(make_ctrl):
     assert (x, ctrl.state.get("pos", "y"), ctrl.state.get("pos", "z")) == tuple(round(v, 3) for v in _fw_mm(ctrl))
     assert ctrl.state.get("move") is None and not ctrl.stage.moving
     # 잠기지 않는다: 경보 없음 · 원점 그대로 · 바로 다음 조그가 된다
-    assert ctrl.state.get("estop_locked") is False and r["locked"] is False and ctrl.state.get("alarms") == []
+    assert ctrl.state.get("estop_locked") is False and r["locked"] is False and alarm_lines(ctrl) == []
     assert all(ctrl.state.get("homed", a) for a in "xyz")
     ctrl.jog("x", 1.0)
     assert abs(ctrl.state.get("pos", "x") - (x + 1.0)) < 0.01
@@ -101,7 +101,7 @@ def test_stop_leaves_heater_coolers_and_k2450_output_as_they_are(make_ctrl):
     assert ctrl.state.get("heater_on_since") == since and ctrl.state.get("relays")[0] is True
     assert ctrl.lab.out_on is True, "K2450 출력도 그대로"
     assert not any(c.startswith("r ") for c in fw.log[n:]), "정지는 릴레이 명령을 보내지 않는다: %s" % fw.log[n:]
-    assert ctrl.state.get("estop_locked") is False and ctrl.state.get("alarms") == []
+    assert ctrl.state.get("estop_locked") is False and alarm_lines(ctrl) == []
 
 
 def test_stop_when_idle_is_ok_and_changes_nothing(make_ctrl):
@@ -111,7 +111,7 @@ def test_stop_when_idle_is_ok_and_changes_nothing(make_ctrl):
     for _ in range(2):
         r = ctrl.run_command("motion_stop")
         assert r["pos"] == pos and r["locked"] is False
-    assert dict(ctrl.state.get("pos")) == pos and ctrl.state.get("alarms") == []
+    assert dict(ctrl.state.get("pos")) == pos and alarm_lines(ctrl) == []
     assert all(ctrl.state.get("homed", a) for a in "xyz")
     ctrl.jog("x", -1.0)                                              # 그 뒤에도 바로 움직인다
     assert abs(ctrl.state.get("pos", "x") - 19.0) < 0.01

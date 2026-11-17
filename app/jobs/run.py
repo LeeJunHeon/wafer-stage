@@ -25,6 +25,7 @@ from pathlib import Path
 
 from app import config as config_mod
 from app import contact as contact_mod
+from app import imgio
 from app.devices import meters
 from app.jobs import analysis, files
 from app.jobs.heater import RelayHeater
@@ -82,6 +83,7 @@ class Runner:
         self._coolers = []
         self._t_miss = 0
         self._slow_warned = False                   # 읽기 한 회차가 온도 못 읽음 허용 시간을 넘었다는 경보(측정마다 한 번)
+        self._pub_lock = threading.RLock()          # state.run 을 쓰는 두 길(publish · refresh_gate)이 서로 앞지르지 않게
 
     # ------------------------------------------------------------------
     @property
@@ -152,8 +154,8 @@ class Runner:
                     self.folder.mkdir(parents=True, exist_ok=True)
                     jpg = c.prep.jpeg("plate")
                     if jpg:
-                        (self.folder / "plate.jpg").write_bytes(jpg)
-                except OSError as e:
+                        imgio.write_bytes(self.folder / "plate.jpg", jpg)     # 이미지 파일은 imgio 로만(한글 경로 · 원자적 쓰기)
+                except (OSError, imgio.ImageIOError) as e:
                     raise Rejected("저장 폴더 생성 실패 · %s" % str(e)[:50])
                 self.items = {s["id"]: self._new_item(s) for s in used}
                 self.order = [s["id"] for s in used]
@@ -822,7 +824,17 @@ class Runner:
                 "summary": summary, "msg": self.msg, "gate": [] if self.state == "running" else self.gate(), "volt": float(self.cond.get("meter_volt", c.cfg["meter_volt"]))}
 
     def publish(self):
-        self.c.state.set("run", self.view())
+        with self._pub_lock:
+            self.c.state.set("run", self.view())
+
+    def refresh_gate(self):
+        """측정 시작 조건(gate)의 입력이 바뀐 순간 화면용 state.run.gate 만 다시 계산해 보낸다(view 전체는 만들지 않는다 - 가볍게).
+        입력: 장비 연결 · 세 축 원점 · 비상정지 잠금 · 판 영역 · 좌표 보정 · 접촉 높이 · 헤드 위치 확인. 부르는 곳은 Controller.gate_inputs_changed 하나다.
+        publish 와 같은 잠금 안에서 계산하고 쓴다 - 먼저 계산한 예전 목록이 나중에 써져 새 목록을 덮지 않게."""
+        with self._pub_lock:
+            if self.c.state.get("run") is None:
+                return
+            self.c.state.set("run", "gate", [] if self.state == "running" else self.gate())
 
 
 def _frac_down(t_from, t_to):

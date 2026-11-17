@@ -9,7 +9,7 @@ from app.config import Config
 from app.devices.meters import read_time_s
 from app.safety import Rejected
 from app.server import create_app
-from tests.conftest import FakeClock, wait_for
+from tests.conftest import FakeClock, alarm_lines, wait_for
 
 PPMM = 160
 FAST = 200.0
@@ -206,7 +206,7 @@ def test_combination_check_at_run_start_and_old_problems_do_not_block_other_chan
 
 def test_slow_reading_cycle_raises_one_alarm_with_the_cause(ready_ctrl):
     """측정 중 실제 한 회차가 온도 못 읽음 허용 시간(3 초)을 넘으면 경보 한 번. (설정으로는 맞는데 장비가 느린 경우)"""
-    ctrl = ready_ctrl(time_scale=FAST, contact_mode="search")
+    ctrl = ready_ctrl(time_scale=FAST, contact_mode="search", temp_stale_s=60.0)     # 허용 시간을 직접 준다(배율 200 에서 실제 0.3 초)
     ctrl.run_command("samples_find")
     for s in [s for s in ctrl.prep.samples if s["use"]][1:]:
         ctrl.run_command("sample_use", {"id": s["id"], "use": False})
@@ -214,15 +214,15 @@ def test_slow_reading_cycle_raises_one_alarm_with_the_cause(ready_ctrl):
     ctrl.run_command("run_start")
     run = ctrl.runner
     assert wait_for(lambda: run.stage == 3, 20), "가열 단계까지"
-    assert not ctrl.state.has_alarm("run_slow")
-    ctrl.lab.read_dt = 2.0                                           # 장비가 느려졌다: 읽기 한 번 2 초(측정 시계) → 온도 + 저항 한 회차가 3 초를 넘는다
+    assert not ctrl.state.has_alarm("run_slow"), alarm_lines(ctrl)
+    ctrl.lab.read_dt = 40.0                                          # 장비가 느려졌다: 읽기 한 번 40 초(측정 시계) → 온도 + 저항 한 회차가 60 초를 넘는다
     assert wait_for(lambda: ctrl.state.has_alarm("run_slow"), 10)
     ctrl.lab.read_dt = 0.002
     ctrl.run_command("run_stop")
     assert wait_for(lambda: not run.active, 30)
     al = [a for a in ctrl.state.get("alarms") if a["code"] == "run_slow"]
     assert len(al) == 1 and al[0]["level"] == "경보" and al[0]["dismiss"] is True
-    assert al[0]["text"].startswith("읽기 한 회차 ") and al[0]["text"].endswith("초 · 허용 3초 초과 · 측정 간격과 평균 횟수 확인")
+    assert al[0]["text"].startswith("읽기 한 회차 ") and al[0]["text"].endswith("초 · 허용 60초 초과 · 측정 간격과 평균 횟수 확인"), al
     assert run.items[sid]["notes"].count("읽기 회차 지연") == 1, "측정마다 한 번만 알린다"
     assert [ln for ln in ctrl.logs.recent if "읽기 한 회차" in ln and "NPLC" in ln], "원인(측정 간격 · NPLC · 평균)을 로그에 남긴다"
 

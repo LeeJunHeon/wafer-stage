@@ -6,7 +6,7 @@ import pytest
 
 from app.devices import stage as stage_mod
 from app.safety import Rejected
-from tests.conftest import FakeClock, wait_for, with_thermometer
+from tests.conftest import FakeClock, alarm_codes, alarm_lines, wait_for, with_thermometer
 
 
 def start_long_move(ctrl, result):
@@ -119,7 +119,7 @@ def test_estop_marks_heater_off_at_once_and_leaves_only_the_estop_alarm(make_ctr
     ctrl.stage.bang = slow_bang
     ctrl.estop("시험")
     assert seen == {"since": None, "relay": True}, "비상정지를 받은 순간 화면의 히트건은 꺼짐이어야 한다"
-    assert [a["code"] for a in ctrl.state.snapshot()["alarms"]] == ["estop"], ctrl.state.snapshot()["alarms"]
+    assert alarm_codes(ctrl) == ["estop"], alarm_lines(ctrl)
     assert ctrl.fake_fw.relay[0] is False and ctrl.state.get("heater_on_since") is None
     assert [ln for ln in ctrl.logs.recent if "히트건 끔 · 비상정지" in ln], "끈 까닭이 프로그램 로그에 남는다"
     # 비상정지를 풀면 바로 다시 켤 수 있다(다시 켜기 대기는 없다)
@@ -206,6 +206,6 @@ def test_after_release_relays_stay_off_and_dropped_moves_do_not_run(make_ctrl):
     assert ctrl.lab.out_on is False, "K2450 출력도 꺼진 채"
     assert ctrl.state.get("heater_on_since") is None and ctrl.state.get("move") is None
     assert ctrl.state.get("pos", "y") == y and ctrl.state.get("pos", "x") == 0.0, "멈춘 위치 그대로"
-    assert [a["code"] for a in ctrl.state.snapshot()["alarms"]] == [], "해제 뒤 남는 경보 없음"
+    assert alarm_codes(ctrl) == [], "해제 뒤 남는 경보 없음: %s" % alarm_lines(ctrl)
     ctrl.jog("x", 1.0)                                               # 풀린 뒤에는 새 명령만 실행된다
     assert abs(ctrl.state.get("pos", "x") - 1.0) < 0.01 and ctrl.state.get("pos", "y") == y

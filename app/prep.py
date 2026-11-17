@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from app import geometry as geo
+from app import imgio
 from app.calib import CORNERS
 from app.devices.camera import CameraError
 from app.safety import Rejected
@@ -33,13 +34,25 @@ class Prep:
         self._empty = None                          # 빈 판 원본(파일에서 읽어 둔 것)
         self.marker_seen = None                     # 마지막으로 헤드 마커가 보였는가
         self.pos_off_mm = None                      # 마지막 위치 확인 결과(mm)
-        self.pos_block = False                      # 위치 확인 경보(측정 시작 막음)
+        self._pos_block = False                     # 위치 확인 경보(측정 시작 막음) - pos_block 으로 읽고 쓴다
         self.samples = []
         self.find_info = None                       # {"t", "n", "notes", "path", "ms"}
         self.last_click = None                      # 판 사진에서 마지막으로 누른 자리 {"px": 사진 픽셀, "plate": 판 mm}
         self.contact = {"active": False, "z": None, "text": "", "result": None, "fail": ""}
         if self.c.calib.note:
             self.c.state.alarm("calib", self.c.calib.note, NOTICE)
+
+    @property
+    def pos_block(self):
+        return self._pos_block
+
+    @pos_block.setter
+    def pos_block(self, on):
+        """위치 확인 경보(측정 시작 막음)가 바뀌면 측정 시작 조건을 그 순간 다시 계산한다."""
+        on = bool(on)
+        if on != self._pos_block:
+            self._pos_block = on
+            self.c.gate_inputs_changed()
 
     # ------------------------------------------------------------------
     # 공통
@@ -171,13 +184,27 @@ class Prep:
         return None if ph is None else self._rectified("photo", ph["frame"], ph["id"])
 
     def empty_frame(self):
+        """빈 판 원본(calib/empty_plate.png). 한 번 읽어 둔다(찍은 때 t 가 바뀌면 다시 읽는다). 없으면 None.
+        calib 에는 있다고 적혀 있는데 파일을 못 읽으면(없음 · 깨짐 · 경로 문제) 말없이 넘어가지 않는다: 주의를 한 번 띄우고 경로와 까닭을 로그에 남긴다.
+        샘플 검출은 지금 규칙대로 사진 한 장으로 계속한다. 파일은 imgio 로 읽는다(cv2.imread 는 Windows 에서 한글 경로를 못 읽는다)."""
         e = self.calib.d.get("empty")
         if not e:
             return None
         if self._empty is None or self._empty[0] != e["t"]:
-            img = cv2.imread(str(self.calib.empty_path), cv2.IMREAD_COLOR) if self.calib.empty_path.exists() else None
+            path = self.calib.empty_path
+            try:
+                img = imgio.read(path)
+            except imgio.ImageIOError as err:
+                img = None
+                self.c.logs.app("빈 판 사진 읽기 실패 · %s · %s" % (path, err), "warn")
+                self.c.state.alarm("empty_read", "빈 판 사진 읽기 실패 · 초기 설정 4 재촬영 필요", NOTICE, dismiss=True)
             self._empty = (e["t"], img)
         return self._empty[1]
+
+    def _empty_unreadable(self):
+        """calib 에 빈 판 사진이 있다고 적혀 있는데 읽어 보니 못 읽었다(읽어 본 결과만 본다 - 여기서 파일을 읽지 않는다)."""
+        e = self.calib.d.get("empty")
+        return bool(e) and self._empty is not None and self._empty[0] == e["t"] and self._empty[1] is None
 
     def empty_rect(self):
         e = self.calib.d.get("empty")
@@ -284,16 +311,14 @@ class Prep:
     def empty_take(self):
         """핀 맨 위 → 촬영 위치 → 원본 한 장을 calib/empty_plate.png 로 저장. 언제든 다시 찍어 바꿀 수 있다."""
         frame = self.capture(move=True, need_head=True)
-        self.calib.dir.mkdir(parents=True, exist_ok=True)
-        ok, buf = cv2.imencode(".png", frame, [cv2.IMWRITE_PNG_COMPRESSION, 1])
-        if not ok:
-            raise Rejected("빈 판 사진 저장 실패")
         try:
-            self.calib.empty_path.write_bytes(buf.tobytes())
-        except OSError as e:
+            imgio.write(self.calib.empty_path, frame, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        except imgio.ImageIOError as e:
+            self.c.logs.app("빈 판 사진 저장 실패 · %s · %s" % (self.calib.empty_path, e), "error")
             raise Rejected("빈 판 사진 저장 실패 · %s" % str(e)[:40])
         self.calib.set_empty((frame.shape[1], frame.shape[0]))
         self._empty = (self.calib.d["empty"]["t"], frame)
+        self.c.state.clear_alarm("empty_read")
         self.publish()
         return {"t": self.calib.d["empty"]["t"]}
 
@@ -444,8 +469,9 @@ class Prep:
             raise Rejected("사진 크기 변경됨 · 초기 설정 3 재설정 필요")
         emp = self.empty_rect()
         res = find_mod.find_samples(cur, emp, geo.RECT_PPMM, geo.RECT_MARGIN_MM, log=lambda t: self.c.logs.app("샘플 찾기 · " + t, "detail"))
-        if emp is None:
+        if emp is None and not self.calib.d.get("empty"):
             res["notes"].append("빈 판 사진 없음 · 사진 한 장으로 검출")
+        # 빈 판 사진이 있다고 적혀 있는데 못 읽었으면 empty_frame 이 주의 "빈 판 사진 읽기 실패 · 초기 설정 4 재촬영 필요" 를 이미 띄웠다(같은 일을 두 번 알리지 않는다)
         batch = self.cfg["batch_name"]
         self.samples = []
         for i, s in enumerate(res["samples"], 1):
@@ -619,7 +645,8 @@ class Prep:
             {"done": dev_ok, "text": "전체 연결됨" if dev_ok else "%d / 4 연결" % n_dev},
             {"done": o_done, "text": o_text},
             {"done": bool(plate) and head is not None, "text": p_text},
-            {"done": bool(emp), "text": "촬영 · %s" % when(emp["t"]) if emp else "없어도 측정 가능"},
+            {"done": bool(emp) and not self._empty_unreadable(),
+             "text": ("읽기 실패 · 재촬영 필요" if self._empty_unreadable() else "촬영 · %s" % when(emp["t"])) if emp else "없어도 측정 가능"},
             {"done": ready, "text": co_text},
             {"done": cz is not None, "text": ("Z %.2f mm · %s" % (cz, when(ct["t"] if ct else None))) if cz is not None else ""},
             {"done": bool(cool), "text": "설정 완료 · %s" % when(cool["t"]) if cool else "번호순 기본값"},

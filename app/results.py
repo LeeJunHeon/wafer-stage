@@ -11,6 +11,7 @@ import shutil
 import time
 from pathlib import Path
 
+from app import imgio
 from app.jobs import analysis, files
 from app.jobs.run import DONE
 from app.safety import Rejected
@@ -136,8 +137,8 @@ def save_png(data_dir, rec_id, data):
         raise Rejected("이미지 크기 초과")
     path, _ch = files.unique_path(str(folder / ("graph_%s.png" % time.strftime("%H%M%S"))))
     try:
-        Path(path).write_bytes(data)
-    except OSError as e:
+        imgio.write_bytes(path, data)                               # 이미지 파일은 imgio 로만(한글 경로 · 원자적 쓰기)
+    except imgio.ImageIOError as e:
         raise Rejected("이미지 저장 실패 · %s" % str(e)[:50])
     return {"path": path}
 

@@ -392,8 +392,8 @@ function buildStep6() {
   const fineBtns = FINE_STEPS.map((v) => btn(String(v), () => { pg.fine = v; syncFine(); }));
   function syncFine() { fineBtns.forEach((b, i) => b.classList.toggle("on", pg.fine === FINE_STEPS[i])); }
   syncFine();
+  pg.zUp = btn("Z 상승", () => api("jog", { axis: "z", mm: -pg.fine }));            // 순서 · 이름은 이동 패드(jogPart)와 같게: [Z 상승] [Z 하강]
   pg.zDown = btn("Z 하강", () => api("jog", { axis: "z", mm: pg.fine }));
-  pg.zUp = btn("Z 상승", () => api("jog", { axis: "z", mm: -pg.fine }));
   pg.zNow = h("span", {});
   pg.whyFine = h("div", { class: "why" });
   pg.saveHere = busyGate("현재 높이로 저장", () => api("contact_save_here"), "on");
@@ -411,7 +411,7 @@ function buildStep6() {
       h("div", { class: "grp" }, h("h4", { text: "핀 높이 조정" }),
         h("div", { class: "small", text: "핀을 조금씩 내려 샘플에 댄 후 저장" }),
         h("div", { class: "steps" }, small("이동 거리"), ...fineBtns, small("mm")),
-        h("div", { class: "row" }, pg.zDown, pg.zUp, pg.zNow), pg.whyFine,
+        h("div", { class: "row" }, pg.zUp, pg.zDown, pg.zNow), pg.whyFine,
         h("div", { class: "row" }, pg.saveHere.b, pg.saveHere.w),
         pg.search)),
     h("div", { class: "grp" }, pg.saved, pg.mode, pg.floor));

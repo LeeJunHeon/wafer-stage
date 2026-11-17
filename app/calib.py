@@ -35,6 +35,7 @@ class Calib:
         self._lock = threading.RLock()
         self.d = {"origin": {}, "plate": None, "empty": None, "coords": {"stage": {}, "extra": []}, "marker": None, "contact": None, "cooler": None}
         self.note = ""
+        self.on_change = None                               # 값이 바뀌어 저장한 뒤 부르는 함수(측정 시작 조건을 다시 계산한다 - Controller 가 정한다)
         self.load()
 
     # ---- 읽기 · 쓰기 ----
@@ -65,6 +66,8 @@ class Calib:
             finally:
                 if os.path.exists(tmp):
                     os.unlink(tmp)
+        if self.on_change is not None:
+            self.on_change()
 
     # ---- 값 바꾸기 ----
     def set_origin(self, axes, how):

@@ -3,6 +3,7 @@
 
 import json
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from app.jobs import files
 from app.jobs.run import DONE, FAIL, SKIPPED, STOPPED, WAIT
 from app.safety import Rejected
 from app.server import create_app
-from tests.conftest import SEARCH, wait_for
+from tests.conftest import SEARCH, alarm_codes, alarm_lines, wait_for
 
 FAST = 200.0
 
@@ -217,7 +218,7 @@ def test_estop_during_run(ready_ctrl):
     assert run.items[ids[1]]["status"] == WAIT
     _all_off(ctrl)
     assert ctrl.state.get("pos", "z") == z > 0, "비상정지면 핀을 올리지 않는다"
-    assert [a["code"] for a in ctrl.state.snapshot()["alarms"]] == ["estop"], "비상정지 뒤 경보는 비상정지 하나뿐"
+    assert alarm_codes(ctrl) == ["estop"], "비상정지 뒤 경보는 비상정지 하나뿐: %s" % alarm_lines(ctrl)
     assert (run.folder / (run.items[ids[0]]["name"] + "_1.00V_0.dat")).stat().st_size > 60, "받은 데이터는 파일로 남는다"
     with pytest.raises(Rejected):
         ctrl.run_command("run_resume")                               # 비상정지를 풀기 전에는 이어서 못 한다
@@ -231,6 +232,51 @@ def test_estop_during_run(ready_ctrl):
     ctrl.run_command("run_resume")
     _finish(ctrl, 40)
     assert run.items[ids[1]]["status"] == DONE
+
+
+def _burn(stop):
+    """CPU 를 쓰는 파이썬 스레드(GIL 을 잡고 계산만 한다)."""
+    x = 0
+    while not stop.is_set():
+        for i in range(2000):
+            x += i * i
+
+
+def test_estop_under_cpu_load_leaves_only_the_estop_alarm(ready_ctrl):
+    """같은 프로세스에 CPU 스레드 2개를 띄운 채 배율 60 으로 가열하다 비상정지 → 경보는 비상정지 하나뿐.
+    예전: temp_stale_s 3 초가 배율 60 에서 실제 0.05 초라, 부하로 한 회차가 실제 0.2~0.8 초 걸리면 안전 감시가 (맞게) "온도 측정 실패 · 히트건 차단"
+    (+ run_slow) 을 비상정지보다 먼저 냈다. 지금은 시험 장치가 그런 창을 실제 시간 1 초(상한 안에서)로 정한다(conftest.real_time_windows).
+    부하는 가열을 시작한 뒤에 띄운다 - 실제 시간 창이 문제 되는 것은 히트건이 켜진 동안이다."""
+    ctrl = ready_ctrl(time_scale=60.0, run_heater_off_c=100.0)        # 가열 구간을 길게(부하로 느려진 회차가 가열 중에 두 번 이상 오게)
+    assert ctrl.cfg["temp_stale_s"] == 60.0 and ctrl.cfg["heater_max_on_s"] == 240.0
+    ctrl.run_command("samples_find")
+    x1, y1 = ctrl.world.sample_stage(1)                              # 표면 13.35 mm - 고정 높이(13.4 mm)로 닿는 샘플 하나
+    for s in ctrl.prep.samples:
+        near = abs(s["xy"][0] - x1) + abs(s["xy"][1] - y1) < 3.0
+        if s["use"] != near:
+            ctrl.run_command("sample_use", {"id": s["id"], "use": near})
+    (sid,) = [s["id"] for s in ctrl.prep.samples if s["use"]]
+    run = ctrl.runner
+    stop = threading.Event()
+    load = [threading.Thread(target=_burn, args=(stop,), daemon=True) for _ in range(2)]
+    try:
+        ctrl.run_command("run_start")
+        assert wait_for(lambda: run.stage == 3 and ctrl.fake_fw.relay[0] and run.items[sid]["points"], 20), "가열 시작"
+        n0 = len(run.items[sid]["points"])
+        for t in load:
+            t.start()
+        assert wait_for(lambda: run.stage == 3 and len(run.items[sid]["points"]) >= n0 + 2, 30), \
+            "부하 아래 가열 중 두 회차 · 단계 %s · %s" % (run.stage, alarm_lines(ctrl))
+        ctrl.estop("시험")
+        assert wait_for(lambda: not run.active, 30)
+    finally:
+        stop.set()
+        for t in load:
+            if t.ident is not None:                                  # 띄운 스레드만 기다린다
+                t.join()
+    assert run.items[sid]["status"] == STOPPED and run.items[sid]["reason"] == "비상정지"
+    assert alarm_codes(ctrl) == ["estop"], "비상정지 뒤 경보는 비상정지 하나뿐: %s" % alarm_lines(ctrl)
+    _all_off(ctrl)
 
 
 def test_contact_failure_goes_to_next_sample(ready_ctrl):

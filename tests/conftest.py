@@ -10,7 +10,7 @@ import time
 import pytest
 
 from app import control as control_mod
-from app.config import Config
+from app.config import BY_KEY, Config
 from app.control import Controller
 from app.devices import meters
 from app.devices.stage import PPMM
@@ -62,6 +62,50 @@ class DeadThermometer:
 def with_thermometer(ctrl, clock):
     ctrl.k2110 = DeadThermometer()
     ctrl.feed_temperature(30.0)
+
+
+# ---------------------------------------------------------------------------
+# 시간 배율과 실제 시간 창
+# time_scale > 1 이면 열 모델 · 측정 · 안전 시계가 그만큼 빨리 간다. 그런데 "이 시간 안에 다음 일이 와야 한다" 는 창도 같이 줄어든다:
+# temp_stale_s 3 초는 배율 60 에서 실제 0.05 초, 배율 200 에서 0.015 초다. 같은 프로세스의 다른 스레드가 GIL 을 잡아 측정 한 회차가 그보다 길어지면
+# 안전 감시가 (맞게) "온도 측정 실패 · 히트건 차단" 을 낸다 - 프로그램이 아니라 시험 장치의 문제다(CPU 스레드 2~3개를 같이 돌리면 한 회차가 실제 0.5~0.8 초).
+# 그래서 배율을 건 Controller 는 그런 창을 실제 시간 REAL_WINDOW_S 이상으로 정한다(설정 상한 안에서 - 그래도 MIN_REAL_WINDOW_S 아래로는 내리지 않는다).
+# 시험이 값을 직접 주면 그대로 쓴다(그 창 자체를 보는 시험 - 판정은 그대로 본다).
+# ---------------------------------------------------------------------------
+REAL_WINDOW_S = 1.0                 # 배율을 걸어도 지켜 줄 실제 시간 여유(초)
+MIN_REAL_WINDOW_S = 0.3             # 설정 상한(temp_stale_s 60 초) 때문에 위를 못 지킬 때의 하한 - 배율 200 에서 60 초 = 실제 0.3 초
+
+
+def real_time_windows(time_scale, given):
+    """배율을 건 Controller 의 "실제 시간 여유가 필요한 창" 기본값 {설정 이름: 값}. given = 시험이 직접 준 설정 이름들(그 값은 건드리지 않는다).
+    - temp_stale_s : 측정 한 회차(온도 → 저항 → 측정 간격)가 이 안에 다시 와야 히트건이 꺼지지 않는다 → max(기본값, REAL_WINDOW_S × 배율), 상한 안에서.
+    - heater_max_on_s : 가열에 드는 시간(열 모델이 정한다 - 30 → 85 °C 약 60 초) + 끝 온도를 알아채는 한 회차. 한 회차(= 실제 시간 × 배율)가
+      부하에 늘어나므로 기본값에 REAL_WINDOW_S × 배율을 더한다.
+    그 밖의 시간 값은 부하에 흔들리지 않아 그대로 둔다: 가열 무반응(읽은 온도의 오름으로 판정 - 회차가 늦으면 그만큼 더 올라 있다) ·
+    냉각 정체 · 한 단계 한도(열 모델 시간 + 한 회차 - 한도 1800 초에 비해 작다) · 비상정지 직후 2초(해제를 막는 쪽이라 시험이 기다린다)."""
+    k = float(time_scale)
+    out = {}
+    if k <= 1.0:
+        return out
+    if "temp_stale_s" not in given:
+        it = BY_KEY["temp_stale_s"]
+        v = min(float(it.max), max(float(it.default), REAL_WINDOW_S * k))
+        if v / k < MIN_REAL_WINDOW_S:
+            raise ValueError("time_scale %g 에서는 temp_stale_s 를 실제 %.2f 초 이상으로 정할 수 없음 - 배율을 낮추거나 값을 직접 줄 것" % (k, MIN_REAL_WINDOW_S))
+        out["temp_stale_s"] = v
+    if "heater_max_on_s" not in given:
+        it = BY_KEY["heater_max_on_s"]
+        out["heater_max_on_s"] = min(float(it.max), float(it.default) + REAL_WINDOW_S * k)
+    return out
+
+
+def alarm_lines(ctrl):
+    """경보 목록을 "code: 글" 로(경보 목록을 비교하는 assert 의 실패 글 - 무엇이 떴는지 바로 보이게)."""
+    return ["%s: %s" % (a["code"], a["text"]) for a in ctrl.state.snapshot()["alarms"]]
+
+
+def alarm_codes(ctrl):
+    return [a["code"] for a in ctrl.state.snapshot()["alarms"]]
 
 
 def build_ctrl(cfg, clock=None, scale=0.05, time_scale=1.0):
@@ -124,6 +168,7 @@ def make_ctrl(tmp_path, monkeypatch):
     def make(clock=None, scale=0.05, connect=True, meters=True, camera=False, time_scale=1.0, **cfg_over):
         cfg = Config(tmp_path / "settings.json").load()
         cfg.update({"data_dir": str(tmp_path / "data"), "camera_width": 320, "camera_height": 240, **cfg_over})
+        cfg.update(real_time_windows(time_scale, set(cfg_over)))       # 배율 때문에 실제 시간 창이 수십 ms 로 줄지 않게
         ctrl = build_ctrl(cfg, clock=clock, scale=scale, time_scale=time_scale)
         made.append(ctrl)
         if connect:
@@ -145,7 +190,7 @@ def make_ctrl(tmp_path, monkeypatch):
 def ready_ctrl(make_ctrl):
     """초기 설정이 끝난 가짜 장비: 카메라 1280×960 · 초기 설정 값(판 영역 · 빈 판 사진 · 좌표 · 헤드 마커 · 접촉 높이)을 채운 상태."""
     def make(**kw):
-        opts = dict(scale=0.02, camera=True, camera_width=1280, camera_height=960)
+        opts = dict(scale=0.01, camera=True, camera_width=1280, camera_height=960)
         opts.update(kw)
         ctrl = make_ctrl(**opts)
         ctrl.lab.read_dt = 0.002

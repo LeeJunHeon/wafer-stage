@@ -17,6 +17,7 @@ app/control.py          명령 → 안전 규칙 → 장비. 서버 · 시험이
 app/server.py           FastAPI + WebSocket (127.0.0.1:8000)
 app/devices/            stage.py(아두이노 V11) · meters.py(K2110 · K2450) · camera.py(OpenCV)
 app/geometry.py         좌표 변환(호모그래피) · 보정 사진 · 헤드 마커 찾기
+app/imgio.py            이미지 파일 읽기 · 쓰기 한 곳(바이트 + imdecode/imencode · 원자적 쓰기) - cv2.imread · cv2.imwrite 금지
 app/calib.py            초기 설정 단계에서 정한 값(calib/calib.json · calib/empty_plate.png)
 app/prep.py             초기 설정 2~7단계 · 사진 · 위치 확인 · 샘플 찾기 명령
 app/vision/             샘플 찾기: fixed_detect.py · refdiff.py(v2 그대로) + find.py(입력 · 출력 맞춤)
@@ -35,6 +36,10 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
 - 설정을 바꾸는 길은 `Controller.update_settings`(PUT /api/settings) 하나다: 값 검증 → 조합 검사(`config.problems`) → 저장.
   **새로 생기는 값은 모두 `app/config.py` 의 `ITEMS` 에 넣고 설명(`desc`)을 붙인다**(전체 설정 화면 · 말풍선에 나온다). 코드에 숫자를 박지 않는다.
 - 점 데이터 · 사진은 state 에 넣지 않는다: `GET /api/run/points` · `/api/results/*` · `/api/img/{raw|crop|plate|empty}.jpg` · `/api/camera/preview.jpg`.
+- **이미지 파일은 `app/imgio.py` 로만 읽고 쓴다**(빈 판 사진 · plate.jpg · 그래프 PNG …). app/ 에 `cv2.imread` · `cv2.imwrite` 를 쓰지 않는다(시험이 코드를 훑어 막는다).
+  까닭: Windows 의 OpenCV 는 경로를 ANSI 코드 페이지로 넘겨서 경로에 한글이 있으면(측정 PC: `Desktop\01_장비\자동 측정\data_v3`) 오류 없이 None · False 를 돌려준다.
+  그래서 다시 켠 뒤 빈 판 사진을 못 읽고 말없이 "사진 한 장" 검출로 넘어간 일이 있었다(v2 도 같은 일로 core/imgio.py 를 만들었다).
+  imgio 는 파이썬이 바이트를 읽고 쓰고(유니코드 경로) OpenCV 는 메모리에서만 해석 · 변환한다. 쓰기는 임시 파일 → `os.replace`(원자적). 못 읽으면 None 이 아니라 `ImageIOError`.
 
 ## 2. 하드웨어 값 (확정)
 - 아두이노 Mega + 펌웨어 V11, 115200, 줄끝 `\n`. 포트는 settings `stage_port`(측정 PC 는 COM5).
@@ -111,6 +116,8 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
      그 거리는 `stage.FIND_PULSE`(800) · `FIND_GAP_PULSE`(320 = 펌웨어 `HOME_GAP`)이고 화면 설명은 `state.hw` 의 값으로 쓴다(숫자를 화면에 따로 적지 않는다).
   3. 판 영역 — 촬영 위치 · 마커가 보이는지 · 사진에서 꼭짓점 4개. 다시 정하면 사진 픽셀로 기억한 것(보정 점 · 헤드 마커)을 버린다.
   4. 빈 판 사진 — 없어도 측정은 된다(샘플 찾기가 사진 한 장으로 한다).
+     calib 에는 있다고 적혀 있는데 파일을 못 읽으면(없음 · 깨짐) 말없이 넘어가지 않는다: 주의 "빈 판 사진 읽기 실패 · 초기 설정 4 재촬영 필요" 를 한 번(찍은 때마다 한 번)
+     띄우고 경로와 까닭을 로그에 남긴다. 초기 설정 4 는 "읽기 실패 · 재촬영 필요"(✓ 없음). 검출은 사진 한 장으로 계속한다. 다시 촬영하면 풀린다.
   5. 좌표 보정 — 꼭짓점 A~D 에 **핀을 직접 대고** 스테이지 X · Y 를 기억. 보정 점(최근 30점)을 더하면 전체 점의 최소제곱으로 다시 맞춘다. 품질(변 길이 2 mm · 직각 1°)은 주의만.
   6. 접촉 높이 설정 — 기본: 핀을 작은 단위(0.01 · 0.05 · 0.1 · 1 mm)로 내리고 올려 샘플에 댄 뒤 [현재 높이로 저장](`contact_save_here`, 방법 "수동").
      접촉 방식이 전기 탐색일 때만 [접촉 탐색] · [높이 저장] 이 보인다(수동 측정 탭의 [접촉 탐색] 도 같다). 저장된 높이 · 접촉 방식 · Z 하강 한도를 화면 아래에 보인다.
@@ -160,6 +167,11 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
 - 명령: `run_start` · `run_resume` · `run_stop` · `run_skip` · `run_pause_after(on)` · `run_requeue(id)` · `sample_rename` · `batch_set`.
 - `runner.active` 는 마지막 파일 저장 · NAS 복사 · 끝난 상태를 화면에 보낸 뒤에야 False 가 된다(그 전에는 새 측정 · 손 조작을 받지 않는다).
 - 상태는 `state.run`(state · rows · cur · stage 0~5 · frac · line · gate · summary · record).
+- **gate 표시는 입력이 바뀐 순간 다시 계산한다**(1초 주기 publish 를 기다리지 않는다). 입력이 바뀌는 길은 `Controller.gate_inputs_changed` 한 곳으로 모은다:
+  `state.watch` 로 본 devices(장비 연결 · 끊김 · 오류) · homed(원점) · estop_locked(비상정지) · cfg(접촉 높이 등 설정) / `Calib.on_change`(판 영역 · 좌표 보정 · 접촉 기록 저장) /
+  `Prep.pos_block` 의 setter(헤드 위치 확인). 거기서 `runner.refresh_gate()` 가 gate 만 계산해 `state.run.gate` 에 쓴다(view 전체를 만들지 않는다 - 스테이지 일꾼 스레드에서도 불린다).
+  `refresh_gate` 와 `publish` 는 같은 잠금 안에서 계산하고 쓴다(먼저 계산한 예전 목록이 나중에 써지지 않게). `state.watch` 의 함수는 상태 잠금 밖에서, 값이 실제로 바뀔 때만 불린다.
+  gate 의 입력을 새로 만들면 이 길에 같이 넣는다(곳곳에 publish 를 붙이지 않는다).
 - 화면에 주는 점(`/api/run/points`)은 파일에 쓴 값 그대로다(`%.7E` 로 쓴 값을 다시 읽은 수). 측정 때 낸 요약과 측정 결과 탭이 파일에서 다시 낸 요약이 똑같다.
 
 ## 7. 저장 형식 (app/jobs/files.py — LabVIEW 와 같게, v2 함수 그대로)
@@ -244,6 +256,14 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
   기본값은 실장비(`time.monotonic` · `time.sleep` · `open_serial` · pyvisa · OpenCV)다. 포트 목록은 `control.serial_ports`.
 - `tests/conftest.py` 의 `build_ctrl` 이 그 자리에 시험용 장비를 꽂는다. 시험은 `ctrl.fake_fw` · `ctrl.lab` · `ctrl.world` 로 들여다본다(프로그램은 쓰지 않는다).
   시간 배율(`time_scale`)은 주입한 clock · sleep 으로 열 모델 · 측정 · 안전 시계를 같이 빠르게 한다. `fill_prep(ctrl)` 은 초기 설정 2~7단계 값을 세계의 참값으로 채운다.
+- **시간 배율과 실제 시간 창**(`conftest.real_time_windows`): 배율을 걸면 "이 시간 안에 다음 일이 와야 한다" 는 창도 같이 줄어든다
+  (`temp_stale_s` 3 초 = 배율 60 에서 실제 0.05 초). 같은 프로세스의 다른 스레드가 GIL 을 잡아 측정 한 회차가 그보다 길어지면 안전 감시가 맞게
+  "온도 측정 실패 · 히트건 차단" 을 낸다 - 프로그램이 아니라 시험 장치의 문제다(CPU 스레드 2~3개가 돌면 한 회차가 실제 0.5~0.8 초).
+  그래서 배율을 건 Controller 는 그런 창을 **실제 시간 1 초 이상**(설정 상한 안에서, 그래도 실제 0.3 초 아래로는 안 됨)으로 정한다:
+  `temp_stale_s` = max(기본값, 1 초 × 배율, 상한 60) · `heater_max_on_s` = 기본값 + 1 초 × 배율. 시험이 값을 직접 주면 그대로 쓴다(그 창 자체를 보는 시험 - 판정은 그대로).
+  가열 무반응 · 냉각 정체 · 한 단계 한도는 온도 변화로 판정해 부하에 흔들리지 않아 그대로 둔다. 새 시간 창이 생기면 같은 원칙으로 점검한다.
+  app/ 의 안전 규칙 · 판정은 시험 때문에 바꾸지 않는다.
+- 경보 목록을 비교하는 assert 는 실패 글에 경보 code 와 글을 같이 보인다(`conftest.alarm_lines` · `alarm_codes`).
 - `tests/fakes/world.py` 가 세계 하나다: 판 자리 · 기울기(1°) · 샘플(자리 · 크기 · 저항 전이) · 판 높이 · 샘플을 올렸는지.
   카메라(사다리꼴 사진 · 헤드 · 시차 있는 마커) · K2450(접촉 · 단락 · 4단자) · 열 모델(샘플마다 온도)이 모두 이것과 스테이지의 실제 X · Y · Z 를 본다.
 

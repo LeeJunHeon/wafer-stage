@@ -129,6 +129,11 @@ class Controller:
         self.publish_cfg()
         self.prep.publish()
         self.runner.publish()
+        # 측정 시작 조건(gate)의 입력이 바뀌는 길을 여기 한 곳에 모은다 → gate_inputs_changed:
+        #   state 의 devices(장비 연결 · 끊김 · 오류) · homed(세 축 원점) · estop_locked(비상정지) · cfg(접촉 높이 등 설정) /
+        #   calib 저장(판 영역 · 좌표 보정 · 접촉 높이 기록) / prep.pos_block(헤드 위치 확인)
+        self.state.watch(("devices", "homed", "estop_locked", "cfg"), self.gate_inputs_changed)
+        self.calib.on_change = self.gate_inputs_changed
         self._start_threads()
 
     # ------------------------------------------------------------------
@@ -1145,6 +1150,14 @@ class Controller:
         except (config_mod.ConfigError, OSError) as e:
             self.logs.app("설정 저장 실패 · %s" % e, "warn")
         self.publish_cfg()
+
+    def gate_inputs_changed(self):
+        """측정 시작 조건의 입력이 바뀌었다: 화면용 gate 를 그 순간 다시 계산한다(1초 주기를 기다리지 않는다).
+        바꾼 쪽 스레드(스테이지 일꾼 포함)에서 불리므로 가볍게 - gate 만 계산한다. 화면용 값 계산의 오류가 장비 스레드를 멈추지 않게 로그에 남기고 계속한다."""
+        try:
+            self.runner.refresh_gate()
+        except Exception as e:                                      # noqa: BLE001 - 다음 1초 주기 publish 가 다시 계산한다
+            self.logs.app("측정 시작 조건 계산 오류 · %s: %s" % (type(e).__name__, e), "error")
 
     def publish_cfg(self):
         """설정 값을 state 로 내보낸다(설정이 바뀔 때마다). 화면은 이것만 본다."""

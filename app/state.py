@@ -1,6 +1,8 @@
 """state.py - 화면에 보낼 모든 것을 한 덩어리로 둔다. 바뀔 때마다 구독자(WebSocket)에게 알린다.
 
 경보(alarms)는 여기 한 곳에만 쌓는다(등급: 주의 · 경보). 같은 경보를 다른 곳에 따로 두지 않는다.
+watch(keys, fn): 맨 위 이름(devices · homed · …) 중 하나가 실제로 바뀌면 fn() 을 부른다 - 다른 값에서 나오는 화면 값(측정 시작 조건 gate)을
+그 순간 다시 계산하는 자리다. 바꾼 쪽 스레드에서, 상태 잠금을 놓은 뒤에 부른다(잠금 순서가 엉켜 멈추지 않게). 값이 같으면 부르지 않는다.
 """
 
 import threading
@@ -15,6 +17,7 @@ class State:
     def __init__(self):
         self._lock = threading.RLock()
         self._subs = []
+        self._watch = []                                             # (맨 위 이름들, fn)
         self.version = 0
         self.d = {
             "devices": {k: {"name": DEV_NAMES[k], "state": "끊김", "why": "", "target": "", "info": ""} for k in DEVICES},
@@ -68,6 +71,7 @@ class State:
                 return
             node[path[-1]] = value
             self._bump()
+        self._changed(path[0])
 
     def update(self, section: str, **kw):
         with self._lock:
@@ -79,13 +83,28 @@ class State:
                     changed = True
             if changed:
                 self._bump()
+        if changed:
+            self._changed(section)
 
     def set_device(self, key: str, state: str, why: str = "", target: str = "", info: str = ""):
         with self._lock:
             dev = self.d["devices"][key]
-            if (dev["state"], dev["why"], dev["target"], dev["info"]) != (state, why, target, info):
+            changed = (dev["state"], dev["why"], dev["target"], dev["info"]) != (state, why, target, info)
+            if changed:
                 dev.update(state=state, why=why, target=target, info=info)
                 self._bump()
+        if changed:
+            self._changed("devices")
+
+    # ---- 바뀌면 다시 계산하는 값 ----
+    def watch(self, keys, fn):
+        """keys(맨 위 이름들) 중 하나가 바뀌면 fn() 을 부른다(바꾼 쪽 스레드 · 상태 잠금 밖)."""
+        self._watch.append((frozenset(keys), fn))
+
+    def _changed(self, key):
+        for keys, fn in list(self._watch):
+            if key in keys:
+                fn()
 
     # ---- 경보 ----
     def alarm(self, code: str, text: str, level: str = ALARM, dismiss: bool = False):
