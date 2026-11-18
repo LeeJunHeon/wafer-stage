@@ -124,10 +124,12 @@ def test_results_from_a_finished_run(ready_ctrl, tmp_path, monkeypatch):
         # 온도계는 샘플보다 늦게 따라간다 → 가열 때는 모델보다 조금 낮게, 냉각 때는 조금 높게 보인다.
         # 허용 폭 = 기록된 점에서 계산한 지연(lag) + 점 간격(step) + 모델 곡선 폭에서 오는 0.5 °C(점이 촘촘하고 지연이 없을 때의 오차 - test_analysis_matches_model_curve)
         name = run.items[s["id"]]["name"]
+        # 한 회차는 온도를 먼저 읽고 저항을 나중에 읽는다 - 그 사이(회차가 길면 배율 200 에서 수 초) 온도가 변한 만큼 저항은 다른 온도의 값이다.
+        # 그 차이는 한 회차의 온도 변화(= 기록된 점 간격 step) 안이므로, 늦게 따라가는 쪽(가열 - 아래 · 냉각 - 위)에 step 을 한 번 더 둔다
         lag, step, back = _allowance(ctrl, run.folder, name, "가열", m["t_up"])
-        assert m["t_up"] - lag - step - back - 0.5 < a["t_heat"] <= m["t_up"] + step + back + 0.5, (a["t_heat"], m["t_up"], lag, step, back)
+        assert m["t_up"] - lag - 2 * step - back - 0.5 < a["t_heat"] <= m["t_up"] + step + back + 0.5, (a["t_heat"], m["t_up"], lag, step, back)
         lag, step, back = _allowance(ctrl, run.folder, name, "냉각", m["t_down"])
-        assert m["t_down"] - step - back - 0.5 <= a["t_cool"] < m["t_down"] + lag + step + back + 0.5, (a["t_cool"], m["t_down"], lag, step, back)
+        assert m["t_down"] - step - back - 0.5 <= a["t_cool"] < m["t_down"] + lag + 2 * step + back + 0.5, (a["t_cool"], m["t_down"], lag, step, back)
         assert a["hyst"] == round(a["t_heat"] - a["t_cool"], 2) > 0
         assert a["t_max"] >= ctrl.cfg["run_heater_off_c"], "열선을 끈 뒤 더 오른 구간까지 들어 있다"
         assert a == run.items[s["id"]]["sum"], "측정 때 낸 요약과 파일에서 다시 낸 요약이 같다(화면용 점 = 파일에 쓴 값)"

@@ -11,6 +11,14 @@ const DEVS = [
   { key: "camera", name: "카메라", cfg: "camera_index", list: "cameras", conn: (v) => api("connect_camera", { index: parseInt(v, 10) }), off: () => api("disconnect_camera") },
 ];
 const CORNER = ["A", "B", "C", "D"];
+const CORNER_AT = ["왼쪽 위", "오른쪽 위", "오른쪽 아래", "왼쪽 아래"];        // 꼭짓점 순서: A 왼쪽 위부터 시계 방향
+/* 네 변(사진상)의 길이 차이 한 줄: 점을 잘못 찍었는지 바로 보이게. 최대 차이 = (가장 긴 변 − 가장 짧은 변) ÷ 평균 */
+function edgeDiffText(pts) {
+  if (pts.length !== 4) return "";
+  const L = pts.map((p, i) => Math.hypot(pts[(i + 1) % 4][0] - p[0], pts[(i + 1) % 4][1] - p[1]));
+  const mean = L.reduce((a, b) => a + b, 0) / 4;
+  return mean > 0 ? "변 길이 차이 최대 " + ((Math.max(...L) - Math.min(...L)) / mean * 100).toFixed(1) + " %" : "";
+}
 const prep = { step: 0, pages: [], items: [] };
 
 /* 버튼 + 못 누르는 이유 한 줄 */
@@ -180,11 +188,16 @@ function buildStep3() {
   pg.headTxt = h("div", {});
   pg.take = busyGate("촬영", async () => { const r = await api("photo_take"); if (r.ok) { pg.dirty = false; pg.photoId = null; } });
   pg.list = h("div", { class: "small" });
-  pg.redo = btn("다시 선택", () => { pg.pts = []; pg.dirty = true; drawPts(); renderPts(); });
-  pg.apply = busyGate("확정", async () => {
+  const redo = () => { pg.pts = []; pg.sel = -1; pg.dirty = true; syncAll(); };
+  const apply = async () => {                                     // 작은 사진 · 크게 선택 창이 같은 명령(plate_set)
     const r = await api("plate_set", { corners: pg.pts });
     if (r.ok) { pg.dirty = false; toast(r.result.note || "판 영역 설정 완료"); }
-  }, "on");
+    return r;
+  };
+  pg.redo = btn("다시 선택", redo);
+  pg.apply = busyGate("확정", apply, "on");
+  pg.big = btn("크게 선택", () => openPlatePick());
+  pg.sel = -1;                                                    // 고른 점(방향키로 옮긴다)
   pg.mag = h("div", { class: "mag hidden" }, h("i", { class: "cross-h" }), h("i", { class: "cross-v" }));
   pg.pb.box.append(pg.mag);                                     // 확대창은 사진 위 구석에 띄운다(누르는 자리의 반대쪽)
   pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "3 · 카메라 · 판 영역" }),
@@ -193,28 +206,84 @@ function buildStep3() {
         h("div", { class: "small", text: "헤드가 판을 가리지 않고 마커가 보이는 위치" }),
         pg.jog.el, h("div", { class: "row" }, pg.headSet.b, pg.headSet.w), pg.headTxt),
       h("div", { class: "grp" }, h("h4", { text: "판 영역" }),
-        h("div", { class: "row" }, pg.take.b, pg.take.w),
+        h("div", { class: "row" }, pg.take.b, pg.big, pg.take.w),
         h("div", { class: "small", text: "꼭짓점을 왼쪽 위부터 시계 방향으로 선택" }),
         pg.list, h("div", { class: "row" }, pg.redo, pg.apply.b, pg.apply.w)))));
 
   const photo = () => P().photo;
   function toPx(ev) { const ph = photo(); const [fx, fy] = pg.pb.toFrac(ev); return [Math.max(0, Math.min(ph.w - 1, fx * ph.w)), Math.max(0, Math.min(ph.h - 1, fy * ph.h))]; }
+  /* 꼭짓점 덧그림(사진 픽셀 좌표 · k = 화면 1 px 의 사진 픽셀 수): 작은 사진 · 크게 선택 창이 같이 쓴다 */
+  function cornerKids(k) {
+    const kids = [];
+    if (pg.pts.length >= 2) kids.push(svgEl(pg.pts.length === 4 ? "polygon" : "polyline", { points: pg.pts.map((p) => p.join(",")).join(" "), fill: "none", stroke: "#1F2A37", "stroke-width": 1.5 * k }));
+    pg.pts.forEach((p, i) => {
+      kids.push(svgEl("circle", { cx: p[0], cy: p[1], r: 6 * k, fill: i === pg.sel ? "#C03A7D" : "#fff", stroke: "#1F2A37", "stroke-width": 2 * k }));
+      kids.push(svgEl("text", { x: p[0] + 10 * k, y: p[1] - 8 * k, "font-size": 14 * k, "font-weight": 700, fill: "#1F2A37", stroke: "#fff", "stroke-width": 3 * k, "paint-order": "stroke", text: CORNER[i] }));
+    });
+    return kids;
+  }
   function drawPts() {
     const ph = photo();
     if (!ph || !pg.pb.w) { setKids(pg.ov); return; }
     pg.pb.svg.setAttribute("viewBox", "0 0 " + ph.w + " " + ph.h);
-    const k = ph.w / pg.pb.w;                                   // 화면 1px = 사진 k 픽셀
-    const kids = [];
-    if (pg.pts.length >= 2) kids.push(svgEl(pg.pts.length === 4 ? "polygon" : "polyline", { points: pg.pts.map((p) => p.join(",")).join(" "), fill: "none", stroke: "#1F2A37", "stroke-width": 1.5 * k }));
-    pg.pts.forEach((p, i) => {
-      kids.push(svgEl("circle", { cx: p[0], cy: p[1], r: 6 * k, fill: "#fff", stroke: "#1F2A37", "stroke-width": 2 * k }));
-      kids.push(svgEl("text", { x: p[0] + 10 * k, y: p[1] - 8 * k, "font-size": 14 * k, "font-weight": 700, fill: "#1F2A37", stroke: "#fff", "stroke-width": 3 * k, "paint-order": "stroke", text: CORNER[i] }));
-    });
-    setKids(pg.ov, ...kids);
+    setKids(pg.ov, ...cornerKids(ph.w / pg.pb.w));              // 화면 1px = 사진 ph.w / pg.pb.w 픽셀
   }
+  const ptsText = () => (pg.pts.length ? pg.pts.map((p, i) => CORNER[i] + " (" + Math.round(p[0]) + ", " + Math.round(p[1]) + ")").join("  ") : "선택한 점 없음");
+  const nextText = () => (pg.pts.length < 4 ? "다음: " + CORNER[pg.pts.length] + " · " + CORNER_AT[pg.pts.length] : edgeDiffText(pg.pts));
   function renderPts() {
-    pg.list.textContent = pg.pts.length ? pg.pts.map((p, i) => CORNER[i] + " (" + Math.round(p[0]) + ", " + Math.round(p[1]) + ")").join("  ") : "선택한 점 없음";
+    pg.list.textContent = ptsText() + (pg.pts.length === 4 ? " · " + edgeDiffText(pg.pts) : "");
     if (S) syncApply();                                           // 누르는 그 자리에서 바로(서버 상태가 올 때까지 기다리지 않는다)
+    if (pg.bigSync) pg.bigSync();
+  }
+  function syncAll() { drawPts(); renderPts(); }
+  /* 누른 자리: 기존 점 가까이(tol 사진 픽셀)면 그 점을 잡고, 아니면 다음 점을 더한다(4점이면 무시). 잡은 점 번호 · 없으면 -1 */
+  function pickAt(p, tol) {
+    let hit = -1, best = tol;
+    pg.pts.forEach((q, i) => { const d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d < best) { best = d; hit = i; } });
+    if (hit < 0) {
+      if (pg.pts.length >= 4) return -1;
+      pg.pts.push(p); hit = pg.pts.length - 1;
+    }
+    pg.sel = hit; pg.dirty = true;
+    return hit;
+  }
+  /* 방향키: 고른 점을 1 px · Shift 10 px(원본 사진 픽셀) */
+  function nudge(ev) {
+    const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[ev.key];
+    const ph = photo();
+    if (!d || pg.sel < 0 || !pg.pts[pg.sel] || !ph) return false;
+    const n = ev.shiftKey ? 10 : 1, q = pg.pts[pg.sel];
+    pg.pts[pg.sel] = [Math.max(0, Math.min(ph.w - 1, q[0] + d[0] * n)), Math.max(0, Math.min(ph.h - 1, q[1] + d[1] * n))];
+    pg.dirty = true; syncAll();
+    return true;
+  }
+
+  /* ---- [크게 선택]: 위 띠만 남기고 화면 전체. 확대 · 이동 · 돋보기(zoomView) + 꼭짓점 목록 · 다음 점 안내 · [다시 선택] [확정] ---- */
+  function openPlatePick() {
+    const ph = photo();
+    if (!ph) { toast("촬영 필요"); return; }
+    const z = zoomView({ src: "raw", empty: "사진 없음",
+      draw: (g, k) => setKids(g, ...cornerKids(k)),
+      onDown: (p) => { const i = pickAt(p, 14 / z.s); if (i < 0) return false; pg.drag = i; syncAll(); return true; },
+      onDrag: (p) => { if (pg.drag >= 0) { pg.pts[pg.drag] = p; syncAll(); } },
+      onUp: () => { pg.drag = -1; syncAll(); },
+      onKey: nudge });
+    const list = h("div", { class: "zv-pts" }), next = h("div", { class: "small" });
+    const bApply = busyGate("확정", apply, "on"), bRedo = btn("다시 선택", redo);
+    const side = h("div", { class: "col" }, h("h4", { text: "꼭짓점" }), small("왼쪽 위부터 시계 방향 · 점을 끌어 옮김 · 고른 점은 방향키 1 px · Shift 10 px"),
+      list, next, h("div", { class: "row" }, bRedo, bApply.b), bApply.w);
+    pg.bigSync = () => {
+      setKids(list, ...CORNER.flatMap((c, i) => { const p = pg.pts[i]; const cls = i === pg.sel ? "sel" : ""; return [h("b", { class: cls, text: c }), h("span", { class: cls, text: p ? Math.round(p[0]) + ", " + Math.round(p[1]) : CORNER_AT[i] })]; }));
+      next.textContent = nextText();
+      const phn = photo();
+      bApply.set(!phn ? "촬영 필요" : pg.pts.length < 4 ? "꼭짓점 " + pg.pts.length + " / 4" : running() ? "측정 중 실행 불가" : "");
+      bRedo.disabled = !pg.pts.length;
+      z.redraw();
+    };
+    const close = () => { pg.bigSync = null; closeDialog(); syncAll(); };
+    const setPhoto = () => { const p2 = photo(); z.set(p2 ? [p2.w, p2.h] : null, p2 ? "/api/img/raw.jpg?v=" + p2.id : "", p2 ? String(p2.id) : "", p2 ? Math.min(1600, p2.w) : 0); };
+    openZoomDialog("판 영역 · 꼭짓점 선택", z, side, [btn("닫기", close)], () => { setPhoto(); pg.bigSync && pg.bigSync(); });
+    setPhoto(); pg.bigSync();
   }
   function syncApply() {                                          // [이대로 정하기] · [다시 누르기] 를 누를 수 있는지와 그 이유
     const ph = photo(), pl = P().plate;
@@ -236,13 +305,9 @@ function buildStep3() {
     if (!ph || ev.button !== 0) return;
     ev.preventDefault();
     const p = toPx(ev), k = ph.w / Math.max(1, pg.pb.w);
-    let hit = -1, best = 14 * k;
-    pg.pts.forEach((q, i) => { const d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d < best) { best = d; hit = i; } });
-    if (hit < 0) {
-      if (pg.pts.length >= 4) return;
-      pg.pts.push(p); hit = pg.pts.length - 1;
-    }
-    pg.drag = hit; pg.dirty = true;
+    const hit = pickAt(p, 14 * k);
+    if (hit < 0) return;
+    pg.drag = hit;
     pg.pb.inner.setPointerCapture(ev.pointerId);
     pg.magT = 0; showMag(pg.pts[hit]); drawPts(); renderPts();
   });
@@ -261,6 +326,7 @@ function buildStep3() {
     if (ph && pg.photoId !== ph.id && !pg.dirty && pg.drag < 0) {    // 새 사진: 저장된 꼭짓점이 이 사진 크기와 맞으면 그것부터 보여 준다
       pg.photoId = ph.id;
       pg.pts = pl && pl.size[0] === ph.w && pl.size[1] === ph.h ? pl.corners.map((p) => [p[0], p[1]]) : [];
+      pg.sel = -1;
       drawPts(); renderPts();
     }
     pg.headSet.set(whyStage(true, false) || whyCamera());
@@ -268,6 +334,7 @@ function buildStep3() {
     setKids(pg.headTxt, hp ? "X " + f1(hp[0]) + " · Y " + f1(hp[1]) : "미설정",
       hp && seen != null ? h("span", { class: seen ? "st-ok" : "st-warn", text: seen ? " · 마커 보임" : " · 마커 안 보임" }) : "");
     pg.take.set(running() ? "측정 중 실행 불가" : whyCamera());
+    pg.big.disabled = !ph;
     syncApply();
     pg.jog.update();
   };

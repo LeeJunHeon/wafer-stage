@@ -3,6 +3,7 @@
   GET  /                     화면(ui/index.html) · /ui/ 아래 정적 파일
   GET  /api/camera/preview.jpg  카메라 미리보기(가로 preview_width 로 줄인 JPEG, 1 초에 한 장 갱신. 없으면 204)
   GET  /api/img/{raw|crop|plate|empty}.jpg  찍은 사진 · 원본 조각 · 보정한 판 사진 · 빈 판 사진(없으면 204)
+  GET  /api/img/region.jpg?src=raw|plate&x&y&w&h&out   원본 해상도 조각(크게 보기 창)
   GET  /api/run/points?sample=<id>&from=<n>   측정 점(새 점만)
   GET  /api/temptest/points?from=<n>          온도 시험 점(새 점만)
   GET  /api/results          측정 기록 목록 · /api/results/record?id= 기록 하나 · /api/results/points?id=&sample= 점 · POST /api/results/png?id= 그림 저장
@@ -88,6 +89,18 @@ def create_app(ctrl: Controller) -> FastAPI:
     @app.get("/api/camera/preview.jpg")
     async def camera_preview():
         jpg = ctrl.camera.preview_jpeg()
+        if jpg is None:
+            return Response(status_code=204)
+        return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/img/region.jpg")
+    async def img_region(src: str, x: int, y: int, w: int, h: int, out: int = 0):
+        """크게 보기 창의 원본 해상도 조각: src(raw · plate) 사진의 픽셀 사각형 x, y, w, h 를 가로 out px 로(0 = 원본 그대로).
+        사진이 없으면 204 · 사진 밖 사각형은 400. /api/img/{what}.jpg 보다 먼저 둔다(그쪽이 "region" 을 먼저 잡지 않게)."""
+        try:
+            jpg = await asyncio.to_thread(ctrl.prep.region, src, x, y, w, h, out or None)
+        except Rejected as e:
+            return JSONResponse({"ok": False, "msg": str(e)}, status_code=400)
         if jpg is None:
             return Response(status_code=204)
         return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})

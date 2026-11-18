@@ -353,3 +353,38 @@ def test_pin_position_can_be_drawn_on_the_plate_photo(ready_ctrl):
     assert max(abs(v) for v in to_plate(*a)) < 0.5
     ctrl.run_command("coord_clear")
     assert ctrl.state.get("prep", "coords", "to_plate") is None
+
+
+def test_region_gives_original_pixels_and_rejects_out_of_range(ready_ctrl):
+    """크게 보기 창의 원본 조각(GET /api/img/region.jpg): 사진 픽셀 사각형 그대로 · 가로 out 으로 줄임(늘리지 않음) · 사진 밖은 거절 · 사진 없으면 204."""
+    import numpy as np
+    from fastapi.testclient import TestClient
+    from app import imgio
+    from app.server import create_app
+    ctrl = ready_ctrl()
+    p = ctrl.prep
+    with TestClient(create_app(ctrl)) as c:
+        p.photo = None
+        assert c.get("/api/img/region.jpg", params=dict(src="raw", x=0, y=0, w=10, h=10)).status_code == 204, "사진 없음"
+        ctrl.run_command("photo_take")
+        f = p.photo["frame"]
+        H, W = f.shape[:2]
+        r = c.get("/api/img/region.jpg", params=dict(src="raw", x=100, y=50, w=200, h=120))
+        assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+        img = imgio.decode(r.content)
+        assert img.shape[:2] == (120, 200), "원본 해상도 그대로(out 없음)"
+        assert float(np.abs(img.astype(float) - f[50:170, 100:300].astype(float)).mean()) < 6.0, "그 자리의 원본 화소(JPEG 오차 안)"
+        img = imgio.decode(c.get("/api/img/region.jpg", params=dict(src="raw", x=0, y=0, w=200, h=100, out=50)).content)
+        assert img.shape[:2] == (25, 50), "가로 out 으로 줄임 · 비율 유지"
+        img = imgio.decode(c.get("/api/img/region.jpg", params=dict(src="raw", x=0, y=0, w=40, h=40, out=400)).content)
+        assert img.shape[:2] == (40, 40), "조각보다 크게 늘리지 않는다"
+        for bad in (dict(x=-1, y=0, w=10, h=10), dict(x=W - 5, y=0, w=10, h=10), dict(x=0, y=H - 5, w=10, h=10), dict(x=0, y=0, w=0, h=10)):
+            r = c.get("/api/img/region.jpg", params=dict(src="raw", **bad))
+            assert r.status_code == 400 and "범위 밖" in r.json()["msg"], bad
+        r = c.get("/api/img/region.jpg", params=dict(src="nope", x=0, y=0, w=10, h=10))
+        assert r.status_code == 400
+        pl = p.jpeg("plate")
+        assert pl is not None
+        pw = imgio.decode(pl).shape[1]
+        r = c.get("/api/img/region.jpg", params=dict(src="plate", x=0, y=0, w=pw, h=10))
+        assert r.status_code == 200 and imgio.decode(r.content).shape[1] == pw, "판 사진도 원본 크기 그대로"

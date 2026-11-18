@@ -244,6 +244,31 @@ class Prep:
             return self._jpeg(self._inner(self.empty_rect()))
         return None
 
+    REGION_MAX_OUT = 2048                                            # 조각 한 장의 가장 큰 가로(px) - 화면이 이보다 넓게 보여 줄 일은 없다
+
+    def region(self, src, x, y, w, h, out=None):
+        """크게 보기 창(ui/zoom.js)이 받는 원본 해상도 조각. src: raw(찍은 원본 사진) · plate(보정한 판 사진).
+        x, y, w, h = 그 사진의 픽셀 사각형(사진 안이어야 한다 - 밖이면 Rejected). out = 돌려줄 가로(px, 16~2048) - 조각보다 크면 늘리지 않는다
+        (원본 화소 그대로 - 화면이 화소를 그대로 확대한다). 사진이 없으면 None."""
+        if src == "raw":
+            img = None if self.photo is None else self.photo["frame"]
+        elif src == "plate":
+            img = self._inner(self.photo_rect())
+        else:
+            raise Rejected("사진 종류 오류 · raw 또는 plate")
+        if img is None:
+            return None
+        H, W = img.shape[:2]
+        x, y, w, h = int(x), int(y), int(w), int(h)
+        if w < 1 or h < 1 or x < 0 or y < 0 or x + w > W or y + h > H:
+            raise Rejected("범위 밖 · 사진 %d×%d" % (W, H))
+        o = w if out is None else max(16, min(self.REGION_MAX_OUT, int(out)))
+        o = min(o, w)
+        piece = img[y:y + h, x:x + w]
+        if o < w:
+            piece = cv2.resize(piece, (o, max(1, int(round(h * o / w)))), interpolation=cv2.INTER_AREA)
+        return self._jpeg(piece, None, 90)
+
     # ------------------------------------------------------------------
     # 3 · 카메라 · 판 영역
     # ------------------------------------------------------------------
