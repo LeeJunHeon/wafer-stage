@@ -20,7 +20,7 @@ from app.devices.camera import Camera, CameraError
 from app.devices import stage as stage_mod
 from app.devices.stage import PPMM, Stage, StageError
 from app.logs import Logs
-from app.jobs.run import Runner
+from app.jobs.run import WAIT as RUN_WAIT, Runner
 from app.jobs.temptest import TempTest
 from app.prep import Prep
 from app.safety import BY_MANUAL, BY_RUN, Rejected, Safety
@@ -138,6 +138,8 @@ class Controller:
         self._alive = True
         self._shut = False                                          # 종료 처리는 한 번만(창 닫기 · 서버 종료가 둘 다 부른다)
         self._shut_lock = threading.Lock()
+        self._quit_fn = None                                        # 창 닫기 함수(창으로 실행했을 때만 - set_quit)
+        self.ui_clients = 0                                         # 연결된 화면(WebSocket) 수 - 없으면 창 X 를 확인 없이 닫는다
         self._threads = []
         meters.LOG = self.logs.visa
         for n in self.cfg.loaded_notes:
@@ -1640,6 +1642,141 @@ class Controller:
             raise Rejected("명령 값 오류 · %s" % str(e)[:60])
         return method(**(args or {}))
 
+    # ------------------------------------------------------------------
+    # 자동 이동 전 확인(move_plan) · 프로그램 종료 확인(quit_plan · app_quit)
+    # 버튼의 주목적이 이동이 아닌데 모터가 움직이는 명령 · 여러 단계를 자동으로 움직이는 명령은 화면이 실행 전에 move_plan 을 묻는다.
+    # 내용은 서버가 지금 설정 · 상태의 실제 숫자로 만든다(실제로 할 일과 어긋나지 않게). 확인이 필요 없으면 None.
+    # 버튼 자체가 이동인 것(조그 · 정지 · 좌표 이동 · 촬영 위치로 이동 · 클릭 이동 · 핀 상승 · D 예상 위치로 이동)은 묻지 않는다.
+    # ------------------------------------------------------------------
+    MOVE_WARN = "판 위 물건 · 손 치우기"
+
+    def _head_steps(self):
+        """촬영 위치로 가는 단계. 갈 일이 없으면(촬영 위치 없음 · 원점 없음 · 이미 그 자리) None."""
+        head = self.cfg["photo_head_xy"]
+        if head is None or not self.stage.connected or not all(self.stage.homed.get(a) for a in "xyz"):
+            return None
+        if self.prep._at(head) and self._mm("z") == 0:
+            return None
+        return ["핀 맨 위(Z 0) → X %.2f · Y %.2f 이동(촬영 위치)" % (head[0], head[1])]
+
+    def _marker_steps(self):
+        """헤드 마커 등록(prep.marker_learn)이 움직이는 순서 - marker_learn 과 같은 규칙(+ 쪽이 범위 밖이면 − 쪽)."""
+        head = self.cfg["photo_head_xy"]
+        if head is None:
+            return None
+        step = float(self.cfg["marker_probe_mm"])
+        out = ["핀 맨 위(Z 0) → X %.2f · Y %.2f 이동(촬영 위치)" % (head[0], head[1])]
+        for axis in (0, 1):
+            sign = 1.0 if head[axis] + step <= float(self.cfg["%s_max_mm" % "xy"[axis]]) else -1.0
+            p = [head[0], head[1]]
+            p[axis] += sign * step
+            out.append("%s %+g mm → X %.2f · Y %.2f" % ("XY"[axis], sign * step, p[0], p[1]))
+        out.append("촬영 위치로 되돌아옴 · 각 위치에서 두 장 촬영")
+        return out
+
+    def move_plan(self, name: str, args: Optional[dict] = None):
+        """실행 전 확인 창 내용 {"title", "purpose", "steps", "note", "warn", "warn_top"} 또는 None(확인 필요 없음 · 설정 "자동 이동 전 확인" 끔)."""
+        if not self.cfg["confirm_auto_move"]:
+            return None
+        a = dict(args or {})
+        c = self.cfg
+        plan = None
+        if name == "set_origin" and a.get("mode") == "end":
+            ax = str(a.get("axis", "")).lower()
+            push, gap = stage_mod.FIND_PULSE / PPMM, stage_mod.FIND_GAP_PULSE / PPMM
+            steps = ([] if ax == "z" else ["핀 맨 위(Z 0) 확인"]) + [
+                "%s %s 끝으로 최대 %.1f mm 밀기 · 끝단 접촉 소음" % (ax.upper(), "위쪽(0 쪽)" if ax == "z" else "모터 쪽(0 쪽)", push),
+                "닿은 뒤 %.1f mm 물러난 위치 = %s 원점 · 위치 저장" % (gap, ax.upper())]
+            plan = {"title": "끝단 접촉 원점 · %s" % ax.upper(), "purpose": "%s 축을 끝에 대어 원점 잡기" % ax.upper(), "steps": steps}
+        elif name in ("photo_take", "empty_take", "samples_find"):
+            steps = self._head_steps()
+            if steps:
+                what = {"photo_take": ("촬영", "촬영 위치에서 판 사진 촬영"), "empty_take": ("빈 판 촬영", "촬영 위치에서 빈 판 사진 저장"),
+                        "samples_find": ("촬영 · 샘플 검출", "촬영 위치에서 촬영 후 샘플 검출")}[name]
+                plan = {"title": what[0], "purpose": what[1], "steps": steps + ["촬영 · 헤드 마커로 위치 확인"]}
+        elif name == "focus_find":
+            head = c["photo_head_xy"]
+            if head is not None:
+                lo, hi, big, small = int(c["focus_scan_min"]), int(c["focus_scan_max"]), int(c["focus_coarse_step"]), int(c["focus_fine_step"])
+                n = (hi - lo) // max(1, big) + 2 + (2 * big) // max(1, small)
+                steps = (self._head_steps() or ["촬영 위치에 있음 · 이동 없음"]) + [
+                    "초점 %d~%d · %d 간격 → 가장 선명한 곳 둘레 %d 간격" % (lo, hi, big, small),
+                    "약 %d점 · 점마다 %.1f초 대기 · 약 %.0f초" % (n, float(c["focus_settle_s"]), n * (float(c["focus_settle_s"]) + 0.5))]
+                plan = {"title": "초점 찾기", "purpose": "판 영역이 가장 선명한 초점 값 찾기", "steps": steps,
+                        "note": "[정지] · 비상정지로 멈춤 · 멈추면 원래 초점 값"}
+        elif name == "coord_set":
+            n = str(a.get("name", "")).upper()
+            have = set(self.calib.d["coords"]["stage"]) | {n}
+            if n in "ABCD" and n and have >= set("ABCD"):
+                steps = self._marker_steps()
+                if steps:
+                    plan = {"title": "%s 등록 · 헤드 마커 등록" % n, "purpose": "꼭짓점 4개 등록 뒤 헤드 마커 자동 등록", "steps": steps}
+        elif name == "marker_learn":
+            steps = self._marker_steps()
+            if steps:
+                plan = {"title": "마커 재등록", "purpose": "헤드 마커 위치 · 이동량 다시 재기", "steps": steps}
+        elif name == "contact_find":
+            if c["contact_mode"] == "search":
+                z = self._mm("z") or 0.0
+                dist, step, back = float(c["contact_search_mm"]), float(c["contact_search_step_mm"]), float(c["contact_search_back_mm"])
+                plan = {"title": "접촉 탐색", "purpose": "핀을 내리며 전기로 접촉 높이 찾기", "steps": [
+                    "K2450 출력 켬 · 2단자", "Z %.2f mm 에서 %.2f mm 씩 내림 · 최대 %.2f mm(Z %.2f 까지)" % (z, step, dist, z + dist),
+                    "닿으면 %.2f mm 올렸다가 다시 내려 확인" % back, "끝나면 출력 끔 · 실패하면 핀 맨 위(Z 0)"]}
+        elif name in ("run_start", "run_resume"):
+            if name == "run_start":
+                todo = [s for s in self.prep.samples if s["use"] and s["xy"] is not None]
+                xy = [s["xy"] for s in todo]
+            else:
+                todo = [i for i in self.runner.order if self.runner.items[i]["status"] == RUN_WAIT]
+                xy = [self.runner.items[i]["xy"] for i in todo]
+            if todo:
+                cool = {"zone": "샘플 아래 구역 쿨러", "all": "쿨러 전부", "none": "쿨러 안 씀"}.get(c["run_cooler_mode"], c["run_cooler_mode"])
+                down = ("Z %.2f mm 까지 내림(접촉 높이)" % c["contact_z_mm"] if c["contact_mode"] == "fixed" or c["contact_z_mm"] is None
+                        else "접촉 높이 %.2f − %.2f mm 에서 전기 탐색" % (c["contact_z_mm"], c["contact_start_above_mm"])) if c["contact_z_mm"] is not None else "접촉 높이까지 내림"
+                plan = {"title": "측정 시작" if name == "run_start" else "측정 재개",
+                        "purpose": "샘플 %d개 차례로 측정 · 첫 샘플 X %.2f · Y %.2f" % (len(todo), xy[0][0], xy[0][1]),
+                        "steps": ["샘플마다: 핀 맨 위(Z 0) → 샘플 위 X · Y 이동", down,
+                                  "냉각(%g °C) → 가열(%g °C) → 냉각(%g °C) · 반복 %d회" % (c["run_start_c"], c["run_heater_off_c"], c["run_cool_end_c"], c["run_repeat"]),
+                                  "핀 맨 위(Z 0) → 다음 샘플"],
+                        "note": "히트건 · %s 사용" % cool}
+        if plan is None:
+            return None
+        plan.setdefault("note", "")
+        plan["warn"] = self.MOVE_WARN
+        plan["warn_top"] = ""
+        return plan
+
+    def quit_plan(self):
+        """창 닫기(X) 확인 창 내용: 닫을 때 하는 일(shutdown 순서) + 측정 · 온도 시험 중이면 맨 위 경고 한 줄."""
+        top = "측정 중 · 종료하면 측정 중지" if self.runner.active else "온도 시험 중 · 종료하면 시험 중지" if self.temptest.active else ""
+        if self.safety.locked:
+            park = "비상정지 잠금 · 핀 이동 · 위치 저장 안 함"
+        elif not self.stage.connected:
+            park = "스테이지 연결 없음 · 핀 이동 · 위치 저장 없음"
+        else:
+            park = "핀 맨 위(Z 0) → 위치 저장" if self.stage.homed.get("z") else "Z 원점 없음 · 핀 이동 없음 → 위치 저장"
+        return {"title": "프로그램 종료", "warn_top": top,
+                "steps": ["측정 · 온도 시험 중지", "릴레이 끔(히트건 · 쿨러)", park, "장비 연결 닫기"]}
+
+    def set_quit(self, fn):
+        """창으로 실행했을 때 run.py 가 넘기는 "창 닫기" 함수(확인 창 [종료] 가 부른다). --no-window 에는 없다."""
+        self._quit_fn = fn
+
+    def ask_quit(self) -> bool:
+        """창 X 를 눌렀다: 화면에 종료 확인 창을 띄우게 한다(state.quit_ask 번호를 올린다). 화면이 연결돼 있지 않으면 False(바로 닫는다)."""
+        if self.ui_clients <= 0:
+            return False
+        self.state.set("quit_ask", (self.state.get("quit_ask") or 0) + 1)
+        return True
+
+    def app_quit(self):
+        """확인 창 [종료]: 창을 닫는다 → run.py 가 shutdown 을 부른다."""
+        if self._quit_fn is None:
+            raise Rejected("창 실행 아님 · 창 없이 실행 중")
+        self.logs.app("종료 확인 · 창 닫기")
+        threading.Thread(target=self._quit_fn, daemon=True, name="quit").start()
+        return {}
+
     def shutdown(self):
         """닫을 때(창 닫기 · Ctrl+C · 서버 종료): 측정 · 온도 시험 정지 → 대기 조그 · 줄 선 이동 취소 · 이동 중이면 멈추고 st 로 확인 →
         릴레이 끄기 → 핀 맨 위(비상정지 잠금이 아니고 Z 원점이 있을 때) → 위치 저장(save · DIRTY=0 확인 - 비상정지 잠금 중이면 하지 않음) → K2450 · 온도계 · 카메라 닫기 → 스테이지 닫기. 여러 번 불러도 한 번만 한다."""
@@ -1685,6 +1822,7 @@ COMMANDS = {
     "empty_take": "prep.empty_take", "coord_set": "prep.coord_set", "coord_goto_d": "prep.coord_goto_d", "coord_clear": "prep.coord_clear",
     "marker_learn": "prep.marker_learn", "plate_goto": "prep.plate_goto", "coord_add_here": "prep.coord_add_here", "coord_remove": "prep.coord_remove",
     "samples_find": "prep.samples_find", "sample_use": "prep.sample_use",
+    "move_plan": "move_plan", "quit_plan": "quit_plan", "app_quit": "app_quit",
     "focus_find": "prep.focus_find", "focus_nudge": "prep.focus_nudge", "focus_apply": "prep.focus_apply",
     "cooler_only": "prep.cooler_only", "cooler_save": "prep.cooler_save", "cooler_cell": "prep.cooler_cell",
     "sample_rename": "prep.sample_rename", "batch_set": "prep.batch_set",
@@ -1702,7 +1840,7 @@ TEMPTEST_BLOCKED = {"run_start", "run_resume", "contact_find", "cooler_only", "h
 
 
 # 측정 중에도 되는 명령(읽기 · 측정 조작 · 경보 지우기). 그 밖의 명령은 측정 중에 거절한다. 비상정지는 명령 줄을 거치지 않는다.
-RUN_ALLOWED = {"estop_release", "alarm_clear", "motion_stop", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_requeue",
+RUN_ALLOWED = {"move_plan", "quit_plan", "app_quit", "estop_release", "alarm_clear", "motion_stop", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_requeue",
                "sample_rename", "batch_set", "result_open_folder", "result_nas_copy"}
 
 

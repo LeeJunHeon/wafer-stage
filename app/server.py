@@ -195,6 +195,7 @@ def create_app(ctrl: Controller) -> FastAPI:
     @app.websocket("/ws")
     async def ws(sock: WebSocket):
         await sock.accept()
+        ctrl.ui_clients += 1                                        # 화면이 하나라도 있으면 창 X 는 확인 창을 거친다(Controller.ask_quit)
         loop = asyncio.get_running_loop()
         changed = asyncio.Event()
         notify = lambda: loop.call_soon_threadsafe(changed.set)    # noqa: E731 - 어느 스레드에서 불러도 된다
@@ -237,6 +238,7 @@ def create_app(ctrl: Controller) -> FastAPI:
         finally:
             send_task.cancel()
             ctrl.state.unsubscribe(notify)
+            ctrl.ui_clients -= 1
 
     if UI_DIR.is_dir():
         app.mount("/ui", StaticFiles(directory=str(UI_DIR)), name="ui")

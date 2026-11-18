@@ -139,16 +139,64 @@ function toast(msg) {
 /* ---------- 창: 제목 · 내용(넘치면 내용만 안에서 스크롤) · 아래에 항상 보이는 버튼 줄. 높이는 화면 높이 − 80px 를 넘지 않는다
    창이 떠 있어도 위 띠(비상정지 버튼)와 비상정지 띠는 창 위에 보이고 눌린다(메뉴만 잠긴다). Esc 는 언제나 비상정지.
    opts.cls = 창 상자에 붙일 class(큰 창) · opts.render = 서버 상태가 올 때마다 창 내용을 고치는 함수(창이 떠 있는 동안만) ---------- */
-let dlgRender = null;
+let dlgRender = null, dlgOnClose = null;
 function openDialog(title, body, buttons, opts) {
   const o = opts || {};
+  if (dlgOnClose) { const f = dlgOnClose; dlgOnClose = null; f(); }    // 앞 창이 다른 창에 밀려 닫힌다(기다리던 쪽에 알린다)
+  dlgOnClose = o.onClose || null;
   setKids($("#dlg"), h("div", { class: "box " + (o.cls || "") }, h("h3", { text: title }), h("div", { class: "dlg-body" }, body), h("div", { class: "dlg-foot" }, buttons)));
   $("#dlg").classList.remove("hidden");
   $("#app").classList.add("dlg-open");
   dlgRender = o.render || null;
   if (dlgRender && S) dlgRender();
 }
-function closeDialog() { dlgRender = null; $("#dlg").classList.add("hidden"); $("#app").classList.remove("dlg-open"); }
+function closeDialog() {
+  dlgRender = null;
+  if (dlgOnClose) { const f = dlgOnClose; dlgOnClose = null; f(); }
+  $("#dlg").classList.add("hidden"); $("#app").classList.remove("dlg-open");
+}
+/* ---------- 자동 이동 전 확인 창 · 종료 확인 창 ----------
+   apiMove(name, args): 서버에 move_plan 을 묻고(내용은 서버가 지금 설정 · 상태의 숫자로 만든다) 계획이 있으면 [취소] [진행] 창 → [진행] 일 때만 명령.
+   계획이 없으면(확인 필요 없음 · 설정 "자동 이동 전 확인" 끔) 바로 명령. Enter · Space 로는 [진행] 이 눌리지 않는다(눌러서만). Esc 는 언제나 비상정지. */
+function noEnter(b) { b.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") e.preventDefault(); }); return b; }
+function planBody(plan) {
+  return h("div", { class: "plan" },
+    plan.warn_top ? h("div", { class: "st-err plan-top", text: plan.warn_top }) : null,
+    plan.purpose ? h("div", { text: plan.purpose }) : null,
+    h("ol", {}, ...(plan.steps || []).map((s) => h("li", { text: s }))),
+    plan.note ? h("div", { class: "small", text: plan.note }) : null,
+    plan.warn ? h("div", { class: "st-warn", text: plan.warn }) : null);
+}
+let planBusy = false;
+async function apiMove(name, args) {
+  if (planBusy) return { ok: false, msg: "확인 창 열림" };
+  const p = await api("move_plan", { name, args: args || {} });
+  if (!p.ok) return p;
+  if (!p.result) return api(name, args);
+  planBusy = true;
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (go) => { if (done) return; done = true; planBusy = false; closeDialog(); resolve(go ? api(name, args) : { ok: false, cancelled: true }); };
+    openDialog(p.result.title, planBody(p.result), [noEnter(btn("취소", () => finish(false))), noEnter(btn("진행", () => finish(true), "on"))],
+      { onClose: () => finish(false) });
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  });
+}
+/* 창 X(서버가 state.quit_ask 를 올린다): "프로그램 종료" + 닫을 때 하는 일. [종료] = app_quit · [취소] = 아무것도 바꾸지 않음 */
+let quitSeen = null;
+async function askQuit() {
+  const p = await api("quit_plan", {}, true);
+  if (!p.ok) return;
+  openDialog(p.result.title, planBody(p.result),
+    [noEnter(btn("취소", closeDialog)), noEnter(btn("종료", () => { closeDialog(); api("app_quit"); }, "on"))]);
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+}
+function renderQuit() {
+  const n = S.quit_ask || 0;
+  if (quitSeen === null) { quitSeen = n; return; }                // 처음 받은 값(다시 이어진 화면)은 창을 띄우지 않는다
+  if (n !== quitSeen) { quitSeen = n; askQuit(); }
+}
+
 
 /* ---------- 말풍선(공용): tip(el, 내용) - 마우스를 올리고 0.3초 뒤에 뜨고, 떠나면 닫힌다. 화면 밖으로 나가지 않는다.
    내용 = 글, 또는 {title, text, hint}, 또는 그것을 돌려주는 함수. 브라우저 기본 title 은 쓰지 않는다(느리고 작다). ---------- */
@@ -374,7 +422,7 @@ function renderTab() {
   try { m.render(); } catch (e) { console.error(e); toast("화면 표시 실패 · " + String(e && e.message ? e.message : e).slice(0, 60)); }
 }
 function render() {
-  renderEstop(); renderStatus(); renderAlarms(); renderTab();
+  renderEstop(); renderStatus(); renderAlarms(); renderTab(); renderQuit();
   if (dlgRender) { try { dlgRender(); } catch (e) { console.error(e); } }
 }
 function showOffline(on) { $("#offline").classList.toggle("hidden", !on); }

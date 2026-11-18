@@ -167,12 +167,12 @@ function renderButtons() {
       b.push(btn("완료 후 정지", () => api("run_pause_after", { on: !R().pause_after }), run.pause_after ? "on" : ""));
       b.push(busyBtn("측정 중지", () => api("run_stop")));
     } else if (!n) {
-      ms.find = busyBtn("촬영 · 샘플 검출", () => api("samples_find"), "on"); b.push(ms.find);
+      ms.find = busyBtn("촬영 · 샘플 검출", () => apiMove("samples_find"), "on"); b.push(ms.find);
     } else {
-      if (run.state === "stopped") { ms.resume = busyBtn("측정 재개", () => api("run_resume"), "on"); b.push(ms.resume); }
+      if (run.state === "stopped") { ms.resume = busyBtn("측정 재개", () => apiMove("run_resume"), "on"); b.push(ms.resume); }
       if (run.state === "done") b.push(btn("결과 보기", () => { if (typeof openResult === "function") openResult(R().record); }, "on"));
-      ms.start = busyBtn(run.state === "idle" ? "측정 시작" : "전체 재측정", () => api("run_start"), run.state === "idle" ? "on" : ""); b.push(ms.start);
-      ms.find = busyBtn("재촬영", () => api("samples_find")); b.push(ms.find);
+      ms.start = busyBtn(run.state === "idle" ? "측정 시작" : "전체 재측정", () => apiMove("run_start"), run.state === "idle" ? "on" : ""); b.push(ms.start);
+      ms.find = busyBtn("재촬영", () => apiMove("samples_find")); b.push(ms.find);
       b.push(btn("조건", openRunCond));
     }
     setKids(ms.btns, ...b);

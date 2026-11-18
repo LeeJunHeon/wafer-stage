@@ -141,7 +141,7 @@ function buildStep2() {
     pg.ax[a] = { dot, txt, when };
     return h("div", { class: "row" }, h("b", { class: "axname", text: a.toUpperCase() + " 축" }), dot, txt, when);
   });
-  const origin = (axis, mode) => () => api("set_origin", { axis, mode });
+  const origin = (axis, mode) => () => (mode === "end" ? apiMove : api)("set_origin", { axis, mode });     // 끝단 접촉은 확인 창 먼저
   pg.here = [gate("X 등록", origin("x", "here")), gate("Y 등록", origin("y", "here")), gate("Z 등록", origin("z", "here")), gate("전체 등록", origin("all", "here"))];
   pg.end = [gate("X", origin("x", "end")), gate("Y", origin("y", "end")), gate("Z", origin("z", "end"))];
   pg.whyHere = h("div", { class: "why" }); pg.whyEnd = h("div", { class: "why" });
@@ -231,7 +231,7 @@ function buildStep3() {
   pg.pb.svg.append(pg.ov);
   pg.headSet = busyGate("현재 위치로 설정", () => api("photo_head_set"));
   pg.headTxt = h("div", {});
-  pg.take = busyGate("촬영", async () => { const r = await api("photo_take"); if (r.ok) { pg.dirty = false; pg.photoId = null; } });
+  pg.take = busyGate("촬영", async () => { const r = await apiMove("photo_take"); if (r.ok) { pg.dirty = false; pg.photoId = null; } });
   pg.list = h("div", { class: "small" });
   const redo = () => { pg.pts = []; pg.sel = -1; pg.dirty = true; syncAll(); };
   const apply = async () => {                                     // 작은 사진 · 크게 선택 창이 같은 명령(plate_set)
@@ -252,7 +252,7 @@ function buildStep3() {
   pg.fres = h("div", { class: "small" });
   pg.fnote = h("div", {});
   pg.fnudge = h("span", { class: "small" });
-  pg.ffind = busyGate("초점 찾기", () => api("focus_find", { roi: P().plate ? null : pg.roi }));
+  pg.ffind = busyGate("초점 찾기", () => apiMove("focus_find", { roi: P().plate ? null : pg.roi }));
   pg.fbox = btn("범위 상자", () => { pg.boxMode = !pg.boxMode; pg.fbox.classList.toggle("on", pg.boxMode); });
   pg.fminus = busyGate("−", () => api("focus_nudge", { d: -1 }));
   pg.fplus = busyGate("+", () => api("focus_nudge", { d: 1 }));
@@ -440,7 +440,7 @@ function buildStep3() {
 function buildStep4() {
   const pg = {};
   pg.pb = photoBox({ ar: 1, note: "빈 판 사진 없음" });
-  pg.take = busyGate("빈 판 촬영", () => api("empty_take"), "on");
+  pg.take = busyGate("빈 판 촬영", () => apiMove("empty_take"), "on");
   pg.txt = h("div", {});
   pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "4 · 빈 판 사진" }),
     photoSplit(pg.pb, h("div", {},
@@ -467,7 +467,7 @@ function buildStep5() {
   pg.ov = svgEl("g", {});
   pg.guide = svgEl("svg", { class: "guide", width: GUIDE, height: GUIDE, viewBox: "0 0 " + GUIDE + " " + GUIDE },
     svgEl("rect", { x: 0.5, y: 0.5, width: GUIDE - 1, height: GUIDE - 1, fill: "#F7F8F9", stroke: "#D5D9DE" }), pg.img, pg.ov);
-  pg.set = CORNER.map((n) => busyGate(n + " 등록", () => api("coord_set", { name: n })));
+  pg.set = CORNER.map((n) => busyGate(n + " 등록", () => apiMove("coord_set", { name: n })));     // 4개째면 헤드 마커 등록이 이어진다(확인 창)
   pg.whySet = h("div", { class: "why" });
   pg.gotoD = busyGate("D 예상 위치로 이동", () => api("coord_goto_d"));
   pg.cells = CORNER.map(() => [h("td", { class: "num" }), h("td", { class: "num" })]);
@@ -475,7 +475,7 @@ function buildStep5() {
     h("tbody", {}, ...CORNER.map((n, i) => h("tr", {}, h("td", { text: n }), pg.cells[i][0], pg.cells[i][1]))));
   pg.q = h("div", { class: "small" });
   pg.marker = h("div", { class: "small" });
-  pg.learn = busyGate("마커 재등록", () => api("marker_learn"), "sm");
+  pg.learn = busyGate("마커 재등록", () => apiMove("marker_learn"), "sm");
   pg.extra = h("div", { class: "exlist" });
   pg.clear = btn("초기화", () => api("coord_clear"), "sm");
   pg.markerNote = h("div", { class: "small" });                 // D 등록 뒤 자동으로 하는 일(이동 거리는 설정 marker_probe_mm)
@@ -562,7 +562,7 @@ function buildStep6() {
   pg.zNow = h("span", {});
   pg.whyFine = h("div", { class: "why" });
   pg.saveHere = busyGate("현재 높이로 저장", () => api("contact_save_here"), "on");
-  pg.find = busyGate("접촉 탐색", () => api("contact_find"));
+  pg.find = busyGate("접촉 탐색", () => apiMove("contact_find"));
   pg.line = h("div", {});
   pg.save = busyGate("높이 저장", () => api("contact_save"));
   pg.search = h("div", { class: "grp" }, h("h4", { text: "전기 탐색" }),

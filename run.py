@@ -1,7 +1,9 @@
 """run.py - 시작점.  python run.py (창을 연다) / --no-window (서버만, 브라우저로 접속) / --port (서버 포트)
 
-서버는 127.0.0.1:8000. 기본은 pywebview 창(최대화, 제목 "VO₂ 자동 측정 프로그램")을 연다. 창을 닫으면 종료 처리
-(히트건 · 쿨러 끄기 → K2450 출력 끄기 → 연결 닫기)를 하고 끝난다.
+서버는 127.0.0.1:8000. 기본은 pywebview 창(최대화, 제목 "VO₂ 자동 측정 프로그램")을 연다.
+창 X 를 누르면 바로 닫지 않고(closing 이벤트에서 False = 닫기 취소) 화면에 종료 확인 창을 띄운다(Controller.ask_quit → state.quit_ask).
+[종료] 를 누르면 app_quit 이 창을 닫고 종료 처리(Controller.shutdown)를 한다. 화면이 연결돼 있지 않으면 확인 없이 닫는다.
+--no-window 와 Ctrl+C 는 확인 없이 닫는다.
 창으로 실행했을 때만 폴더 선택 창([찾아보기])을 쓸 수 있다 - 창을 만든 뒤 그 함수를 Controller 에 넘긴다(--no-window 에는 없다).
 """
 
@@ -56,6 +58,22 @@ def main(argv=None):
                 return got or None
 
             ctrl.set_folder_picker(pick_folder)
+            allow = {"close": False}
+
+            def on_closing():
+                """창 X: 확인 창 [종료] 를 거친 닫기만 통과시킨다. False 를 돌려주면 pywebview 가 닫기를 취소한다."""
+                if allow["close"]:
+                    return True
+                if ctrl.ask_quit():
+                    return False
+                return True                                         # 화면이 없으면(페이지 오류 · 연결 끊김) 묻지 않고 닫는다
+
+            def quit_window():
+                allow["close"] = True
+                window.destroy()
+
+            window.events.closing += on_closing
+            ctrl.set_quit(quit_window)
             webview.start()                                         # 창을 닫으면 돌아온다
     except KeyboardInterrupt:
         pass

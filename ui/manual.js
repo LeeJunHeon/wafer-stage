@@ -20,7 +20,7 @@ function buildManual() {
   man.pb.svg.append(man.ov);
   const setView = (v) => { man.view = v; man.pb.setNote("미리보기 대기 중"); man.pb.show(""); refreshPreview(); renderManual(); };
   man.photoInfo = h("span", { class: "small" });
-  man.retake = busyGate("재촬영", () => api("samples_find"), "sm");             // 자동 측정 탭의 재촬영과 같다(사진 + 샘플 검출)
+  man.retake = busyGate("재촬영", () => apiMove("samples_find"), "sm");             // 자동 측정 탭의 재촬영과 같다(사진 + 샘플 검출)
   man.bigView = btn("크게 보기", openPlateBig, "sm");
   man.fixPart = h("span", { class: "row hidden" }, man.photoInfo, man.retake.b, man.bigView, man.retake.w);
   man.viewRaw = h("input", { type: "radio", name: "view", checked: true, onchange: () => setView("raw") });
@@ -70,7 +70,7 @@ function buildManual() {
   man.readR = btn("1회 측정", () => api("read_resistance"));
   man.condBtn = btn("조건", openCond);
   man.measWhy = h("div", { class: "why hidden" });
-  man.contact = busyGate("접촉 탐색", () => api("contact_find"));
+  man.contact = busyGate("접촉 탐색", () => apiMove("contact_find"));
   man.contactLine = h("div", { class: "small" });
   const measure = h("div", { class: "panel" }, h("h3", { text: "수동 측정" }),
     h("div", { class: "reading" }, h("span", { class: "lbl", text: "온도 · K2110" }), man.temp, man.readT),
