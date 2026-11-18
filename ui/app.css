@@ -129,8 +129,8 @@ label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .steps { display: flex; gap: 4px; align-items: center; }
 .steps .btn { padding: 0 12px; min-width: 44px; }
 .jog-body { display: flex; gap: 16px; align-items: flex-start; }
-.pad { display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 36px); gap: 4px; }
-.pad .btn { width: 56px; height: 36px; padding: 0; }
+.pad { display: grid; grid-template-columns: repeat(3, 72px); grid-template-rows: repeat(3, 36px); gap: 4px; }        /* 문 기준 방향 글("안쪽 X−") 이 들어가게 */
+.pad .btn { width: 72px; height: 36px; padding: 0; font-size: 12px; }
 .pad .u { grid-column: 2; grid-row: 1; } .pad .l { grid-column: 1; grid-row: 2; } .pad .r { grid-column: 3; grid-row: 2; } .pad .d { grid-column: 2; grid-row: 3; }
 .pad .c { grid-column: 2; grid-row: 2; }                              /* 십자 가운데: [정지] - 이동만 멈춘다 */
 .btn.stop.moving { border: 2px solid var(--estop); font-weight: 700; }   /* 이동 중에는 강조(빨강 테두리) */
@@ -185,6 +185,10 @@ table.ctab tr:hover td { background: none; }
 .cboard { display: grid; grid-template-columns: 16px max-content 16px; gap: 4px; align-items: center; justify-items: center; margin: 8px 0; }
 .cboard .cgrid { grid-column: 2; grid-row: 2; }
 .vfy.pc { color: var(--ink2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 4px; }      /* 전체 설정의 PC 값 표시 */
+.photo-box.with-dirs { position: relative; }                            /* 사진 칸 둘레 방향 글(문 기준) */
+.pdir { position: absolute; font-size: 11px; color: var(--ink2); line-height: 16px; height: 16px; text-align: center; white-space: nowrap; pointer-events: none; }
+.pdir.left, .pdir.right { width: 16px; height: auto; display: flex; align-items: center; justify-content: center; writing-mode: vertical-rl; }
+.pdir.left { transform: rotate(180deg); }
 .plan ol { margin: 8px 0; padding-left: 20px; } .plan li { margin: 2px 0; } .plan-top { font-weight: 700; margin-bottom: 8px; }     /* 자동 이동 · 종료 확인 창 */
 .fgraph { display: block; margin: 4px 0; border-radius: 4px; background: #fff; }      /* 초기 설정 3 초점 그래프 */
 .cside { font-size: 12px; color: var(--ink2); white-space: nowrap; }

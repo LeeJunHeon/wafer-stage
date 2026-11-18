@@ -11,7 +11,8 @@ const DEVS = [
   { key: "camera", name: "카메라", cfg: "camera_index", list: "cameras", conn: (v) => api("connect_camera", { index: parseInt(v, 10) }), off: () => api("disconnect_camera") },
 ];
 const CORNER = ["A", "B", "C", "D"];
-const CORNER_AT = ["왼쪽 위", "오른쪽 위", "오른쪽 아래", "왼쪽 아래"];        // 꼭짓점 순서: A 왼쪽 위부터 시계 방향
+const CORNER_AT = ["안쪽 왼쪽", "안쪽 오른쪽", "문 쪽 오른쪽", "문 쪽 왼쪽"];   // 꼭짓점 화면 이름(문 기준): 화면 왼쪽 위(안쪽 왼쪽)부터 시계 방향
+/* 꼭짓점 이름은 모두 화면 이름(문 기준)이다. 저장 이름(사진 기준)과의 변환은 서버 한 곳(geometry.view_names)에서 한다 - 명령에는 view: true 를 붙인다 */
 /* 네 변(사진상)의 길이 차이 한 줄: 점을 잘못 찍었는지 바로 보이게. 최대 차이 = (가장 긴 변 − 가장 짧은 변) ÷ 평균 */
 function edgeDiffText(pts) {
   if (pts.length !== 4) return "";
@@ -227,7 +228,7 @@ function focusGraph() {
 function buildStep3() {
   const pg = { jog: jogPart(), pts: [], drag: -1, photoId: null, dirty: false, magT: 0 };
   pg.ov = svgEl("g", {});
-  pg.pb = photoBox({ ar: 4 / 3, note: "사진 없음", onfit: () => drawPts() });
+  pg.pb = photoBox({ ar: 4 / 3, note: "사진 없음", onfit: () => drawPts(), dirs: true });     // 화면 방향(문 기준) 사진 · 둘레 방향 글
   pg.pb.svg.append(pg.ov);
   pg.headSet = busyGate("현재 위치로 설정", () => api("photo_head_set"));
   pg.headTxt = h("div", {});
@@ -235,7 +236,7 @@ function buildStep3() {
   pg.list = h("div", { class: "small" });
   const redo = () => { pg.pts = []; pg.sel = -1; pg.dirty = true; syncAll(); };
   const apply = async () => {                                     // 작은 사진 · 크게 선택 창이 같은 명령(plate_set)
-    const r = await api("plate_set", { corners: pg.pts });
+    const r = await api("plate_set", { corners: pg.pts, view: true });     // 화면 픽셀 · 화면 이름 순서 → 서버가 저장 기준으로 바꾼다
     if (r.ok) { pg.dirty = false; toast(r.result.note || "판 영역 설정 완료"); }
     return r;
   };
@@ -252,7 +253,7 @@ function buildStep3() {
   pg.fres = h("div", { class: "small" });
   pg.fnote = h("div", {});
   pg.fnudge = h("span", { class: "small" });
-  pg.ffind = busyGate("초점 찾기", () => apiMove("focus_find", { roi: P().plate ? null : pg.roi }));
+  pg.ffind = busyGate("초점 찾기", () => apiMove("focus_find", { roi: P().plate ? null : pg.roi, view: true }));
   pg.fbox = btn("범위 상자", () => { pg.boxMode = !pg.boxMode; pg.fbox.classList.toggle("on", pg.boxMode); });
   pg.fminus = busyGate("−", () => api("focus_nudge", { d: -1 }));
   pg.fplus = busyGate("+", () => api("focus_nudge", { d: 1 }));
@@ -271,7 +272,8 @@ function buildStep3() {
         pg.fcur, h("div", { class: "row" }, pg.ffind.b, pg.fbox, pg.ffind.w), pg.fgraph.el, pg.fres, pg.fnote,
         h("div", { class: "row" }, pg.fminus.b, pg.fplus.b, pg.fnudge, pg.fapply.b), pg.fapply.w))));
 
-  const photo = () => P().photo;
+  /* 찍은 사진(화면 방향): w · h = 화면 방향 크기(90 · 270° 면 가로 · 세로가 바뀐다). 점 · 상자 · 돋보기 좌표는 모두 화면 픽셀 */
+  const photo = () => { const ph = P().photo; return ph ? Object.assign({}, ph, { w: ph.vw || ph.w, h: ph.vh || ph.h }) : null; };
   function toPx(ev) { const ph = photo(); const [fx, fy] = pg.pb.toFrac(ev); return [Math.max(0, Math.min(ph.w - 1, fx * ph.w)), Math.max(0, Math.min(ph.h - 1, fy * ph.h))]; }
   /* 꼭짓점 덧그림(사진 픽셀 좌표 · k = 화면 1 px 의 사진 픽셀 수): 작은 사진 · 크게 선택 창이 같이 쓴다 */
   function cornerKids(k) {
@@ -361,7 +363,7 @@ function buildStep3() {
     const ph = photo();
     pg.mag.classList.remove("hidden");
     pg.mag.classList.toggle("left", p[0] > ph.w / 2);
-    pg.mag.style.backgroundImage = "url(/api/img/crop.jpg?x=" + Math.round(p[0]) + "&y=" + Math.round(p[1]) + "&half=50&t=" + Math.round(now) + ")";
+    pg.mag.style.backgroundImage = "url(/api/img/crop.jpg?view=1&x=" + Math.round(p[0]) + "&y=" + Math.round(p[1]) + "&half=50&t=" + Math.round(now) + ")";
   }
   pg.pb.inner.addEventListener("pointerdown", (ev) => {
     const ph = photo();
@@ -397,7 +399,7 @@ function buildStep3() {
   pg.pb.inner.addEventListener("pointercancel", endDrag);
 
   pg.render = () => {
-    const ph = photo(), pl = P().plate, c = S.cfg;
+    const ph = photo(), pl = (P().view || {}).plate, c = S.cfg;                 // pl = 저장된 꼭짓점을 화면 픽셀 · 화면 이름 순서로(서버)
     if (ph) { pg.pb.setAr(ph.w / ph.h); pg.pb.show("/api/img/raw.jpg?v=" + ph.id); } else pg.pb.show("");
     if (ph && pg.photoId !== ph.id && !pg.dirty && pg.drag < 0) {    // 새 사진: 저장된 꼭짓점이 이 사진 크기와 맞으면 그것부터 보여 준다
       pg.photoId = ph.id;
@@ -439,7 +441,7 @@ function buildStep3() {
 /* ---------- 4 · 빈 판 사진 ---------- */
 function buildStep4() {
   const pg = {};
-  pg.pb = photoBox({ ar: 1, note: "빈 판 사진 없음" });
+  pg.pb = photoBox({ ar: 1, note: "빈 판 사진 없음", dirs: true });
   pg.take = busyGate("빈 판 촬영", () => apiMove("empty_take"), "on");
   pg.txt = h("div", {});
   pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "4 · 빈 판 사진" }),
@@ -467,7 +469,7 @@ function buildStep5() {
   pg.ov = svgEl("g", {});
   pg.guide = svgEl("svg", { class: "guide", width: GUIDE, height: GUIDE, viewBox: "0 0 " + GUIDE + " " + GUIDE },
     svgEl("rect", { x: 0.5, y: 0.5, width: GUIDE - 1, height: GUIDE - 1, fill: "#F7F8F9", stroke: "#D5D9DE" }), pg.img, pg.ov);
-  pg.set = CORNER.map((n) => busyGate(n + " 등록", () => apiMove("coord_set", { name: n })));     // 4개째면 헤드 마커 등록이 이어진다(확인 창)
+  pg.set = CORNER.map((n) => busyGate(n + " 등록", () => apiMove("coord_set", { name: n, view: true })));     // 화면 이름 · 4개째면 헤드 마커 등록이 이어진다(확인 창)
   pg.whySet = h("div", { class: "why" });
   pg.gotoD = busyGate("D 예상 위치로 이동", () => api("coord_goto_d"));
   pg.cells = CORNER.map(() => [h("td", { class: "num" }), h("td", { class: "num" })]);
@@ -483,7 +485,7 @@ function buildStep5() {
     h("div", { class: "two" },
       h("div", { class: "grp" }, h("h4", { text: "핀 이동" }), h("div", { class: "small", text: "핀을 꼭짓점에 맞춘 후 등록" }), pg.jog.el),
       h("div", { class: "grp" }, h("h4", { text: "꼭짓점 등록" }),
-        h("div", { class: "row top" }, pg.guide, h("div", { class: "col" }, small("A = 사진 왼쪽 위 · 시계 방향"), pg.pts)),
+        h("div", { class: "row top" }, pg.guide, h("div", { class: "col" }, small("A = 안쪽 왼쪽 · 시계 방향"), pg.pts)),
         h("div", { class: "row wrap" }, ...pg.set.map((g) => g.b)), pg.whySet, pg.markerNote,
         h("div", { class: "row" }, pg.gotoD.b, pg.gotoD.w))),
     h("div", { class: "three" },
@@ -497,7 +499,7 @@ function buildStep5() {
     if (!S) return;
     const at = [[0, 0], [GUIDE, 0], [GUIDE, GUIDE], [0, GUIDE]], kids = [];
     CORNER.forEach((n, i) => {
-      const has = co && co.stage[n];
+      const has = co && co.view_stage && co.view_stage[n];          // 화면 이름(문 기준) - 그림도 화면 방향(서버가 돌린 판 사진)
       const x = at[i][0] + (i === 1 || i === 2 ? -1 : 1) * 14, y = at[i][1] + (i >= 2 ? -1 : 1) * 14;
       kids.push(svgEl("circle", { cx: x, cy: y, r: 11, fill: has ? "#1F2A37" : "#fff", stroke: "#1F2A37", "stroke-width": 1.5 }));
       kids.push(svgEl("text", { x, y: y + 4.5, "font-size": 12, "font-weight": 700, "text-anchor": "middle", fill: has ? "#fff" : "#1F2A37", text: n }));
@@ -507,13 +509,16 @@ function buildStep5() {
   pg.render = () => {
     const co = P().coords || { stage: {}, extra: [] }, pl = P().plate, ph = P().photo, e = P().empty;
     const src = pl && ph && ph.rect ? "/api/img/plate.jpg?v=" + ph.id + "-" + pl.t : pl && e ? "/api/img/empty.jpg?v=" + e.t + "-" + pl.t : "";
-    if (src !== pg.src) { pg.src = src; if (src) pg.img.setAttribute("href", src); else pg.img.removeAttribute("href"); }     // 없으면 빈 사각형
-    pg.markerNote.textContent = "D 등록 후 촬영 위치로 이동해 헤드 마커 자동 등록 · " + S.cfg.marker_probe_mm + " mm 씩 이동";
+    const srcV = src ? src + vq() : "";
+    if (srcV !== pg.src) { pg.src = srcV; if (srcV) pg.img.setAttribute("href", srcV); else pg.img.removeAttribute("href"); }     // 없으면 빈 사각형 · 화면 방향(문 기준) 그림
+    pg.markerNote.textContent = "4번째 등록 후 촬영 위치로 이동해 헤드 마커 자동 등록 · " + S.cfg.marker_probe_mm + " mm 씩 이동";
     const why = whyStage(true, false);
     pg.set.forEach((g) => { g.b.disabled = !!why; });
     pg.whySet.textContent = why || (pl ? "" : "판 영역 설정 필요 (초기 설정 3)");
-    pg.gotoD.set(whyStage(true, true) || (co.d_guess ? "" : co.stage.D ? "D 등록됨" : "A · B · C 등록 필요"));
-    CORNER.forEach((n, i) => { const p = co.stage[n]; pg.cells[i][0].textContent = p ? f1(p[0]) : "—"; pg.cells[i][1].textContent = p ? f1(p[1]) : "—"; });
+    const vs = co.view_stage || {}, nReg = Object.keys(vs).length;
+    pg.gotoD.b.textContent = (co.guess_name || "D") + " 예상 위치로 이동";      // 남은 꼭짓점(화면 이름)
+    pg.gotoD.set(whyStage(true, true) || (co.d_guess ? "" : nReg >= 4 ? "꼭짓점 4개 등록됨" : "꼭짓점 3개 등록 필요"));
+    CORNER.forEach((n, i) => { const p = vs[n]; pg.cells[i][0].textContent = p ? f1(p[0]) : "—"; pg.cells[i][1].textContent = p ? f1(p[1]) : "—"; });
     const q = co.quality;
     if (q) {
       setKids(pg.q, 
@@ -621,11 +626,9 @@ function buildStep7() {
   pg.pickBtns = [];
   pg.pickBox = h("div", { class: "row wrap pick" });
   pg.note = h("div", {});
-  pg.viewWhy = h("div", { class: "small" });
   pg.why = h("div", { class: "why" });
   pg.cellWhy = h("div", { class: "why" });
   pg.off = btn("전체 끄기", () => api("cooler_only", { n: 0 }));
-  pg.photo = h("input", { type: "checkbox", onchange: () => putSettings({ cooler_view: pg.photo.checked ? "photo" : "front" }) });
   pg.title = h("h4", {});
   pg.side = { top: h("div", { class: "cside top" }), bottom: h("div", { class: "cside bottom" }), left: h("div", { class: "cside left" }), right: h("div", { class: "cside right" }) };
   pg.el = h("div", { class: "panel prep-panel" }, h("h3", { text: "7 · 쿨러 배치" }),
@@ -634,12 +637,11 @@ function buildStep7() {
       h("div", { class: "grp" }, h("h4", { text: "켜 보기" }), pg.relBox, h("div", { class: "row" }, pg.off), pg.why),
       h("div", { class: "grp" }, pg.title, pg.pickBox,
         h("div", { class: "cboard" }, pg.side.top, pg.side.left, pg.gridEl, pg.side.right, pg.side.bottom),
-        pg.cellWhy, pg.note, pg.viewWhy,
-        h("label", { class: "row" }, pg.photo, small("사진 기준으로 보기")))));
+        pg.cellWhy, pg.note)));
   const coolers = () => S.cfg.cooler_relays || [];
-  function layout() {                                            // 장비 앞 기준으로 그릴 배치(못 그리면 null → 사진 기준)
+  function layout() {                                            // 문 기준 화면 배치(서버 - 공용 변환 geometry.to_view)
     const cv = P().cooler || {};
-    return S.cfg.cooler_view === "front" && cv.layout ? cv.layout : null;
+    return cv.layout || null;
   }
   function at(i) {                                               // 화면 칸 i(위 → 아래 · 왼쪽 → 오른쪽) → cooler_grid [행, 열]
     const r = Math.floor(i / 3), c = i % 3, lay = layout();
@@ -693,14 +695,11 @@ function buildStep7() {
       b.disabled = !!cellWhy;
     });
     pg.cellWhy.textContent = cellWhy;
-    pg.title.textContent = lay ? "장비 앞 기준" : "판 (왼쪽 위 = A)";
-    pg.side.bottom.textContent = lay ? "앞(" + cv.front + ")" : "";
-    pg.side.top.textContent = lay ? "뒤(" + cv.back + ")" : "";
+    pg.title.textContent = "판 · 문 기준 (아래 = 문)";
+    pg.side.bottom.textContent = lay ? "문(" + cv.front + ")" : "";
+    pg.side.top.textContent = lay ? "안쪽(" + cv.back + ")" : "";
     pg.side.right.textContent = lay ? "오른쪽(" + cv.right + ")" : "";
     pg.side.left.textContent = lay ? "왼쪽(" + cv.left + ")" : "";
-    pg.photo.checked = S.cfg.cooler_view === "photo";
-    pg.photo.disabled = !!cellWhy;
-    pg.viewWhy.textContent = S.cfg.cooler_view === "front" && !cv.layout ? cv.why || "" : "";
     // ---- 상태 한 줄 ----
     const flat = g.flat(), empty = flat.filter((n) => n == null).length;
     const unused = coolers().filter((n) => flat.indexOf(n) < 0).map((n) => "R" + n);

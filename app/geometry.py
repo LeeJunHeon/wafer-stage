@@ -157,3 +157,97 @@ def front_layout(stage_corners, front, right):
             r, c = a + gc * eb + gr * ed
             cells[int(r)][int(c)] = [gr, gc]
     return {"corners": {n: [int(v) for v in at[n]] for n in "ABCD"}, "cells": cells}
+
+
+# ----------------------------------------------------------------------
+# 화면 방향(장비 앞 = 문 기준): 사진 → 화면 회전(0 · 90 · 180 · 270 시계 방향) + 좌우 뒤집기(먼저). 저장된 값(사진 픽셀 · 판 mm · 스테이지 mm)은
+# 그대로 두고, 화면에 그릴 때와 화면 입력을 받을 때만 이 함수들로 바꾼다(변환은 여기 한 곳 - 서버가 그림 · 덧그림 좌표를 화면 방향으로 보낸다).
+# 판 mm 도 같은 변환(판 좌표는 사진의 A = 왼쪽 위 기준이라 사진과 같은 방향이다).
+# ----------------------------------------------------------------------
+VIEW_NAMES = ("A", "B", "C", "D")                   # 화면 꼭짓점 이름: 화면 왼쪽 위부터 시계 방향
+_UNIT = {"A": (0.0, 0.0), "B": (1.0, 0.0), "C": (1.0, 1.0), "D": (0.0, 1.0)}     # 사진(저장) 꼭짓점의 사진 안 자리
+
+
+def view_size(W, H, rot):
+    return (H, W) if int(rot) in (90, 270) else (W, H)
+
+
+def to_view(x, y, W, H, rot, flip):
+    """사진(또는 판) 좌표 → 화면 좌표(W × H 는 사진 · 판의 크기)."""
+    rot = int(rot)
+    if flip:
+        x = W - x
+    if rot == 90:
+        return H - y, x
+    if rot == 180:
+        return W - x, H - y
+    if rot == 270:
+        return y, W - x
+    return x, y
+
+
+def from_view(u, v, W, H, rot, flip):
+    """화면 좌표 → 사진(또는 판) 좌표."""
+    rot = int(rot)
+    if rot == 90:
+        x, y = v, H - u
+    elif rot == 180:
+        x, y = W - u, H - v
+    elif rot == 270:
+        x, y = W - v, u
+    else:
+        x, y = u, v
+    if flip:
+        x = W - x
+    return x, y
+
+
+def view_matrix(W, H, rot, flip):
+    """to_view 를 3×3 행렬로(다른 변환 뒤에 곱해 화면 좌표를 바로 낸다)."""
+    o = np.asarray(to_view(0.0, 0.0, W, H, rot, flip))
+    ex = np.asarray(to_view(1.0, 0.0, W, H, rot, flip)) - o
+    ey = np.asarray(to_view(0.0, 1.0, W, H, rot, flip)) - o
+    return np.array([[ex[0], ey[0], o[0]], [ex[1], ey[1], o[1]], [0.0, 0.0, 1.0]])
+
+
+def rotate_img(img, rot, flip):
+    """사진(그림)을 화면 방향으로."""
+    if img is None:
+        return None
+    if flip:
+        img = cv2.flip(img, 1)
+    rot = int(rot)
+    if rot == 90:
+        return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+    if rot == 180:
+        return cv2.rotate(img, cv2.ROTATE_180)
+    if rot == 270:
+        return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return img
+
+
+def view_names(rot, flip):
+    """저장(사진 기준) 꼭짓점 이름 → 화면 이름(화면 왼쪽 위부터 시계 방향 A · B · C · D)."""
+    out = {}
+    for n, (x, y) in _UNIT.items():
+        u, v = to_view(x, y, 1.0, 1.0, rot, flip)
+        out[n] = {(0, 0): "A", (1, 0): "B", (1, 1): "C", (0, 1): "D"}[(int(round(u)), int(round(v)))]
+    return out
+
+
+def store_name(view_name, rot, flip):
+    """화면 꼭짓점 이름 → 저장 이름."""
+    inv = {v: k for k, v in view_names(rot, flip).items()}
+    return inv[str(view_name).upper()]
+
+
+def view_matches(stage_corners, rot, flip, front, right):
+    """회전 설정이 꼭짓점 방향(초기 설정 5 스테이지 좌표 + 장비 앞쪽 · 오른쪽 - front_layout)과 맞는가. 꼭짓점이 모자라면 None."""
+    lay = front_layout(stage_corners, front, right)
+    if lay is None:
+        return None
+    for n, (x, y) in _UNIT.items():
+        u, v = to_view(x, y, 1.0, 1.0, rot, flip)
+        if lay["corners"][n] != [2 if v > 0.5 else 0, 2 if u > 0.5 else 0]:
+            return False
+    return True

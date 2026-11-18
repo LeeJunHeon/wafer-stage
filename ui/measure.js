@@ -13,12 +13,12 @@ const sampleOf = (id) => (S.samples || []).find((s) => s.id === id);
 function buildMeasure() {
   /* ---- 왼쪽: 판 ---- */
   ms.ov = svgEl("g", {});
-  ms.pb = photoBox({ ar: 1, note: "사진 없음", cls: "plate-photo", onfit: () => drawPlate() });
+  ms.pb = photoBox({ ar: 1, note: "사진 없음", cls: "plate-photo", onfit: () => drawPlate(), dirs: true });     // 문 기준 화면
   ms.pb.svg.append(ms.ov);
   ms.pb.inner.addEventListener("click", (ev) => {
     const [fx, fy] = ms.pb.toFrac(ev), sz = S.cfg.plate_size_mm, x = fx * sz, y = fy * sz;
     let best = null, bd = 9;                                     // 9 mm 안에서 가장 가까운 샘플(없으면 고르기를 풀고 지금 샘플을 따라간다)
-    for (const s of S.samples || []) { const d = Math.hypot(s.plate[0] - x, s.plate[1] - y); if (d < bd) { bd = d; best = s.id; } }
+    for (const s of S.samples || []) { const d = Math.hypot(s.vplate[0] - x, s.vplate[1] - y); if (d < bd) { bd = d; best = s.id; } }     // 화면 판 mm
     selectSample(best);
   });
   ms.btns = h("div", { class: "row wrap" });
@@ -90,20 +90,20 @@ function drawPlate() {
   ms.pb.svg.setAttribute("viewBox", "0 0 " + sz + " " + sz);
   for (const s of S.samples || []) {
     const row = rowOf(s.id) || { status: s.use ? "대기" : "제외" };
-    const st = row.status, pts = s.outline.map((p) => p.join(",")).join(" ");
+    const st = row.status, pts = s.voutline.map((p) => p.join(",")).join(" ");        // 화면(문 기준) 판 mm
     const out = st === "제외", now = st === "측정 중";
     const g = svgEl("g", { opacity: out ? 0.4 : 1 });
     g.append(svgEl("polygon", { points: pts, fill: "none", stroke: "#FFFFFF", "stroke-width": (now ? 5 : 3.5) * k, "stroke-linejoin": "round" }));
     g.append(svgEl("polygon", { points: pts, fill: "none", stroke: "#1F2329", "stroke-width": (now ? 3 : 1.5) * k, "stroke-linejoin": "round", "stroke-dasharray": s.weak ? 4 * k + " " + 3 * k : null }));
-    const [cx, cy] = s.plate;
+    const [cx, cy] = s.vplate;
     if (now) { const r = 7 * k; g.append(svgEl("path", { d: "M" + (cx - r) + " " + cy + "H" + (cx + r) + "M" + cx + " " + (cy - r) + "V" + (cy + r), stroke: "#FFFFFF", "stroke-width": 3.5 * k, fill: "none" }));
       g.append(svgEl("path", { d: "M" + (cx - r) + " " + cy + "H" + (cx + r) + "M" + cx + " " + (cy - r) + "V" + (cy + r), stroke: "#1F2329", "stroke-width": 1.5 * k, fill: "none" })); }
     const mark = st === "완료" ? "✓" : st === "실패" ? "✕" : "";
     if (mark) g.append(svgEl("text", { x: cx, y: cy + 5 * k, "font-size": 15 * k, "font-weight": 700, "text-anchor": "middle", fill: "#1F2329", stroke: "#FFFFFF", "stroke-width": 3 * k, "paint-order": "stroke", text: mark }));
-    const top = Math.min(...s.outline.map((p) => p[1]));
+    const top = Math.min(...s.voutline.map((p) => p[1]));
     g.append(svgEl("text", { x: cx, y: top - 4 * k, "font-size": 12 * k, "font-weight": s.id === shown ? 700 : 400, "text-anchor": "middle", fill: "#1F2329", stroke: "#FFFFFF", "stroke-width": 3 * k, "paint-order": "stroke", text: row.name || s.name }));
     if (s.id === shown) {
-      const xs = s.outline.map((p) => p[0]), ys = s.outline.map((p) => p[1]), m = 3 * k;
+      const xs = s.voutline.map((p) => p[0]), ys = s.voutline.map((p) => p[1]), m = 3 * k;
       g.append(svgEl("rect", { x: Math.min(...xs) - m, y: Math.min(...ys) - m, width: Math.max(...xs) - Math.min(...xs) + 2 * m, height: Math.max(...ys) - Math.min(...ys) + 2 * m, fill: "none", stroke: "#1F2329", "stroke-width": 1 * k, "stroke-dasharray": 2 * k + " " + 2 * k }));
     }
     kids.push(g);

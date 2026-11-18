@@ -15,7 +15,7 @@ function buildManual() {
   /* ---- 왼쪽: 카메라 ---- */
   man.view = "raw";
   man.ov = svgEl("g", {});
-  man.pb = photoBox({ ar: 4 / 3, note: "카메라 연결 안 됨", center: true, cls: "fill", onfit: () => drawManualOverlay() });     // 칸이 허락하는 만큼 크게
+  man.pb = photoBox({ ar: 4 / 3, note: "카메라 연결 안 됨", center: true, cls: "fill", onfit: () => drawManualOverlay(), dirs: true });     // 칸이 허락하는 만큼 크게 · 문 기준 화면
   man.pb.box.id = "preview-box";
   man.pb.svg.append(man.ov);
   const setView = (v) => { man.view = v; man.pb.setNote("미리보기 대기 중"); man.pb.show(""); refreshPreview(); renderManual(); };
@@ -123,7 +123,7 @@ async function plateClick(fx, fy) {
   if (!man.clickGo.checked || man.clickGo.disabled || running()) return;
   if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
   const sz = S.cfg.plate_size_mm;
-  const r = await api("plate_goto", { x: fx * sz, y: fy * sz });
+  const r = await api("plate_goto", { x: fx * sz, y: fy * sz, view: true });      // 화면(문 기준) 판 mm - 서버가 저장 좌표로 바꾼다
   if (r.ok) fillHere(r.result && r.result.pos);                               // 클릭 이동 뒤에도 좌표 이동 칸을 채운다
 }
 /* 좌표 이동 칸(X · Y · Z)에 현재 위치(또는 받은 위치) */
@@ -132,17 +132,18 @@ function fillHere(pos) {
   const put = (el, v) => { el.value = v == null ? "" : Number(v).toFixed(2); };
   put(man.gx, p.x); put(man.gy, p.y); put(man.gz, p.z);
 }
-/* 판 사진 덧그림(판 mm 좌표 → 그림 좌표 u 배): 샘플 윤곽 · 이름 · 누른 위치 · 핀 십자. 작은 사진(u = 1, viewBox 가 mm) · [크게 보기](u = px/mm)가 같이 쓴다 */
+/* 판 사진 덧그림(화면 판 mm 좌표 → 그림 좌표 u 배): 샘플 윤곽 · 이름 · 누른 위치 · 핀 십자. 작은 사진(u = 1, viewBox 가 mm) · [크게 보기](u = px/mm)가 같이 쓴다.
+   좌표는 서버가 화면 방향(문 기준)으로 준 값(voutline · vplate · last_click.vplate · coords.to_view)만 쓴다 */
 function plateOverlayKids(k, u) {
   const sz = S.cfg.plate_size_mm, kids = [], pr = S.prep || {};
   const halo = (tag, a, wd) => { kids.push(svgEl(tag, Object.assign({}, a, { stroke: "#FFFFFF", "stroke-width": (wd + 2.5) * k, fill: "none" })), svgEl(tag, Object.assign({}, a, { stroke: "#1F2329", "stroke-width": wd * k, fill: "none" }))); };
   for (const s of S.samples || []) {
-    halo("polygon", { points: s.outline.map((p) => p[0] * u + "," + p[1] * u).join(" "), "stroke-linejoin": "round" }, 1.5);
-    kids.push(svgEl("text", { x: s.plate[0] * u, y: Math.min(...s.outline.map((p) => p[1])) * u - 4 * k, "font-size": 12 * k, "text-anchor": "middle", fill: "#1F2329", stroke: "#FFFFFF", "stroke-width": 3 * k, "paint-order": "stroke", text: s.name }));
+    halo("polygon", { points: s.voutline.map((p) => p[0] * u + "," + p[1] * u).join(" "), "stroke-linejoin": "round" }, 1.5);
+    kids.push(svgEl("text", { x: s.vplate[0] * u, y: Math.min(...s.voutline.map((p) => p[1])) * u - 4 * k, "font-size": 12 * k, "text-anchor": "middle", fill: "#1F2329", stroke: "#FFFFFF", "stroke-width": 3 * k, "paint-order": "stroke", text: s.name }));
   }
   const lc = pr.last_click;
-  if (lc) halo("circle", { cx: lc.plate[0] * u, cy: lc.plate[1] * u, r: 6 * k }, 1.5);
-  const pin = S.pos && S.pos.x != null && S.pos.y != null ? applyH(pr.coords && pr.coords.to_plate, S.pos.x, S.pos.y) : null;
+  if (lc && lc.vplate) halo("circle", { cx: lc.vplate[0] * u, cy: lc.vplate[1] * u, r: 6 * k }, 1.5);
+  const pin = S.pos && S.pos.x != null && S.pos.y != null ? applyH(pr.coords && pr.coords.to_view, S.pos.x, S.pos.y) : null;
   if (pin && pin[0] >= 0 && pin[0] <= sz && pin[1] >= 0 && pin[1] <= sz) {
     const x = pin[0] * u, y = pin[1] * u, r = 9 * k;
     halo("path", { d: "M" + (x - r) + " " + y + "H" + (x + r) + "M" + x + " " + (y - r) + "V" + (y + r) }, 1.5);
@@ -153,7 +154,7 @@ function plateOverlayKids(k, u) {
 function openPlateBig() {
   const ph = (S.prep || {}).photo, pl = (S.prep || {}).plate;
   if (!ph || !ph.rect || !pl) { toast("사진 없음"); return; }
-  const url = "/api/img/plate.jpg?v=" + ph.id + "-" + pl.t;
+  const url = "/api/img/plate.jpg?v=" + ph.id + "-" + pl.t;          // 화면 방향(문 기준) 판 사진 - 정사각형이라 크기는 그대로
   const z = zoomView({ src: "plate", empty: "사진 없음",
     draw: (g, k) => setKids(g, ...plateOverlayKids(k, z.W / S.cfg.plate_size_mm)),
     onDown: (p) => { plateClick(p[0] / z.W, p[1] / z.H); return false; } });
@@ -175,7 +176,7 @@ function openPlateBig() {
     render();
   };
   img.onerror = () => toast("사진 읽기 실패");
-  img.src = url;
+  img.src = url + vq();
 }
 function logLine(cls, text) {
   const t = new Date();
@@ -315,7 +316,7 @@ function drawManualOverlay() {
 let prevUrl = null;
 async function refreshPreview() {
   if (tab !== "manual" || !S || man.view !== "raw") return;
-  man.pb.setAr(4 / 3);                                           // 사진이 없어도 상자는 카메라 화면 크기 그대로
+  man.pb.setAr([90, 270].includes(Number(S.cfg.view_rot)) ? 3 / 4 : 4 / 3);     // 사진이 없어도 상자는 카메라 화면 크기 그대로(화면 방향 - 90 · 270° 면 세로)
   if (!devOk("camera")) { man.pb.setNote("카메라 연결 안 됨"); man.pb.show(""); return; }
   try {
     const r = await fetch("/api/camera/preview.jpg?t=" + Date.now(), { cache: "no-store" });

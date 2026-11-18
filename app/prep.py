@@ -279,31 +279,86 @@ class Prep:
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, q])
         return buf.tobytes() if ok else None
 
+    # ------------------------------------------------------------------
+    # 화면 방향(문 기준): 그림 · 덧그림 좌표는 화면 방향으로 보내고, 화면 입력(view=True)은 여기서 저장 좌표로 바꾼다(geometry.to_view · from_view 한 곳)
+    # ------------------------------------------------------------------
+    def _vr(self):
+        return int(self.cfg["view_rot"]), bool(self.cfg["view_flip"])
+
+    def _vimg(self, img):
+        return geo.rotate_img(img, *self._vr())
+
+    def _vplate(self, p):
+        """판 mm → 화면 판 mm."""
+        S = self._size_mm()
+        u, v = geo.to_view(float(p[0]), float(p[1]), S, S, *self._vr())
+        return [round(u, 3), round(v, 3)]
+
+    def _from_vplate(self, u, v):
+        S = self._size_mm()
+        return geo.from_view(float(u), float(v), S, S, *self._vr())
+
+    def vname(self, stored):
+        """저장 꼭짓점 이름 → 화면 이름(화면 왼쪽 위부터 시계 방향)."""
+        return geo.view_names(*self._vr())[stored]
+
+    def sname(self, view_name):
+        """화면 꼭짓점 이름 → 저장 이름."""
+        return geo.store_name(view_name, *self._vr())
+
+    def _dirs(self):
+        """사진 칸 둘레의 방향 글: 위 = 안쪽 · 아래 = 문 · 왼쪽 · 오른쪽 = 장비 오른쪽의 반대 · 장비 오른쪽."""
+        c = self.cfg
+        return {"top": "안쪽", "bottom": "문", "left": config_mod.SIDE_NAME[_opposite(c["machine_right_side"])],
+                "right": config_mod.SIDE_NAME[c["machine_right_side"]]}
+
+    def _view_check(self):
+        """회전 설정(view_rot · view_flip)이 꼭짓점 방향(초기 설정 5 + 장비 앞쪽 · 오른쪽)과 맞는가 - 다르면 주의."""
+        c = self.cfg
+        ok = geo.view_matches(self.calib.d["coords"]["stage"], *self._vr(), c["machine_front_side"], c["machine_right_side"])
+        if ok is False:
+            self.c.state.alarm("view_rot", "사진 회전 설정과 꼭짓점 방향 다름", NOTICE)
+        else:
+            self.c.state.clear_alarm("view_rot")
+        return ok
+
+    def preview_jpeg(self):
+        """실시간 미리보기(화면 방향). 돌릴 일이 없으면 카메라의 JPEG 그대로."""
+        jpg = self.c.camera.preview_jpeg()
+        rot, flip = self._vr()
+        if jpg is None or (rot == 0 and not flip):
+            return jpg
+        img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+        return self._jpeg(self._vimg(img), None, 80) if img is not None else None
+
     def jpeg(self, what, **kw):
         """화면용 그림. what: raw(찍은 원본, 가로 1600 까지) · crop(원본 해상도 조각: x, y, half) · plate(보정한 판 사진) ·
         empty(보정한 빈 판 사진). 없으면 None."""
         ph = self.photo
         if what == "raw":
-            return None if ph is None else self._jpeg(ph["frame"], 1600)
-        if what == "crop":
+            return None if ph is None else self._jpeg(self._vimg(ph["frame"]), 1600)          # 화면 방향(문 기준)
+        if what == "crop":                                           # x, y = 화면 방향 사진의 픽셀(kw view) · 아니면 원본 픽셀
             if ph is None:
                 return None
             f = ph["frame"]
-            x, y, half = int(float(kw.get("x", 0))), int(float(kw.get("y", 0))), max(20, min(400, int(float(kw.get("half", 120)))))
+            x, y, half = float(kw.get("x", 0)), float(kw.get("y", 0)), max(20, min(400, int(float(kw.get("half", 120)))))
+            if kw.get("view"):
+                x, y = geo.from_view(x, y, f.shape[1], f.shape[0], *self._vr())
+            x, y = int(x), int(y)
             pad = cv2.copyMakeBorder(f, half, half, half, half, cv2.BORDER_CONSTANT, value=(255, 255, 255))
             x, y = max(0, min(f.shape[1] - 1, x)), max(0, min(f.shape[0] - 1, y))
-            return self._jpeg(pad[y:y + 2 * half, x:x + 2 * half], None, 90)
+            return self._jpeg(self._vimg(pad[y:y + 2 * half, x:x + 2 * half]), None, 90)
         if what == "plate":
-            return self._jpeg(self._inner(self.photo_rect()))
+            return self._jpeg(self._vimg(self._inner(self.photo_rect())))
         if what == "empty":
-            return self._jpeg(self._inner(self.empty_rect()))
+            return self._jpeg(self._vimg(self._inner(self.empty_rect())))
         return None
 
     REGION_MAX_OUT = 2048                                            # 조각 한 장의 가장 큰 가로(px) - 화면이 이보다 넓게 보여 줄 일은 없다
 
     def region(self, src, x, y, w, h, out=None):
         """크게 보기 창(ui/zoom.js)이 받는 원본 해상도 조각. src: raw(찍은 원본 사진) · plate(보정한 판 사진).
-        x, y, w, h = 그 사진의 픽셀 사각형(사진 안이어야 한다 - 밖이면 Rejected). out = 돌려줄 가로(px, 16~2048) - 조각보다 크면 늘리지 않는다
+        x, y, w, h = **화면 방향(문 기준)** 사진의 픽셀 사각형(사진 안이어야 한다 - 밖이면 Rejected). 조각도 화면 방향으로 돌려 준다. out = 돌려줄 가로(px, 16~2048) - 조각보다 크면 늘리지 않는다
         (원본 화소 그대로 - 화면이 화소를 그대로 확대한다). 사진이 없으면 None."""
         if src == "raw":
             img = None if self.photo is None else self.photo["frame"]
@@ -313,13 +368,19 @@ class Prep:
             raise Rejected("사진 종류 오류 · raw 또는 plate")
         if img is None:
             return None
-        H, W = img.shape[:2]
+        H0, W0 = img.shape[:2]
+        rot, flip = self._vr()
+        W, H = geo.view_size(W0, H0, rot)
         x, y, w, h = int(x), int(y), int(w), int(h)
         if w < 1 or h < 1 or x < 0 or y < 0 or x + w > W or y + h > H:
             raise Rejected("범위 밖 · 사진 %d×%d" % (W, H))
         o = w if out is None else max(16, min(self.REGION_MAX_OUT, int(out)))
         o = min(o, w)
-        piece = img[y:y + h, x:x + w]
+        a = geo.from_view(x, y, W0, H0, rot, flip)                  # 화면 사각형 → 원본 사각형
+        b = geo.from_view(x + w, y + h, W0, H0, rot, flip)
+        x0, x1 = int(round(min(a[0], b[0]))), int(round(max(a[0], b[0])))
+        y0, y1 = int(round(min(a[1], b[1]))), int(round(max(a[1], b[1])))
+        piece = self._vimg(img[max(0, y0):min(H0, y1), max(0, x0):min(W0, x1)])
         if o < w:
             piece = cv2.resize(piece, (o, max(1, int(round(h * o / w)))), interpolation=cv2.INTER_AREA)
         return self._jpeg(piece, None, 90)
@@ -355,8 +416,9 @@ class Prep:
         self.publish()
         return {"photo": self._photo_view()}
 
-    def plate_set(self, corners):
-        """사진에서 누른 판 꼭짓점 A · B · C · D(원본 픽셀, 왼쪽 위부터 시계 방향) → "사진 → 판 mm" 변환."""
+    def plate_set(self, corners, view=False):
+        """사진에서 누른 판 꼭짓점 A · B · C · D(원본 픽셀, 왼쪽 위부터 시계 방향) → "사진 → 판 mm" 변환.
+        view = 화면(문 기준)에서 누른 점 - 화면 이름 A · B · C · D 순서 · 화면 픽셀 → 저장(사진 기준) 이름 순서 · 원본 픽셀로 바꾼다."""
         self.c._no_run("판 영역 정하기")
         ph = self.photo
         if ph is None:
@@ -368,6 +430,10 @@ class Prep:
         if len(pts) != 4:
             raise Rejected("꼭짓점 4개 선택 필요")
         h, w = ph["frame"].shape[:2]
+        if view:
+            rot, flip = self._vr()
+            by = {self.sname(geo.VIEW_NAMES[i]): list(geo.from_view(p[0], p[1], w, h, rot, flip)) for i, p in enumerate(pts)}
+            pts = [by[n] for n in CORNERS]
         if any(not (0 <= x < w and 0 <= y < h) for x, y in pts):
             raise Rejected("꼭짓점이 사진 밖")
         q = np.asarray(pts, np.float32)
@@ -422,7 +488,7 @@ class Prep:
         lap = cv2.Laplacian(g, cv2.CV_64F)
         return float(lap[mask[y0:y1, x0:x1] > 0].var())
 
-    def focus_find(self, roi=None):
+    def focus_find(self, roi=None, view=False):
         """[초점 찾기]: 핀 맨 위 → 촬영 위치(판 밖) → 자동 초점 끔 → focus_coarse_step 간격으로 넓게 → 가장 선명한 곳 둘레를 focus_fine_step 간격으로.
         값마다 focus_settle_s 기다린 뒤 새 프레임으로 잰다. 넣은 뒤 다시 읽어 안 바뀐 값(범위 밖)은 건너뛴다(다시 읽기 미지원이면 그대로 쓴다 · 화면 · 로그에 남김).
         roi = 판 영역이 없을 때 사진에서 그린 상자 [x, y, w, h](원본 픽셀). [정지] · 비상정지면 원래 초점 값으로 되돌린다. 저장은 [적용](focus_apply)."""
@@ -431,6 +497,11 @@ class Prep:
         self.c._no_run("초점 찾기")
         if self.focus.get("active"):
             raise Rejected("초점 찾기 중")
+        if view and roi is not None and self.photo is not None:     # 화면(문 기준)에서 그린 상자 → 원본 픽셀 상자
+            H0, W0 = self.photo["frame"].shape[:2]
+            a = geo.from_view(roi[0], roi[1], W0, H0, *self._vr())
+            b = geo.from_view(roi[0] + roi[2], roi[1] + roi[3], W0, H0, *self._vr())
+            roi = [int(min(a[0], b[0])), int(min(a[1], b[1])), int(abs(b[0] - a[0])), int(abs(b[1] - a[1]))]
         if c["photo_head_xy"] is None:
             raise Rejected("촬영 위치 설정 필요 (초기 설정 3)")
         if not self.calib.d.get("plate") and roi is None:
@@ -605,18 +676,25 @@ class Prep:
     # ------------------------------------------------------------------
     # 5 · 좌표 맞추기
     # ------------------------------------------------------------------
-    def coord_set(self, name):
-        """[여기가 A] … [여기가 D]: 지금 스테이지 X · Y 를 그 꼭짓점 자리로 기억한다. 4점이 모이면 헤드 마커도 이어서 기억한다."""
+    def coord_set(self, name, view=False):
+        """[A 등록] … [D 등록]: 지금 스테이지 X · Y 를 그 꼭짓점 자리로 기억한다. 4점이 모이면 헤드 마커도 이어서 기억한다.
+        view = 화면 이름(문 기준 - 화면 왼쪽 위부터 시계 방향) → 저장 이름(사진 기준)으로 바꿔 저장한다."""
         name = str(name).upper()
         if name not in CORNERS:
             raise Rejected("꼭짓점은 A · B · C · D 중 하나")
+        shown = name
+        if view:
+            name = self.sname(name)
+        else:
+            shown = self.vname(name)
         self._need_xy()
         self.c._no_run("좌표 보정")
         self.calib.set_corner_stage(name, self._xy())
         self.clear_pos_check()
         self._refresh_samples()
         self.publish()
-        out = {"name": name, "xy": self.calib.d["coords"]["stage"][name]}
+        self.c.logs.app("꼭짓점 %s 등록 · X %.2f · Y %.2f mm" % (shown, *self.calib.d["coords"]["stage"][name]))
+        out = {"name": shown, "xy": self.calib.d["coords"]["stage"][name]}
         if all(n in self.calib.d["coords"]["stage"] for n in CORNERS):
             try:
                 out["marker"] = self.marker_learn()
@@ -626,9 +704,10 @@ class Prep:
         return out
 
     def coord_goto_d(self):
+        """남은 꼭짓점 하나의 예상 위치로(세 꼭짓점이 있을 때 - 평행사변형)."""
         g = self.calib.d_guess()
         if g is None:
-            raise Rejected("A · B · C 등록 필요")
+            raise Rejected("꼭짓점 3개 등록 필요")
         return self.c.goto(g[0], g[1])
 
     def coord_clear(self):
@@ -786,12 +865,12 @@ class Prep:
         self.publish()
         return {"px": [round(m0[0], 1), round(m0[1], 1)]}
 
-    def plate_goto(self, x, y):
-        """판 사진을 누른 자리(판 mm)로 간다(핀 맨 위로 올린 뒤). 샘플 근처를 누르면 샘플 가운데로 붙는다."""
+    def plate_goto(self, x, y, view=False):
+        """판 사진을 누른 자리(판 mm - view 면 화면 판 mm)로 간다(핀 맨 위로 올린 뒤). 샘플 근처를 누르면 샘플 가운데로 붙는다."""
         Hp, Hs = self.calib.plate_h(self._size_mm()), self.calib.stage_h()
         if Hp is None or Hs is None:
             raise Rejected("초기 설정 3 · 5 필요")
-        px, py = float(x), float(y)
+        px, py = self._from_vplate(x, y) if view else (float(x), float(y))
         snapped = None
         best = None
         for s in self.samples:
@@ -852,7 +931,7 @@ class Prep:
         # 빈 판 사진이 있다고 적혀 있는데 못 읽었으면 empty_frame 이 주의 "빈 판 사진 읽기 실패 · 초기 설정 4 재촬영 필요" 를 이미 띄웠다(같은 일을 두 번 알리지 않는다)
         batch = self.cfg["batch_name"]
         self.samples = []
-        for i, s in enumerate(res["samples"], 1):
+        for i, s in enumerate(self._view_order(res["samples"]), 1):      # 번호: 문 기준 화면에서 줄마다 왼쪽 → 오른쪽(시작 구석 sample_number_start)
             self.samples.append({"id": i, "name": "%s-%d" % (batch, i), "plate": s["plate"], "outline": s["outline"], "w": s["w"], "h": s["h"], "area": s["area"],
                                  "source": s["source"], "weak": s["weak"], "small": False, "xy": None, "use": True})
         self._refresh_samples(reset_use=True)
@@ -866,6 +945,19 @@ class Prep:
         self.publish()
         self.c.gate_inputs_changed()
         return {"n": len(self.samples), "used": sum(1 for s in self.samples if s["use"]), "notes": res["notes"]}
+
+    def _view_order(self, samples):
+        """샘플 순서: 문 기준 화면에서 왼쪽 위(또는 왼쪽 아래 - 문 쪽)부터 줄마다 왼쪽 → 오른쪽."""
+        if not samples:
+            return []
+        S = self._size_mm()
+        bottom = self.cfg["sample_number_start"] == "bottom_left"
+        proxy = []
+        for s in samples:
+            u, v = self._vplate(s["plate"])
+            proxy.append({"plate": [u, S - v if bottom else v], "_s": s})
+        long_mm = max(max(float(s["w"]), float(s["h"])) for s in samples)
+        return [p["_s"] for p in find_mod.order_rows(proxy, long_mm)]
 
     def _refresh_samples(self, reset_use=False):
         """샘플의 스테이지 X · Y 와 "핀보다 작음"을 지금 보정 값으로 다시 계산한다."""
@@ -1007,7 +1099,8 @@ class Prep:
         ph = self.photo
         if ph is None:
             return None
-        return {"id": ph["id"], "t": ph["t"], "w": int(ph["frame"].shape[1]), "h": int(ph["frame"].shape[0]), "at_head": ph["at_head"], "pos_off_mm": self.pos_off_mm,
+        vw, vh = geo.view_size(int(ph["frame"].shape[1]), int(ph["frame"].shape[0]), self._vr()[0])
+        return {"id": ph["id"], "t": ph["t"], "w": int(ph["frame"].shape[1]), "h": int(ph["frame"].shape[0]), "vw": vw, "vh": vh, "at_head": ph["at_head"], "pos_off_mm": self.pos_off_mm,
                 "rect": self.photo_rect() is not None}
 
     def steps(self):
@@ -1060,14 +1153,30 @@ class Prep:
         return {"done": False, "text": "기본 배치 · 확인 필요"}
 
     def _cooler_view(self):
-        """초기 설정 7 의 장비 앞 기준 보기(geometry.front_layout). 꼭짓점 4개가 없거나 방향을 못 정하면 None + 까닭."""
+        """초기 설정 7 의 칸(문 기준 화면 - 공용 변환 to_view): 화면 3×3 칸마다 cooler_grid [행, 열]. 네 구석 = 화면 꼭짓점 이름(A 왼쪽 위부터 시계 방향)."""
         c = self.cfg
-        lay = geo.front_layout(self.calib.d["coords"]["stage"], c["machine_front_side"], c["machine_right_side"])
-        why = "" if lay else ("장비 앞 기준은 초기 설정 5 후" if not all(n in self.calib.d["coords"]["stage"] for n in CORNERS)
-                              else "꼭짓점 방향 판정 불가 · 장비 앞쪽 · 오른쪽 설정 확인")
-        return {"layout": lay, "why": why,
+        S = self._size_mm()
+        cells = [[None] * 3 for _ in range(3)]
+        for r in range(3):
+            for col in range(3):
+                x, y = self._from_vplate(S * (col + 0.5) / 3.0, S * (r + 0.5) / 3.0)
+                cells[r][col] = list(geo.cooler_cell((x, y), S))
+        return {"layout": {"cells": cells, "corners": {"A": [0, 0], "B": [0, 2], "C": [2, 2], "D": [2, 0]}}, "why": "",
                 "front": config_mod.SIDE_NAME[c["machine_front_side"]], "right": config_mod.SIDE_NAME[c["machine_right_side"]],
                 "back": config_mod.SIDE_NAME[_opposite(c["machine_front_side"])], "left": config_mod.SIDE_NAME[_opposite(c["machine_right_side"])]}
+
+    def _view_block(self):
+        """화면 방향: 회전 · 뒤집기 · 사진 칸 둘레 글 · 꼭짓점 이름 표 · 꼭짓점 방향 검사 · 판 영역 꼭짓점(화면 픽셀 · 화면 이름 순서)."""
+        rot, flip = self._vr()
+        names = geo.view_names(rot, flip)
+        p = self.calib.d.get("plate")
+        pv = None
+        if p:
+            W0, H0 = p["size"]
+            inv = {v: k for k, v in names.items()}
+            pv = {"corners": [[round(c, 2) for c in geo.to_view(*p["corners"][CORNERS.index(inv[n])], W0, H0, rot, flip)] for n in geo.VIEW_NAMES],
+                  "size": list(geo.view_size(W0, H0, rot)), "t": p["t"]}
+        return {"rot": rot, "flip": flip, "dirs": self._dirs(), "names": names, "check": self._view_check(), "plate": pv}
 
     def view(self):
         cal = self.calib.d
@@ -1078,6 +1187,10 @@ class Prep:
             quality["warn"] = bool(quality["max_side_err"] > float(self.cfg["coord_warn_mm"]) or quality["max_angle_err"] > float(self.cfg["coord_warn_deg"]))
         errs = self.calib.extra_errors()
         to_plate = self.calib.stage_to_plate(self._size_mm())
+        S = self._size_mm()
+        to_view = None if to_plate is None else geo.view_matrix(S, S, *self._vr()) @ np.asarray(to_plate, float)     # 스테이지 X · Y → 화면 판 mm
+        miss = self.calib.missing_corner()
+        lc = self.last_click
         return {
             "steps": self.steps(),
             "origin": dict(cal.get("origin") or {}),
@@ -1085,11 +1198,15 @@ class Prep:
             "photo": self._photo_view(),
             "plate": cal.get("plate"),
             "empty": cal.get("empty"),
+            "view": self._view_block(),
             "coords": {"stage": dict(stage_pts), "d_guess": self.calib.d_guess(), "quality": quality, "ready": self.calib.coords_ready(),
+                       "view_stage": {self.vname(n): xy for n, xy in stage_pts.items()},                # 화면 이름(문 기준) → 스테이지 X · Y
+                       "guess_name": None if miss is None else self.vname(miss),
+                       "to_view": None if to_view is None else [[float(v) for v in row] for row in to_view],
                        "extra": [dict(e, err=errs[i]) for i, e in enumerate(cal["coords"]["extra"])],
                        "marker": None if not cal.get("marker") else {"t": cal["marker"]["t"]},
                        "to_plate": None if to_plate is None else [[float(v) for v in row] for row in to_plate]},   # 스테이지 X · Y → 판 mm (3×3)
-            "last_click": self.last_click,
+            "last_click": None if lc is None else dict(lc, vplate=self._vplate(lc["plate"])),
             "contact": dict(self.contact),
             "z_floor": self._z_floor_view(),
             "pos_block": self.pos_block,
@@ -1106,7 +1223,7 @@ class Prep:
 
     def publish(self):
         self.c.state.set("prep", self.view())
-        self.c.state.set("samples", [dict(s) for s in self.samples])
+        self.c.state.set("samples", [dict(s, vplate=self._vplate(s["plate"]), voutline=[self._vplate(q) for q in s["outline"]]) for s in self.samples])     # v… = 화면(문 기준) 판 mm
 
 
 def _opposite(side):

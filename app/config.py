@@ -89,7 +89,7 @@ ITEMS = (
          Item("camera_focus_fixed", True, "bool", "초점 고정",
               desc="자동 초점 끔 · 촬영마다 초점이 변하지 않게 함"),
          Item("camera_focus_value", 240, "int", "초점 값", "", -1, 4095,                # 장비 값(측정 PC 에서 초점 찾기로 정한 값)
-              desc="고정 초점 값 · −1 은 미설정(켤 때마다 렌즈가 그 순간 자리에 굳음)\n초기 설정 3 [초점 찾기] 후 [적용] 으로 저장\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
+              desc="고정 초점 값 · −1 은 미설정(켤 때마다 렌즈가 그 순간 자리에 굳음)\n초기 설정 3 [초점 찾기] 후 [적용] 으로 저장"),
          # 초점 찾기(초기 설정 3): 판 영역 안의 선명도(라플라시안 분산)가 가장 큰 초점 값을 찾는다
          Item("focus_scan_min", 0, "int", "초점 찾기 시작 값", "", 0, 4095,
               desc="초점 찾기에서 훑는 가장 작은 초점 값"),
@@ -143,22 +143,24 @@ ITEMS = (
               desc="고정 값일 때 수동으로 내릴 수 있는 가장 낮은 Z\n실장비에서 확인한 높이 입력"))
     + _g("릴레이",                                                                        # 릴레이 역할. 그 밖의 릴레이는 미배정(켜는 길이 없다)
          Item("heater_fan_relay", 1, "int", "송풍 릴레이", "번", 1, 10,
-              desc="히트건 송풍(바람) 릴레이 번호 · 릴레이 모두 끈 뒤 변경 가능\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
+              desc="히트건 송풍(바람) 릴레이 번호 · 릴레이 모두 끈 뒤 변경 가능"),
          Item("heater_element_relay", 10, "int", "열선 릴레이", "번", 1, 10,
-              desc="히트건 열선 릴레이 번호 · 켤 때 열선 먼저 · 릴레이 모두 끈 뒤 변경 가능\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
+              desc="히트건 열선 릴레이 번호 · 켤 때 열선 먼저 · 릴레이 모두 끈 뒤 변경 가능"),
          Item("cooler_relays", [2, 3, 4], "ints", "쿨러 릴레이",
-              desc="쿨러 묶음 릴레이 번호 목록 · 송풍 · 열선과 겹치면 안 됨\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
+              desc="쿨러 묶음 릴레이 번호 목록 · 송풍 · 열선과 겹치면 안 됨"),
          # 쿨러 3x3 자리 배치(판 mm 기준 칸 → 쿨러 릴레이 번호 · 0 행 = A–B 변 쪽 · 0 열 = A–D 변 쪽 = 사진 기준). 같은 릴레이를 여러 칸에 써도 된다.
          # 빈 칸(null)도 된다 - 쿨러 "샘플 아래 구역" 이면 빈 칸의 샘플은 측정 시작을 거절한다(run.gate). 초기 설정 7 에서 정한다
          Item("cooler_grid", [[3, 4, 4], [2, 2, 3], [2, 3, 4]], "grid", "쿨러 배치",          # 장비 값(측정 PC 초기 설정 7)
-              desc="판 3×3 칸마다 쿨러 릴레이 번호 · 사진 기준(왼쪽 위 = A) · 빈 칸 가능\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
+              desc="판 3×3 칸마다 쿨러 릴레이 번호 · 사진 기준(왼쪽 위 = A) · 빈 칸 가능"),
          # 장비 앞(사람이 서는 쪽)에서 본 방향: 초기 설정 7 의 칸을 장비 앞 기준으로 돌려 그릴 때만 쓴다(cooler_grid 의 뜻은 그대로)
          Item("machine_front_side", "x_far", "choice", "장비 앞쪽", choices=SIDES,
-              desc="장비 앞(사람이 서는 쪽)이 스테이지의 어느 쪽인지 · 초기 설정 7 의 칸 방향\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
+              desc="장비 앞(사람이 서는 쪽)이 스테이지의 어느 쪽인지 · 초기 설정 7 의 칸 방향"),
          Item("machine_right_side", "y_far", "choice", "장비 오른쪽", choices=SIDES,
-              desc="장비 앞에서 볼 때 오른쪽이 스테이지의 어느 쪽인지 · 초기 설정 7 의 칸 방향\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
-         Item("cooler_view", "front", "choice", "쿨러 배치 보기", choices=(("front", "장비 앞 기준"), ("photo", "사진 기준")),
-              desc="초기 설정 7 의 칸을 그리는 방향\n장비 앞 기준은 초기 설정 5 의 꼭짓점 4개 필요"))
+              desc="장비 앞에서 볼 때 오른쪽이 스테이지의 어느 쪽인지 · 초기 설정 7 의 칸 방향"),
+         Item("view_rot", "180", "choice", "사진 화면 회전", choices=(("0", "0°"), ("90", "90°"), ("180", "180°"), ("270", "270°")),
+              desc="사진을 문 기준 화면(아래 = 문)으로 돌리는 각도 · 시계 방향\n저장 값은 그대로 · 화면에 그릴 때만 돌림"),
+         Item("view_flip", False, "bool", "사진 좌우 뒤집기",
+              desc="회전 전에 사진을 좌우로 뒤집음 · 카메라를 거울 방향으로 달았을 때만"))
     + _g("히트건 안전",
          Item("heater_max_c", 110.0, "float", "히트건 차단 온도", "°C", 30, 300,
               desc="이 온도 이상이면 열선을 켜지 않고 켜져 있으면 끔\n가열 끝 온도보다 높게 설정"),
@@ -196,11 +198,11 @@ ITEMS = (
          Item("heater_pwm_period_ms", 1000, "int", "열선 출력 주기", "ms", 200, 5000,
               desc="열선 출력 % 의 한 주기(SSR) · 주기 × % 동안만 켬\n펌웨어 V12 에 연결 때 알려 줌"),
          Item("heat_model_k", None, "optfloat", "열 모델 이득", "°C/%", 0.01, 20, verify=True,
-              desc="열선 출력 1 % 당 올라가는 온도 · 온도 시험 [반응 재기] 로 저장\n비우면 보수적인 기본값 · 장비 값"),
+              desc="열선 출력 1 % 당 올라가는 온도 · 온도 시험 [반응 재기] 로 저장\n비우면 보수적인 기본값"),
          Item("heat_model_tau_s", None, "optfloat", "열 모델 시간 상수", "s", 1, 3600, verify=True,
-              desc="출력을 바꾼 뒤 온도가 63 % 따라가는 시간 · [반응 재기] 로 저장 · 장비 값"),
+              desc="출력을 바꾼 뒤 온도가 63 % 따라가는 시간 · [반응 재기] 로 저장"),
          Item("heat_model_theta_s", None, "optfloat", "열 모델 지연", "s", 0, 300, verify=True,
-              desc="출력을 바꾼 뒤 온도가 움직이기 시작할 때까지 · [반응 재기] 로 저장 · 장비 값"),
+              desc="출력을 바꾼 뒤 온도가 움직이기 시작할 때까지 · [반응 재기] 로 저장"),
          Item("reversal_c", 0.3, "float", "역전 기준", "°C", 0.01, 10,
               desc="가열 중 내려감 · 냉각 중 올라감이 이 값 넘으면 역전 1회로 셈"),
          Item("run_fan_during_cool", True, "bool", "냉각 중 송풍",
@@ -234,6 +236,8 @@ ITEMS = (
               desc="핀 끝의 긴 쪽이 향하는 스테이지 방향\n핀 장착 방향을 바꿨을 때 변경"),
          Item("sample_layout", "free", "choice", "샘플 배치", choices=(("free", "자유"), ("grid", "격자")),
               desc="자유는 보이는 샘플만 검출 · 격자는 행 · 열 격자로 빈 자리를 \"미확인\" 으로 예측\n판 사각형 밖 샘플은 어느 쪽이든 내지 않음"),
+         Item("sample_number_start", "top_left", "choice", "샘플 번호 시작", choices=(("top_left", "왼쪽 위"), ("bottom_left", "왼쪽 아래(문 쪽)")),
+              desc="문 기준 화면에서 번호를 시작하는 구석 · 줄마다 왼쪽 → 오른쪽\n다시 검출하면 새 규칙"),
          Item("sample_grid_rows", 3, "int", "격자 행", "행", 1, 20,
               desc="샘플 배치가 격자일 때 행 수"),
          Item("sample_grid_cols", 5, "int", "격자 열", "열", 1, 20,
@@ -364,6 +368,10 @@ BY_KEY = {i.key: i for i in ITEMS}
 PC_KEYS = frozenset({"stage_port", "k2110_addr", "k2450_addr", "data_dir", "auto_connect", "blocked_ports", "camera_index",
                      "nas_dir", "nas_date_folder", "photo_head_xy", "contact_z_mm"})
 
+# 장비 값: 장비(한 대)에 딸린 값 - 코드 기본값이 그 장비의 값이다(배선 · 설치가 바뀌면 코드 기본값도 바꾼다). 전체 설정에 "장비 값" 표시
+DEVICE_KEYS = frozenset({"cooler_grid", "machine_front_side", "machine_right_side", "view_rot", "view_flip", "camera_focus_value",
+                         "heater_fan_relay", "heater_element_relay", "cooler_relays", "heat_model_k", "heat_model_tau_s", "heat_model_theta_s"})
+
 # 기본값 이력(키 → 예전 기본값들): 저장된 값이 예전 기본값과 같으면 "바꾼 적 없음" 으로 보고 지운다(새 기본값을 따른다 - Config.load 한 번 · 로그 한 줄씩).
 # 기본값을 바꿀 때 예전 값을 여기에 더한다. 없어진 키는 REMOVED_KEYS 에(읽을 때 버리고 로그).
 DEFAULT_HISTORY = {
@@ -373,6 +381,7 @@ DEFAULT_HISTORY = {
     "run_interval_s": [1.0],
 }
 REMOVED_KEYS = {
+    "cooler_view": "화면 방향은 문 기준 하나(view_rot · view_flip)",
     "heater_min_on_s": "열선 출력 % 제어(SSR)라 최소 켜짐 없음",
     "heater_min_off_s": "열선 출력 % 제어(SSR)라 최소 꺼짐 없음",
     "heater_band_c": "켜기 · 끄기 판정 대신 출력 % 제어",
@@ -772,4 +781,4 @@ class Config:
         """화면용 설정 표."""
         return [{"key": i.key, "label": i.label, "unit": i.unit, "value": self.values[i.key], "default": i.default, "kind": i.kind, "group": i.group,
                  "verify": i.verify, "min": i.min, "max": i.max, "choices": [list(c) for c in i.choices],
-                 "desc": i.desc, "hint": hint(i), "folder": i.folder, "pc": i.key in PC_KEYS} for i in ITEMS]
+                 "desc": i.desc, "hint": hint(i), "folder": i.folder, "pc": i.key in PC_KEYS, "device": i.key in DEVICE_KEYS} for i in ITEMS]

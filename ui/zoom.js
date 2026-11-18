@@ -3,6 +3,7 @@
    - 이동: 가운데 · 오른쪽 버튼 끌기 · 스페이스바를 누른 채 왼쪽 끌기.
    - 원본 해상도: 바탕은 작은 사진(빠르게), 보이는 부분은 서버가 원본에서 잘라 준 조각(GET /api/img/region.jpg)을 위에 덮는다 - 확대해도 흐려지지 않는다.
    - 돋보기: 마우스를 올리기만 해도 커서 근처 원본을 크게(배율 settings plate_pick_mag) + 십자선. 커서와 반대쪽 구석에 둔다.
+   - 좌표는 모두 화면 방향(문 기준) 사진의 픽셀이다 - 서버가 그림 · 조각을 화면 방향으로 돌려 준다(geometry.to_view).
    - 덧그림: opts.draw(g, k) 가 사진 픽셀 좌표로 그린다(k = 화면 1 px 의 사진 픽셀 수 - 선 굵기 · 글자 크기에 곱한다).
    - 누르기: opts.onDown(p, ev) → true 면 끌기를 시작해 onDrag(p) · onUp() 을 부른다. p = 사진 픽셀 [x, y](사진 안으로 잘라 줌). */
 "use strict";
@@ -142,9 +143,10 @@ function zoomView(opts) {
   z.set = (size, baseUrl, ver, baseW) => {
     if (!size) { z.ready = false; z.base.removeAttribute("src"); z.hi.classList.add("hidden"); z.note.textContent = opts.empty || "사진 없음"; z.note.classList.remove("hidden"); setKids(z.g); return; }
     z.note.classList.add("hidden");
+    ver = ver + vq();                                          // 화면 방향이 바뀌어도 새 그림
     const changed = z.ver !== ver;
     z.W = size[0]; z.H = size[1]; z.ver = ver; z.ready = true; opts.baseW = baseW;
-    if (changed) { z.base.src = baseUrl; z.regKey = ""; z.hiRect = null; z.hi.classList.add("hidden"); z.fitView(); }
+    if (changed) { z.base.src = baseUrl + vq(); z.regKey = ""; z.hiRect = null; z.hi.classList.add("hidden"); z.fitView(); }
     else z.layout();
   };
   new ResizeObserver(() => { if (z.ready) { const keep = Math.abs(z.s - z.fit) < 1e-6; const r = rect(); z.fit = Math.min(r.width / z.W, r.height / z.H); if (keep) z.fitView(); else { z.s = Math.max(z.s, z.fit); clamp(); z.layout(); } } }).observe(z.el);

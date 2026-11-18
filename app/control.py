@@ -1805,7 +1805,8 @@ class Controller:
                         "note": "[정지] · 비상정지로 멈춤 · 멈추면 원래 초점 값"}
         elif name == "coord_set":
             n = str(a.get("name", "")).upper()
-            have = set(self.calib.d["coords"]["stage"]) | {n}
+            sn = self.prep.sname(n) if (a.get("view") and n and n in "ABCD") else n     # 화면 이름(문 기준) → 저장 이름
+            have = set(self.calib.d["coords"]["stage"]) | {sn}
             if n in "ABCD" and n and have >= set("ABCD"):
                 steps = self._marker_steps()
                 if steps:

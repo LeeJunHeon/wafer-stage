@@ -88,7 +88,7 @@ def create_app(ctrl: Controller) -> FastAPI:
 
     @app.get("/api/camera/preview.jpg")
     async def camera_preview():
-        jpg = ctrl.camera.preview_jpeg()
+        jpg = ctrl.prep.preview_jpeg()                              # 화면 방향(문 기준)으로 돌린 미리보기
         if jpg is None:
             return Response(status_code=204)
         return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
@@ -106,9 +106,9 @@ def create_app(ctrl: Controller) -> FastAPI:
         return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/img/{what}.jpg")
-    async def img(what: str, x: float = 0.0, y: float = 0.0, half: int = 120):
-        """화면용 그림: raw(찍은 원본) · crop(원본 해상도 조각 x, y, half) · plate(보정한 판 사진) · empty(보정한 빈 판 사진)."""
-        jpg = await asyncio.to_thread(ctrl.prep.jpeg, what, x=x, y=y, half=half)
+    async def img(what: str, x: float = 0.0, y: float = 0.0, half: int = 120, view: int = 0):
+        """화면용 그림(모두 화면 방향 - 문 기준): raw(찍은 원본) · crop(원본 해상도 조각 x, y, half - view=1 이면 x, y 가 화면 방향 픽셀) · plate(보정한 판 사진) · empty(보정한 빈 판 사진)."""
+        jpg = await asyncio.to_thread(ctrl.prep.jpeg, what, x=x, y=y, half=half, view=bool(view))
         if jpg is None:
             return Response(status_code=204)
         return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})

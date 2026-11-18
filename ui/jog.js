@@ -24,7 +24,16 @@ function jogPart() {
   function sync() { stepBtns.forEach((b, i) => b.classList.toggle("on", !custom.value && st.step === STEPS[i])); }
   sync();
   const jog = (axis, sign) => () => api("jog", { axis, mm: sign * st.step });
-  const moveBtns = [btn("Y +", jog("y", 1), "u"), btn("X −", jog("x", -1), "l"), btn("X +", jog("x", 1), "r"), btn("Y −", jog("y", -1), "d"),
+  /* X · Y 네 버튼은 문 기준 화면 방향(위 = 안쪽 · 아래 = 문 · 왼쪽 · 오른쪽 = 장비 오른쪽 설정): 축 · 부호는 machine_front_side · machine_right_side 로 정한다 */
+  const padDir = (pos) => {
+    const c = (S && S.cfg) || {}, front = c.machine_front_side || "x_far", right = c.machine_right_side || "y_far";
+    const sideOf = (side, toward) => ({ axis: side[0], sign: (side.endsWith("far") ? 1 : -1) * (toward ? 1 : -1) });
+    const d = pos === "d" ? sideOf(front, true) : pos === "u" ? sideOf(front, false) : pos === "r" ? sideOf(right, true) : sideOf(right, false);
+    d.label = { u: "안쪽", d: "문", l: "왼쪽", r: "오른쪽" }[pos] + " " + d.axis.toUpperCase() + (d.sign > 0 ? "+" : "−");
+    return d;
+  };
+  const dirBtn = (pos) => { const b = btn("", () => { const d = padDir(pos); api("jog", { axis: d.axis, mm: d.sign * st.step }); }, pos); b.dataset.pos = pos; return b; };
+  const moveBtns = [dirBtn("u"), dirBtn("l"), dirBtn("r"), dirBtn("d"),
     btn("Z 상승", jog("z", -1)), btn("Z 하강", jog("z", 1)), btn("핀 상승", () => api("z_top"))];
   const stopBtn = btn("정지", stopMove, "c stop");
   stopBtn.addEventListener("pointerdown", (e) => { if (!stopBtn.disabled) { e.preventDefault(); stopMove(); } });      // 손을 떼기 전에 바로 보낸다
@@ -38,7 +47,7 @@ function jogPart() {
   function update() {
     const run = running() ? "측정 중 사용 불가" : "";         // 서버도 거절한다 - 화면은 이유만 미리 보여 준다
     const block = run || (!devOk("stage") ? "스테이지 연결 필요" : "") || (S.estop_locked ? "비상정지 해제 필요" : "");      // 스테이지 없음 · 비상정지 중에는 이동 버튼이 모두 꺼진다
-    moveBtns.forEach((b) => { b.disabled = !!block; });
+    moveBtns.forEach((b) => { b.disabled = !!block; if (b.dataset.pos) { const t = padDir(b.dataset.pos).label; if (b.textContent !== t) b.textContent = t; } });
     stopBtn.disabled = !!run || !devOk("stage");                 // 스테이지가 연결돼 있으면 항상 누를 수 있다(측정 중에는 꺼진다)
     stopBtn.classList.toggle("moving", !stopBtn.disabled && !!(S && S.move));     // 이동 중에는 빨강 테두리
     stopBtn.title = run ? "측정 중 · 측정 중지 또는 비상정지 사용" : !devOk("stage") ? "스테이지 연결 필요 (초기 설정 1)" : "";

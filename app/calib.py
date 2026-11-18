@@ -199,14 +199,22 @@ class Calib:
     def coords_ready(self):
         return self.stage_h() is not None
 
-    def d_guess(self):
-        """A · B · C 를 찍었으면 D 의 예상 자리(A + C − B)."""
+    def missing_corner(self):
+        """꼭짓점 셋이 있고 하나가 없으면 그 이름(저장 기준), 아니면 None."""
         st = self.d["coords"]["stage"]
-        if all(n in st for n in "ABC") and "D" not in st:
-            a, b, c = (np.asarray(st[n], float) for n in "ABC")
-            g = a + c - b
-            return [round(float(g[0]), 2), round(float(g[1]), 2)]
-        return None
+        miss = [n for n in CORNERS if n not in st]
+        return miss[0] if len(miss) == 1 else None
+
+    def d_guess(self):
+        """꼭짓점 셋을 찍었으면 남은 하나의 예상 자리(평행사변형: 이웃 둘의 합 − 맞은편)."""
+        st = self.d["coords"]["stage"]
+        m = self.missing_corner()
+        if m is None:
+            return None
+        i = CORNERS.index(m)
+        a, b, c = (np.asarray(st[CORNERS[(i + k) % 4]], float) for k in (1, 2, 3))     # a · c = 이웃 · b = 맞은편
+        g = a + c - b
+        return [round(float(g[0]), 2), round(float(g[1]), 2)]
 
     def extra_errors(self):
         """보정 점마다 맞춘 변환과의 차이(mm)."""

@@ -70,7 +70,7 @@ function settingRow(it) {
   const label = h("span", {}, it.label, h("span", { class: "info", text: "ⓘ" }));
   tip(label, { title: it.label, text: it.desc || "", hint: it.hint || "" });
   return h("tr", {}, h("td", { class: "setname" }, label, it.verify ? h("span", { class: "st-warn vfy", text: "실장비 확인 필요" }) : null,
-      it.pc ? h("span", { class: "vfy pc", text: "PC 값" }) : null),
+      it.pc ? h("span", { class: "vfy pc", text: "PC 값" }) : null, it.device ? h("span", { class: "vfy pc", text: "장비 값" }) : null),
     h("td", { class: "setval" }, browse ? h("div", { class: "row" }, input, browse) : input), h("td", { class: "setunit small", text: it.unit || "" }));
 }
 function renderSettingsPage() {

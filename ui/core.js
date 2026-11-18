@@ -375,6 +375,14 @@ function renderAlarms() {
    사진이 들어갈 크기 그대로 상자(1px 테두리 · 옅은 바탕)를 항상 그린다: 사진이 없으면 안내 글을 상자 가운데에, 있으면 사진을 그 안에.
    svg 덧그림은 사진과 같은 크기(좌표는 쓰는 쪽이 viewBox 로 정한다). toFrac(ev) = 사진 안 위치(0~1).
    ==================================================================== */
+/* 사진 칸 둘레(사진 밖 띠)의 방향 글(문 기준 - 위 안쪽 · 아래 문 · 왼쪽 · 오른쪽). 글은 서버가 준다(state.prep.view.dirs) */
+const DIR_PAD = 16, DIR_BOXES = [];
+/* 화면 방향이 바뀌면 그림을 다시 받게 하는 꼬리표(서버가 회전한 그림 - 주소가 같으면 브라우저가 다시 받지 않는다) */
+function vq() { const c = (S && S.cfg) || {}; return "&r=" + (c.view_rot || 0) + (c.view_flip ? "f" : ""); }
+function renderDirs() {
+  const d = (S && S.prep && S.prep.view && S.prep.view.dirs) || null;
+  for (const pb of DIR_BOXES) for (const k of ["top", "bottom", "left", "right"]) { const t = d ? d[k] : ""; if (pb.dirs[k].textContent !== t) pb.dirs[k].textContent = t; }
+}
 function photoBox(opts) {
   opts = opts || {};
   const img = h("img", { alt: "", draggable: "false", class: "hidden" });
@@ -383,13 +391,28 @@ function photoBox(opts) {
   const inner = h("div", { class: "photo-in" }, img, svg, note);      // 상자: 사진이 없어도 사진 크기 그대로 보인다
   const box = h("div", { class: "photo-box " + (opts.cls || "") }, inner);
   const pb = { box, inner, img, svg, note, ar: opts.ar || 1, w: 0, h: 0, url: "" };
+  const pad = opts.dirs ? DIR_PAD : 0;                     // 방향 글 띠(사진 밖)
+  if (opts.dirs) {
+    pb.dirs = {};
+    for (const k of ["top", "bottom", "left", "right"]) { pb.dirs[k] = h("div", { class: "pdir " + k }); box.append(pb.dirs[k]); }
+    box.classList.add("with-dirs");
+    DIR_BOXES.push(pb);
+  }
   pb.fit = () => {
     /* 칸의 실제 크기(소수)를 내림해서 쓴다. clientHeight 는 반올림이라 실제보다 클 수 있고, 그러면 상자의 아래 테두리 한 줄이 칸 밖으로 나가 잘린다.
-       상자 크기(w × hh)는 테두리를 포함한다(box-sizing: border-box). */
-    const rc = box.getBoundingClientRect(), cw = Math.floor(rc.width), ch = Math.floor(rc.height);
-    if (!cw || !ch) return;
+       상자 크기(w × hh)는 테두리를 포함한다(box-sizing: border-box). 방향 글이 있으면 둘레 DIR_PAD 를 비운다. */
+    const rc = box.getBoundingClientRect(), cw = Math.floor(rc.width) - 2 * pad, ch = Math.floor(rc.height) - 2 * pad;
+    if (cw <= 0 || ch <= 0) return;
     const w = Math.floor(Math.min(cw, ch * pb.ar)), hh = Math.floor(w / pb.ar);
-    if (opts.center) { inner.style.left = Math.floor((cw - w) / 2) + "px"; inner.style.top = Math.floor((ch - hh) / 2) + "px"; }
+    if (opts.center) { inner.style.left = pad + Math.floor((cw - w) / 2) + "px"; inner.style.top = pad + Math.floor((ch - hh) / 2) + "px"; }
+    else if (pad) { inner.style.left = pad + "px"; inner.style.top = pad + "px"; }
+    if (pb.dirs) {                                         // 글은 사진 가장자리 바깥 띠의 가운데
+      const L = parseFloat(inner.style.left) || 0, T = parseFloat(inner.style.top) || 0;
+      Object.assign(pb.dirs.top.style, { left: L + "px", width: w + "px", top: (T - pad) + "px" });
+      Object.assign(pb.dirs.bottom.style, { left: L + "px", width: w + "px", top: (T + hh) + "px" });
+      Object.assign(pb.dirs.left.style, { top: T + "px", height: hh + "px", left: (L - pad) + "px" });
+      Object.assign(pb.dirs.right.style, { top: T + "px", height: hh + "px", left: (L + w) + "px" });
+    }
     if (w === pb.w && hh === pb.h) return;
     pb.w = w; pb.h = hh;
     inner.style.width = w + "px"; inner.style.height = hh + "px";
@@ -398,6 +421,7 @@ function photoBox(opts) {
   new ResizeObserver(pb.fit).observe(box);
   pb.setAr = (ar) => { if (ar > 0 && Math.abs(ar - pb.ar) > 1e-6) { pb.ar = ar; pb.w = 0; if (pb.relayout) pb.relayout(); pb.fit(); } };
   pb.show = (url) => {                                     // url 이 없으면 빈 상자 + 가운데 안내 글
+    if (url && url.startsWith("/api/img/")) url += vq();   // 서버가 화면 방향으로 돌린 그림
     const has = !!url;
     if (has && url !== pb.url) img.src = url;
     pb.url = has ? url : "";
@@ -437,7 +461,7 @@ function renderTab() {
   try { m.render(); } catch (e) { console.error(e); toast("화면 표시 실패 · " + String(e && e.message ? e.message : e).slice(0, 60)); }
 }
 function render() {
-  renderEstop(); renderStatus(); renderAlarms(); renderTab(); renderQuit();
+  renderEstop(); renderStatus(); renderAlarms(); renderTab(); renderQuit(); renderDirs();
   if (dlgRender) { try { dlgRender(); } catch (e) { console.error(e); } }
 }
 function showOffline(on) { $("#offline").classList.toggle("hidden", !on); }
