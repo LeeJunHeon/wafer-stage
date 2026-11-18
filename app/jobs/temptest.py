@@ -6,11 +6,12 @@ heater_min_on_s · heater_min_off_s · run_heat_hold_s · run_fan_during_cool ·
 온도 시험 설정(temp_test_coolers · temp_test_interval_s · temp_test_mark_c · temp_test_precool)을 더해 쓴다 - 여기서 맞춘 값이 측정에 그대로 쓰인다.
 
 순서
-  1. 예비 냉각 : 쿨러(temp_test_coolers)를 켠다. temp_test_precool 이면 시작 온도 이하까지(정체 - run_stall_s 동안 run_stall_c 도 안 내려감 - 면
-                그 온도에서 가열 시작 + 주의 한 줄). 꺼져 있으면 쿨러만 켜고 바로 가열. 쿨러는 시험 끝까지 켜 둔다.
-  2. 가열     : 히트건 켜기(Controller 의 히트건 함수 - 열선 → 송풍, 측정 주체 규칙). ramp 이면 자동 측정과 같은 판정 함수
-                (heater.ramp_setpoint · element_decision)로 목표선을 따르고 가열 끝 온도에 닿으면 유지 시간 동안 유지. full 이면 닿을 때까지 열선 켬.
-  3. 냉각     : 열선 끔(송풍은 run_fan_during_cool 에 따름) → 냉각 끝 온도 이하 또는 정체까지 기록.
+  1. 예비 냉각 : 쿨러(temp_test_coolers)를 켠다. temp_test_precool 이면 시작 온도 이하까지. 정체(run_stall_s 동안 run_stall_c 도 안 내려감)면
+                가열하지 않고 "중단 · 시작 온도 미도달 · 현재 xx.x °C". 꺼져 있으면 쿨러만 켜고 바로 가열. 쿨러는 시험 끝까지 켜 둔다.
+  2. 가열     : 히트건 켜기(Controller 의 히트건 함수 - 열선 → 송풍, 측정 주체 규칙). ramp 이면 자동 측정과 같은 목표선 제어
+                (heater.LineControl - element_decision · 목표선 기다림)로 따르고 가열 끝 온도에 닿으면 유지 시간 동안 유지. full 이면 닿을 때까지 열선 켬.
+  3. 냉각     : 열선 끔. run_cool_mode ramp 이면 송풍을 켜 둔 채 같은 LineControl(냉각 속도)로 내려가고, free 면 자연 냉각(송풍은 run_fan_during_cool).
+                냉각 끝 온도 이하 또는 정체까지 기록(정체면 "냉각 끝 온도 미도달").
   4. 끝       : 히트건 끄는 순서(열선 끔 → 송풍은 heater_fan_after_s 뒤) · 쿨러 끔 → 요약 · 파일.
 [정지] · 비상정지 · 안전 규칙의 차단(차단 온도 · 열선 연속 최대 시간 · 온도 못 읽음) · 한 단계 시간 한도 · 통신 끊김 · 온도계 오류에서도
 같은 정리를 하고 그때까지의 기록 · 요약을 저장한다(결과 "정지" · "비상정지" · "중단 · 이유").
@@ -28,7 +29,8 @@ import numpy as np
 from app import config as config_mod
 from app import imgio
 from app.devices import meters
-from app.jobs.heater import RelayHeater, element_decision, ramp_setpoint
+from app.jobs import analysis
+from app.jobs.heater import LineControl, RelayHeater, Stall
 from app.safety import Rejected
 from app.state import ALARM, NOTICE
 
@@ -39,7 +41,8 @@ CSV_HEADER = ("시각", "경과(s)", "단계", "온도(°C)", "목표(°C)", "�
 COND_KEYS = ("run_start_c", "run_heater_off_c", "run_cool_end_c", "run_heat_mode", "run_heat_rate_c_min", "heater_band_c", "heater_min_on_s",
              "heater_min_off_s", "run_heat_hold_s", "run_fan_during_cool", "run_stall_s", "run_stall_c", "run_phase_limit_s",
              "temp_test_coolers", "temp_test_interval_s", "temp_test_mark_c", "temp_test_precool",
-             "heater_max_c", "heater_max_on_s", "temp_stale_s", "heater_start_gap_s", "heater_fan_after_s", "heater_fan_relay", "heater_element_relay")
+             "heater_max_c", "heater_max_on_s", "temp_stale_s", "heater_start_gap_s", "heater_fan_after_s", "heater_fan_relay", "heater_element_relay",
+             "run_cool_mode", "run_cool_rate_c_min", "heater_lead_c")
 T_MISS_N = 3                                      # 온도를 이만큼 연속으로 못 읽으면 중단(열전대 끊김) - 자동 측정과 같다
 MAX_POINTS = 200000
 
@@ -53,9 +56,9 @@ class _End(Exception):
 
 
 def mode_text(cd):
-    if cd.get("run_heat_mode") == "ramp":
-        return "가열 속도 제어 %g °C/분" % float(cd["run_heat_rate_c_min"])
-    return "계속 가열"
+    heat = "가열 속도 제어 %g °C/분" % float(cd["run_heat_rate_c_min"]) if cd.get("run_heat_mode") == "ramp" else "계속 가열"
+    cool = "냉각 속도 제어 %g °C/분" % float(cd["run_cool_rate_c_min"]) if cd.get("run_cool_mode") == "ramp" else "자연 냉각"
+    return "%s · %s" % (heat, cool)
 
 
 # ----------------------------------------------------------------------
@@ -86,7 +89,8 @@ def summarize(pts, elog, ev, cd):
     """점 [경과 s, 온도, 목표 | None, 열선 0|1, 송풍 0|1, 단계] · 열선 기록 [경과 s, 0|1] · 사건 ev → 결과.
     시간은 모두 가열 시작(히트건을 켠 때)부터 잰다(예비 냉각은 시험 시작부터)."""
     off_c, end_c, step = float(cd["run_heater_off_c"]), float(cd["run_cool_end_c"]), float(cd["temp_test_mark_c"])
-    out = {"pre": None, "T0": None, "marks": [], "heat": None, "cool": None}
+    out = {"pre": None, "T0": None, "marks": [], "heat": None, "cool": None,
+           "spacing": {"heat": analysis.spacing([p[1] for p in pts if p[5] in (HEAT, HOLD)]), "cool": analysis.spacing([p[1] for p in pts if p[5] == COOL])}}
     if ev.get("pre") is not None:
         out["pre"] = dict(ev["pre"])
     t_h, T0 = ev.get("t_heat"), ev.get("T0")
@@ -132,7 +136,11 @@ def summarize(pts, elog, ev, cd):
         last = hit or cp[-1]
         s = last[0] - t_end
         out["cool"] = {"from_c": round(T_from, 2), "to_c": round(last[1], 2), "s": round(s, 1), "reached": hit is not None,
-                       "rate_c_min": None if s <= 0 else round((T_from - last[1]) / s * 60.0, 2)}
+                       "rate_c_min": None if s <= 0 else round((T_from - last[1]) / s * 60.0, 2), "rms_c": None, "max_c": None}
+        err = [p[1] - p[2] for p in cp if p[2] is not None]
+        if err:
+            out["cool"]["rms_c"] = round(math.sqrt(sum(e * e for e in err) / len(err)), 2)
+            out["cool"]["max_c"] = round(max(err, key=abs), 2)
     return out
 
 
@@ -147,6 +155,7 @@ def summary_lines(cd, res, result, started, notes):
     L.append("가열 방식 · %s" % mode_text(cd))
     L.append("시작 온도 %g °C · 가열 끝 온도 %g °C · 냉각 끝 온도 %g °C" % (cd["run_start_c"], cd["run_heater_off_c"], cd["run_cool_end_c"]))
     L.append("목표 아래 허용 폭 %g °C · 열선 최소 켜짐 %g s · 최소 꺼짐 %g s · 유지 %g s" % (cd["heater_band_c"], cd["heater_min_on_s"], cd["heater_min_off_s"], cd["run_heat_hold_s"]))
+    L.append("목표선 기다림 폭 %g °C" % cd["heater_lead_c"])
     L.append("냉각 중 송풍 %s · 예비 냉각 %s · 쿨러 %s" % ("켬" if cd["run_fan_during_cool"] else "끔", "켬" if cd["temp_test_precool"] else "끔",
                                                   " · ".join("R%d" % n for n in cd["temp_test_coolers"]) or "없음"))
     L.append("냉각 정체 %g s · %g °C · 한 단계 한도 %g s · 읽기 간격 %g s" % (cd["run_stall_s"], cd["run_stall_c"], cd["run_phase_limit_s"], cd["temp_test_interval_s"]))
@@ -175,8 +184,14 @@ def summary_lines(cd, res, result, started, notes):
     if cl:
         L.append("%s °C → %s °C · %s s · 평균 %s °C/분%s" % (_f(cl["from_c"]), _f(cl["to_c"]), _f(cl["s"]), _f(cl["rate_c_min"], "%.2f"),
                                                        "" if cl["reached"] else " · 냉각 끝 온도 미도달"))
+        if cl.get("rms_c") is not None:
+            L.append("목표선 차이 평균 제곱근 %.2f °C · 최대 %+.2f °C" % (cl["rms_c"], cl["max_c"]))
     else:
         L.append("없음")
+    L += ["", "[점 간격]"]
+    for key, name in (("heat", "가열"), ("cool", "냉각")):
+        sp = (res.get("spacing") or {}).get(key) or {"n": 0, "dc": None}
+        L.append("%s · 점 %d개 · 평균 %s °C 마다 1점" % (name, sp["n"], _f(sp["dc"], "%.2f")))
     if notes:
         L += ["", "[메모]"] + list(notes)
     return L
@@ -227,8 +242,8 @@ def draw_png(pts, elog, ev, cd, title):
             cur = None
     cv2.putText(img, "heater element on", (x1 + 12, by1 - 4), font, 0.45, PINK, 1, cv2.LINE_AA)
     # 목표선(점선) · 온도
-    sp = [(X(p[0]), Y(p[2])) for p in pts if p[2] is not None and p[5] in (HEAT, HOLD)]
-    for i in range(0, len(sp) - 1, 2):
+    sp = [(X(p[0]), Y(p[2])) for p in pts if p[2] is not None]
+    for i in range(0, len(sp) - 1, 2):                              # 점선(가열 · 유지 · 냉각 목표선)
         cv2.line(img, sp[i], sp[i + 1], BLUE, 1, cv2.LINE_AA)
     line = np.array([(X(p[0]), Y(p[1])) for p in pts], np.int32)
     if len(line) > 1:
@@ -238,7 +253,7 @@ def draw_png(pts, elog, ev, cd, title):
     if len(line):
         labels.append(("temperature", tuple(line[-1]), INK))
     if sp:
-        labels.append(("target (ramp)" if cd.get("run_heat_mode") == "ramp" else "target", sp[-1], BLUE))
+        labels.append(("target", sp[-1], BLUE))
     ys = []
     for _name, (px, py), _col in sorted(labels, key=lambda a: a[1][1]):
         y = max(py, (ys[-1] + 18) if ys else y0 + 8)
@@ -478,10 +493,8 @@ class TempTest:
             if T is None or T > start_c:
                 T, stalled = self._cool_loop(g, start_c)
             self.ev["pre"] = {"s": round(c.clock() - t_pre, 1), "T": None if T is None else round(T, 2), "stalled": stalled}
-            if stalled:
-                note = "예비 냉각 정체 · %.1f °C 에서 가열 시작" % T
-                self.notes.append(note)
-                c.state.alarm("temptest_stall", note, NOTICE, dismiss=True)
+            if stalled:                                             # 시작 온도까지 못 식혔다 - 가열하지 않는다(샘플마다 시작점이 달라지지 않게 - 자동 측정과 같은 규칙)
+                raise _End("abort", "시작 온도 미도달 · 현재 %.1f °C" % T)
         # ---- 2 가열 ----
         self._check(g)
         self.phase = HEAT
@@ -503,14 +516,24 @@ class TempTest:
         self._heat(g, t_heat, T0, off_c, trips0)
         if self.heater.element_on:
             self.heater.element(False)                              # 가열 끝: 열선 끔
-        self.elog.append([round(c.clock() - self.t0, 3), 0])
-        self.ev["t_heat_end"] = round(c.clock() - self.t0, 3)
+        now = c.clock()
+        self.elog.append([round(now - self.t0, 3), 0])
+        self.ev["t_heat_end"] = round(now - self.t0, 3)
         self.sp = None
-        if not cd["run_fan_during_cool"]:
+        ctl = None
+        if cd["run_cool_mode"] == "ramp":                           # 냉각 속도 제어: 가열이 끝난 순간 온도에서 냉각 속도로 내려가는 목표선(송풍은 켜 둔 채)
+            ctl = LineControl(self.heater, cd, self.last_T if self.last_T is not None else off_c, end_c, -1, now, "run_cool_rate_c_min",
+                              el_t=now, on_change=lambda t, on: self.elog.append([round(t - self.t0, 3), 1 if on else 0]))
+        elif not cd["run_fan_during_cool"]:
             self.heater.off()                                       # 송풍은 열선 끈 뒤 heater_fan_after_s 에 꺼진다
         # ---- 3 냉각 ----
         self.phase = COOL
-        self._cool_loop(g, end_c)
+        _T, stalled = self._cool_loop(g, end_c, ctl=ctl, trips0=c.heater_trips)
+        if self.heater.element_on:
+            self.heater.element(False)                              # 냉각 끝: 열선 끔(송풍은 정리가 heater_fan_after_s 뒤에 끈다)
+            self.elog.append([round(c.clock() - self.t0, 3), 0])
+        if stalled:
+            self.notes.append("냉각 끝 온도 미도달")
 
     def _check(self, g):
         c = self.c
@@ -550,10 +573,10 @@ class TempTest:
         """가열(ramp · full) → 가열 끝 온도 도달(ramp 는 유지 시간까지). 안전 규칙이 열선을 끄면 중단."""
         c, cd = self.c, self.cond
         ramp = cd["run_heat_mode"] == "ramp"
-        rate, band = float(cd["run_heat_rate_c_min"]), float(cd["heater_band_c"])
-        min_on, min_off, hold_s = float(cd["heater_min_on_s"]), float(cd["heater_min_off_s"]), float(cd["run_heat_hold_s"])
+        hold_s = float(cd["run_heat_hold_s"])
         limit = float(cd["run_phase_limit_s"])
-        el_t = t_heat
+        ctl = LineControl(self.heater, cd, T0, off_c, 1, t_heat, "run_heat_rate_c_min", el_t=t_heat,
+                          on_change=lambda t, on: self.elog.append([round(t - self.t0, 3), 1 if on else 0])) if ramp else None
         hold_t0 = None
         while True:
             self._check(g)
@@ -562,8 +585,7 @@ class TempTest:
             t_it = c.clock()
             T = self._read()
             now = c.clock()
-            el_on = self.heater.element_on
-            sp = ramp_setpoint(T0, rate, now - t_heat, off_c) if ramp else off_c
+            sp = off_c if ctl is None else (ctl.target(T, now) if T is not None else ctl.sp)
             self.sp = sp
             if T is not None:
                 self._record(T, sp)
@@ -578,40 +600,47 @@ class TempTest:
                     self.phase = HOLD
                 if hold_t0 is not None and now - hold_t0 >= hold_s:
                     return
-                if ramp:
-                    want = element_decision(T, sp, band, el_on, now - el_t, min_on, min_off)
-                    if want != el_on:
-                        try:
-                            self.heater.element(want)
-                        except Rejected as e:
-                            self._check(g)
-                            raise _End("abort", "열선 켜기 거절 · %s" % e)
-                        el_t = now
-                        self.elog.append([round(now - self.t0, 3), 1 if want else 0])
+                if ctl is not None:
+                    try:
+                        ctl.decide(T, sp, now)                      # 자동 측정과 같은 판정(element_decision)
+                    except Rejected as e:
+                        self._check(g)
+                        raise _End("abort", "열선 켜기 거절 · %s" % e)
             if now - t_heat > limit:
                 raise _End("abort", "가열 %g초 초과" % limit)
             self._tick(t_it)
 
-    def _cool_loop(self, g, target):
-        """예비 냉각 · 냉각: 온도 ≤ target 이거나 정체(run_stall_s 동안 run_stall_c 도 안 내려감)까지. (마지막 온도, 정체였나)."""
+    def _cool_loop(self, g, target, ctl=None, trips0=None):
+        """예비 냉각 · 냉각: 온도 ≤ target 이거나 정체(run_stall_s 동안 run_stall_c 도 안 내려감 - heater.Stall)까지. (마지막 온도, 정체였나).
+        ctl = 냉각 속도 제어(LineControl). 안전 규칙이 열선을 끄거나 켜기를 거절하면 중단(온도 시험 규칙 - 가열과 같다)."""
         c, cd = self.c, self.cond
-        span, step, limit = float(cd["run_stall_s"]), float(cd["run_stall_c"]), float(cd["run_phase_limit_s"])
+        limit = float(cd["run_phase_limit_s"])
+        stall = Stall(cd["run_stall_s"], cd["run_stall_c"])
         t_start = c.clock()
-        best = best_t = None
         T = None
         while True:
             self._check(g)
+            if ctl is not None and c.heater_trips != trips0:
+                raise _End("abort", c.heater_trip or "히트건 차단")
             t_it = c.clock()
             T = self._read()
             now = c.clock()
             if T is not None:
-                self._record(T, None)
+                sp = ctl.target(T, now) if ctl is not None else None
+                self.sp = sp
+                self._record(T, sp)
+                if ctl is not None and c.heater_trips != trips0:
+                    raise _End("abort", c.heater_trip or "히트건 차단")
                 if T <= target:
                     return T, False
-                if best is None or T < best - step:
-                    best, best_t = T, now
-                elif now - best_t >= span:
+                if stall.update(T, now):
                     return T, True
+                if ctl is not None:
+                    try:
+                        ctl.decide(T, sp, now)
+                    except Rejected as e:
+                        self._check(g)
+                        raise _End("abort", "열선 켜기 거절 · %s" % e)
             if now - t_start > limit:
                 raise _End("abort", "%s %g초 초과" % (PHASES[self.phase], limit))
             self._tick(t_it)

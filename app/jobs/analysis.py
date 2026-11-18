@@ -37,10 +37,25 @@ def transition_temp(points):
     return None if best_t is None else round(best_t, 2)
 
 
+def spacing(temps):
+    """한 방향(가열 또는 냉각) 점들의 온도 → {"n" 점 수, "dc" 평균 몇 °C 마다 1점}. dc = (최고 − 최저) ÷ (점 수 − 1). 점이 2개 미만이면 dc None.
+    자동 측정(run.json 요약 · 측정 화면 · 측정 결과 탭)과 온도 시험(summary.txt · 창)이 같이 쓴다."""
+    ts = [float(t) for t in temps if t is not None]
+    n = len(ts)
+    return {"n": n, "dc": None if n < 2 else round((max(ts) - min(ts)) / (n - 1), 3)}
+
+
+def point_spacing(points):
+    """[(온도, 저항, 단계)] → {"heat": spacing, "cool": spacing}."""
+    return {"heat": spacing([p[0] for p in points if (int(p[2]) if len(p) > 2 else 0) == 0]),
+            "cool": spacing([p[0] for p in points if len(p) > 2 and int(p[2]) == 1])}
+
+
 def analyze(points):
     """[(온도, 저항, 단계)] → {"r_start", "r_peak", "ratio", "t_heat", "t_cool", "hyst", "t_max", "n"}. 없는 값은 None."""
     pts = [(p[0], p[1], int(p[2]) if len(p) > 2 else 0) for p in points if p[0] is not None and p[1] is not None and p[1] > 0]
     out = {"r_start": None, "r_peak": None, "ratio": None, "t_heat": None, "t_cool": None, "hyst": None, "t_max": None, "n": len(pts)}
+    out["spacing"] = point_spacing(pts)                # 점 간격(가열 · 냉각) - 몇 °C 마다 1점
     if not pts:
         return out
     k = max(range(len(pts)), key=lambda i: pts[i][0])

@@ -83,7 +83,7 @@ def test_default_is_fixed_height_and_run_goes_exactly_to_the_saved_height(ready_
     rec = json.loads((run.folder / "run.json").read_text(encoding="utf-8"))
     assert rec["cond"]["contact_mode"] == "fixed" and rec["cond"]["contact_fixed_read"] is True
     assert rec["samples"][0]["contact"] == ct and rec["samples"][0]["status"] == DONE
-    assert ctrl.lab.out_on is False and not any(ctrl.fake_fw.relay)
+    assert ctrl.lab.out_on is False and wait_for(lambda: not any(ctrl.fake_fw.relay), 10)      # 송풍은 마지막으로 열선을 끈 뒤 heater_fan_after_s 에 꺼진다
 
 
 def _bare(make_ctrl, **cfg):

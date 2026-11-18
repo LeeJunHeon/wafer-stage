@@ -10,7 +10,7 @@ const TT_COLORS = { T: "#1F2329", sp: "#2A78D6", el: "#C03A7D", grid: "#ECEEF0",
 const TT_KEYS = [
   ["run_start_c", "시작 온도", "°C"], ["run_heater_off_c", "가열 끝 온도", "°C"], ["run_cool_end_c", "냉각 끝 온도", "°C"],
   ["heater_band_c", "목표 아래 허용 폭", "°C"], ["heater_min_on_s", "열선 최소 켜짐", "s"], ["heater_min_off_s", "열선 최소 꺼짐", "s"],
-  ["run_heat_hold_s", "가열 끝 유지 시간", "s"], ["run_fan_during_cool", "냉각 중 송풍", "bool"], ["run_stall_s", "냉각 정체 시간", "s"],
+  ["run_heat_hold_s", "가열 끝 유지 시간", "s"], ["heater_lead_c", "목표선 기다림 폭", "°C"], ["run_fan_during_cool", "냉각 중 송풍", "bool"], ["run_stall_s", "냉각 정체 시간", "s"],
   ["run_stall_c", "냉각 정체 기준", "°C"], ["run_phase_limit_s", "한 단계 시간 한도", "s"], ["temp_test_coolers", "쿨러", "ints"],
   ["temp_test_precool", "예비 냉각", "bool"], ["temp_test_interval_s", "읽기 간격", "s"], ["temp_test_mark_c", "도달 표 간격", "°C"],
 ];
@@ -35,6 +35,11 @@ function openTempTest() {
   tt.mode = h("select", { onchange: () => putSettings({ run_heat_mode: tt.mode.value }) },
     h("option", { value: "ramp", text: "가열 속도 제어" }), h("option", { value: "full", text: "계속 가열" }));
   tt.rate = h("input", { type: "number", step: "0.1", class: "num", onchange: () => { const v = parseFloat(tt.rate.value); if (isFinite(v)) putSettings({ run_heat_rate_c_min: v }); } });
+  tt.cmode = h("select", { onchange: () => putSettings({ run_cool_mode: tt.cmode.value }) },
+    h("option", { value: "ramp", text: "냉각 속도 제어" }), h("option", { value: "free", text: "자연 냉각" }));
+  tt.crate = h("input", { type: "number", step: "0.1", class: "num", onchange: () => { const v = parseFloat(tt.crate.value); if (isFinite(v)) putSettings({ run_cool_rate_c_min: v }); } });
+  tt.expect = h("div", { class: "small" });
+  tt.spacing = h("div", { class: "tt-sec" });
   tt.condView = h("div", { class: "tt-cond" });
   tt.condBtn = btn("조건", () => { tt.edit = !tt.edit; ttBuildCond(); });
   tt.prog = h("div", { class: "tt-prog" });
@@ -48,10 +53,12 @@ function openTempTest() {
   new ResizeObserver(ttDraw).observe(tt.box);
   const left = h("div", { class: "tt-left" },
     h("div", { class: "tt-sec" }, h("div", { class: "row" }, h("h4", { text: "조건" }), h("span", { class: "sp" }), tt.condBtn),
-      h("div", { class: "tt-cond" }, "가열 방식", tt.mode, "가열 속도", h("span", { class: "row" }, tt.rate, small("°C/분"))), tt.condView),
+      h("div", { class: "tt-cond" }, "가열 방식", tt.mode, "가열 속도", h("span", { class: "row" }, tt.rate, small("°C/분")),
+        "냉각 방식", tt.cmode, "냉각 속도", h("span", { class: "row" }, tt.crate, small("°C/분"))), tt.expect, tt.condView),
     h("div", { class: "tt-sec" }, h("h4", { text: "도달 표" }), tt.marks),
     h("div", { class: "tt-sec" }, h("h4", { text: "가열" }), tt.heat),
     h("div", { class: "tt-sec" }, h("h4", { text: "냉각" }), tt.cool),
+    h("div", { class: "tt-sec" }, h("h4", { text: "점 간격" }), tt.spacing),
     h("div", { class: "tt-sec" }, h("h4", { text: "예비 냉각" }), tt.pre));
   const right = h("div", { class: "tt-right" }, tt.prog, tt.why, tt.box);
   tt.startBtn = btn("시작", () => api("temptest_start"), "on");
@@ -104,8 +111,12 @@ function renderTempTest() {
   /* 조건 */
   if (document.activeElement !== tt.mode) tt.mode.value = c.run_heat_mode;
   if (document.activeElement !== tt.rate) tt.rate.value = c.run_heat_rate_c_min;
+  if (document.activeElement !== tt.cmode) tt.cmode.value = c.run_cool_mode;
+  if (document.activeElement !== tt.crate) tt.crate.value = c.run_cool_rate_c_min;
   const lock = act || running();
   tt.mode.disabled = lock; tt.rate.disabled = lock || c.run_heat_mode !== "ramp"; tt.condBtn.disabled = lock;
+  tt.cmode.disabled = lock; tt.crate.disabled = lock || c.run_cool_mode !== "ramp";
+  tt.expect.textContent = expectText(c, 1);
   if (lock && tt.edit) tt.edit = false;
   const sig = JSON.stringify([tt.edit, TT_KEYS.map(([k]) => c[k])]);
   if (sig !== tt.condSig && !(tt.edit && tt.condView.contains(document.activeElement))) ttBuildCond();
@@ -136,7 +147,10 @@ function renderTempTest() {
     hh.rms_c != null ? h("div", { text: "목표선 차이 " + ttFmt(hh.rms_c, 2, " °C") + " (평균 제곱근) · 최대 " + ttFmt(hh.max_c, 2, " °C") }) : null,
   ] : [small("—")]));
   const cl = s.cool;
-  setKids(tt.cool, cl ? h("div", { text: ttFmt(cl.from_c, 1) + " → " + ttFmt(cl.to_c, 1, " °C") + " · " + ttFmt(cl.s, 0, " s") + " · " + ttFmt(cl.rate_c_min, 2, " °C/분") + (cl.reached ? "" : " · 냉각 끝 온도 미도달") }) : small("—"));
+  setKids(tt.cool, ...(cl ? [h("div", { text: ttFmt(cl.from_c, 1) + " → " + ttFmt(cl.to_c, 1, " °C") + " · " + ttFmt(cl.s, 0, " s") + " · " + ttFmt(cl.rate_c_min, 2, " °C/분") + (cl.reached ? "" : " · 냉각 끝 온도 미도달") }),
+    cl.rms_c != null ? h("div", { text: "목표선 차이 " + ttFmt(cl.rms_c, 2, " °C") + " (평균 제곱근) · 최대 " + ttFmt(cl.max_c, 2, " °C") }) : null] : [small("—")]));
+  const sp = s.spacing;
+  setKids(tt.spacing, ...(sp ? ["heat", "cool"].map((k) => h("div", { text: spacingText(sp, k) || (k === "heat" ? "가열" : "냉각") + " · —" })) : [small("—")]));
   const pre = s.pre;
   setKids(tt.pre, pre ? h("div", { text: (pre.stalled ? "정체 " : "도달 ") + ttFmt(pre.T, 1, " °C") + " · " + ttFmt(pre.s, 0, " s") }) : small(c.temp_test_precool ? "—" : "안 함"));
 }
@@ -193,18 +207,21 @@ function ttDraw() {
   g.fillStyle = TT_COLORS.el;
   for (let i = 0; i < P.length; i++) if (P[i][3]) { const a = X(P[i][0]), b = i + 1 < P.length ? X(P[i + 1][0]) : a + 1; g.fillRect(a, by0 + 1, Math.max(1, b - a), by1 - by0 - 1); }
   /* 목표선(점선) · 온도 */
-  const sp = P.filter((p) => p[2] != null && (p[5] === 1 || p[5] === 2));
+  const sp = P.filter((p) => p[2] != null && p[5] !== 0);
   const line = (pts, yi, col, w, dash) => {
     if (pts.length < 2) return;
     g.strokeStyle = col; g.lineWidth = w; g.setLineDash(dash || []);
     g.beginPath(); pts.forEach((p, i) => (i ? g.lineTo(X(p[0]), Y(p[yi])) : g.moveTo(X(p[0]), Y(p[yi])))); g.stroke(); g.setLineDash([]);
   };
-  if (c.run_heat_mode === "ramp") line(sp, 2, TT_COLORS.sp, 1.5, [6, 4]);
+  /* 목표선은 이어진 구간마다 따로(가열 끝 → 냉각 시작 사이를 잇지 않는다 - 계속 가열의 목표는 가열 끝 온도 한 줄) */
+  const segs = [];
+  sp.forEach((p, i) => { if (!i || p[5] !== sp[i - 1][5] && !(p[5] === 2 && sp[i - 1][5] === 1)) segs.push([]); segs[segs.length - 1].push(p); });
+  segs.forEach((sg) => line(sg, 2, TT_COLORS.sp, 1.5, [6, 4]));
   line(P, 1, TT_COLORS.T, 2);
   /* 이름표: 축 밖 오른쪽, 마지막 점에서 지시선 */
   const labels = [];
   if (P.length) labels.push({ t: "온도", col: TT_COLORS.T, x: X(P[P.length - 1][0]), y: Y(P[P.length - 1][1]) });
-  if (sp.length && c.run_heat_mode === "ramp") labels.push({ t: "목표", col: TT_COLORS.sp, x: X(sp[sp.length - 1][0]), y: Y(sp[sp.length - 1][2]) });
+  if (sp.length) labels.push({ t: "목표", col: TT_COLORS.sp, x: X(sp[sp.length - 1][0]), y: Y(sp[sp.length - 1][2]) });
   labels.sort((a, b) => a.y - b.y);
   let prev = -1e9;
   for (const lb of labels) {

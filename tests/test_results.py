@@ -37,14 +37,22 @@ def _allowance(ctrl, folder, name, phase, t_model):
     """전이 온도 허용 폭을 실제로 기록된 점에서 정한다(고정 숫자가 아니다 - 컴퓨터가 느리면 점 사이 간격이 벌어진다).
     control.csv(첫 회차 · 그 단계)에서 모델 전이 온도 ± 5 °C 안의 점들로:
       step = 이웃한 두 점의 온도 차 최댓값(전이가 점 사이 어디든 있을 수 있다)
-      lag  = 온도계 지연(lab.tau_sensor) × 그 구간의 가장 빠른 온도 변화율 - 온도계는 샘플보다 늦게 따라간다
-    반환 (lag, step)."""
+      lag  = 온도계 지연(lab.tau_sensor) × 그 구간의 가장 빠른 온도 변화율 - 온도계는 샘플보다 늦게 따라간다(경과가 같은 두 줄은 뺀다)
+      back = 그 구간에서 온도가 거꾸로 간 가장 큰 폭(가열 중 내려감 · 냉각 중 올라감) - 속도 제어로 열선을 켜고 끄면 온도가 오르내리고,
+             같은 온도를 여러 번 지나므로 저항이 가장 빨리 변하는 온도가 그 폭만큼 어긋날 수 있다
+    반환 (lag, step, back)."""
     rows = [r.split(",") for r in (folder / ("%s_1.00V_control.csv" % name)).read_text(encoding="utf-8-sig").splitlines()[1:]]
     pts = [(float(r[2]), float(r[3])) for r in rows if r[0] == "1" and r[1] == phase]
     near = [i for i in range(1, len(pts)) if min(abs(pts[i][1] - t_model), abs(pts[i - 1][1] - t_model)) <= 5.0]
     step = max(abs(pts[i][1] - pts[i - 1][1]) for i in near)
-    rate = max(abs(pts[i][1] - pts[i - 1][1]) / max(1e-9, pts[i][0] - pts[i - 1][0]) for i in near)
-    return ctrl.lab.tau_sensor * rate, step
+    rate = max(abs(pts[i][1] - pts[i - 1][1]) / (pts[i][0] - pts[i - 1][0]) for i in near if pts[i][0] > pts[i - 1][0])
+    sign = 1.0 if phase == "가열" else -1.0
+    ts = [pts[i][1] for i in range(near[0] - 1, near[-1] + 1)]
+    back, best = 0.0, ts[0]
+    for t in ts:                                                     # 지금까지 간 가장 먼 온도에서 거꾸로 돌아온 폭
+        best = max(best, t) if sign > 0 else min(best, t)
+        back = max(back, (best - t) * sign)
+    return ctrl.lab.tau_sensor * rate, step, back
 
 
 def _model(ctrl, sid):
@@ -100,10 +108,10 @@ def test_results_from_a_finished_run(ready_ctrl, tmp_path, monkeypatch):
         # 온도계는 샘플보다 늦게 따라간다 → 가열 때는 모델보다 조금 낮게, 냉각 때는 조금 높게 보인다.
         # 허용 폭 = 기록된 점에서 계산한 지연(lag) + 점 간격(step) + 모델 곡선 폭에서 오는 0.5 °C(점이 촘촘하고 지연이 없을 때의 오차 - test_analysis_matches_model_curve)
         name = run.items[s["id"]]["name"]
-        lag, step = _allowance(ctrl, run.folder, name, "가열", m["t_up"])
-        assert m["t_up"] - lag - step - 0.5 < a["t_heat"] <= m["t_up"] + step + 0.5, (a["t_heat"], m["t_up"], lag, step)
-        lag, step = _allowance(ctrl, run.folder, name, "냉각", m["t_down"])
-        assert m["t_down"] - step - 0.5 <= a["t_cool"] < m["t_down"] + lag + step + 0.5, (a["t_cool"], m["t_down"], lag, step)
+        lag, step, back = _allowance(ctrl, run.folder, name, "가열", m["t_up"])
+        assert m["t_up"] - lag - step - back - 0.5 < a["t_heat"] <= m["t_up"] + step + back + 0.5, (a["t_heat"], m["t_up"], lag, step, back)
+        lag, step, back = _allowance(ctrl, run.folder, name, "냉각", m["t_down"])
+        assert m["t_down"] - step - back - 0.5 <= a["t_cool"] < m["t_down"] + lag + step + back + 0.5, (a["t_cool"], m["t_down"], lag, step, back)
         assert a["hyst"] == round(a["t_heat"] - a["t_cool"], 2) > 0
         assert a["t_max"] >= ctrl.cfg["run_heater_off_c"], "열선을 끈 뒤 더 오른 구간까지 들어 있다"
         assert a == run.items[s["id"]]["sum"], "측정 때 낸 요약과 파일에서 다시 낸 요약이 같다(화면용 점 = 파일에 쓴 값)"

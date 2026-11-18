@@ -238,6 +238,23 @@ function fmtDate(epoch) {                                   // 2026-11-12 09:50
   return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
 }
 /* 그래프 선과 같은 색의 짧은 선(12px) - 이름 앞에 붙여 어느 선인지 알려 준다 */
+/* 점 간격 한 줄: {heat:{n, dc}, cool:{n, dc}} → "가열 점 120개 · 평균 0.15 °C 마다 1점 · 냉각 …" (서버 analysis.spacing 이 계산한 값) */
+function spacingText(sp, which) {
+  if (!sp) return "";
+  const one = (k, name) => { const x = sp[k]; return x && x.n ? name + " 점 " + x.n + "개 · 평균 " + (x.dc == null ? "—" : x.dc.toFixed(2)) + " °C 마다 1점" : ""; };
+  return (which ? [one(which, which === "heat" ? "가열" : "냉각")] : [one("heat", "가열"), one("cool", "냉각")]).filter(Boolean).join(" / ");
+}
+/* 예상 시간 한 줄(측정 조건 창 · 온도 시험 창): 가열 (끝 − 시작) ÷ 가열 속도 + 유지 · 냉각 (가열 끝 − 냉각 끝) ÷ 냉각 속도. times = 샘플 수 × 반복(자동 측정) */
+function expectText(c, times) {
+  const heat = c.run_heat_mode === "ramp" ? Math.max(0, c.run_heater_off_c - c.run_start_c) / c.run_heat_rate_c_min * 60 + Number(c.run_heat_hold_s || 0) : null;
+  const cool = c.run_cool_mode === "ramp" ? Math.max(0, c.run_heater_off_c - c.run_cool_end_c) / c.run_cool_rate_c_min * 60 : null;
+  if (![heat, cool].every((v) => v == null || isFinite(v))) return "예상 시간 · 값 확인 필요";
+  const one = heat != null && cool != null ? heat + cool : null;
+  let t = "예상 · 가열 " + (heat == null ? "계속 가열 —" : fmtDur(heat)) + " · 냉각 " + (cool == null ? "자연 냉각 —" : fmtDur(cool));
+  if (times && times > 1 && one != null) t += " · 전체 " + times + "회 " + fmtDur(one * times);
+  else if (one != null) t += " · 합 " + fmtDur(one);
+  return t;
+}
 function swatch(color, width) { return h("i", { class: "swatch", style: "border-top-color:" + color + ";border-top-width:" + (width || 2) + "px" }); }
 /* 3×3 호모그래피로 점 하나를 옮긴다(스테이지 X · Y → 판 mm 등). 못 옮기면 null */
 function applyH(H, x, y) {

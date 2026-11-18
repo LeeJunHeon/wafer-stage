@@ -90,19 +90,40 @@ def test_runs_to_the_end(make_ctrl, mode):
     assert _all_off(ctrl), "끝나면 송풍(뒤에) · 쿨러 모두 꺼짐"
 
 
-def test_precool_stall_starts_heating_at_that_temperature(make_ctrl):
-    """시작 온도가 쿨러로 닿지 못하는 값이면 정체로 보고 그 온도에서 가열을 시작한다 + 주의 한 줄."""
+def test_precool_stall_aborts_without_heating(make_ctrl):
+    """시작 온도까지 못 식으면(정체) 가열하지 않고 "중단 · 시작 온도 미도달 · 현재 xx.x °C" · 쿨러 끔 · 기록 · 요약 저장."""
     ctrl = _ctrl(make_ctrl, run_heat_mode="full", run_start_c=5.0, run_heater_off_c=40.0, run_cool_end_c=30.0, run_stall_s=20.0)
     t = _run(ctrl)
-    assert t.result == tt.DONE, t.result
+    assert t.result.startswith("중단 · 시작 온도 미도달 · 현재 ") and t.result.endswith(" °C"), t.result
     s = ctrl.state.get("temptest", "summary")
-    pre = s["pre"]
-    assert pre["stalled"] and pre["T"] > 5.0 and pre["s"] > 20.0
-    assert abs(s["T0"] - pre["T"]) < 1.0, "그 온도에서 가열 시작"
-    assert any("예비 냉각 정체" in a for a in alarm_lines(ctrl)), alarm_lines(ctrl)
+    assert s["pre"]["stalled"] and s["pre"]["T"] > 5.0 and s["heat"] is None and s["T0"] is None, "가열하지 않았다"
     rows = _csv(t)
-    assert rows[0][2] == "예비 냉각" and any(r[2] == "가열" for r in rows)
-    assert all(r[5] == "0" for r in rows if r[2] == "예비 냉각"), "예비 냉각 중 열선 꺼짐"
+    assert rows and all(r[2] == "예비 냉각" and r[5] == "0" and r[6] == "0" for r in rows), "예비 냉각만 · 히트건 꺼짐"
+    assert "결과 · 중단 · 시작 온도 미도달" in (t.folder / "summary.txt").read_text(encoding="utf-8-sig")
+    assert _all_off(ctrl), "쿨러 끔"
+
+
+def test_cooling_modes_and_spacing(make_ctrl):
+    """냉각 속도 제어: 냉각 중에도 열선을 켜고 끄며 목표선을 따라 내려간다(송풍 켜짐). 자연 냉각: 냉각 중 열선 꺼짐.
+    점 간격 요약 = 기록된 줄 수와 같다."""
+    for mode in ("ramp", "free"):
+        ctrl = _ctrl(make_ctrl, run_heat_rate_c_min=20.0, run_cool_rate_c_min=10.0, run_cool_mode=mode)
+        t = _run(ctrl)
+        assert t.result == tt.DONE, t.result
+        rows = _csv(t)
+        cool = [r for r in rows if r[2] == "냉각"]
+        s = ctrl.state.get("temptest", "summary")
+        if mode == "ramp":
+            assert all(r[6] == "1" and r[4] != "" for r in cool), "송풍 켜짐 · 목표 기록"
+            assert sum(1 for a, b in zip(cool, cool[1:]) if a[5] != b[5]) > 2, "냉각 중 열선을 켜고 끈다"
+            assert s["cool"]["rms_c"] is not None
+            assert abs(s["cool"]["rate_c_min"] - 10.0) < 3.0, "평균 냉각 속도 %.2f" % s["cool"]["rate_c_min"]
+        else:
+            assert all(r[5] == "0" and r[4] == "" for r in cool), "자연 냉각: 열선 꺼짐 · 목표 없음"
+        assert s["spacing"]["cool"]["n"] == len(cool) and s["spacing"]["heat"]["n"] == len([r for r in rows if r[2] in ("가열", "유지")])
+        assert "[점 간격]" in (t.folder / "summary.txt").read_text(encoding="utf-8-sig")
+        assert _all_off(ctrl)
+        ctrl.shutdown()
 
 
 def test_stop_while_heating(make_ctrl):

@@ -137,8 +137,14 @@ ITEMS = (
               desc="가열 속도 제어에서 열선을 끈 뒤 다시 켜기까지 최소 시간\n릴레이가 너무 자주 바뀌면 늘림"),
          Item("run_heat_hold_s", 0.0, "float", "가열 끝 유지 시간", "s", 0, 3600, verify=True,
               desc="가열 끝 온도에 닿은 뒤 그 온도로 유지하는 시간 · 가열 속도 제어만\n0 이면 닿는 즉시 냉각"),
+         Item("run_cool_mode", "ramp", "choice", "냉각 방식", choices=(("ramp", "냉각 속도 제어"), ("free", "자연 냉각")),
+              desc="냉각 속도 제어는 송풍을 켜 둔 채 열선을 켜고 꺼서 목표선을 따라 내려감\n자연 냉각은 열선을 끄고 그대로 식힘 · 높은 온도에서 빨리 떨어짐"),
+         Item("run_cool_rate_c_min", 3.0, "float", "냉각 속도", "°C/분", 0.1, 60, verify=True,
+              desc="냉각 속도 제어의 목표선 기울기 · 목표 = 가열 끝 온도 − 속도 × 경과\n가열 속도와 같게 두면 두 곡선을 같은 조건에서 비교"),
+         Item("heater_lead_c", 3.0, "float", "목표선 기다림 폭", "°C", 0.5, 50, verify=True,
+              desc="온도가 목표선보다 이만큼 넘게 뒤처지면 목표선이 기다림\n가열은 히트건이 못 따라갈 때 · 냉각은 자연 냉각이 느릴 때"),
          Item("run_fan_during_cool", True, "bool", "냉각 중 송풍",
-              desc="가열 뒤 냉각하는 동안 송풍을 켜 둠\n끄면 열선 끈 뒤 송풍 시간이 지나면 끔"))
+              desc="자연 냉각 동안 송풍을 켜 둠 · 냉각 속도 제어는 항상 켬\n끄면 열선 끈 뒤 송풍 시간이 지나면 끔"))
     + _g("쿨러",
          Item("run_cooler_mode", "zone", "choice", "쿨러", choices=(("zone", "샘플 아래 구역"), ("all", "전체"), ("none", "사용 안 함")),
               desc="측정 때 켜는 쿨러\n샘플 아래 구역은 초기 설정 7 의 배치 사용"),
@@ -232,7 +238,7 @@ ITEMS = (
          Item("run_repeat", 1, "int", "반복", "회", 1, 20,
               desc="샘플마다 가열 · 냉각을 반복하는 횟수\n회차마다 파일 하나"),
          Item("run_interval_s", 1.0, "float", "측정 간격", "s", 0.05, 60,
-              desc="온도와 저항을 읽는 간격"),
+              desc="온도와 저항을 읽는 간격\n점 간격(°C) ≈ 속도(°C/분) × 한 점 시간(s) ÷ 60 · 촘촘하게 하려면 속도를 낮춤 · 대신 시간이 늘어남"),
          Item("batch_name", "1", "str", "묶음",
               desc="묶음 이름 · 기록 폴더와 샘플 기본 이름에 사용"))
     + _g("측정 한계",                                                                     # v2 backend/rt.py 에서 쓰던 값
@@ -416,6 +422,10 @@ def heat_problems(v: dict) -> list:
         heat_s = heat_time_s(v)
         if not heat_s < float(v["run_phase_limit_s"]):
             out.append("예상 가열 시간 %.0f초 · 한 단계 시간 한도 %g초 미만 필요 · 가열 속도 확인" % (heat_s, v["run_phase_limit_s"]))
+    if v["run_cool_mode"] == "ramp":
+        cool_s = cool_time_s(v)
+        if not cool_s < float(v["run_phase_limit_s"]):
+            out.append("예상 냉각 시간 %.0f초 · 한 단계 시간 한도 %g초 미만 필요 · 냉각 속도 확인" % (cool_s, v["run_phase_limit_s"]))
     if not float(v["heater_min_on_s"]) < float(v["heater_max_on_s"]):
         out.append("열선 최소 켜짐 %g초 · 열선 연속 최대 시간 %g초 미만 필요" % (v["heater_min_on_s"], v["heater_max_on_s"]))
     if not float(v["heater_band_c"]) > 0:
@@ -460,6 +470,12 @@ def heat_time_s(v: dict) -> float:
     """가열 속도 제어의 예상 가열 시간(초) = (가열 끝 온도 − 시작 온도) ÷ 가열 속도 + 유지 시간."""
     span = max(0.0, float(v["run_heater_off_c"]) - float(v["run_start_c"]))
     return span / float(v["run_heat_rate_c_min"]) * 60.0 + float(v["run_heat_hold_s"])
+
+
+def cool_time_s(v: dict) -> float:
+    """냉각 속도 제어의 예상 냉각 시간(초) = (가열 끝 온도 − 냉각 끝 온도) ÷ 냉각 속도."""
+    span = max(0.0, float(v["run_heater_off_c"]) - float(v["run_cool_end_c"]))
+    return span / float(v["run_cool_rate_c_min"]) * 60.0
 
 
 def cycle_time_s(v: dict) -> float:

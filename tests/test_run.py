@@ -20,7 +20,7 @@ from tests.conftest import SEARCH, alarm_codes, alarm_lines, wait_for
 FAST = 200.0
 # 가열은 기본(가열 속도 제어)으로 하되 가열 속도를 높여 시험 시간을 줄인다(85 − 30 °C 를 20 °C/분 = 165 초).
 # 기본 가열 속도(3 °C/분)로 끝까지 재는 것은 tests/test_heat_control.py 가 따로 본다.
-RAMP = dict(run_heat_rate_c_min=20.0)
+RAMP = dict(run_heat_rate_c_min=20.0, run_cool_rate_c_min=20.0)
 
 
 def _prepare(ready_ctrl, n=2, time_scale=FAST, **cfg):
@@ -282,7 +282,7 @@ def test_estop_under_cpu_load_leaves_only_the_estop_alarm(ready_ctrl):
     # 냉각으로 넘어간다 - 그래도 비상정지 때까지 측정이 이어지게 냉각 끝 온도를 낮추고 냉각 정체 판정을 길게 한다(한 단계 한도까지 냉각)
     # 통신 감시(watchdog_ms)는 시험용 보드에서 배율 없는 실제 시간이다. CPU 스레드가 GIL 을 잡아 시리얼 일꾼이 2 초 넘게 못 돌면 보드가 (맞게)
     # "통신 끊김 · 릴레이 차단" 을 낸다 - 시험 장치의 실제 시간 창이므로 이 시험에서는 넓힌다(conftest 의 시간 창 원칙과 같다)
-    ctrl = ready_ctrl(time_scale=60.0, run_heater_off_c=100.0, run_cool_end_c=5.0, run_stall_s=3000.0, watchdog_ms=20000)
+    ctrl = ready_ctrl(time_scale=60.0, run_heater_off_c=100.0, run_cool_end_c=5.0, run_stall_s=3000.0, watchdog_ms=20000, run_cool_mode="free")
     assert ctrl.cfg["temp_stale_s"] == 60.0 and ctrl.cfg["heater_max_on_s"] == 240.0
     ctrl.run_command("samples_find")
     x1, y1 = ctrl.world.sample_stage(1)                              # 표면 13.35 mm - 고정 높이(13.4 mm)로 닿는 샘플 하나
@@ -364,7 +364,7 @@ def test_no_temperature_rise_fails_sample(ready_ctrl):
 
 def test_phase_time_limit_fails_sample(ready_ctrl):
     # 식히는 데 30 초로는 모자란다. 가열은 계속 가열(30 초 안에 85 °C 에 닿는다 - 가열 속도 제어는 예상 가열 시간이 한도를 넘어 시작이 거절된다)
-    ctrl, ids = _prepare(ready_ctrl, 1, run_heat_mode="full", run_phase_limit_s=30.0, run_stall_s=3000.0)
+    ctrl, ids = _prepare(ready_ctrl, 1, run_heat_mode="full", run_cool_mode="free", run_phase_limit_s=30.0, run_stall_s=3000.0)
     ctrl.run_command("run_start")
     _finish(ctrl)
     run = ctrl.runner
@@ -382,12 +382,46 @@ def test_phase_time_limit_fails_sample(ready_ctrl):
 
 
 def test_cooling_stall_ends_phase_normally(ready_ctrl):
+    """가열 뒤 냉각이 냉각 끝 온도 전에 정체하면 그 회차를 끝내고 "냉각 끝 온도 미도달" 주의(기록 유지)."""
     ctrl, ids = _prepare(ready_ctrl, 1, run_cool_end_c=5.0, run_stall_s=30.0)          # 쿨러로는 5 °C 까지 못 내려간다
     ctrl.run_command("run_start")
     _finish(ctrl, 60)
     it = ctrl.runner.items[ids[0]]
-    assert it["status"] == DONE and any("에서 종료" in n for n in it["notes"])
+    assert it["status"] == DONE and "냉각 끝 온도 미도달" in it["notes"]
     assert 9.0 < it["points"][-1][0] < 14.0
+
+
+def test_start_temperature_not_reached_stops_the_run_and_resume_restarts_that_sample(ready_ctrl):
+    """시작 온도까지 못 식으면(정체) 가열하지 않고 측정 전체를 멈춘다. 그 샘플은 "대기" 로 남고 다음 샘플로 넘어가지 않는다.
+    쿨러가 다시 잘 식히면(시험용 세계의 쿨러 온도를 낮춤) [측정 재개] 가 그 샘플부터 다시 한다."""
+    ctrl, ids = _prepare(ready_ctrl, 2, run_start_c=5.0, run_stall_s=20.0)          # 쿨러로는 10 °C 근처까지만 내려간다
+    run = ctrl.runner
+    ctrl.run_command("run_start")
+    _finish(ctrl, 60)
+    a, b = run.items[ids[0]], run.items[ids[1]]
+    assert run.state == "stopped" and a["status"] == WAIT and a["reason"] == "시작 온도 미도달" and b["status"] == WAIT, (a["status"], b["status"])
+    assert a["points"] == [] and a["cycles"] == [], "가열하지 않았다(기록 없음)"
+    assert "시작 온도 미도달" in run.msg and any("시작 온도 미도달 · 쿨러 · 주위 온도 확인 필요" in x for x in alarm_lines(ctrl)), alarm_lines(ctrl)
+    _all_off(ctrl)
+    ctrl.lab.t_cool = -5.0                                           # 쿨러 문제를 고쳤다
+    ctrl.run_command("run_resume")
+    _finish(ctrl, 90)
+    assert a["status"] == DONE and b["status"] == DONE, (a["status"], a["reason"], b["status"], b["reason"])
+    assert a["points"][0][0] <= 5.0 + 0.5, "시작 온도 이하에서 가열 시작"
+
+
+def test_each_cycle_starts_at_the_start_temperature(ready_ctrl):
+    """반복: 회차마다 가열 전에 시작 온도 이하를 본다. 앞 회차 냉각이 냉각 끝 온도(40 °C)에서 끝나면 쿨러로 시작 온도(30 °C)까지 더 식힌 뒤 가열."""
+    ctrl, ids = _prepare(ready_ctrl, 1, run_repeat=2, run_cool_end_c=40.0)
+    ctrl.run_command("run_start")
+    _finish(ctrl, 90)
+    it = ctrl.runner.items[ids[0]]
+    assert it["status"] == DONE, it["reason"]
+    n1 = it["cycles"][0]["rows"]
+    c1, c2 = it["points"][:n1], it["points"][n1:]
+    assert c1[-1][0] < 40.0 and c1[-1][0] > 30.0, "1회차 냉각은 40 °C 에서 끝"
+    step = max(abs(q[0] - p_[0]) for p_, q in zip(it["points"], it["points"][1:]))
+    assert c2[0][0] <= 30.0 + step, "2회차는 시작 온도 이하에서 가열 시작 · %.2f °C" % c2[0][0]
 
 
 def test_instrument_error_stops_whole_run(ready_ctrl):

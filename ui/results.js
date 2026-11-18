@@ -19,7 +19,8 @@ function buildResults() {
     h("div", { class: "fill gwrap" }, rs.graph.el),
     h("div", { class: "tscroll rtable" }, h("table", { class: "tb" }, h("thead", {}, h("tr", {},
       h("th", { text: "샘플" }), h("th", { class: "num", text: "시작 온도 저항" }), h("th", { class: "num", text: "최고 온도 저항" }), h("th", { class: "num", text: "저항비" }),
-      h("th", { class: "num", text: "가열 전이 온도" }), h("th", { class: "num", text: "냉각 전이 온도" }), h("th", { class: "num", text: "차이" }))), rs.tbody)),
+      h("th", { class: "num", text: "가열 전이 온도" }), h("th", { class: "num", text: "냉각 전이 온도" }), h("th", { class: "num", text: "차이" }),
+      h("th", { class: "num", text: "점 간격 가열 · 냉각" }))), rs.tbody)),
     rs.note = h("div", { class: "small" }));
   rs.files = h("div", { class: "grp" });
   rs.nas = h("div", { class: "grp" });
@@ -83,11 +84,20 @@ function resultTitle() {                                          // 그림으�
 }
 const COND_ROWS = [["meter_volt", "측정 전압", "V"], ["meter_four_wire", "4단자", ""], ["meter_avg_count", "평균", "회"], ["meter_nplc", "NPLC", ""], ["meter_ilim_a", "전류 한도", "A"],
   ["run_start_c", "시작 온도", "°C"], ["run_heater_off_c", "가열 끝 온도", "°C"], ["run_cool_end_c", "냉각 끝 온도", "°C"], ["run_repeat", "반복", "회"], ["run_interval_s", "측정 간격", "s"],
-  ["run_heat_mode", "가열 방식", ""], ["run_heat_rate_c_min", "가열 속도", "°C/분"], ["run_fan_during_cool", "냉각 중 송풍", ""],
+  ["run_heat_mode", "가열 방식", ""], ["run_heat_rate_c_min", "가열 속도", "°C/분"], ["run_cool_mode", "냉각 방식", ""], ["run_cool_rate_c_min", "냉각 속도", "°C/분"],
+  ["heater_lead_c", "목표선 기다림 폭", "°C"], ["run_fan_during_cool", "냉각 중 송풍", ""],
   ["run_cooler_mode", "쿨러", ""], ["run_cooler_during_heat", "가열 중 쿨러", ""], ["contact_mode", "접촉 방식", ""], ["contact_z_mm", "접촉 높이", "mm"]];
 const COOLER_NAMES = { zone: "샘플 아래 구역", all: "전체", none: "사용 안 함" };
 const CONTACT_NAMES = { fixed: "고정 높이", search: "전기 탐색" };
 const HEAT_NAMES = { ramp: "가열 속도 제어", full: "계속 가열" };
+const COOL_NAMES = { ramp: "냉각 속도 제어", free: "자연 냉각" };
+/* 점 간격 칸: "0.15 · 0.16 °C" (가열 · 냉각 평균 몇 °C 마다 1점). 말풍선에 점 수까지 */
+function spacingCell(sp) {
+  const v = (x) => (x && x.dc != null ? x.dc.toFixed(2) : "—");
+  const td = h("td", { class: "num", text: sp ? v(sp.heat) + " · " + v(sp.cool) + " °C" : "—" });
+  if (sp) tip(td, { title: "점 간격", text: spacingText(sp).split(" / ").join("\n") });
+  return td;
+}
 function renderRecord() {
   const rec = rs.rec;
   rs.save.disabled = !rec || !rs.picks.length;
@@ -107,7 +117,7 @@ function renderRecord() {
     const a = s.sum || {}, col = pickColor(s.id);
     return h("tr", { class: rs.picks.includes(s.id) ? "sel" : "", onclick: () => { if (s.n) togglePick(s.id); } }, h("td", {}, col ? swatch(col) : null, s.name + (s.status !== "완료" ? " · " + s.status : "")),
       h("td", { class: "num", text: e2(a.r_start) }), h("td", { class: "num", text: e2(a.r_peak) }), h("td", { class: "num", text: a.ratio == null ? "—" : a.ratio >= 100 ? Math.round(a.ratio).toLocaleString() : a.ratio.toFixed(1) }),
-      h("td", { class: "num", text: t1(a.t_heat) }), h("td", { class: "num", text: t1(a.t_cool) }), h("td", { class: "num", text: t1(a.hyst) }));
+      h("td", { class: "num", text: t1(a.t_heat) }), h("td", { class: "num", text: t1(a.t_cool) }), h("td", { class: "num", text: t1(a.hyst) }), spacingCell(a.spacing));
   }));
   setKids(rs.files, h("div", { class: "small path", text: rec.folder }), h("div", { class: "flist" }, ...rec.files.map((f) => h("div", { text: f }))),
     h("div", { class: "row" }, btn("폴더 열기", () => api("result_open_folder", { id: rec.id }))));
@@ -123,6 +133,7 @@ function renderRecord() {
     else if (k === "run_cooler_mode") v = COOLER_NAMES[v] || v;
     else if (k === "contact_mode") v = CONTACT_NAMES[v] || v;
     else if (k === "run_heat_mode") v = HEAT_NAMES[v] || v;
+    else if (k === "run_cool_mode") v = COOL_NAMES[v] || v;
     return [h("span", { class: "small", text: name }), h("span", { text: v + (unit ? " " + unit : "") })];
   })));
   drawResultGraph();
