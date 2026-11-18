@@ -110,6 +110,23 @@ def parse_rs(line):
         raise StageError("릴레이 응답 읽기 실패: %s" % line.strip()[:60])
 
 
+EEPROM_STATES = ("restored", "unsaved", "none")
+
+
+def parse_eeprom(line):
+    """부팅 배너의 EEPROM 줄 → restored(마지막 저장 위치 복원) · unsaved(save 하지 않고 꺼짐 → 원점 없음) · none(기록 없음). 그 줄이 아니면 None.
+    펌웨어 V11 stage_v11.ino 의 배너 그대로: "EEPROM: 마지막 저장 위치 복원 …" · "EEPROM: save 하지 않고 꺼짐 → 위치 불신" · "EEPROM: 기록 없음"."""
+    if "EEPROM:" not in line:
+        return None
+    if "복원" in line:
+        return "restored"
+    if "save" in line and "꺼짐" in line:
+        return "unsaved"
+    if "기록 없음" in line:
+        return "none"
+    return None
+
+
 def parse_banner_version(line):
     m = re.search(r"3-AXIS\s+(V\d+)", line or "", re.I)
     return m.group(1).upper() if m else None
@@ -178,6 +195,7 @@ class Stage:
         self.port_name = ""
         self.firmware = ""
         self.banner_lines = []
+        self.eeprom = None                                          # 마지막 부팅 배너의 EEPROM 상태(EEPROM_STATES) · 모르면 None
         self.pos = {"x": None, "y": None, "z": None}               # 펄스
         self.homed = {"x": False, "y": False, "z": False}
         self.dirty = None
@@ -208,6 +226,7 @@ class Stage:
         self.ser = ser
         self._rbuf = b""
         self.banner_lines = []
+        self.eeprom = None
         fw = None
         t_end = time.monotonic() + banner_wait_s
         try:
@@ -218,6 +237,7 @@ class Stage:
                         break                                       # 배너 뒤 조용해졌다
                     continue
                 self.banner_lines.append(ln)
+                self.eeprom = parse_eeprom(ln) or self.eeprom
                 v = parse_banner_version(ln)
                 if v:
                     fw = v
@@ -442,6 +462,10 @@ class Stage:
         try:
             if "3-AXIS" in ln:
                 self.on_event("reboot", ln.strip())
+            ee = parse_eeprom(ln)
+            if ee:                                                  # 도중 재시작 배너의 EEPROM 줄
+                self.eeprom = ee
+                self.on_event("eeprom", ee)
             if WD_MARK in ln and "[!]" in ln:
                 self.on_event("wd_trip", ln.strip())
             if is_st(ln):

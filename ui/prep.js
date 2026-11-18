@@ -146,8 +146,9 @@ function buildStep2() {
   pg.end = [gate("X", origin("x", "end")), gate("Y", origin("y", "end")), gate("Z", origin("z", "end"))];
   pg.whyHere = h("div", { class: "why" }); pg.whyEnd = h("div", { class: "why" });
   pg.endDesc = h("div", { class: "small" });                     // 끝단 접촉 원점이 하는 일(거리는 서버가 준 실제 값 - state.hw)
+  pg.mem = h("div", { class: "small" });                         // 연결 때 보드가 알려 준 위치 기억(배너의 EEPROM 줄)
   const el = h("div", { class: "panel prep-panel" }, h("h3", { text: "2 · 원점 설정" }),
-    h("div", { class: "grp" }, ...rows),
+    h("div", { class: "grp" }, ...rows, pg.mem),
     h("div", { class: "two" },
       h("div", { class: "grp" }, h("h4", { text: "현재 위치를 원점으로" }),
         h("div", { class: "small", text: "세 축을 모터 쪽 끝에 붙인 후 등록" }),
@@ -171,6 +172,9 @@ function buildStep2() {
     pg.end[0].b.disabled = pg.end[1].b.disabled = !!whyXY;
     pg.end[2].b.disabled = !!why;
     pg.whyEnd.textContent = why || (whyXY ? whyXY : "");
+    const mem = S.stage_mem || {};
+    pg.mem.textContent = devOk("stage") && mem.text ? mem.text : "";
+    pg.mem.className = "small" + (mem.code && mem.code !== "restored" ? " st-warn" : "");
     const hw = S.hw || {};
     pg.endDesc.textContent = hw.find_push_mm == null ? "" : "0 쪽 끝으로 최대 " + hw.find_push_mm + " mm 밀고 " + hw.find_gap_mm + " mm 물러난 위치 = 0 · 끝에서 " + hw.find_push_mm + " mm 안쪽일 때만 사용";
     pg.jog.update();
@@ -367,9 +371,12 @@ function buildStep4() {
 /* ---------- 5 · 좌표 맞추기 ---------- */
 function buildStep5() {
   const pg = { jog: jogPart() };
+  /* 작은 안내 그림(160 px 정사각형): 판 사진 축소본(없으면 빈 사각형) + A~D 원(등록된 점은 채움). 누르는 그림이 아니다 */
+  const GUIDE = 160;
+  pg.img = svgEl("image", { x: 0, y: 0, width: GUIDE, height: GUIDE, preserveAspectRatio: "none" });
   pg.ov = svgEl("g", {});
-  pg.pb = photoBox({ ar: 1, note: "판 영역 설정 필요 (초기 설정 3)", onfit: () => pg.draw() });
-  pg.pb.svg.append(pg.ov);
+  pg.guide = svgEl("svg", { class: "guide", width: GUIDE, height: GUIDE, viewBox: "0 0 " + GUIDE + " " + GUIDE },
+    svgEl("rect", { x: 0.5, y: 0.5, width: GUIDE - 1, height: GUIDE - 1, fill: "#F7F8F9", stroke: "#D5D9DE" }), pg.img, pg.ov);
   pg.set = CORNER.map((n) => busyGate(n + " 등록", () => api("coord_set", { name: n })));
   pg.whySet = h("div", { class: "why" });
   pg.gotoD = busyGate("D 예상 위치로 이동", () => api("coord_goto_d"));
@@ -381,36 +388,37 @@ function buildStep5() {
   pg.learn = busyGate("마커 재등록", () => api("marker_learn"), "sm");
   pg.extra = h("div", { class: "exlist" });
   pg.clear = btn("초기화", () => api("coord_clear"), "sm");
-  pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "5 · 좌표 보정" }),
-    photoSplit(pg.pb, h("div", {},
-      h("div", { class: "grp" },
-        h("div", { class: "small", text: "핀을 꼭짓점에 맞춘 후 해당 버튼 누름" }),
-        pg.jog.el, h("div", { class: "row wrap" }, ...pg.set.map((g) => g.b)), pg.whySet,
-        h("div", { class: "row" }, pg.gotoD.b, pg.gotoD.w), pg.pts),
+  pg.markerNote = h("div", { class: "small" });                 // D 등록 뒤 자동으로 하는 일(이동 거리는 설정 marker_probe_mm)
+  pg.el = h("div", { class: "panel prep-panel" }, h("h3", { text: "5 · 좌표 보정" }),
+    h("div", { class: "two" },
+      h("div", { class: "grp" }, h("h4", { text: "핀 이동" }), h("div", { class: "small", text: "핀을 꼭짓점에 맞춘 후 등록" }), pg.jog.el),
+      h("div", { class: "grp" }, h("h4", { text: "꼭짓점 등록" }),
+        h("div", { class: "row top" }, pg.guide, h("div", { class: "col" }, small("A = 사진 왼쪽 위 · 시계 방향"), pg.pts)),
+        h("div", { class: "row wrap" }, ...pg.set.map((g) => g.b)), pg.whySet, pg.markerNote,
+        h("div", { class: "row" }, pg.gotoD.b, pg.gotoD.w))),
+    h("div", { class: "three" },
       h("div", { class: "grp" }, h("h4", { text: "정확도" }), pg.q),
       h("div", { class: "grp" }, h("h4", { text: "헤드 마커" }), pg.marker, h("div", { class: "row" }, pg.learn.b, pg.learn.w)),
       h("div", { class: "grp" }, h("h4", { text: "보정 점" }),
         h("div", { class: "small", text: "수동 제어 탭 판 사진에서 추가" }),
-        pg.extra, h("div", { class: "row" }, pg.clear)))));
+        pg.extra, h("div", { class: "row" }, pg.clear))));
   pg.draw = () => {
-    const c = S && S.cfg, co = P().coords;
-    if (!S || !pg.pb.w) return;
-    const sz = c.plate_size_mm, k = sz / pg.pb.w;
-    pg.pb.svg.setAttribute("viewBox", "0 0 " + sz + " " + sz);
-    const at = [[0, 0], [sz, 0], [sz, sz], [0, sz]], kids = [];
+    const co = P().coords;
+    if (!S) return;
+    const at = [[0, 0], [GUIDE, 0], [GUIDE, GUIDE], [0, GUIDE]], kids = [];
     CORNER.forEach((n, i) => {
       const has = co && co.stage[n];
-      const x = at[i][0] + (i === 1 || i === 2 ? -1 : 1) * 14 * k, y = at[i][1] + (i >= 2 ? -1 : 1) * 14 * k;
-      kids.push(svgEl("circle", { cx: x, cy: y, r: 11 * k, fill: has ? "#1F2A37" : "#fff", stroke: "#1F2A37", "stroke-width": 1.5 * k }));
-      kids.push(svgEl("text", { x, y: y + 4.5 * k, "font-size": 12 * k, "font-weight": 700, "text-anchor": "middle", fill: has ? "#fff" : "#1F2A37", text: n }));
+      const x = at[i][0] + (i === 1 || i === 2 ? -1 : 1) * 14, y = at[i][1] + (i >= 2 ? -1 : 1) * 14;
+      kids.push(svgEl("circle", { cx: x, cy: y, r: 11, fill: has ? "#1F2A37" : "#fff", stroke: "#1F2A37", "stroke-width": 1.5 }));
+      kids.push(svgEl("text", { x, y: y + 4.5, "font-size": 12, "font-weight": 700, "text-anchor": "middle", fill: has ? "#fff" : "#1F2A37", text: n }));
     });
     setKids(pg.ov, ...kids);
   };
   pg.render = () => {
     const co = P().coords || { stage: {}, extra: [] }, pl = P().plate, ph = P().photo, e = P().empty;
     const src = pl && ph && ph.rect ? "/api/img/plate.jpg?v=" + ph.id + "-" + pl.t : pl && e ? "/api/img/empty.jpg?v=" + e.t + "-" + pl.t : "";
-    pg.pb.setNote(pl ? "사진 없음" : "판 영역 설정 필요 (초기 설정 3)");
-    pg.pb.show(src);
+    if (src !== pg.src) { pg.src = src; if (src) pg.img.setAttribute("href", src); else pg.img.removeAttribute("href"); }     // 없으면 빈 사각형
+    pg.markerNote.textContent = "D 등록 후 촬영 위치로 이동해 헤드 마커 자동 등록 · " + S.cfg.marker_probe_mm + " mm 씩 이동";
     const why = whyStage(true, false);
     pg.set.forEach((g) => { g.b.disabled = !!why; });
     pg.whySet.textContent = why || (pl ? "" : "판 영역 설정 필요 (초기 설정 3)");

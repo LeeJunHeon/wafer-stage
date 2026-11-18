@@ -152,6 +152,22 @@ class FakeV11:
         with self.cv:
             self.cv.notify_all()
 
+    def reopen(self):
+        """같은 보드의 포트를 다시 연다(시험용 - 전원은 켜진 채): 포트를 열면 보드가 재시작한다(DTR). RAM 위치는 사라지고 EEPROM 표시로 정한다 -
+        save 뒤 안 움직였으면 "마지막 저장 위치 복원"(원점 있음), save 없이 움직였으면 "save 하지 않고 꺼짐"(원점 없음 · 위치 0)."""
+        if self.th.is_alive():
+            self.close()
+            self.th.join(timeout=2.0)
+        with self.cv:
+            self.out.clear()
+        self.inbuf = bytearray()
+        self.unplugged = False
+        self.alive = True
+        self.reboot()
+        self.th = threading.Thread(target=self._run, daemon=True, name="fake-fw")
+        self.th.start()
+        return self
+
     # ---- 시험용 조작 ----------------------------------------------------
     def block_write(self, sec):
         self.block_until = time.monotonic() + sec

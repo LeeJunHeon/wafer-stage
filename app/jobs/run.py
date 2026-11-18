@@ -350,6 +350,7 @@ class Runner:
                     self._save_json(final)
                 n = self.counts()
                 c.logs.app("측정 %s · 완료 %d · 실패 %d · 남음 %d" % ("완료" if final == "done" else "중지", n[DONE], n[FAIL], n[WAIT]))
+                c.save_position("측정 끝")                          # 정리(핀 맨 위)까지 끝난 위치를 저장 - 측정 뒤 PC · 프로그램이 죽어도 원점을 믿을 수 있게(비상정지 잠금이면 건너뜀)
             finally:
                 # 순서: 파일 저장 · NAS 복사 → 끝난 상태를 화면에 보냄 → K2450 사용권 놓음 → "측정 중이 아님".
                 # 그 사이에 새 측정이 시작돼 같은 기록에 섞여 쓰지 않게 한다.

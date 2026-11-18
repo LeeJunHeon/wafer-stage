@@ -310,3 +310,9 @@ table.tb.tt-marks td { max-width: none; }
 .zv-loupe .cross-v { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: #C03A7D; }
 .zv-pts { display: grid; grid-template-columns: 24px 1fr; gap: 2px 8px; }
 .zv-pts .sel { font-weight: 700; }
+
+/* 초기 설정 5: 안내 그림 · 아래 세 칸(정확도 · 헤드 마커 · 보정 점 - 좁으면 아래로 접힘) */
+.guide { flex: none; display: block; }
+.row.top { align-items: flex-start; }
+.three { display: flex; flex-wrap: wrap; gap: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.three > .grp { flex: 1 1 240px; }

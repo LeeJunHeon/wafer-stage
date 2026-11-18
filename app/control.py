@@ -55,6 +55,10 @@ METER_RAW_NO_HEAD = {"k2450": ("MEAS", "READ", "INIT", "*TST", "*CAL"), "k2110":
 RAW_METER_NO = "직접 명령은 조회만 가능 · 출력과 설정은 버튼 사용"
 # 송풍 · 열선 릴레이는 개별 릴레이 버튼 · 쿨러 경로로 켜고 끄지 않는다(히트건 인터락: 송풍을 먼저 켜고 열선을 켜면 히트건이 오류를 낸다).
 RELAY_HEATER_NO = "히트건 릴레이 · 히트건 버튼 사용"
+# 연결할 때 배너의 EEPROM 줄(stage.parse_eeprom) → 초기 설정 2 의 한 줄 · 로그
+EEPROM_TEXT = {"restored": "마지막 저장 위치 복원 · 꺼진 동안 손으로 밀었다면 원점 다시",
+               "unsaved": "지난 종료 때 위치 저장 안 됨 · 원점 다시 설정",
+               "none": "위치 기록 없음 · 원점 설정 필요"}
 
 
 def meter_raw_ok(target, line) -> bool:
@@ -221,18 +225,85 @@ class Controller:
         self.state.clear_alarm("stage_lost")
         self._stage_status()
         self.logs.app("스테이지 연결 · %s · 펌웨어 %s" % (port, self.stage.firmware))
+        self._note_eeprom(self.stage.eeprom)
         return {"port": port, "firmware": self.stage.firmware}
 
+    def _note_eeprom(self, code):
+        """배너의 EEPROM 상태를 화면 상태(state.stage_mem - 초기 설정 2 의 한 줄)와 로그에 둔다. 복원된 위치는 촬영 위치의 헤드 마커 확인이 검사한다."""
+        text = EEPROM_TEXT.get(code, "")
+        self.state.set("stage_mem", {"code": code, "text": text})
+        if code:
+            self.logs.app("스테이지 위치 기억 · %s" % text, "info" if code == "restored" else "warn")
+
     def disconnect_stage(self):
+        """[연결 끊기]: 닫을 때와 같은 순서 - 측정 · 온도 시험 정지 → 이동 멈춤(st 로 확인) → 릴레이 끄기 → 위치 저장 → 스테이지 닫기."""
+        self._stop_jobs("연결 끊기")
         if self.stage.connected:
+            self._halt_motion("연결 끊기")
             try:
                 self.stage.relays_off(None, prio=0)
-            except StageError:
-                pass
+            except StageError as e:
+                self.logs.app("연결 끊기 · 릴레이 끄기 실패 · %s" % e, "error")
+            self.save_position("연결 끊기")
         self.stage.disconnect()
         self.state.set_device("stage", "끊김", "", "")
         self._heater_sync("스테이지 연결 끊기", force_off=True)
         self._set_move(None)
+
+    # ---- 위치 저장(save) ----
+    # 펌웨어 V11 은 위치를 RAM 에만 두고 EEPROM 에는 "save 이후 움직였는가" 만 적는다(첫 이동 때 ok=0 · save 때 ok=1).
+    # 포트를 열면 보드가 재시작하고 ok=0 이면 "save 하지 않고 꺼짐 → 위치 불신" 으로 세 축 원점이 없어진다.
+    # 그래서 정상 종료 · [연결 끊기] · 측정이 끝나 정리(핀 맨 위)까지 마친 때 save 한다. 이동마다 하지 않는다(EEPROM 수명 - 저장 1회 + 다음 첫 이동 1회).
+    def _stop_jobs(self, why):
+        """측정 · 온도 시험을 멈추고 정리가 끝나기를 기다린다(닫기 · 연결 끊기 앞)."""
+        if self.runner.active:
+            self.runner._stop = True
+            self.runner.join(timeout=20)
+        if self.temptest.active:
+            self.temptest._stop = True
+            self.temptest.join(timeout=20)
+
+    def _halt_motion(self, why):
+        """대기 조그 · 줄 선 이동을 버리고, 이동 중이면 [정지] 와 같은 방법('!' 바로)으로 멈춘 뒤 st 로 위치를 확인한다."""
+        self.safety.cancel_pending()
+        with self._plock:
+            self._jog_pending = None
+        if self.stage.moving:
+            try:
+                self.stage.bang()
+                self.logs.app("%s · 이동 중이라 정지" % why, "warn")
+            except StageError as e:
+                self.logs.app("%s · 정지 신호 실패 · %s" % (why, e), "error")
+        try:
+            self.stage.call("st", None, stage_mod.is_st, 3.0 + stage_mod.LINE_TIMEOUT_S, prio=0)   # 끊긴 이동이 끝난 뒤의 위치
+        except StageError as e:
+            self.logs.app("%s · 위치 읽기 실패 · %s" % (why, e), "warn")
+
+    def save_position(self, why: str) -> bool:
+        """위치 저장: save → st 로 DIRTY=0 확인. 스테이지가 응답하고 이동이 멈춰 있을 때만. 원점 없는 축이 있어도 한다(펌웨어가 원점 여부까지 적는다).
+        비상정지 잠금 중(해제 전)에는 하지 않는다 - 무슨 일이 있었는지 확인 전이므로 다음 실행 때 원점을 다시 잡게 한다. 결과는 로그 한 줄. 실패해도 Rejected 를 내지 않는다."""
+        st = self.stage
+        if not st.connected:
+            self.logs.app("위치 저장 건너뜀 · %s · 스테이지 연결 안 됨" % why, "warn")
+            return False
+        if self.safety.locked:
+            self.logs.app("위치 저장 건너뜀 · %s · 비상정지 잠금(해제 전) · 다음 실행 때 원점 다시" % why, "warn")
+            return False
+        if st.moving:
+            self.logs.app("위치 저장 건너뜀 · %s · 이동 중" % why, "warn")
+            return False
+        try:
+            st.save(None)
+            st.read_status(None)
+        except StageError as e:
+            self.logs.app("위치 저장 실패 · %s · %s" % (why, e), "error")
+            return False
+        if st.dirty is not False:
+            self.logs.app("위치 저장 실패 · %s · 저장 뒤에도 DIRTY=1" % why, "error")
+            return False
+        pos = {a: (None if st.pos.get(a) is None else st.pos[a] / PPMM) for a in AXES}
+        self.logs.app("위치 저장 · %s · X %s · Y %s · Z %s mm" % (why, *("—" if pos[a] is None else "%.3f" % pos[a] for a in AXES)))
+        return True
 
     def connect_meter(self, kind: str, addr: Optional[str] = None):
         if kind not in ("k2110", "k2450"):
@@ -372,6 +443,8 @@ class Controller:
         """일꾼 스레드에서 온다 - 오래 걸리는 일은 새 스레드로 넘긴다."""
         if kind == "reboot":
             threading.Thread(target=self._board_reboot, args=(text,), daemon=True, name="reboot").start()
+        elif kind == "eeprom":
+            self._note_eeprom(text)
         elif kind == "wd_trip":
             self.state.alarm("wd", "통신 끊김 · 릴레이 차단", NOTICE)
             self.logs.app("통신 감시 작동 · %s" % text, "warn")
@@ -1523,26 +1596,27 @@ class Controller:
         return method(**(args or {}))
 
     def shutdown(self):
-        """닫을 때: 히트건 · 쿨러 끄기 → K2450 출력 끄기 → 연결 닫기. 여러 번 불러도 한 번만 한다."""
+        """닫을 때(창 닫기 · Ctrl+C · 서버 종료): 측정 · 온도 시험 정지 → 대기 조그 · 줄 선 이동 취소 · 이동 중이면 멈추고 st 로 확인 →
+        릴레이 끄기 → 위치 저장(save · DIRTY=0 확인 - 비상정지 잠금 중이면 하지 않음) → K2450 · 온도계 · 카메라 닫기 → 스테이지 닫기. 여러 번 불러도 한 번만 한다."""
         with self._shut_lock:
             if self._shut:
                 return
             self._shut = True
-        if self.runner.active:                                      # 측정 중에 닫으면 측정부터 멈춘다(정리: 히트건 · 출력 · 쿨러 끔 → 핀 맨 위 · 파일 닫기)
-            self.runner._stop = True
-            self.runner.join(timeout=20)
-        if self.temptest.active:                                    # 온도 시험도 멈춘다(정리 · 기록 저장)
-            self.temptest._stop = True
-            self.temptest.join(timeout=20)
+        self._stop_jobs("종료")                                     # 측정 중에 닫으면 측정부터 멈춘다(정리: 히트건 · 출력 · 쿨러 끔 → 핀 맨 위 · 파일 닫기)
         self._alive = False
         self._heater_why = "종료"
         try:
             if self.stage.connected:
+                self._halt_motion("종료")
                 self.stage.relays_off(None, prio=0)
         except Exception as e:                                      # noqa: BLE001
             self.logs.app("종료 중 릴레이 끄기 실패 · %s" % e, "error")
         finally:
             self._heater_why = None
+        try:
+            self.save_position("종료")
+        except Exception as e:                                      # noqa: BLE001 - 저장 실패도 닫기는 계속한다(로그에 남긴다)
+            self.logs.app("위치 저장 실패 · 종료 · %s: %s" % (type(e).__name__, e), "error")
         for kind in ("k2450", "k2110"):
             self._close_meter(kind)
         self.camera.close()

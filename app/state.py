@@ -31,6 +31,7 @@ class State:
             "estop_hold": False,                                     # 비상정지 직후(2초): 이 동안은 해제를 받지 않는다 - 화면은 해제 버튼을 꺼 둔다
             "heater_on_since": None,                                 # 히트건(송풍 또는 열선)을 켠 시각(epoch) · 꺼져 있으면 None
             "heater": {"fan": None, "element": None, "fan_off_at": None},   # 송풍 · 열선(True · False · None 모름) · 송풍을 끌 시각(epoch)
+            "stage_mem": {"code": None, "text": ""},                 # 연결 때 배너의 EEPROM 상태(restored · unsaved · none) · 초기 설정 2 의 한 줄
             "alarms": [],
             "busy": "",                                              # 지금 하는 일(이동 중 등)
             "move": None,                                            # 이동 중 정보 {what, target{x,y,z mm}, pending{axis,mm}} - 끝나면 None

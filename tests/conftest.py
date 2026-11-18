@@ -114,8 +114,10 @@ def alarm_codes(ctrl):
     return [a["code"] for a in ctrl.state.snapshot()["alarms"]]
 
 
-def build_ctrl(cfg, clock=None, scale=0.05, time_scale=1.0):
-    """가짜 장비를 꽂은 Controller. scale = 가짜 스테이지의 이동 시간 배율(작을수록 빠름) · time_scale = 열 모델 · 측정 · 안전 시계의 배율."""
+def build_ctrl(cfg, clock=None, scale=0.05, time_scale=1.0, board=None, keep_board=False):
+    """가짜 장비를 꽂은 Controller. scale = 가짜 스테이지의 이동 시간 배율(작을수록 빠름) · time_scale = 열 모델 · 측정 · 안전 시계의 배율.
+    board = 이 시험용 보드를 연다(다시 열면 재시작 - FakeV11.reopen: EEPROM 표시로 위치 · 원점을 정한다). 종료 뒤 다시 실행을 볼 때 앞 Controller 의 보드를 준다.
+    keep_board = [연결 끊기] 뒤 다시 [연결] 해도 같은 보드를 다시 연다(기본은 열 때마다 새 보드)."""
     k = float(time_scale)
     base = (lambda: time.monotonic() * k) if k != 1.0 else time.monotonic        # 가짜 열 모델의 시계
     sleep = (lambda s: time.sleep(s / k)) if k != 1.0 else time.sleep
@@ -134,8 +136,9 @@ def build_ctrl(cfg, clock=None, scale=0.05, time_scale=1.0):
     lab.addrs = ["ASRL5::INSTR", "ASRL4::INSTR", cfg["k2110_addr"], cfg["k2450_addr"]]
     fake_visa.install(lab)                                          # meters.RM_FACTORY 에 꽂는다
 
-    def open_port(name):                                            # 스테이지 포트 여는 자리: 열 때마다 새 가짜 보드
-        box["fw"] = FakeV11(time_scale=scale, homed=True)
+    def open_port(name):                                            # 스테이지 포트 여는 자리: 열 때마다 새 가짜 보드(board · keep_board 면 같은 보드를 다시 연다 = 재시작)
+        old = board if box["fw"] is None else (box["fw"] if keep_board else None)
+        box["fw"] = old.reopen() if old is not None else FakeV11(time_scale=scale, homed=True)
         box["fw"].on_relay = gun.update                             # 히트건은 보드의 릴레이를 따라간다
         gun.update(box["fw"].relay)
         box["ctrl"].fake_fw = box["fw"]
@@ -175,11 +178,11 @@ def make_ctrl(tmp_path, monkeypatch):
     made = []
     monkeypatch.setattr(control_mod, "serial_ports", lambda: [("COM5", "Arduino Mega 2560 (COM5)")])     # 포트 목록: 실제 포트를 훑지 않는다
 
-    def make(clock=None, scale=0.05, connect=True, meters=True, camera=False, time_scale=1.0, **cfg_over):
+    def make(clock=None, scale=0.05, connect=True, meters=True, camera=False, time_scale=1.0, board=None, keep_board=False, **cfg_over):
         cfg = Config(tmp_path / "settings.json").load()
         cfg.update({"data_dir": str(tmp_path / "data"), "camera_width": 320, "camera_height": 240, **cfg_over})
         cfg.update(real_time_windows(time_scale, set(cfg_over)))       # 배율 때문에 실제 시간 창이 수십 ms 로 줄지 않게
-        ctrl = build_ctrl(cfg, clock=clock, scale=scale, time_scale=time_scale)
+        ctrl = build_ctrl(cfg, clock=clock, scale=scale, time_scale=time_scale, board=board, keep_board=keep_board)
         made.append(ctrl)
         if connect:
             ctrl.connect_stage()
