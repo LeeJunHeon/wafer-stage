@@ -34,6 +34,11 @@ class Item:
     folder: bool = False            # 폴더 경로(화면에 [찾아보기] 버튼을 붙인다)
 
 
+# 스테이지의 네 쪽(장비 앞쪽 · 오른쪽 설정): 먼 쪽 = 좌표가 큰 쪽 · 모터 쪽 = 0 쪽
+SIDES = (("x_far", "X 먼 쪽"), ("x_motor", "X 모터 쪽"), ("y_far", "Y 먼 쪽"), ("y_motor", "Y 모터 쪽"))
+SIDE_NAME = dict(SIDES)
+
+
 def _g(group, *items):
     return [Item(**dict(i.__dict__, group=group)) for i in items]
 
@@ -112,9 +117,17 @@ ITEMS = (
               desc="히트건 열선 릴레이 번호 · 켤 때 열선 먼저\n배선을 바꿨을 때만 변경 · 릴레이 모두 끈 뒤 변경 가능"),
          Item("cooler_relays", [2, 3, 4], "ints", "쿨러 릴레이",
               desc="쿨러 묶음 릴레이 번호 목록 · 하나에 쿨러 여러 개\n배선을 바꿨을 때만 변경 · 송풍 · 열선과 겹치면 안 됨"),
-         # 쿨러 3x3 자리 배치(판을 위에서 본 칸 → 쿨러 릴레이 번호). 같은 릴레이를 여러 칸에 써도 된다. 초기 설정 7 에서 정한다
+         # 쿨러 3x3 자리 배치(판 mm 기준 칸 → 쿨러 릴레이 번호 · 0 행 = A–B 변 쪽 · 0 열 = A–D 변 쪽 = 사진 기준). 같은 릴레이를 여러 칸에 써도 된다.
+         # 빈 칸(null)도 된다 - 쿨러 "샘플 아래 구역" 이면 빈 칸의 샘플은 측정 시작을 거절한다(run.gate). 초기 설정 7 에서 정한다
          Item("cooler_grid", [[2, 2, 2], [3, 3, 3], [4, 4, 4]], "grid", "쿨러 배치", verify=True,
-              desc="판을 위에서 본 3×3 칸마다 쿨러 릴레이 번호 · 중복 가능\n초기 설정 7 에서 켜 보고 설정"))
+              desc="판 3×3 칸마다 쿨러 릴레이 번호 · 중복 · 빈 칸 가능\n초기 설정 7 에서 설정 · 저장은 사진 기준(왼쪽 위 = A)"),
+         # 장비 앞(사람이 서는 쪽)에서 본 방향: 초기 설정 7 의 칸을 장비 앞 기준으로 돌려 그릴 때만 쓴다(cooler_grid 의 뜻은 그대로)
+         Item("machine_front_side", "x_far", "choice", "장비 앞쪽", choices=SIDES,
+              desc="장비 앞(사람이 서는 쪽)이 스테이지의 어느 쪽인지\n초기 설정 7 의 칸 방향에만 사용 · 오른쪽과 다른 축 필요"),
+         Item("machine_right_side", "y_far", "choice", "장비 오른쪽", choices=SIDES,
+              desc="장비 앞에서 볼 때 오른쪽이 스테이지의 어느 쪽인지\n초기 설정 7 의 칸 방향에만 사용 · 앞쪽과 다른 축 필요"),
+         Item("cooler_view", "front", "choice", "쿨러 배치 보기", choices=(("front", "장비 앞 기준"), ("photo", "사진 기준")),
+              desc="초기 설정 7 의 칸을 그리는 방향\n장비 앞 기준은 초기 설정 5 의 꼭짓점 4개 필요"))
     + _g("히트건 안전",
          Item("heater_max_c", 110.0, "float", "히트건 차단 온도", "°C", 30, 300,
               desc="이 온도 이상이면 열선을 켜지 않고 켜져 있으면 끔\n가열 끝 온도보다 높게 설정"),
@@ -307,12 +320,12 @@ def check(item: Item, value: Any) -> Any:
         if not isinstance(value, bool):
             raise ConfigError("%s: 켬/끔 값 필요" % name)
         return value
-    if item.kind == "grid":                       # 칸마다 릴레이 번호. 같은 번호를 여러 칸에 써도 된다(쿨러 하나가 여러 칸을 맡는다)
+    if item.kind == "grid":                       # 칸마다 릴레이 번호 또는 빈 칸(None). 같은 번호를 여러 칸에 써도 된다(쿨러 하나가 여러 칸을 맡는다)
         ok = isinstance(value, list) and len(value) == 3 and all(isinstance(r, list) and len(r) == 3 for r in value)   # 쿨러 릴레이인지는 problems() 가 본다
         nums = [n for r in value for n in r] if ok else []
-        if not ok or not all(_relay_no(n) for n in nums):
-            raise ConfigError("%s: 3×3 칸에 릴레이 번호 1~%d 입력 필요" % (name, N_RELAY))
-        return [[int(n) for n in r] for r in value]
+        if not ok or not all(n is None or _relay_no(n) for n in nums):
+            raise ConfigError("%s: 3×3 칸에 릴레이 번호 1~%d 또는 빈 칸 필요" % (name, N_RELAY))
+        return [[None if n is None else int(n) for n in r] for r in value]
     if item.kind == "ints":                       # min = 0 이면 빈 목록도 된다(온도 시험 쿨러 - 쿨러 없이 시험)
         lo = 0 if item.min == 0 else 1
         if not isinstance(value, list) or not lo <= len(value) <= N_RELAY or not all(_relay_no(n) for n in value) or len(set(value)) != len(value):
@@ -386,6 +399,7 @@ def problems(v: dict) -> list:
     limit = float(v["temp_stale_s"]) * float(v["stale_use_ratio"])
     if not cycle < limit:
         out.append("읽기 한 회차 예상 %.2f초 · %.2f초 미만 필요 · 측정 간격과 평균 횟수 확인" % (cycle, limit))
+    out += side_problems(v)
     # ---- 접촉 값들의 크기 관계 ----
     if float(v["contact_step_mm"]) > float(v["contact_search_step_mm"]):
         out.append("하강 간격 %g mm · 탐색 간격 %g mm 이하 필요" % (v["contact_step_mm"], v["contact_search_step_mm"]))
@@ -437,6 +451,24 @@ def heat_problems(v: dict) -> list:
     return out
 
 
+def side_problems(v: dict) -> list:
+    """장비 앞쪽 · 오른쪽 방향은 서로 다른 축이어야 한다(X 하나 · Y 하나)."""
+    f, r = v["machine_front_side"], v["machine_right_side"]
+    if f[0] == r[0]:
+        return ["장비 앞쪽 %s · 오른쪽 %s 같은 축 · X 하나 · Y 하나 필요" % (SIDE_NAME[f], SIDE_NAME[r])]
+    return []
+
+
+def grid_relays(grid) -> list:
+    """쿨러 배치에 든 릴레이 번호(빈 칸 제외 · 칸 순서대로)."""
+    return [int(n) for row in grid for n in row if n is not None]
+
+
+def grid_empty(grid) -> int:
+    """쿨러 배치의 빈 칸 수."""
+    return sum(1 for row in grid for n in row if n is None)
+
+
 def role_problems(v: dict) -> list:
     """릴레이 역할이 겹치는지 · 쿨러 배치가 쿨러 릴레이만 쓰는지. 문제마다 한 줄."""
     out = []
@@ -446,7 +478,7 @@ def role_problems(v: dict) -> list:
     for n, what in ((fan, "송풍"), (el, "열선")):
         if n in cool:
             out.append("R%d %s · 쿨러 릴레이와 겹침" % (n, what))
-    bad = sorted({int(n) for r in v["cooler_grid"] for n in r} - set(cool))
+    bad = sorted(set(grid_relays(v["cooler_grid"])) - set(cool))
     if bad:
         out.append("쿨러 배치 %s · 쿨러 릴레이 아님" % " · ".join("R%d" % n for n in bad))
     return out
@@ -550,7 +582,7 @@ class Config:
             self.migrated.append("릴레이 역할 겹침 · 송풍 R%d · 열선 R%d · 쿨러 %s 기본값 사용" % (
                 v["heater_fan_relay"], v["heater_element_relay"], json.dumps(v["cooler_relays"])))
         cool = v["cooler_relays"]
-        if self.cooler_reset or any(n not in cool for r in v["cooler_grid"] for n in r):
+        if self.cooler_reset or any(n not in cool for n in grid_relays(v["cooler_grid"])):      # 빈 칸은 그대로 둔다
             v["cooler_grid"] = default_grid(cool)
             self.cooler_reset = True
             self.migrated.append("쿨러 배치 %s · 쿨러 릴레이 %s 밖 번호 · 기본 배치 사용 · 초기 설정 7 확인 필요" % (

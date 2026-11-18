@@ -1639,7 +1639,7 @@ COMMANDS = {
     "empty_take": "prep.empty_take", "coord_set": "prep.coord_set", "coord_goto_d": "prep.coord_goto_d", "coord_clear": "prep.coord_clear",
     "marker_learn": "prep.marker_learn", "plate_goto": "prep.plate_goto", "coord_add_here": "prep.coord_add_here", "coord_remove": "prep.coord_remove",
     "samples_find": "prep.samples_find", "sample_use": "prep.sample_use",
-    "cooler_only": "prep.cooler_only", "cooler_save": "prep.cooler_save",
+    "cooler_only": "prep.cooler_only", "cooler_save": "prep.cooler_save", "cooler_cell": "prep.cooler_cell",
     "sample_rename": "prep.sample_rename", "batch_set": "prep.batch_set",
     # 측정(app/jobs/run.py)
     "run_start": "runner.start", "run_resume": "runner.resume", "run_stop": "runner.stop", "run_skip": "runner.skip",

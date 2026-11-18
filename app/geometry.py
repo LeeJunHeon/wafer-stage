@@ -118,3 +118,42 @@ def _diag_cross(q):
 
 def point_in_poly(poly, x, y):
     return cv2.pointPolygonTest(np.asarray(poly, np.float32).reshape(-1, 1, 2), (float(x), float(y)), False) >= 0
+
+
+def cooler_cell(plate_xy, size_mm):
+    """판 mm 자리 → 쿨러 배치 칸 (행, 열). 0 행 = A–B 변 쪽(판 y 작은 쪽) · 0 열 = A–D 변 쪽(판 x 작은 쪽). 판 밖은 가장자리 칸."""
+    cell = float(size_mm) / 3.0
+    col = min(2, max(0, int(float(plate_xy[0]) // cell)))
+    row = min(2, max(0, int(float(plate_xy[1]) // cell)))
+    return row, col
+
+
+def _side_value(side, x, y):
+    """스테이지 X · Y 를 그 쪽으로 갈수록 커지는 값으로(먼 쪽 = +좌표 · 모터 쪽 = −좌표)."""
+    v = x if side[0] == "x" else y
+    return v if side.endswith("far") else -v
+
+
+def front_layout(stage_corners, front, right):
+    """장비 앞에서 본 쿨러 칸 배치(초기 설정 7 의 장비 앞 기준 보기).
+    stage_corners: 꼭짓점 A~D 의 스테이지 X · Y(초기 설정 5) · front · right: 장비 앞쪽 · 오른쪽 방향(config.SIDES 값 - 서로 다른 축).
+    화면: 아래 = 앞쪽 · 오른쪽 = 오른쪽. 반환 {"corners": {"A": [화면 행, 화면 열], …}(0 또는 2), "cells": 화면 3×3 마다 [cooler_grid 행, 열]}.
+    꼭짓점이 모자라거나 방향이 같은 축 · 네 꼭짓점이 화면의 네 구석으로 나뉘지 않으면 None."""
+    if front[0] == right[0] or not all(n in stage_corners for n in "ABCD"):
+        return None
+    pts = {n: (_side_value(right, *stage_corners[n]), _side_value(front, *stage_corners[n])) for n in "ABCD"}   # (화면 오른쪽 값, 화면 아래 값)
+    mu = sum(p[0] for p in pts.values()) / 4.0
+    mv = sum(p[1] for p in pts.values()) / 4.0
+    at = {n: (2 if p[1] > mv else 0, 2 if p[0] > mu else 0) for n, p in pts.items()}
+    if len(set(at.values())) != 4:
+        return None
+    a, b, d = (np.array(at[n]) for n in "ABD")
+    eb, ed = (b - a) // 2, (d - a) // 2                 # 판 열(+1) · 판 행(+1)마다 화면에서 움직이는 칸
+    if abs(eb).sum() != 1 or abs(ed).sum() != 1 or (eb * ed).any():
+        return None
+    cells = [[None] * 3 for _ in range(3)]
+    for gr in range(3):
+        for gc in range(3):
+            r, c = a + gc * eb + gr * ed
+            cells[int(r)][int(c)] = [gr, gc]
+    return {"corners": {n: [int(v) for v in at[n]] for n in "ABCD"}, "cells": cells}

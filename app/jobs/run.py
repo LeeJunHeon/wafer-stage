@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 
 from app import config as config_mod
+from app import geometry as geo
 from app import contact as contact_mod
 from app import imgio
 from app.devices import meters
@@ -133,6 +134,8 @@ class Runner:
             out.append({"text": "접촉 높이", "step": 6})
         if c.prep.pos_block:
             out.append({"text": "헤드 위치 확인", "step": 2})
+        if self.empty_cell_names(c.cfg.values, [s for s in c.prep.samples if s["use"]]):
+            out.append({"text": "쿨러 배치 빈 칸", "step": 7})
         return out
 
     def reset(self):
@@ -208,6 +211,8 @@ class Runner:
                     self.order.append(s["id"])
             if not any(self.items[i]["status"] == WAIT for i in self.order):
                 raise Rejected("남은 샘플 없음")
+            if self.empty_cell_names(self.cond, [self.items[i] for i in self.order if self.items[i]["status"] == WAIT]):
+                raise Rejected("쿨러 배치 빈 칸 · 초기 설정 7")              # 재개는 이 측정의 조건(cond)의 배치를 쓴다
             bad = config_mod.problems(dict(self.c.cfg.values, **self.cond))    # 이 측정이 쓰는 조건(cond) + 지금의 안전 설정으로 다시 검사한다
             if bad:
                 raise Rejected(bad[0])
@@ -782,10 +787,21 @@ class Runner:
             return []
         if mode == "all":
             return [int(n) for n in cd["cooler_relays"]]
-        cell = float(cd["plate_size_mm"]) / 3.0                      # 샘플 아래 구역만
-        col = min(2, max(0, int(it["plate"][0] // cell)))
-        row = min(2, max(0, int(it["plate"][1] // cell)))
+        row, col = geo.cooler_cell(it["plate"], cd["plate_size_mm"])     # 샘플 아래 구역만(빈 칸의 샘플은 시작 · 재개가 거절한다 - empty_cell_names)
         return [grid[row][col]]
+
+    @staticmethod
+    def empty_cell_names(v, samples):
+        """쿨러 "샘플 아래 구역" 인데 쿨러 배치의 빈 칸에 있는 샘플 이름들. 그 밖의 쿨러 방식이면 []."""
+        if v["run_cooler_mode"] != "zone":
+            return []
+        grid = v["cooler_grid"]
+        out = []
+        for s in samples:
+            r, c = geo.cooler_cell(s["plate"], v["plate_size_mm"])
+            if grid[r][c] is None:
+                out.append(s["name"])
+        return out
 
     def _cleanup(self, estop):
         """어떤 끝에서도: 히트건 끔(열선 바로 · 송풍은 열선 끈 뒤 heater_fan_after_s) → K2450 출력 끔 → 쿨러 끔 → (비상정지가 아니면) 핀 맨 위.
@@ -994,7 +1010,7 @@ class Runner:
 
     def refresh_gate(self):
         """측정 시작 조건(gate)의 입력이 바뀐 순간 화면용 state.run.gate 만 다시 계산해 보낸다(view 전체는 만들지 않는다 - 가볍게).
-        입력: 장비 연결 · 세 축 원점 · 비상정지 잠금 · 판 영역 · 좌표 보정 · 접촉 높이 · 헤드 위치 확인. 부르는 곳은 Controller.gate_inputs_changed 하나다.
+        입력: 장비 연결 · 세 축 원점 · 비상정지 잠금 · 판 영역 · 좌표 보정 · 접촉 높이 · 헤드 위치 확인 · 쿨러 배치 빈 칸(고른 샘플). 부르는 곳은 Controller.gate_inputs_changed 하나다.
         publish 와 같은 잠금 안에서 계산하고 쓴다 - 먼저 계산한 예전 목록이 나중에 써져 새 목록을 덮지 않게."""
         with self._pub_lock:
             if self.c.state.get("run") is None:

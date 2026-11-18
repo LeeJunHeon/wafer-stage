@@ -513,11 +513,13 @@ function buildStep6() {
   return pg;
 }
 
-/* ---------- 7 · 쿨러 배치: 쿨러 릴레이(cooler_relays)를 하나씩 켜 보고 냉각되는 칸을 고른다 ----------
-   칸마다 쿨러 릴레이 하나(같은 릴레이를 여러 칸에 써도 된다 - 릴레이 하나에 쿨러 여러 개). 칸을 누르면 지금 켜 본 릴레이가 그 칸에 들어가고 바로 저장한다.
+/* ---------- 7 · 쿨러 배치: "켜 보기"(쿨러 릴레이 하나씩 켜 보기)와 "칸 정하기"(고른 값을 누른 칸에 - 쿨러를 켜지 않아도 됨)를 나눈다 ----------
+   칸마다 쿨러 릴레이 하나 또는 빈 칸(같은 릴레이를 여러 칸에 써도 된다 - 릴레이 하나에 쿨러 여러 개). 누를 때마다 저장(cooler_cell - 같은 값이 든 칸은 비운다).
+   보이는 방향: 장비 앞 기준(아래 = 앞쪽 - state.prep.cooler.layout 이 초기 설정 5 꼭짓점으로 돌린 배치) / 사진 기준(왼쪽 위 = A). 저장은 언제나 cooler_grid(사진 기준).
    송풍 · 열선 · 미배정 릴레이는 여기 나오지 않는다. */
+const PHOTO_CORNERS = { A: [0, 0], B: [0, 2], C: [2, 2], D: [2, 0] };
 function buildStep7() {
-  const pg = { grid: null, base: "", relSig: "" };
+  const pg = { relSig: "", pick: undefined, lastOn: null };
   pg.cells = [];
   pg.gridEl = h("div", { class: "cgrid" });
   for (let i = 0; i < 9; i++) {
@@ -526,32 +528,44 @@ function buildStep7() {
   }
   pg.relBtns = {};
   pg.relBox = h("div", { class: "relays" });
+  pg.pickBtns = [];
+  pg.pickBox = h("div", { class: "row wrap pick" });
   pg.note = h("div", {});
+  pg.viewWhy = h("div", { class: "small" });
   pg.why = h("div", { class: "why" });
+  pg.cellWhy = h("div", { class: "why" });
   pg.off = btn("전체 끄기", () => api("cooler_only", { n: 0 }));
+  pg.photo = h("input", { type: "checkbox", onchange: () => putSettings({ cooler_view: pg.photo.checked ? "photo" : "front" }) });
+  pg.title = h("h4", {});
+  pg.side = { top: h("div", { class: "cside top" }), bottom: h("div", { class: "cside bottom" }), left: h("div", { class: "cside left" }), right: h("div", { class: "cside right" }) };
   pg.el = h("div", { class: "panel prep-panel" }, h("h3", { text: "7 · 쿨러 배치" }),
-    h("div", { class: "small", text: "쿨러 릴레이를 켜 보고 냉각되는 칸 선택" }),
+    h("div", { class: "small", text: "쿨러를 켜 보고 냉각되는 칸 확인 · 값 고른 후 칸 누름" }),
     h("div", { class: "two" },
       h("div", { class: "grp" }, h("h4", { text: "켜 보기" }), pg.relBox, h("div", { class: "row" }, pg.off), pg.why),
-      h("div", { class: "grp" }, h("h4", { text: "판 (왼쪽 위 = A)" }), pg.gridEl, pg.note)));
+      h("div", { class: "grp" }, pg.title, pg.pickBox,
+        h("div", { class: "cboard" }, pg.side.top, pg.side.left, pg.gridEl, pg.side.right, pg.side.bottom),
+        pg.cellWhy, pg.note, pg.viewWhy,
+        h("label", { class: "row" }, pg.photo, small("사진 기준으로 보기")))));
   const coolers = () => S.cfg.cooler_relays || [];
+  function layout() {                                            // 장비 앞 기준으로 그릴 배치(못 그리면 null → 사진 기준)
+    const cv = P().cooler || {};
+    return S.cfg.cooler_view === "front" && cv.layout ? cv.layout : null;
+  }
+  function at(i) {                                               // 화면 칸 i(위 → 아래 · 왼쪽 → 오른쪽) → cooler_grid [행, 열]
+    const r = Math.floor(i / 3), c = i % 3, lay = layout();
+    return lay ? lay.cells[r][c] : [r, c];
+  }
   async function put(i) {
-    const on = onRelay();
-    if (on == null) { toast("쿨러 릴레이 켜기 필요"); return; }
-    const g = pg.grid.slice();
-    g[i] = on;                                                   // 같은 릴레이를 여러 칸에 둘 수 있다
-    pg.grid = g;
-    const r = await api("cooler_save", { grid: [g.slice(0, 3), g.slice(3, 6), g.slice(6, 9)] });
-    if (r.ok) toast("쿨러 배치 저장 완료");
-    pg.render();
+    if (pg.pick === undefined) return;
+    const [row, col] = at(i);
+    await api("cooler_cell", { row, col, n: pg.pick });           // 같은 값이 든 칸이면 서버가 비운다
   }
   function onRelay() {                                           // 지금 켜 본 쿨러 릴레이(하나만 켜진다)
     for (const n of coolers()) if (S.relays[n - 1]) return n;
     return null;
   }
+  function choose(v) { pg.pick = v; pg.render(); }
   pg.render = () => {
-    const sig = JSON.stringify(S.cfg.cooler_grid);
-    if (sig !== pg.base || !pg.grid) { pg.base = sig; pg.grid = S.cfg.cooler_grid.flat(); }      // 저장된 배치가 바뀌면 거기서 다시 시작
     const rs = JSON.stringify(coolers());
     if (rs !== pg.relSig) {                                      // 쿨러 릴레이 목록(전체 설정)이 바뀌면 버튼을 다시 만든다
       pg.relSig = rs;
@@ -560,16 +574,49 @@ function buildStep7() {
         const b = btn("R" + n, () => api("cooler_only", { n: S.relays[n - 1] ? 0 : n }));
         pg.relBtns[n] = b; return b;
       }));
+      pg.pickBtns = [...coolers().map((n) => ({ v: n, b: btn("R" + n, () => choose(n)) })), { v: null, b: btn("비우기", () => choose(null)) }];
+      setKids(pg.pickBox, ...pg.pickBtns.map((x) => x.b));
+      if (pg.pick != null && coolers().indexOf(pg.pick) < 0) pg.pick = undefined;
     }
-    const on = onRelay(), why = whyStage(false, false);
-    pg.cells.forEach((b, i) => { const n = pg.grid[i]; b.textContent = n == null ? "—" : "R" + n; b.classList.toggle("on", n != null && n === on); b.disabled = !!why; });
+    const on = onRelay();
+    if (on != null && on !== pg.lastOn) pg.pick = on;             // 켜 본 릴레이가 처음 고른 값
+    pg.lastOn = on;
+    if (pg.pick === undefined) pg.pick = coolers().length ? coolers()[0] : null;
+    // ---- 켜 보기 ----
+    const tt = !!(S.temptest && S.temptest.active);
+    const why = whyStage(false, false) || (tt ? "온도 시험 중 실행 불가" : "");
     for (const [n, b] of Object.entries(pg.relBtns)) { const k = Number(n); b.classList.toggle("on", k === on); b.textContent = "R" + k + (k === on ? " 켜짐" : ""); b.disabled = !!why; }
     pg.off.disabled = !!why;
     pg.why.textContent = why;
-    const unused = coolers().filter((n) => pg.grid.indexOf(n) < 0).map((n) => "R" + n);
+    // ---- 칸 정하기(스테이지 없이도 됨 · 측정 · 온도 시험 중에는 설정을 바꾸지 않는다 - 서버도 거절) ----
+    const cellWhy = running() ? "측정 중 실행 불가" : tt ? "온도 시험 중 실행 불가" : "";
+    pg.pickBtns.forEach((x) => { x.b.classList.toggle("on", x.v === pg.pick); x.b.disabled = !!cellWhy; });
+    const g = S.cfg.cooler_grid, lay = layout(), cv = P().cooler || {};
+    const corners = lay ? lay.corners : PHOTO_CORNERS, tagAt = {};
+    for (const n of "ABCD") tagAt[corners[n][0] * 3 + corners[n][1]] = n;
+    pg.cells.forEach((b, i) => {
+      const [r, c] = at(i), n = g[r][c], k = tagAt[i];
+      const pos = k ? (corners[k][0] ? "b" : "t") + (corners[k][1] ? "r" : "l") : "";
+      setKids(b, k ? h("span", { class: "ctag " + pos, text: k }) : null, h("span", { text: n == null ? "—" : "R" + n }));
+      b.classList.toggle("on", n != null && n === on);
+      b.classList.toggle("empty", n == null);
+      b.disabled = !!cellWhy;
+    });
+    pg.cellWhy.textContent = cellWhy;
+    pg.title.textContent = lay ? "장비 앞 기준" : "판 (왼쪽 위 = A)";
+    pg.side.bottom.textContent = lay ? "앞(" + cv.front + ")" : "";
+    pg.side.top.textContent = lay ? "뒤(" + cv.back + ")" : "";
+    pg.side.right.textContent = lay ? "오른쪽(" + cv.right + ")" : "";
+    pg.side.left.textContent = lay ? "왼쪽(" + cv.left + ")" : "";
+    pg.photo.checked = S.cfg.cooler_view === "photo";
+    pg.photo.disabled = !!cellWhy;
+    pg.viewWhy.textContent = S.cfg.cooler_view === "front" && !cv.layout ? cv.why || "" : "";
+    // ---- 상태 한 줄 ----
+    const flat = g.flat(), empty = flat.filter((n) => n == null).length;
+    const unused = coolers().filter((n) => flat.indexOf(n) < 0).map((n) => "R" + n);
     const saved = !!((P().steps || [])[6] || {}).done;
-    pg.note.textContent = unused.length ? "배치에 없는 릴레이: " + unused.join(" · ") : saved ? "저장된 배치" : "기본 배치 · 확인 필요";
-    pg.note.className = unused.length || !saved ? "st-warn" : "small";
+    pg.note.textContent = empty ? "빈 칸 " + empty + "개" : unused.length ? "배치에 없는 릴레이: " + unused.join(" · ") : saved ? "저장된 배치" : "기본 배치 · 확인 필요";
+    pg.note.className = empty || unused.length || !saved ? "st-warn" : "small";
   };
   return pg;
 }
@@ -580,6 +627,7 @@ function renderPrepList() {
   prep.items.forEach((x, i) => {
     const s = st[i] || {};
     x.sub.textContent = s.text || "";
+    x.sub.classList.toggle("st-warn", !!s.warn);                    // 주의가 필요한 단계 글(예: 7 "빈 칸 n개")
     x.sub.title = s.text || "";
     x.done.textContent = s.done ? "✓" : "";
   });

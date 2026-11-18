@@ -12,6 +12,7 @@ import time
 import cv2
 import numpy as np
 
+from app import config as config_mod
 from app import geometry as geo
 from app import imgio
 from app.calib import CORNERS
@@ -511,6 +512,7 @@ class Prep:
             self.c.state.clear_alarm("find")
         self.c.logs.app("샘플 찾기 · %d개 · %s · %d ms" % (len(self.samples), res["path"], self.find_info["ms"]))
         self.publish()
+        self.c.gate_inputs_changed()
         return {"n": len(self.samples), "used": sum(1 for s in self.samples if s["use"]), "notes": res["notes"]}
 
     def _refresh_samples(self, reset_use=False):
@@ -597,6 +599,7 @@ class Prep:
             if s["id"] == int(id):
                 s["use"] = bool(use)
                 self.publish()
+                self.c.gate_inputs_changed()                             # 측정 시작 조건이 고른 샘플을 본다(쿨러 배치 빈 칸)
                 return {"id": s["id"], "use": s["use"]}
         raise Rejected("해당 샘플 없음")
 
@@ -631,6 +634,19 @@ class Prep:
         self.c.publish_cfg()
         self.publish()
         return {"cooler_grid": self.cfg["cooler_grid"]}
+
+    def cooler_cell(self, row, col, n=None):
+        """칸 하나 정하기(초기 설정 7 · 누를 때마다 저장): 고른 쿨러 릴레이 n 을 그 칸에(쿨러를 켜지 않아도 된다).
+        이미 n 이 든 칸을 다시 누르거나 n 이 없으면(None · [비우기]) 그 칸을 비운다. row · col 은 cooler_grid 기준(사진 기준 · 0 행 = A–B 변 쪽)."""
+        row, col = int(row), int(col)
+        if not (0 <= row < 3 and 0 <= col < 3):
+            raise Rejected("칸 범위 밖")
+        n = None if n is None else int(n)
+        if n is not None and n not in [int(x) for x in self.cfg["cooler_relays"]]:
+            raise Rejected("R%d · 쿨러 릴레이 아님" % n)
+        grid = [list(r) for r in self.cfg["cooler_grid"]]
+        grid[row][col] = None if grid[row][col] == n else n
+        return self.cooler_save(grid)
 
     # ------------------------------------------------------------------
     # 화면에 보낼 상태
@@ -676,8 +692,25 @@ class Prep:
              "text": ("읽기 실패 · 재촬영 필요" if self._empty_unreadable() else "촬영 · %s" % when(emp["t"])) if emp else "없어도 측정 가능"},
             {"done": ready, "text": co_text},
             {"done": cz is not None, "text": ("Z %.2f mm · %s" % (cz, when(ct["t"] if ct else None))) if cz is not None else "높이 없음"},
-            {"done": bool(cool), "text": "설정 완료 · %s" % when(cool["t"]) if cool else "기본 배치 · 확인 필요"},
+            dict(self._cooler_step(cool, when)),
         ]
+
+    def _cooler_step(self, cool, when):
+        """초기 설정 7 의 단계 글: 빈 칸이 있으면 미완료 · 주의 "빈 칸 n개"."""
+        empty = config_mod.grid_empty(self.cfg["cooler_grid"])
+        if empty:
+            return {"done": False, "warn": True, "text": "빈 칸 %d개" % empty}
+        return {"done": bool(cool), "text": "설정 완료 · %s" % when(cool["t"]) if cool else "기본 배치 · 확인 필요"}
+
+    def _cooler_view(self):
+        """초기 설정 7 의 장비 앞 기준 보기(geometry.front_layout). 꼭짓점 4개가 없거나 방향을 못 정하면 None + 까닭."""
+        c = self.cfg
+        lay = geo.front_layout(self.calib.d["coords"]["stage"], c["machine_front_side"], c["machine_right_side"])
+        why = "" if lay else ("장비 앞 기준은 초기 설정 5 후" if not all(n in self.calib.d["coords"]["stage"] for n in CORNERS)
+                              else "꼭짓점 방향 판정 불가 · 장비 앞쪽 · 오른쪽 설정 확인")
+        return {"layout": lay, "why": why,
+                "front": config_mod.SIDE_NAME[c["machine_front_side"]], "right": config_mod.SIDE_NAME[c["machine_right_side"]],
+                "back": config_mod.SIDE_NAME[_opposite(c["machine_front_side"])], "left": config_mod.SIDE_NAME[_opposite(c["machine_right_side"])]}
 
     def view(self):
         cal = self.calib.d
@@ -704,6 +737,7 @@ class Prep:
             "z_floor": self._z_floor_view(),
             "pos_block": self.pos_block,
             "find": self.find_info,
+            "cooler": self._cooler_view(),
         }
 
     def _z_floor_view(self):
@@ -714,3 +748,8 @@ class Prep:
     def publish(self):
         self.c.state.set("prep", self.view())
         self.c.state.set("samples", [dict(s) for s in self.samples])
+
+
+def _opposite(side):
+    """반대쪽(먼 쪽 ↔ 모터 쪽)."""
+    return side[0] + ("_motor" if side.endswith("far") else "_far")
