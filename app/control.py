@@ -3,12 +3,14 @@
 거절은 Rejected(쉬운 한국어 한 문장). 이동은 한 번에 하나만(이동 잠금) - 여러 단계 이동(Z 올리기 → X · Y)이 다른 이동과 섞이지 않게 한다.
 """
 
+import json
 import ntpath
 import os
 import re
 import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Optional
 
 from app import config as config_mod
@@ -139,6 +141,7 @@ class Controller:
         self._shut = False                                          # 종료 처리는 한 번만(창 닫기 · 서버 종료가 둘 다 부른다)
         self._shut_lock = threading.Lock()
         self._quit_fn = None                                        # 창 닫기 함수(창으로 실행했을 때만 - set_quit)
+        self._file_saver = None                                     # 파일 저장 위치 고르기(창으로 실행했을 때만 - set_file_saver)
         self.ui_clients = 0                                         # 연결된 화면(WebSocket) 수 - 없으면 창 X 를 확인 없이 닫는다
         self._threads = []
         meters.LOG = self.logs.visa
@@ -1758,6 +1761,84 @@ class Controller:
         return {"title": "프로그램 종료", "warn_top": top,
                 "steps": ["측정 · 온도 시험 중지", "릴레이 끔(히트건 · 쿨러)", park, "장비 연결 닫기"]}
 
+    # ------------------------------------------------------------------
+    # 설정 내보내기 · 가져오기(전체 설정): 바꾼 값만(Config.changed) · 가져오기는 바뀔 항목을 보여 주고 확인 · 검사 통과해야 적용
+    # ------------------------------------------------------------------
+    def set_file_saver(self, fn):
+        """창으로 실행했을 때 run.py 가 넘기는 "파일 저장 위치 고르기" 함수(fn(기본 이름) → 경로 또는 None)."""
+        self._file_saver = fn
+
+    def settings_export(self):
+        """바꾼 값만 json 으로 저장. 창 실행이면 저장 위치를 고르고(취소하면 아무것도 안 함), 아니면 <데이터 폴더>/settings_export/."""
+        name = time.strftime("settings_%Y%m%d_%H%M%S.json")
+        if self._file_saver is not None:
+            path = self._file_saver(name)
+            if not path:
+                return {"cancelled": True}
+            path = Path(path)
+        else:
+            path = self.cfg.data_path() / "settings_export" / name
+        data = {"program": "VO2 v3", "saved": time.strftime("%Y-%m-%d %H:%M:%S"), "values": self.cfg.changed()}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as e:
+            raise Rejected("설정 내보내기 실패 · %s" % str(e)[:50])
+        self.logs.app("설정 내보내기 · %d개 · %s" % (len(data["values"]), path))
+        return {"path": str(path), "n": len(data["values"])}
+
+    def _import_plan(self, text, skip_pc=True):
+        """가져올 파일 → 바뀔 항목 목록 · 무시한 키 · 건너뛴 PC 값 · 값 오류 · 조합 검사 문제."""
+        try:
+            obj = json.loads(str(text))
+        except ValueError as e:
+            raise Rejected("설정 파일 형식 오류 · %s" % str(e)[:40])
+        vals = obj.get("values", obj) if isinstance(obj, dict) else None
+        if not isinstance(vals, dict):
+            raise Rejected("설정 파일 형식 오류 · 값 목록 없음")
+        out = {"changes": [], "ignored": [], "skipped": [], "errors": [], "problems": []}
+        patch = {}
+        for k, v in vals.items():
+            item = config_mod.BY_KEY.get(k)
+            if item is None:
+                out["ignored"].append(k)
+                continue
+            if skip_pc and k in config_mod.PC_KEYS:
+                out["skipped"].append(item.label)
+                continue
+            try:
+                v = config_mod.check(item, v)
+            except config_mod.ConfigError as e:
+                out["errors"].append(str(e))
+                continue
+            if v != self.cfg[k]:
+                patch[k] = v
+                out["changes"].append({"key": k, "label": item.label, "old": self.cfg[k], "new": v, "pc": k in config_mod.PC_KEYS})
+        allp = lambda d: config_mod.problems(d) + config_mod.temptest_problems(d)     # noqa: E731 - update_settings 와 같은 검사
+        before = set(allp(dict(self.cfg.values)))
+        out["problems"] = [t for t in allp(dict(self.cfg.values, **patch)) if t not in before]
+        return out, patch
+
+    def settings_import_preview(self, text, skip_pc=True):
+        out, _patch = self._import_plan(text, bool(skip_pc))
+        return out
+
+    def settings_import_apply(self, text, skip_pc=True):
+        """확인 창 [적용]: 같은 내용을 다시 검사하고 update_settings(값 검증 + 조합 검사 + 저장) 한 번으로 적용한다."""
+        out, patch = self._import_plan(text, bool(skip_pc))
+        if out["errors"]:
+            raise Rejected(out["errors"][0])
+        if out["problems"]:
+            raise Rejected(out["problems"][0])
+        if not patch:
+            raise Rejected("바뀔 항목 없음")
+        try:
+            self.update_settings(patch)
+        except config_mod.ConfigError as e:
+            raise Rejected(str(e))
+        self.logs.app("설정 가져오기 · %d개 · %s" % (len(patch), " · ".join(sorted(patch))))
+        return {"n": len(patch)}
+
     def set_quit(self, fn):
         """창으로 실행했을 때 run.py 가 넘기는 "창 닫기" 함수(확인 창 [종료] 가 부른다). --no-window 에는 없다."""
         self._quit_fn = fn
@@ -1822,6 +1903,7 @@ COMMANDS = {
     "empty_take": "prep.empty_take", "coord_set": "prep.coord_set", "coord_goto_d": "prep.coord_goto_d", "coord_clear": "prep.coord_clear",
     "marker_learn": "prep.marker_learn", "plate_goto": "prep.plate_goto", "coord_add_here": "prep.coord_add_here", "coord_remove": "prep.coord_remove",
     "samples_find": "prep.samples_find", "sample_use": "prep.sample_use",
+    "settings_export": "settings_export", "settings_import_preview": "settings_import_preview", "settings_import_apply": "settings_import_apply",
     "move_plan": "move_plan", "quit_plan": "quit_plan", "app_quit": "app_quit",
     "focus_find": "prep.focus_find", "focus_nudge": "prep.focus_nudge", "focus_apply": "prep.focus_apply",
     "cooler_only": "prep.cooler_only", "cooler_save": "prep.cooler_save", "cooler_cell": "prep.cooler_cell",

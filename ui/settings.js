@@ -8,9 +8,37 @@ const stg = { items: [], rows: {} };
 
 function buildSettingsPage() {
   stg.body = h("div", { class: "setbody" });
+  /* 설정 내보내기(바꾼 값만) · 가져오기(파일 선택 → 바뀔 항목 확인 → 검사 통과해야 적용 · "PC 값 제외" 기본 켬) */
+  stg.exp = btn("설정 내보내기", async () => { const r = await api("settings_export"); if (r.ok && !r.result.cancelled) toast("내보내기 완료 · " + r.result.n + "개 · " + r.result.path); });
+  stg.file = h("input", { type: "file", accept: ".json,application/json", class: "hidden", onchange: () => importFile() });
+  stg.imp = btn("가져오기", () => { stg.file.value = ""; stg.file.click(); });
+  stg.skipPc = h("input", { type: "checkbox", checked: true });
   const el = h("div", { class: "panel prep-panel" }, h("h3", { text: "전체 설정" }),
-    h("div", { class: "small", text: "변경 즉시 저장" }), stg.body);
+    h("div", { class: "row" }, small("변경 즉시 저장 · 기본값과 다른 값만 저장"), stg.exp, stg.imp, h("label", { class: "row" }, stg.skipPc, small("PC 값 제외")), stg.file),
+    stg.body);
   return { el, render: renderSettingsPage, show: loadSettingsPage };
+}
+const fmtVal = (v) => (v == null ? "없음" : typeof v === "object" ? JSON.stringify(v) : String(v));
+async function importFile() {
+  const f = stg.file.files && stg.file.files[0];
+  if (!f) return;
+  let text = "";
+  try { text = await f.text(); } catch (e) { toast("파일 읽기 실패"); return; }
+  const skip = stg.skipPc.checked;
+  const r = await api("settings_import_preview", { text, skip_pc: skip });
+  if (!r.ok) return;
+  const p = r.result, bad = [...p.errors, ...p.problems];
+  const rows = p.changes.map((c) => h("tr", {}, h("td", { text: c.label + (c.pc ? " (PC 값)" : "") }), h("td", { class: "mono", text: fmtVal(c.old) }),
+    h("td", { text: "→" }), h("td", { class: "mono", text: fmtVal(c.new) })));
+  const body = h("div", { class: "col" },
+    small(f.name + " · 바뀔 항목 " + p.changes.length + "개"),
+    p.changes.length ? h("table", { class: "tb" }, h("tbody", {}, ...rows)) : small("바뀔 항목 없음"),
+    p.skipped.length ? small("PC 값 제외: " + p.skipped.join(" · ")) : null,
+    p.ignored.length ? small("모르는 설정 무시: " + p.ignored.join(" · ")) : null,
+    ...bad.map((t) => h("div", { class: "st-err", text: t })));
+  const go = btn("적용", async () => { const a = await api("settings_import_apply", { text, skip_pc: skip }); if (a.ok) { closeDialog(); toast("가져오기 완료 · " + a.result.n + "개"); loadSettingsPage(); } }, "on");
+  go.disabled = !!bad.length || !p.changes.length || running();
+  openDialog("설정 가져오기", body, [noEnter(btn("취소", closeDialog)), noEnter(go)]);
 }
 async function loadSettingsPage() {
   const j = await getJson("/api/settings");
@@ -41,7 +69,8 @@ function settingRow(it) {
   stg.rows[it.key] = { it, input, browse };
   const label = h("span", {}, it.label, h("span", { class: "info", text: "ⓘ" }));
   tip(label, { title: it.label, text: it.desc || "", hint: it.hint || "" });
-  return h("tr", {}, h("td", { class: "setname" }, label, it.verify ? h("span", { class: "st-warn vfy", text: "실장비 확인 필요" }) : null),
+  return h("tr", {}, h("td", { class: "setname" }, label, it.verify ? h("span", { class: "st-warn vfy", text: "실장비 확인 필요" }) : null,
+      it.pc ? h("span", { class: "vfy pc", text: "PC 값" }) : null),
     h("td", { class: "setval" }, browse ? h("div", { class: "row" }, input, browse) : input), h("td", { class: "setunit small", text: it.unit || "" }));
 }
 function renderSettingsPage() {
@@ -55,6 +84,7 @@ function renderSettingsPage() {
     else r.input.value = v == null ? "" : v;
   }
   const lock = running() || !!(S.temptest && S.temptest.active);  // 측정 · 온도 시험 중에는 설정을 바꾸지 않는다(서버도 거절)
+  if (stg.imp) stg.imp.disabled = lock;
   for (const r of Object.values(stg.rows)) {
     r.input.disabled = lock;
     if (r.browse) {                                              // [찾아보기] 는 창으로 실행했을 때만 보인다(그때만 입력 칸을 줄여 자리를 낸다)

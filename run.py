@@ -58,6 +58,15 @@ def main(argv=None):
                 return got or None
 
             ctrl.set_folder_picker(pick_folder)
+
+            def save_file(name):
+                """설정 내보내기: 저장할 파일 고르기. 취소하면 None."""
+                got = window.create_file_dialog(webview.FileDialog.SAVE, save_filename=name, file_types=("JSON (*.json)",))
+                if isinstance(got, (list, tuple)):
+                    got = got[0] if got else None
+                return got or None
+
+            ctrl.set_file_saver(save_file)
             allow = {"close": False}
 
             def on_closing():

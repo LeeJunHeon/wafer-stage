@@ -59,7 +59,7 @@ class World:
         self.head_rect = (-36.0, -26.0, 36.0, 66.0)   # 헤드 윗면 사각형(핀 가운데 기준 x0 · y0 · x1 · y1)
         # 실제 배선: 히트건 송풍 R1 · 열선 R10 · 쿨러 3묶음 R2 · R3 · R4(릴레이 하나에 쿨러 3개). 그 밖은 미배정
         self.fan_relay, self.element_relay, self.cooler_relays = 1, 10, [2, 3, 4]
-        self.cooler_map = [[2, 2, 2], [3, 3, 3], [4, 4, 4]]    # 실제 쿨러 배치(판 3×3 칸 → 릴레이 번호 · 판의 줄마다 한 묶음)
+        self.cooler_map = [[3, 4, 4], [2, 2, 3], [2, 3, 4]]    # 실제 쿨러 배치(판 3×3 칸 → 릴레이 번호 · 장비 값 = 설정 cooler_grid 기본값과 같은 배선)
 
     # ---- 판 좌표 ↔ 스테이지 ----
     def _uv(self):

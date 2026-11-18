@@ -1,7 +1,11 @@
 """config.py - settings.json 읽기 · 쓰기 · 기본값 · 검증.
 
 설정은 ITEMS 표 한 곳에 모은다(이름 · 기본값 · 한국어 이름 · 단위 · 범위 · 설명). 코드 다른 곳에 숫자를 박지 않는다.
-settings.json 은 장비마다 다른 로컬 파일이라 git 에 넣지 않는다. 없으면 기본값으로 시작한다.
+settings.json 은 PC 마다 다른 로컬 파일이라 git 에 넣지 않는다. 없으면 기본값으로 시작한다.
+**저장은 기본값과 다른 값만 쓴다**(읽을 때는 기본값 위에 덮는다) - 코드 기본값을 바꾸면 바꾼 적 없는 PC 에도 반영된다.
+장비가 한 대라 장비에 딸린 값(쿨러 배치 · 릴레이 배선 · 초점 · 장비 방향)은 코드 기본값으로 둔다(GitHub 로 관리). PC 값(PC_KEYS - 포트 · 주소 · 폴더 ·
+카메라 번호 · 촬영 위치 · 접촉 높이)만 settings.json 에 남는다고 보면 된다. 기본값을 바꿀 때는 DEFAULT_HISTORY 에 예전 기본값을 더한다
+(저장된 값이 예전 기본값과 같으면 "바꾼 적 없음" 으로 보고 지운다 - 새 기본값을 따른다).
 기본값 중 "실장비 확인 필요" 표시는 측정 PC 에서 확인하기 전의 값이다.
 """
 
@@ -78,8 +82,8 @@ ITEMS = (
               desc="고정 화이트밸런스 색온도\n조명을 바꿨을 때 변경"),
          Item("camera_focus_fixed", True, "bool", "초점 고정",
               desc="자동 초점 끔 · 촬영마다 초점이 변하지 않게 함"),
-         Item("camera_focus_value", -1, "int", "초점 값", "", -1, 4095, verify=True,
-              desc="고정 초점 값 · −1 은 미설정(켤 때마다 렌즈가 그 순간 자리에 굳음)\n초기 설정 3 [초점 찾기] 후 [적용] 으로 저장"),
+         Item("camera_focus_value", 240, "int", "초점 값", "", -1, 4095,                # 장비 값(측정 PC 에서 초점 찾기로 정한 값)
+              desc="고정 초점 값 · −1 은 미설정(켤 때마다 렌즈가 그 순간 자리에 굳음)\n초기 설정 3 [초점 찾기] 후 [적용] 으로 저장\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
          # 초점 찾기(초기 설정 3): 판 영역 안의 선명도(라플라시안 분산)가 가장 큰 초점 값을 찾는다
          Item("focus_scan_min", 0, "int", "초점 찾기 시작 값", "", 0, 4095,
               desc="초점 찾기에서 훑는 가장 작은 초점 값"),
@@ -133,20 +137,20 @@ ITEMS = (
               desc="고정 값일 때 수동으로 내릴 수 있는 가장 낮은 Z\n실장비에서 확인한 높이 입력"))
     + _g("릴레이",                                                                        # 릴레이 역할. 그 밖의 릴레이는 미배정(켜는 길이 없다)
          Item("heater_fan_relay", 1, "int", "송풍 릴레이", "번", 1, 10,
-              desc="히트건 송풍(바람) 릴레이 번호\n배선을 바꿨을 때만 변경 · 릴레이 모두 끈 뒤 변경 가능"),
+              desc="히트건 송풍(바람) 릴레이 번호 · 릴레이 모두 끈 뒤 변경 가능\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
          Item("heater_element_relay", 10, "int", "열선 릴레이", "번", 1, 10,
-              desc="히트건 열선 릴레이 번호 · 켤 때 열선 먼저\n배선을 바꿨을 때만 변경 · 릴레이 모두 끈 뒤 변경 가능"),
+              desc="히트건 열선 릴레이 번호 · 켤 때 열선 먼저 · 릴레이 모두 끈 뒤 변경 가능\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
          Item("cooler_relays", [2, 3, 4], "ints", "쿨러 릴레이",
-              desc="쿨러 묶음 릴레이 번호 목록 · 하나에 쿨러 여러 개\n배선을 바꿨을 때만 변경 · 송풍 · 열선과 겹치면 안 됨"),
+              desc="쿨러 묶음 릴레이 번호 목록 · 송풍 · 열선과 겹치면 안 됨\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
          # 쿨러 3x3 자리 배치(판 mm 기준 칸 → 쿨러 릴레이 번호 · 0 행 = A–B 변 쪽 · 0 열 = A–D 변 쪽 = 사진 기준). 같은 릴레이를 여러 칸에 써도 된다.
          # 빈 칸(null)도 된다 - 쿨러 "샘플 아래 구역" 이면 빈 칸의 샘플은 측정 시작을 거절한다(run.gate). 초기 설정 7 에서 정한다
-         Item("cooler_grid", [[2, 2, 2], [3, 3, 3], [4, 4, 4]], "grid", "쿨러 배치", verify=True,
-              desc="판 3×3 칸마다 쿨러 릴레이 번호 · 중복 · 빈 칸 가능\n초기 설정 7 에서 설정 · 저장은 사진 기준(왼쪽 위 = A)"),
+         Item("cooler_grid", [[3, 4, 4], [2, 2, 3], [2, 3, 4]], "grid", "쿨러 배치",          # 장비 값(측정 PC 초기 설정 7)
+              desc="판 3×3 칸마다 쿨러 릴레이 번호 · 사진 기준(왼쪽 위 = A) · 빈 칸 가능\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
          # 장비 앞(사람이 서는 쪽)에서 본 방향: 초기 설정 7 의 칸을 장비 앞 기준으로 돌려 그릴 때만 쓴다(cooler_grid 의 뜻은 그대로)
          Item("machine_front_side", "x_far", "choice", "장비 앞쪽", choices=SIDES,
-              desc="장비 앞(사람이 서는 쪽)이 스테이지의 어느 쪽인지\n초기 설정 7 의 칸 방향에만 사용 · 오른쪽과 다른 축 필요"),
+              desc="장비 앞(사람이 서는 쪽)이 스테이지의 어느 쪽인지 · 초기 설정 7 의 칸 방향\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
          Item("machine_right_side", "y_far", "choice", "장비 오른쪽", choices=SIDES,
-              desc="장비 앞에서 볼 때 오른쪽이 스테이지의 어느 쪽인지\n초기 설정 7 의 칸 방향에만 사용 · 앞쪽과 다른 축 필요"),
+              desc="장비 앞에서 볼 때 오른쪽이 스테이지의 어느 쪽인지 · 초기 설정 7 의 칸 방향\n장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경"),
          Item("cooler_view", "front", "choice", "쿨러 배치 보기", choices=(("front", "장비 앞 기준"), ("photo", "사진 기준")),
               desc="초기 설정 7 의 칸을 그리는 방향\n장비 앞 기준은 초기 설정 5 의 꼭짓점 4개 필요"))
     + _g("히트건 안전",
@@ -326,6 +330,19 @@ ITEMS = (
 )
 BY_KEY = {i.key: i for i in ITEMS}
 
+# PC 값: PC 마다 다르다(settings.json 에 남는다 · 설정 가져오기의 "PC 값 제외" 가 건너뛴다). 그 밖은 장비 · 측정 값(코드 기본값 · 바꾼 값만 저장)
+PC_KEYS = frozenset({"stage_port", "k2110_addr", "k2450_addr", "data_dir", "auto_connect", "blocked_ports", "camera_index",
+                     "nas_dir", "nas_date_folder", "photo_head_xy", "contact_z_mm"})
+
+# 기본값 이력(키 → 예전 기본값들): 저장된 값이 예전 기본값과 같으면 "바꾼 적 없음" 으로 보고 지운다(새 기본값을 따른다 - Config.load 한 번 · 로그 한 줄씩).
+# 기본값을 바꿀 때 예전 값을 여기에 더한다. 없어진 키는 REMOVED_KEYS 에(읽을 때 버리고 로그).
+DEFAULT_HISTORY = {
+    "meter_volt": [1.0],
+    "camera_focus_value": [-1],
+    "cooler_grid": [[[2, 2, 2], [3, 3, 3], [4, 4, 4]]],
+}
+REMOVED_KEYS = {}
+
 
 N_RELAY = 10                                       # 보드의 릴레이 수(펌웨어 V11 · R1~R10)
 ROLE_KEYS = ("heater_fan_relay", "heater_element_relay", "cooler_relays")      # 릴레이 역할(릴레이가 하나라도 켜져 있으면 바꾸지 못한다)
@@ -336,8 +353,10 @@ def _relay_no(n) -> bool:
 
 
 def default_grid(coolers):
-    """쿨러 배치 기본값: 판의 줄(위 → 아래)마다 쿨러 릴레이를 차례로. 쿨러 릴레이가 기본값 [2, 3, 4] 면 ITEMS 의 기본값과 같다."""
+    """쿨러 배치를 되돌릴 값: 쿨러 릴레이가 기본값이면 ITEMS 의 기본값(장비 값). 아니면 판의 줄(위 → 아래)마다 쿨러 릴레이를 차례로."""
     cs = [int(n) for n in coolers]
+    if cs == list(BY_KEY["cooler_relays"].default):
+        return copy.deepcopy(BY_KEY["cooler_grid"].default)
     return [[cs[r % len(cs)]] * 3 for r in range(3)]
 
 
@@ -584,6 +603,11 @@ class Config:
         self.migrated = []                           # 예전 설정을 지금 규칙으로 옮긴 것(로그 한 줄씩 - 경보는 띄우지 않는다)
         self.cooler_reset = False                    # 쿨러 배치를 기본값으로 되돌렸다 → 초기 설정 7 미완료(Controller 가 calib 을 지운다)
 
+    # ---- 바꾼 값 ----
+    def changed(self) -> dict:
+        """기본값과 다른 값만(저장 · 내보내기에 쓴다)."""
+        return {i.key: copy.deepcopy(self.values[i.key]) for i in ITEMS if self.values[i.key] != i.default}
+
     # ---- 읽기 · 쓰기 ----
     def load(self):
         self.values = defaults()
@@ -600,6 +624,14 @@ class Config:
         if not isinstance(raw, dict):
             self.loaded_notes.append("설정 파일 형식 오류 · 기본값 사용")
             return self
+        for k in list(raw):
+            if k in DEFAULT_HISTORY and raw[k] in DEFAULT_HISTORY[k] and raw[k] != BY_KEY[k].default:
+                self.migrated.append("%s · 예전 기본값 %s 저장됨 · 새 기본값 %s 사용" % (
+                    BY_KEY[k].label, json.dumps(raw[k], ensure_ascii=False), json.dumps(BY_KEY[k].default, ensure_ascii=False)))
+                del raw[k]                            # 바꾼 적 없는 값: 새 기본값을 따른다(다음 저장 때 파일에서도 빠진다)
+            elif k in REMOVED_KEYS:
+                self.migrated.append("%s · 없어진 설정 · %s" % (k, REMOVED_KEYS[k]))
+                del raw[k]
         for k, v in raw.items():
             item = BY_KEY.get(k)
             if item is None:
@@ -636,12 +668,12 @@ class Config:
                 json.dumps(raw.get("cooler_grid"), ensure_ascii=False), json.dumps(cool)))
 
     def save(self):
-        """원자적으로 쓴다(임시 파일 → 바꿔치기)."""
+        """기본값과 다른 값만 원자적으로 쓴다(임시 파일 → 바꿔치기). 읽을 때 기본값 위에 덮으므로 바꾸지 않은 값은 코드 기본값을 따른다."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(self.path.parent), prefix=".settings.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(self.values, f, ensure_ascii=False, indent=2)
+                json.dump(self.changed(), f, ensure_ascii=False, indent=2)
             os.replace(tmp, self.path)
         finally:
             if os.path.exists(tmp):
@@ -676,4 +708,4 @@ class Config:
         """화면용 설정 표."""
         return [{"key": i.key, "label": i.label, "unit": i.unit, "value": self.values[i.key], "default": i.default, "kind": i.kind, "group": i.group,
                  "verify": i.verify, "min": i.min, "max": i.max, "choices": [list(c) for c in i.choices],
-                 "desc": i.desc, "hint": hint(i), "folder": i.folder} for i in ITEMS]
+                 "desc": i.desc, "hint": hint(i), "folder": i.folder, "pc": i.key in PC_KEYS} for i in ITEMS]

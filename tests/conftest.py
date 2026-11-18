@@ -180,8 +180,7 @@ def make_ctrl(tmp_path, monkeypatch):
 
     def make(clock=None, scale=0.05, connect=True, meters=True, camera=False, time_scale=1.0, board=None, keep_board=False, **cfg_over):
         cfg = Config(tmp_path / "settings.json").load()
-        # 초점 값: 미설정(−1)이면 카메라 연결 때 "초점 미설정" 주의가 뜬다 - 시험용 카메라는 초점과 상관없이 그리므로 정해 둔 값을 쓴다
-        cfg.update({"data_dir": str(tmp_path / "data"), "camera_width": 320, "camera_height": 240, "camera_focus_value": 400, **cfg_over})
+        cfg.update({"data_dir": str(tmp_path / "data"), "camera_width": 320, "camera_height": 240, **cfg_over})
         cfg.update(real_time_windows(time_scale, set(cfg_over)))       # 배율 때문에 실제 시간 창이 수십 ms 로 줄지 않게
         ctrl = build_ctrl(cfg, clock=clock, scale=scale, time_scale=time_scale, board=board, keep_board=keep_board)
         made.append(ctrl)

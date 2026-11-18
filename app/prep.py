@@ -1013,7 +1013,11 @@ class Prep:
         empty = config_mod.grid_empty(self.cfg["cooler_grid"])
         if empty:
             return {"done": False, "warn": True, "text": "빈 칸 %d개" % empty}
-        return {"done": bool(cool), "text": "설정 완료 · %s" % when(cool["t"]) if cool else "기본 배치 · 확인 필요"}
+        if cool:
+            return {"done": True, "text": "설정 완료 · %s" % when(cool["t"])}
+        if self.cfg["cooler_grid"] == config_mod.BY_KEY["cooler_grid"].default:      # 장비 값(코드 기본값 - 측정 PC 에서 정한 배치)
+            return {"done": True, "text": "장비 기본 배치"}
+        return {"done": False, "text": "기본 배치 · 확인 필요"}
 
     def _cooler_view(self):
         """초기 설정 7 의 장비 앞 기준 보기(geometry.front_layout). 꼭짓점 4개가 없거나 방향을 못 정하면 None + 까닭."""

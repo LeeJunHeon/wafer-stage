@@ -35,6 +35,15 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
 - 프로그램에는 실장비 방식 하나뿐이다. 시험용 장비는 `tests/fakes/` 에만 있고, app 에는 "장비를 꽂는 자리"만 둔다(10번).
 - 명령은 모두 `run_command` 를 지난다(`COMMANDS` 표). 측정 중에는 `RUN_ALLOWED` 만 통과하고 설정도 못 바꾼다(직접 명령은 st · rs · p 만).
 - 설정을 바꾸는 길은 `Controller.update_settings`(PUT /api/settings) 하나다: 값 검증 → 조합 검사(`config.problems`) → 저장.
+- **설정 저장 방식**: settings.json 에는 **기본값과 다른 값만** 쓴다(`Config.changed`). 읽을 때는 기본값 위에 덮는다 - 코드 기본값을 바꾸면 바꾼 적 없는 PC 에도 반영된다.
+  - **장비 값은 코드 기본값**(장비는 한 대 · GitHub 로 관리): `cooler_grid` [[3,4,4],[2,2,3],[2,3,4]] · `machine_front_side` x_far · `machine_right_side` y_far · `cooler_view` front ·
+    `camera_focus_value` 240(초점 고정 켬) · 릴레이 배선(송풍 1 · 열선 10 · 쿨러 [2,3,4]). 설명에 "장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경". 배선 · 설치를 바꾸면 코드를 고친다.
+  - **PC 값**(`config.PC_KEYS` - 포트 · 장비 주소 · 자동 연결 · 사용 안 할 포트 · 카메라 번호 · 데이터 · NAS 폴더 · 촬영 위치 · 접촉 높이)은 settings.json 에 남는다. 전체 설정에 "PC 값" 표시.
+  - **기본값 이력**(`config.DEFAULT_HISTORY` - 키 → 예전 기본값들): 저장된 값이 예전 기본값과 같으면 "바꾼 적 없음" 으로 보고 지운다(새 기본값을 따른다 · `Config.load` 가 한 번 ·
+    로그 "설정 이행 · …" 한 줄씩 · 바로 저장). 없어진 키는 `REMOVED_KEYS`. **기본값을 바꾸거나 키를 없앨 때 여기에 더한다**. 지금: meter_volt 1.0 · camera_focus_value −1 · cooler_grid 줄마다 배치.
+  - **내보내기 · 가져오기**(전체 설정 위): [설정 내보내기] = 바꾼 값만 json(창 실행이면 저장 위치 선택 · 아니면 `<데이터 폴더>/settings_export/`) ·
+    [가져오기] = 파일 선택 → `settings_import_preview`(바뀔 항목 · 무시한 키 · 값 오류 · 조합 검사 문제) 창 → [적용] = `settings_import_apply`(다시 검사 → `update_settings` 한 번).
+    "PC 값 제외" 기본 켬. 오류 · 문제가 있으면 [적용] 이 꺼진다.
   **새로 생기는 값은 모두 `app/config.py` 의 `ITEMS` 에 넣고 설명(`desc`)을 붙인다**(전체 설정 화면 · 말풍선에 나온다). 코드에 숫자를 박지 않는다.
 - 점 데이터 · 사진은 state 에 넣지 않는다: `GET /api/run/points` · `/api/results/*` · `/api/img/{raw|crop|plate|empty}.jpg` · `/api/camera/preview.jpg`.
 - **이미지 파일은 `app/imgio.py` 로만 읽고 쓴다**(빈 판 사진 · plate.jpg · 그래프 PNG …). app/ 에 `cv2.imread` · `cv2.imwrite` 를 쓰지 않는다(시험이 코드를 훑어 막는다).
@@ -60,7 +69,7 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
   자동 초점 끔 → 저장한 값 넣기 → 다시 읽어 비교(`Camera.open` 의 info focus_req · focus_read → `Controller._check_focus`). 다르면 주의 "초점 값 불일치" + 로그,
   미설정이면 주의 "초점 미설정 · 초기 설정 3 에서 초점 찾기". 카메라 열림 로그에 초점 요청 · 읽은 값을 붙인다. cap 은 읽기 스레드와 초점 바꾸기가 `_cap_lock` 으로 번갈아 쓴다.
 - **모르는 값은 지어내지 않는다.** settings 기본값으로 두고 "실장비 확인 필요"(`verify`)로 표시한다. 지금 표시된 것:
-  `plate_size_mm`(154) · `pin_long_axis`("y") · `cooler_grid`(줄마다 R2 · R3 · R4) · `camera_focus_value` · `slow_speed_pps` ·
+  `plate_size_mm`(154) · `pin_long_axis`("y") · `slow_speed_pps` ·
   `heater_start_gap_s`(1 s) · `heater_fan_after_s`(30 s) · 가열 제어 값(`run_heat_rate_c_min` 3 °C/분 · `run_cool_rate_c_min` 3 °C/분 · `heater_band_c` 0.5 · `heater_lead_c` 3 °C ·
   `heater_min_on_s` · `heater_min_off_s` 2 s · `run_heat_hold_s` 0).
 
@@ -186,7 +195,7 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
      [사진 기준으로 보기](`cooler_view` photo · 제목 "판 (왼쪽 위 = A)"). 꼭짓점 4개가 없으면 사진 기준으로만 보이고 "장비 앞 기준은 초기 설정 5 후". 저장은 언제나 사진 기준.
      빈 칸이 있으면 단계 미완료 · 주의 색 "빈 칸 n개". 쿨러 "샘플 아래 구역" 인데 고른 샘플이 빈 칸에 있으면 측정 시작 조건에 "쿨러 배치 빈 칸"(초기 설정 7) ·
      재개는 그 측정의 배치(cond)로 남은 샘플을 보고 "쿨러 배치 빈 칸 · 초기 설정 7" 로 거절(`Runner.empty_cell_names`). 샘플 고르기 · 새 샘플도 gate 입력이다.
-     송풍 · 열선 · 미배정 릴레이는 여기 나오지 않는다. 저장 전(기본 배치)이면 단계 글 "기본 배치 · 확인 필요".
+     송풍 · 열선 · 미배정 릴레이는 여기 나오지 않는다. 저장 전이면 코드 기본값(장비 값)과 같을 때 "장비 기본 배치"(완료) · 다르면 "기본 배치 · 확인 필요".
   - 단계 목록의 글은 값이 없을 때도 비우지 않는다(예: 5 "보정 없음" · 6 "높이 없음").
 - **장비 목록**(초기 설정 1 의 선택 상자 · `devices_refresh` → `state.devlist`): 프로그램을 실행한 컴퓨터 기준. [새로고침] 하나가 세 목록을 뒤에서 다시 읽는다(읽는 동안 `busy`).
   - 스테이지: pyserial `list_ports` 의 포트 + 장치 설명("COM5 · Arduino Mega 2560"). 포트를 열지 않는다.
@@ -319,7 +328,7 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
   정지 뒤 2초(`state.estop_hold`)는 해제 버튼이 꺼져 있고 Esc 도 창을 띄우지 않는다(서버도 거절한다 - 4번 규칙 2).
 - 아래 상태줄의 히트건은 "히트건 꺼짐 · 송풍 · 가열"(가열 = 열선 켜짐 · 송풍 = 바람만), 쿨러는 켜진 쿨러 릴레이 번호.
 - 장비 상태는 아래 상태줄 한 곳, 경보는 경보 띠에만. 거절 문구는 3 초짜리 작은 알림 하나. **같은 상태를 두 곳에 보여 주지 않는다.**
-  확인 창은 셋뿐이다: 비상정지 해제(`openConfirm` · Enter 로 해제) · **자동 이동 전 확인** · **프로그램 종료 확인**. 그 밖의 일에는 띄우지 않는다.
+  확인 창은 넷뿐이다: 비상정지 해제(`openConfirm` · Enter 로 해제) · **자동 이동 전 확인** · **프로그램 종료 확인** · 설정 가져오기(바뀔 항목). 그 밖의 일에는 띄우지 않는다.
   - **자동 이동 전 확인**(`core.js apiMove` → `Controller.move_plan(name, args)` · 설정 `confirm_auto_move` 기본 켬 - 끄면 바로 실행):
     누른 버튼의 주목적이 이동이 아닌데 모터가 움직이는 것 · 여러 단계를 자동으로 움직이는 것 - 초기 설정 2 끝단 접촉 원점 · 3 [촬영](촬영 위치로 갈 때만) · [초점 찾기] ·
     4 [빈 판 촬영] · 5 [A~D 등록](그 등록으로 꼭짓점 4개가 모여 헤드 마커 등록이 이어질 때만) · [마커 재등록] · 접촉 탐색(초기 설정 6 · 수동 제어) ·
