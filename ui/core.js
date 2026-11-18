@@ -136,12 +136,19 @@ function toast(msg) {
   toastT = setTimeout(() => t.classList.add("hidden"), 3000);
 }
 
-/* ---------- 창: 제목 · 내용(넘치면 내용만 안에서 스크롤) · 아래에 항상 보이는 버튼 줄. 높이는 화면 높이 − 80px 를 넘지 않는다 ---------- */
-function openDialog(title, body, buttons) {
-  setKids($("#dlg"), h("div", { class: "box" }, h("h3", { text: title }), h("div", { class: "dlg-body" }, body), h("div", { class: "dlg-foot" }, buttons)));
+/* ---------- 창: 제목 · 내용(넘치면 내용만 안에서 스크롤) · 아래에 항상 보이는 버튼 줄. 높이는 화면 높이 − 80px 를 넘지 않는다
+   창이 떠 있어도 위 띠(비상정지 버튼)와 비상정지 띠는 창 위에 보이고 눌린다(메뉴만 잠긴다). Esc 는 언제나 비상정지.
+   opts.cls = 창 상자에 붙일 class(큰 창) · opts.render = 서버 상태가 올 때마다 창 내용을 고치는 함수(창이 떠 있는 동안만) ---------- */
+let dlgRender = null;
+function openDialog(title, body, buttons, opts) {
+  const o = opts || {};
+  setKids($("#dlg"), h("div", { class: "box " + (o.cls || "") }, h("h3", { text: title }), h("div", { class: "dlg-body" }, body), h("div", { class: "dlg-foot" }, buttons)));
   $("#dlg").classList.remove("hidden");
+  $("#app").classList.add("dlg-open");
+  dlgRender = o.render || null;
+  if (dlgRender && S) dlgRender();
 }
-function closeDialog() { $("#dlg").classList.add("hidden"); }
+function closeDialog() { dlgRender = null; $("#dlg").classList.add("hidden"); $("#app").classList.remove("dlg-open"); }
 
 /* ---------- 말풍선(공용): tip(el, 내용) - 마우스를 올리고 0.3초 뒤에 뜨고, 떠나면 닫힌다. 화면 밖으로 나가지 않는다.
    내용 = 글, 또는 {title, text, hint}, 또는 그것을 돌려주는 함수. 브라우저 기본 title 은 쓰지 않는다(느리고 작다). ---------- */
@@ -351,6 +358,7 @@ function renderTab() {
 }
 function render() {
   renderEstop(); renderStatus(); renderAlarms(); renderTab();
+  if (dlgRender) { try { dlgRender(); } catch (e) { console.error(e); } }
 }
 function showOffline(on) { $("#offline").classList.toggle("hidden", !on); }
 function connectWS() {

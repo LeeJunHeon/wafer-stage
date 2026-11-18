@@ -54,7 +54,7 @@ function renderSettingsPage() {
     else if (r.it.kind === "grid" || r.it.kind === "ints" || r.it.kind === "xy" || r.it.kind === "list") r.input.value = v == null ? "" : JSON.stringify(v);
     else r.input.value = v == null ? "" : v;
   }
-  const lock = running();
+  const lock = running() || !!(S.temptest && S.temptest.active);  // 측정 · 온도 시험 중에는 설정을 바꾸지 않는다(서버도 거절)
   for (const r of Object.values(stg.rows)) {
     r.input.disabled = lock;
     if (r.browse) {                                              // [찾아보기] 는 창으로 실행했을 때만 보인다(그때만 입력 칸을 줄여 자리를 낸다)

@@ -21,6 +21,7 @@ from app.devices import stage as stage_mod
 from app.devices.stage import PPMM, Stage, StageError
 from app.logs import Logs
 from app.jobs.run import Runner
+from app.jobs.temptest import TempTest
 from app.prep import Prep
 from app.safety import BY_MANUAL, BY_RUN, Rejected, Safety
 from app.state import ALARM, NOTICE, State
@@ -108,6 +109,7 @@ class Controller:
         self.calib = Calib(self.cfg.data_path())
         self.prep = Prep(self)
         self.runner = Runner(self)                                  # 측정(app/jobs/run.py)
+        self.temptest = TempTest(self)                              # 온도 시험(app/jobs/temptest.py - 수동 제어 탭)
         self.heater_trip = ""                                       # 안전 규칙이 열선을 마지막으로 끈 이유
         self.heater_trips = 0                                       # 안전 규칙이 열선을 끈 횟수(측정이 "안전 규칙이 먼저 껐다" 를 알아챈다)
         self._heater_lock = threading.RLock()                       # 히트건 켜고 끄는 순서는 한 번에 하나(켜기 · 끄기 · 안전 감시 · 송풍 늦게 끄기)
@@ -142,6 +144,7 @@ class Controller:
         self.publish_cfg()
         self.prep.publish()
         self.runner.publish()
+        self.temptest.publish()
         # 측정 시작 조건(gate)의 입력이 바뀌는 길을 여기 한 곳에 모은다 → gate_inputs_changed:
         #   state 의 devices(장비 연결 · 끊김 · 오류) · homed(세 축 원점) · estop_locked(비상정지) · cfg(접촉 높이 등 설정) /
         #   calib 저장(판 영역 · 좌표 보정 · 접촉 높이 기록) / prep.pos_block(헤드 위치 확인)
@@ -405,6 +408,7 @@ class Controller:
             self._heater_off_logged = True
             self.logs.app("히트건 끔 · 비상정지")
         self.runner.on_estop()                                      # 측정도 멈춘다(정리는 측정 스레드가: 히트건 · 출력 · 쿨러 끔, 핀은 그대로)
+        self.temptest.on_estop()                                    # 온도 시험도 바로 끝난다(기록 · 요약은 저장)
         with self._plock:
             self._jog_pending = None                                # 대기 중이던 조그를 지운다
         self._monitor_on = False
@@ -706,8 +710,12 @@ class Controller:
         return {"relays": list(self.state.get("relays"))}
 
     def relays_off(self):
-        """[전체 끄기]: 히트건은 끄는 순서대로(열선 끔 → 송풍은 heater_fan_after_s 뒤), 그 밖의 릴레이는 바로 끈다."""
+        """[전체 끄기]: 히트건은 끄는 순서대로(열선 끔 → 송풍은 heater_fan_after_s 뒤), 그 밖의 릴레이는 바로 끈다.
+        온도 시험 중이면 시험을 [정지] 하고 그 정리(히트건 끄는 순서 · 쿨러 끔)가 끝나기를 기다린 뒤 나머지를 끈다 - 끄기는 언제나 된다."""
         self._need_stage()
+        if self.temptest.active:
+            self.temptest.stop()
+            self.temptest.join(timeout=10)
         self.heater_off(BY_MANUAL)
         fan, el, _ = self._roles()
         for n in range(1, N_RELAY + 1):
@@ -1032,6 +1040,11 @@ class Controller:
     def run_active(self) -> bool:
         r = self.runner
         return bool(r is not None and r.active)
+
+    def contact_busy(self) -> bool:
+        """접촉 탐색이 K2450 을 쓰는 중."""
+        with self._k2450_cv:
+            return self._k2450_user == USE_CONTACT
 
     def _no_run(self, what: str):
         """측정 중에는 손으로 하는 이동 · 릴레이 · 측정을 막는다(비상정지와 읽기만 된다)."""
@@ -1358,13 +1371,16 @@ class Controller:
         예전 파일에 이미 있던 문제 때문에 다른 값을 못 고치는 일이 없게(그 문제는 측정 시작이 막는다)."""
         if self.run_active():
             raise Rejected("측정 중 실행 불가")
+        if self.temptest.active:
+            raise Rejected("온도 시험 중 실행 불가")                  # 시험이 쓰는 값 · 릴레이 역할이 도중에 바뀌지 않게
         old = dict(self.cfg.values)
         new = self.cfg.checked(patch)
         roles_changed = [k for k in config_mod.ROLE_KEYS if k in new and new[k] != old[k]]
         if roles_changed and (any(r for r in self.state.get("relays")) or self._heater_starting):
             raise Rejected("릴레이 모두 끈 뒤 변경")                 # 켜진 릴레이의 뜻(송풍 · 열선 ↔ 쿨러)이 도중에 바뀌면 안전 감시가 엉뚱한 릴레이를 본다
-        before = set(config_mod.problems(old))
-        bad = [t for t in config_mod.problems(dict(old, **new)) if t not in before]
+        allp = lambda v: config_mod.problems(v) + config_mod.temptest_problems(v)     # noqa: E731
+        before = set(allp(old))
+        bad = [t for t in allp(dict(old, **new)) if t not in before]
         if bad:
             raise Rejected(bad[0])
         self.cfg.values.update(new)
@@ -1474,7 +1490,7 @@ class Controller:
     def _temp_loop(self):
         while self._alive:
             dev = self.k2110
-            if dev is not None and dev.is_open and not self.runner.feeding:      # 측정이 읽는 동안에는 따로 읽지 않는다(측정이 그 값을 넘겨 준다)
+            if dev is not None and dev.is_open and not self.runner.feeding and not self.temptest.feeding:      # 측정 · 온도 시험이 읽는 동안에는 따로 읽지 않는다(그 값을 넘겨 준다)
                 try:
                     self.feed_temperature(dev.read_temp())
                     if self.state.get("devices", "k2110", "state") == "오류":
@@ -1490,6 +1506,8 @@ class Controller:
         if self.run_active() and name not in RUN_ALLOWED:           # 측정 중에는 손으로 하는 이동 · 릴레이 · 측정을 막는다(측정은 명령이 아니라 메서드를 직접 부른다)
             if not (name == "raw" and (args or {}).get("target") == "stage" and str((args or {}).get("line", "")).strip().split(" ")[0].lower() in ("st", "rs", "p")):
                 raise Rejected("측정 중 실행 불가")
+        if self.temptest.active and name in TEMPTEST_BLOCKED:        # 온도 시험이 히트건 · 쿨러 · 안전 감시를 쓰는 중
+            raise Rejected("온도 시험 중 실행 불가")
         obj = self
         if "." in fn:                                               # "prep.photo_take" → self.prep.photo_take
             owner, fn = fn.split(".", 1)
@@ -1513,6 +1531,9 @@ class Controller:
         if self.runner.active:                                      # 측정 중에 닫으면 측정부터 멈춘다(정리: 히트건 · 출력 · 쿨러 끔 → 핀 맨 위 · 파일 닫기)
             self.runner._stop = True
             self.runner.join(timeout=20)
+        if self.temptest.active:                                    # 온도 시험도 멈춘다(정리 · 기록 저장)
+            self.temptest._stop = True
+            self.temptest.join(timeout=20)
         self._alive = False
         self._heater_why = "종료"
         try:
@@ -1550,7 +1571,13 @@ COMMANDS = {
     "run_start": "runner.start", "run_resume": "runner.resume", "run_stop": "runner.stop", "run_skip": "runner.skip",
     "run_pause_after": "runner.set_pause_after", "run_requeue": "runner.requeue",
     "result_open_folder": "result_open_folder", "result_nas_copy": "result_nas_copy",
+    # 온도 시험(app/jobs/temptest.py)
+    "temptest_start": "temptest.start", "temptest_stop": "temptest.stop", "temptest_open_folder": "temptest.open_folder",
 }
+
+# 온도 시험 중에 거절하는 명령: 자동 측정 · 접촉 탐색 · 쿨러 [켜 보기] · 히트건 수동 버튼 · 개별 릴레이 버튼(시험이 히트건 · 쿨러를 쓴다).
+# [전체 끄기] 는 시험을 [정지] 한 뒤 끈다(끄기는 언제나 된다). 비상정지는 명령 줄을 거치지 않는다.
+TEMPTEST_BLOCKED = {"run_start", "run_resume", "contact_find", "cooler_only", "heater_on", "heater_off", "heater_element", "relay_on", "relay_off"}
 
 
 # 측정 중에도 되는 명령(읽기 · 측정 조작 · 경보 지우기). 그 밖의 명령은 측정 중에 거절한다. 비상정지는 명령 줄을 거치지 않는다.

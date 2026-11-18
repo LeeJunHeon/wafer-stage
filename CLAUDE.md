@@ -22,9 +22,10 @@ app/calib.py            초기 설정 단계에서 정한 값(calib/calib.json �
 app/prep.py             초기 설정 2~7단계 · 사진 · 위치 확인 · 샘플 찾기 명령
 app/vision/             샘플 찾기: fixed_detect.py · refdiff.py(v2 그대로) + find.py(입력 · 출력 맞춤)
 app/contact.py          전기로 접촉 찾기(v2 방식 · 값)
-app/jobs/               측정: run.py(순서 · 한계 · 가열 제어 · 정리) · files.py(파일 형식 · NAS) · analysis.py(전이 온도) · heater.py(가열 장치 · 가열 속도 제어 판정)
+app/jobs/               측정: run.py(순서 · 한계 · 가열 제어 · 정리) · files.py(파일 형식 · NAS) · analysis.py(전이 온도) · heater.py(가열 장치 · 가열 속도 제어 판정) ·
+                        temptest.py(온도 시험 - 수동 제어 탭)
 app/results.py          측정 결과 탭: 저장된 기록 읽기 · 그림 저장 · NAS 다시 복사 · 폴더 열기
-ui/                     화면(빌드 없는 HTML · CSS · JS): core.js · jog.js · graph.js · prep.js · manual.js(수동 제어 탭) · measure.js · results.js · settings.js · app.js
+ui/                     화면(빌드 없는 HTML · CSS · JS): core.js · jog.js · graph.js · prep.js · manual.js(수동 제어 탭) · temptest.js(온도 시험 창) · measure.js · results.js · settings.js · app.js
 tests/                  pytest 빠른 시험(전체 2 분 안) · conftest.py(시험용 장비 · 시계 꽂기 · 초기 설정 값 넣기)
 tests/fakes/            시험용 장비(시험만 쓴다): world.py(세계 하나 · 배선) · fake_v11.py · fake_visa.py(+ 열 모델) · fake_camera.py · fake_heatgun.py(인터락)
 firmware/stage_v11/     펌웨어(고치지 않는다)
@@ -189,7 +190,7 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
   - 끈 뒤 더 오르는 구간도 기록한다. 화면 오른쪽(가열 중) 한 줄 "목표 52.3 °C · 열선 켜짐"(`state.run.heat`).
 - 읽는 간격마다 K2110 한 번 · K2450 한 번. 그 온도를 안전 감시에도 넘긴다(`feed_temperature`).
 - 쿨러: "샘플 아래 구역만"(`cooler_grid`) / "전부" / "안 씀". 가열 장치는 `heater.py RelayHeater` - 하드웨어가 바뀌면 여기만 고친다.
-- 한계(settings `run_*`, v2 값): **열선이 켜져 있던 시간**이 45 s 쌓였는데 0.5 °C 도 안 오르면 그 샘플 실패(`ramp` 는 열선이 꺼진 동안 식은 만큼 기준을 낮춘다 ·
+- 한계(settings `run_*`, v2 값): **열선이 켜져 있던 시간**(온도를 읽은 시각 기준 - 저항 읽기 동안은 다음 온도에 반영)이 45 s 쌓였는데 0.5 °C 도 안 오르면 그 샘플 실패(`ramp` 는 열선이 꺼진 동안 식은 만큼 기준을 낮춘다 ·
   유지 중에는 보지 않는다) · 1 초에 5 °C 넘게 오르면 주의 한 번(열선은 끄지 않는다) · 냉각이 180 s 동안 0.3 °C 도 안 내려가면 그 단계를 정상으로 끝냄 ·
   한 단계 1800 s 넘으면 실패(가열 단계 전체 시간) · 전류 1e-9 A 아래 5번 연속이면 주의 "핀이 떨어진 것 같음" · 안전 규칙이 열선을 먼저 끄면(`heater_trips`) 냉각으로 넘어가고 "가열 끝 온도 미도달".
 - 접촉 실패 · 샘플 실패는 그 샘플만 "실패 · 이유"로 두고 다음으로. 장비 오류(연결 끊김 · 온도 3번 연속 못 읽음 · 파일 못 씀)는 전체를 멈추고 경보.
@@ -203,6 +204,22 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
   `refresh_gate` 와 `publish` 는 같은 잠금 안에서 계산하고 쓴다(먼저 계산한 예전 목록이 나중에 써지지 않게). `state.watch` 의 함수는 상태 잠금 밖에서, 값이 실제로 바뀔 때만 불린다.
   gate 의 입력을 새로 만들면 이 길에 같이 넣는다(곳곳에 publish 를 붙이지 않는다).
 - 화면에 주는 점(`/api/run/points`)은 파일에 쓴 값 그대로다(`%.7E` 로 쓴 값을 다시 읽은 수). 측정 때 낸 요약과 측정 결과 탭이 파일에서 다시 낸 요약이 똑같다.
+
+## 6-1. 온도 시험 (app/jobs/temptest.py · 수동 제어 탭 [온도 시험])
+- 목적: 샘플 · 저항계 · 모터 없이 히트건 · 쿨러의 온도 거동만 잰다(도달 시간 · 최대 가열 속도 · 넘침 · 냉각 시간 → 히트건 · 가열 제어 값 정하기).
+- 조건은 자동 측정과 같은 설정(`run_start_c` · `run_heater_off_c` · `run_cool_end_c` · `run_heat_mode` · `run_heat_rate_c_min` · `heater_band_c` ·
+  `heater_min_on_s` · `heater_min_off_s` · `run_heat_hold_s` · `run_fan_during_cool` · `run_stall_s` · `run_stall_c` · `run_phase_limit_s`) +
+  `temp_test_coolers`(쿨러 릴레이 안 · 빈 목록 가능) · `temp_test_interval_s`(≥ 온도 읽기 시간 · < 온도 못 읽음 허용 × 사용 비율) · `temp_test_mark_c` · `temp_test_precool`
+  (`config.temptest_problems` · 시작 때 `heat_problems` 도). 창에서 가열 방식 · 속도를 바로, 나머지는 [조건] 으로 고친다(같은 설정 값).
+- 순서: 쿨러 켬 → 예비 냉각(시작 온도까지 · 정체면 그 온도에서 시작 + 주의) → 히트건 켜기(Controller 히트건 함수 · 측정 주체 규칙) →
+  full · ramp(`ramp_setpoint` · `element_decision` 같은 함수) · 유지 → 열선 끔(송풍은 `run_fan_during_cool`) → 냉각 끝 온도 또는 정체 → 히트건 끄는 순서 · 쿨러 끔.
+  쿨러는 시험 내내 켜 둔다. 가열 무반응 판정은 쓰지 않는다(샘플 판정) - 열선 연속 최대 시간 · 한 단계 시간 한도가 묶는다.
+- [정지] · 비상정지 · 안전 차단 · 온도 못 읽음(3번) · 온도계 오류 · 통신 끊김 · 한 단계 한도: 같은 정리 후 결과 "정지" · "비상정지" · "중단 · 이유", 기록 · 요약 저장.
+- 서로 막기: 시험 중 `TEMPTEST_BLOCKED`(자동 측정 · 접촉 탐색 · 쿨러 [켜 보기] · 히트건 버튼 · 개별 릴레이) · 설정 변경 거절. [전체 끄기] 는 시험을 정지하고 끈다.
+  시험 시작은 자동 측정 · 접촉 탐색 중 · 릴레이(히트건 · 쿨러 · 송풍 늦게 끄기)가 켜져 있으면 거절. 측정 시작과는 `runner._lock` 으로 엇갈리지 않는다.
+- 저장: `<데이터 폴더>/temp_test/YYYYMMDD_HHMMSS/` temp.csv(UTF-8 BOM · 시각 · 경과 · 단계 · 온도 · 목표 · 열선 · 송풍 · 쿨러) · summary.txt(조건 + 결과) ·
+  graph.png(서버가 OpenCV 로 그림 - 글자는 영문). 로그: 시작 · 끝 · 요약 한 줄. 화면: `state.temptest` + `GET /api/temptest/points`.
+- 창(`openDialog` 의 `cls` · `render`)이 떠 있어도 위 띠(비상정지)는 창 위에서 눌린다(메뉴만 잠김). 창을 닫아도 시험은 계속된다.
 
 ## 7. 저장 형식 (app/jobs/files.py — LabVIEW 와 같게, v2 함수 그대로)
 - PC: `<데이터 폴더>/<YYYY-MM-DD>/<HHMMSS>_<묶음>/`

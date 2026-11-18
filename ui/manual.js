@@ -2,7 +2,8 @@
    카메라 "실시간" = 실시간 미리보기. "판 사진" = 마지막으로 찍은 판 사진(자동 측정 탭과 같은 사진) + 샘플 윤곽 · 이름 + 지금 핀 자리(십자).
    실시간 화면을 보정해 보여 주지 않는 까닭: 헤드가 판 위에 있으면 헤드가 판을 가린다.
    장비가 연결되지 않았으면 그 장비가 필요한 버튼을 끄고 이유를 한 줄 보인다(서버도 거절한다 - 화면은 미리 알려 준다).
-   히트건 = 송풍 + 열선. [켜기] 는 서버가 열선 → 송풍 순서로 켠다 · [끄기] 는 열선을 끄고 송풍은 heater_fan_after_s 뒤에 끈다. */
+   히트건 = 송풍 + 열선. [켜기] 는 서버가 열선 → 송풍 순서로 켠다 · [끄기] 는 열선을 끄고 송풍은 heater_fan_after_s 뒤에 끈다.
+   [온도 시험] 은 큰 창(ui/temptest.js)을 연다. 온도 시험 중에는 히트건 · 쿨러 버튼 · 접촉 탐색을 끈다([전체 끄기] 는 시험을 정지하고 끈다). */
 "use strict";
 
 const man = {};
@@ -85,10 +86,13 @@ function buildManual() {
   man.coolSig = "";
   man.allOff = btn("전체 끄기", () => api("relays_off"));
   man.relWhy = h("div", { class: "why hidden" });
+  man.tt = btn("온도 시험", openTempTest);
+  man.ttLine = h("span", { class: "small nowrap" });
   const relay = h("div", { class: "panel" }, h("h3", { text: "릴레이 시험" }),
     h("div", { class: "row" }, h("span", { class: "lbl small", text: "히트건" }), man.hOn, man.hEl, man.hOff, man.hState),
     h("div", { class: "small", text: "켜는 순서: 열선 → 송풍(자동)" }),
     h("div", { class: "row" }, h("span", { class: "lbl small", text: "쿨러" }), man.coolBox, h("span", { class: "sp" }), man.allOff),
+    h("div", { class: "row" }, h("span", { class: "lbl small", text: "온도" }), man.tt, man.ttLine),
     man.relWhy);
 
   /* ---- 오른쪽 맨 아래: 직접 명령(작게 - 결과는 최근 몇 줄만 보이는 상자, 넘치면 그 안에서만 스크롤) ---- */
@@ -145,6 +149,7 @@ function heaterText(ht) {
 function renderManual() {
   const c = S.cfg || {};
   const busy = running(), locked = !!S.estop_locked;              // 측정 중 · 비상정지 중: 이동 · 릴레이 켜기가 꺼진다(끄기는 된다)
+  const tts = S.temptest || {}, ttOn = !!tts.active;              // 온도 시험 중: 히트건 · 쿨러 버튼 · 접촉 탐색은 시험이 쓴다
   const stage = devOk("stage"), tOk = devOk("k2110"), rOk = devOk("k2450");
   man.temp.textContent = S.temp.value == null ? "—" : S.temp.value.toFixed(1) + " °C";
   man.ohm.textContent = fmtOhm(S.resistance.ohm);
@@ -169,16 +174,16 @@ function renderManual() {
   const search = c.contact_mode === "search";                    // [접촉 탐색] 은 접촉 방식이 전기 탐색일 때만 보인다
   man.contact.b.classList.toggle("hidden", !search);
   man.contactLine.classList.toggle("hidden", !search);
-  man.contact.b.disabled = !!(ct.active || whyContact());
+  man.contact.b.disabled = !!(ct.active || whyContact() || ttOn);
   man.contactLine.textContent = contactLine(ct) || (whyContact() && !busy ? whyContact() : "");
 
   /* 릴레이 시험: 스테이지 연결 필요. 히트건 줄 · 쿨러 줄(cooler_relays 만) */
   const ht = S.heater || {}, hOn = !!(ht.fan || ht.element);
-  const relayBlock = busy ? "측정 중 사용 불가" : !stage ? NEED.stage : locked ? "비상정지 해제 필요" : "";
+  const relayBlock = busy ? "측정 중 사용 불가" : ttOn ? "온도 시험 중 · 창의 [정지] 사용" : !stage ? NEED.stage : locked ? "비상정지 해제 필요" : "";
   man.hOn.disabled = !!relayBlock || !!ht.element;
   man.hEl.textContent = ht.element ? "열선 끄기" : "열선 켜기";
-  man.hEl.disabled = busy || !stage || !ht.fan || (!ht.element && locked);        // 송풍이 켜진 동안만(끄기는 비상정지 중에도)
-  man.hOff.disabled = busy || !stage || !hOn;
+  man.hEl.disabled = busy || ttOn || !stage || !ht.fan || (!ht.element && locked);        // 송풍이 켜진 동안만(끄기는 비상정지 중에도)
+  man.hOff.disabled = busy || ttOn || !stage || !hOn;
   man.hState.textContent = heaterText(ht);
   man.hState.className = "small nowrap" + (hOn ? " st-warn" : "");
   const cool = c.cooler_relays || [];
@@ -192,10 +197,12 @@ function renderManual() {
     const on = !!S.relays[n - 1];
     b.classList.toggle("on", on);
     b.textContent = "R" + n + (on ? " 켜짐" : "");
-    b.disabled = busy || !stage || (locked && !on);
+    b.disabled = busy || ttOn || !stage || (locked && !on);
   }
   man.allOff.disabled = busy || !stage;
   setWhy(man.relWhy, relayBlock);
+  man.tt.classList.toggle("on", ttOn);
+  man.ttLine.textContent = ttOn ? "온도 시험 중 · " + (tts.phase || "") : tts.result ? "마지막 결과 · " + tts.result : "히트건 · 쿨러 온도만 측정";
 
   /* 카메라: 판 사진 보기 · 눌러서 이동 · 보정 점 추가 */
   const pr = S.prep || {}, hasPlate = !!pr.plate, ready = !!(pr.coords && pr.coords.ready);

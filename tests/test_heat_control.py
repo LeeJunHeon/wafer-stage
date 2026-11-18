@@ -128,7 +128,9 @@ def test_full_mode_keeps_the_element_on(ready_ctrl):
 
 
 def test_hold_time_keeps_the_end_temperature(ready_ctrl):
-    """가열 끝 온도에 닿으면 유지 시간 동안 같은 방식으로 유지한 뒤 끝."""
+    """가열 끝 온도에 닿으면 유지 시간 동안 같은 방식으로 유지한 뒤 끝.
+    유지는 (사양대로) 온도가 85 °C 에 닿은 순간 시작한다. 히트건이 목표선보다 1~2 °C 앞서 오르면 그 순간 목표선은 아직 85 미만일 수 있다 -
+    그래서 목표가 85 인 것은 "목표선이 85 에 닿은 뒤로" 만 본다."""
     ctrl, sid = _one_sample(ready_ctrl, run_heat_rate_c_min=20.0, run_heat_hold_s=120.0)
     ctrl.run_command("run_start")
     _finish(ctrl)
@@ -138,7 +140,9 @@ def test_hold_time_keeps_the_end_temperature(ready_ctrl):
     first = next(i for i, r in enumerate(heat) if r["T"] >= 85.0)
     hold = heat[first:]
     assert hold[-1]["t"] - hold[0]["t"] >= 120.0 - 1e-6, "유지 시간만큼 더 가열 단계"
-    assert all(r["sp"] == 85.0 for r in hold) and any(not r["el"] for r in hold) and any(r["el"] for r in hold[len(hold) // 2:]), "유지 중에도 열선을 켜고 끈다"
+    top = next(i for i, r in enumerate(heat) if r["sp"] >= 85.0)
+    assert all(r["sp"] == 85.0 for r in heat[top:]), "목표선이 85 에 닿은 뒤로는 85 유지"
+    assert any(not r["el"] for r in hold) and any(r["el"] for r in hold[len(hold) // 2:]), "유지 중에도 열선을 켜고 끈다"
     late = hold[len(hold) // 2:]
     step = max(abs(b["T"] - a["T"]) for a, b in zip(heat, heat[1:]))          # 기록된 점 사이의 가장 큰 온도 변화(판정 간격은 컴퓨터 속도에 따라 다르다)
     mean = sum(r["T"] for r in late) / len(late)

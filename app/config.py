@@ -144,6 +144,15 @@ ITEMS = (
               desc="측정 때 켜는 쿨러\n샘플 아래 구역은 초기 설정 7 의 배치 사용"),
          Item("run_cooler_during_heat", True, "bool", "가열 중 쿨러 켬",
               desc="가열 중에도 쿨러를 켠 채로 둠\n끄면 가열하는 동안 쿨러 끔"))
+    + _g("온도 시험",                                                                      # 수동 제어 탭 [온도 시험]: 샘플 · 저항계 · 모터 없이 히트건 · 쿨러의 온도 거동만 잰다
+         Item("temp_test_coolers", [2, 3, 4], "ints", "온도 시험 쿨러", min=0, max=10,      # 기본 = 쿨러 릴레이 전부
+              desc="온도 시험 동안 켜 둘 쿨러 릴레이 목록 · 비우면 [] 쿨러 없이\n쿨러 릴레이 안의 번호만 가능"),
+         Item("temp_test_interval_s", 0.5, "float", "온도 시험 읽기 간격", "s", 0.05, 10,
+              desc="온도 시험에서 온도를 읽고 기록하는 간격\n온도 읽기 시간 이상 · 온도 못 읽음 허용 시간보다 충분히 짧게"),
+         Item("temp_test_mark_c", 5.0, "float", "도달 표 온도 간격", "°C", 0.5, 50,
+              desc="도달 표에 걸린 시간을 적는 온도 간격 · 5 면 35 · 40 · 45 °C …\n촘촘히 볼 때 줄임"),
+         Item("temp_test_precool", True, "bool", "온도 시험 예비 냉각",
+              desc="가열 전에 쿨러로 시작 온도까지 냉각\n끄면 쿨러만 켜고 바로 가열"))
     + _g("판 · 핀",
          Item("plate_size_mm", 154.0, "float", "판 사각형 한 변", "mm", 10, 400, verify=True,
               desc="판에 새겨진 사각형의 한 변 길이 · 좌표의 기준\n판을 바꿨을 때 실측 값으로 변경"),
@@ -296,8 +305,9 @@ def check(item: Item, value: Any) -> Any:
         if not ok or not all(_relay_no(n) for n in nums):
             raise ConfigError("%s: 3×3 칸에 릴레이 번호 1~%d 입력 필요" % (name, N_RELAY))
         return [[int(n) for n in r] for r in value]
-    if item.kind == "ints":
-        if not isinstance(value, list) or not 1 <= len(value) <= N_RELAY or not all(_relay_no(n) for n in value) or len(set(value)) != len(value):
+    if item.kind == "ints":                       # min = 0 이면 빈 목록도 된다(온도 시험 쿨러 - 쿨러 없이 시험)
+        lo = 0 if item.min == 0 else 1
+        if not isinstance(value, list) or not lo <= len(value) <= N_RELAY or not all(_relay_no(n) for n in value) or len(set(value)) != len(value):
             raise ConfigError("%s: 릴레이 번호 1~%d 목록 필요 · 중복 없이 · 예 [2, 3, 4]" % (name, N_RELAY))
         return [int(n) for n in value]
     if item.kind == "choice":
@@ -351,7 +361,7 @@ def hint(item: Item) -> str:
     if item.unit:
         parts.append("단위 %s" % item.unit)
     parts.append("기본값 %s" % _show(item, item.default))
-    if item.min is not None and item.max is not None:
+    if item.min is not None and item.max is not None and item.kind != "ints":
         parts.append("범위 %g~%g" % (item.min, item.max))
     return " · ".join(parts)
 
@@ -359,27 +369,9 @@ def hint(item: Item) -> str:
 def problems(v: dict) -> list:
     """설정 조합 검사: 값 하나하나는 맞아도 같이 쓰면 안 되는 조합을 찾는다. 문제마다 사람이 읽는 한 줄. 없으면 [].
     설정 저장(PUT)과 측정 시작 · 재개가 이 함수 하나를 쓴다(app/control.py update_settings · app/jobs/run.py start · resume)."""
-    out = []
-    # ---- 온도 ----
-    if not float(v["run_heater_off_c"]) < float(v["heater_max_c"]):
-        out.append("가열 끝 온도 %g °C · 차단 온도 %g °C 미만 필요" % (v["run_heater_off_c"], v["heater_max_c"]))
-    if not float(v["run_cool_end_c"]) < float(v["run_heater_off_c"]):
-        out.append("냉각 끝 온도 %g °C · 가열 끝 온도 %g °C 미만 필요" % (v["run_cool_end_c"], v["run_heater_off_c"]))
-    if not float(v["run_start_c"]) < float(v["run_heater_off_c"]):
-        out.append("시작 온도 %g °C · 가열 끝 온도 %g °C 미만 필요" % (v["run_start_c"], v["run_heater_off_c"]))
+    out = heat_problems(v)
     if not float(v["run_no_rise_s"]) < float(v["heater_max_on_s"]):
         out.append("가열 무반응 시간 %g초 · 열선 연속 최대 시간 %g초 미만 필요" % (v["run_no_rise_s"], v["heater_max_on_s"]))
-    # ---- 가열 제어: 예상 가열 시간이 한 단계 시간 한도 안 · 최소 켜짐 < 연속 최대 · 허용 폭 > 0 ----
-    if v["run_heat_mode"] == "ramp":
-        heat_s = heat_time_s(v)
-        if not heat_s < float(v["run_phase_limit_s"]):
-            out.append("예상 가열 시간 %.0f초 · 한 단계 시간 한도 %g초 미만 필요 · 가열 속도 확인" % (heat_s, v["run_phase_limit_s"]))
-    if not float(v["heater_min_on_s"]) < float(v["heater_max_on_s"]):
-        out.append("열선 최소 켜짐 %g초 · 열선 연속 최대 시간 %g초 미만 필요" % (v["heater_min_on_s"], v["heater_max_on_s"]))
-    if not float(v["heater_band_c"]) > 0:
-        out.append("목표 아래 허용 폭 %g °C · 0 보다 커야 함" % v["heater_band_c"])
-    # ---- 릴레이 역할: 송풍 · 열선 · 쿨러가 서로 겹치지 않는다 · 쿨러 배치는 쿨러 릴레이만 ----
-    out += role_problems(v)
     # ---- 읽기 시간: 측정 중 온도는 측정 간격마다 읽는다. 한 회차가 온도 못 읽음 허용 시간에 가까우면 안전 감시가 히트건을 꺼서
     #      모든 샘플이 "가열 끝 온도 미도달" 이 된다 → 측정 간격 + 온도 읽기 + 저항 읽기 예상 < 허용 시간 × 사용 비율 ----
     cycle = cycle_time_s(v)
@@ -409,6 +401,30 @@ def problems(v: dict) -> list:
     return out
 
 
+def heat_problems(v: dict) -> list:
+    """가열 · 냉각 온도와 가열 제어 · 릴레이 역할의 조합 검사. 자동 측정(problems)과 온도 시험(temptest_problems 와 같이)이 같이 쓴다."""
+    out = []
+    # ---- 온도 ----
+    if not float(v["run_heater_off_c"]) < float(v["heater_max_c"]):
+        out.append("가열 끝 온도 %g °C · 차단 온도 %g °C 미만 필요" % (v["run_heater_off_c"], v["heater_max_c"]))
+    if not float(v["run_cool_end_c"]) < float(v["run_heater_off_c"]):
+        out.append("냉각 끝 온도 %g °C · 가열 끝 온도 %g °C 미만 필요" % (v["run_cool_end_c"], v["run_heater_off_c"]))
+    if not float(v["run_start_c"]) < float(v["run_heater_off_c"]):
+        out.append("시작 온도 %g °C · 가열 끝 온도 %g °C 미만 필요" % (v["run_start_c"], v["run_heater_off_c"]))
+    # ---- 가열 제어: 예상 가열 시간이 한 단계 시간 한도 안 · 최소 켜짐 < 연속 최대 · 허용 폭 > 0 ----
+    if v["run_heat_mode"] == "ramp":
+        heat_s = heat_time_s(v)
+        if not heat_s < float(v["run_phase_limit_s"]):
+            out.append("예상 가열 시간 %.0f초 · 한 단계 시간 한도 %g초 미만 필요 · 가열 속도 확인" % (heat_s, v["run_phase_limit_s"]))
+    if not float(v["heater_min_on_s"]) < float(v["heater_max_on_s"]):
+        out.append("열선 최소 켜짐 %g초 · 열선 연속 최대 시간 %g초 미만 필요" % (v["heater_min_on_s"], v["heater_max_on_s"]))
+    if not float(v["heater_band_c"]) > 0:
+        out.append("목표 아래 허용 폭 %g °C · 0 보다 커야 함" % v["heater_band_c"])
+    # ---- 릴레이 역할: 송풍 · 열선 · 쿨러가 서로 겹치지 않는다 · 쿨러 배치는 쿨러 릴레이만 ----
+    out += role_problems(v)
+    return out
+
+
 def role_problems(v: dict) -> list:
     """릴레이 역할이 겹치는지 · 쿨러 배치가 쿨러 릴레이만 쓰는지. 문제마다 한 줄."""
     out = []
@@ -421,6 +437,22 @@ def role_problems(v: dict) -> list:
     bad = sorted({int(n) for r in v["cooler_grid"] for n in r} - set(cool))
     if bad:
         out.append("쿨러 배치 %s · 쿨러 릴레이 아님" % " · ".join("R%d" % n for n in bad))
+    return out
+
+
+def temptest_problems(v: dict) -> list:
+    """온도 시험 설정의 조합 검사: 켤 쿨러는 쿨러 릴레이 안 · 읽기 간격 ≥ 온도 읽기 시간 · 읽기 간격 < 온도 못 읽음 허용 시간 × 사용 비율
+    (온도 시험은 측정 주체 규칙 - 그 시간 넘게 못 읽으면 안전 감시가 열선을 끈다). 설정 저장과 온도 시험 시작이 쓴다."""
+    out = []
+    bad = sorted({int(n) for n in v["temp_test_coolers"]} - {int(n) for n in v["cooler_relays"]})
+    if bad:
+        out.append("온도 시험 쿨러 %s · 쿨러 릴레이 아님" % " · ".join("R%d" % n for n in bad))
+    iv = float(v["temp_test_interval_s"])
+    if iv < float(v["temp_read_s"]):
+        out.append("온도 시험 읽기 간격 %g초 · 온도 읽기 시간 %g초 이상 필요" % (iv, v["temp_read_s"]))
+    limit = float(v["temp_stale_s"]) * float(v["stale_use_ratio"])
+    if not iv < limit:
+        out.append("온도 시험 읽기 간격 %g초 · %.2f초 미만 필요" % (iv, limit))
     return out
 
 

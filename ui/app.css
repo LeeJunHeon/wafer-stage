@@ -88,6 +88,9 @@ label.chk { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 #toast { position: absolute; left: 50%; bottom: 76px; transform: translateX(-50%); background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 4px 12px; font-size: 12px; color: var(--ink); z-index: 20; max-width: 760px; }
 #offline { position: absolute; inset: 0; background: rgba(238, 240, 242, .92); display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 600; z-index: 100; }
 #dlg { position: absolute; inset: 0; background: rgba(26, 29, 33, .35); display: flex; align-items: center; justify-content: center; z-index: 50; }
+/* 창이 떠 있어도 위 띠(비상정지 버튼) · 비상정지 띠는 창 위에서 보이고 눌린다. 메뉴는 창이 닫힐 때까지 잠근다 */
+#top, #estop-band { position: relative; z-index: 55; }
+#app.dlg-open #tabs { pointer-events: none; opacity: .5; }
 /* 창: 높이는 화면 높이 − 80px 까지. 넘치면 내용(.dlg-body)만 안에서 스크롤하고, 아래 버튼 줄(.dlg-foot)은 항상 보인다 */
 #dlg .box { background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 16px; min-width: 320px; max-width: calc(100% - 32px); max-height: calc(100vh - 80px);
   display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
@@ -271,3 +274,21 @@ input.setnum { width: 120px; text-align: right; }
 input.settext { width: 360px; }
 input.settext.withbtn { width: 272px; }                              /* [찾아보기] 가 옆에 붙는 폴더 칸 */
 .vfy { margin-left: 8px; font-size: 12px; }
+
+/* ---- 온도 시험 창(수동 제어 탭 [온도 시험]): 왼쪽 조건 · 결과(넘치면 그 칸 안에서 스크롤) / 오른쪽 진행 · 그래프(남는 자리 전부) ---- */
+#dlg .box.tt-box { width: calc(100vw - 64px); max-width: 1400px; height: calc(100vh - 120px); }
+.tt-box .dlg-body { flex: 1 1 0; overflow: hidden; }
+.tt { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 16px; height: 100%; min-height: 0; }
+.tt-left { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; padding-right: 4px; }
+.tt-right { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
+.tt h4 { margin: 0; font-size: 12px; color: var(--ink2); font-weight: 600; }
+.tt-sec { display: flex; flex-direction: column; gap: 4px; }
+.tt-cond { display: grid; grid-template-columns: 120px max-content; gap: 4px 8px; align-items: center; }
+.tt-cond input[type=number] { width: 80px; text-align: right; }
+.tt-cond input[type=text] { width: 120px; }
+.tt-prog { font-size: 13px; min-height: 20px; }
+.tt-graph { flex: 1 1 0; min-height: 0; position: relative; }
+.tt-graph canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+table.tb.tt-marks { width: auto; }
+table.tb.tt-marks tr { cursor: default; }
+table.tb.tt-marks td { max-width: none; }

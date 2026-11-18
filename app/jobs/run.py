@@ -140,6 +140,8 @@ class Runner:
         with self._lock:
             if self.active:
                 raise Rejected("이미 측정 중")
+            if c.temptest.active:                                   # 온도 시험이 히트건 · 쿨러를 쓰는 중(온도 시험 시작도 이 잠금 안에서 측정을 본다)
+                raise Rejected("온도 시험 중 실행 불가")
             miss = self.gate()
             if miss:
                 raise Rejected("필요 항목: " + " · ".join(m["text"] for m in miss))
@@ -184,6 +186,8 @@ class Runner:
                 raise Rejected("이미 측정 중")
             if self.state not in ("stopped", "done") or self.folder is None:
                 raise Rejected("재개할 측정 없음")
+            if self.c.temptest.active:
+                raise Rejected("온도 시험 중 실행 불가")
             miss = self.gate()
             if miss:
                 raise Rejected("필요 항목: " + " · ".join(m["text"] for m in miss))
@@ -581,7 +585,7 @@ class Runner:
         ref_T = None
         prev = None
         hold_t0 = None
-        last = (c.clock(), self.heater.element_on)                  # (시각, 그때 열선 상태) - 열선이 켜져 있던 시간을 더한다
+        last = (c.clock(), self.heater.element_on)                  # (온도를 읽은 시각, 그때 열선 상태) - 열선이 켜져 있던 시간을 더한다
         st = it.setdefault("_st", {"low": 0, "open_warned": False, "trip_warned": False, "fast_warned": False})
         t_prev = None
         while True:
@@ -590,12 +594,13 @@ class Runner:
             self._note_cycle(it, t_prev, t_it)
             t_prev = t_it
             T = self._read_temp()
+            t_T, el_T = c.clock(), self.heater.element_on          # 온도를 읽은 시각 · 그때 열선 상태
             cur, R, trip = self._read_r()
             now = c.clock()
             el_on = self.heater.element_on
-            if last[1]:
-                on_time += now - last[0]
-            last = (now, el_on)
+            if last[1]:                                             # 열선이 켜져 있던 시간은 온도를 읽은 시각까지만 센다 - 그 뒤(저항 읽기 동안)의 가열은
+                on_time += t_T - last[0]                            # 아직 이 온도에 없다. 저항 읽기가 길어지면 오른 것을 못 본 채 시간만 쌓여 "온도 상승 없음" 이 된다
+            last = (t_T, el_T)
             sp = ramp_setpoint(T_start, rate, now - t0, off_c) if ramp else float(off_c)
             self.heat = {"sp": round(sp, 2), "element": el_on, "fan": self.heater.fan_on, "mode": "ramp" if ramp else "full"}
             self._note_reading(it, cur, trip, st)
@@ -632,6 +637,8 @@ class Runner:
                             c.logs.app("샘플 %s · 열선 켜기 거절 · %s" % (it["name"], e), "warn")
                             return False
                         el_t = now
+                        if last[1]:
+                            on_time += now - last[0]                # 온도를 읽은 뒤 끌 때까지 켜져 있던 시간(다음 온도에 나타난다)
                         last = (now, want)
                         elog.append([round(now - t_rec, 3), 1 if want else 0, self.cycle])
                 self.frac = max(0.0, min(1.0, (T - T_start) / max(1e-6, off_c - T_start)))

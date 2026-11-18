@@ -4,6 +4,7 @@
   GET  /api/camera/preview.jpg  카메라 미리보기(가로 preview_width 로 줄인 JPEG, 1 초에 한 장 갱신. 없으면 204)
   GET  /api/img/{raw|crop|plate|empty}.jpg  찍은 사진 · 원본 조각 · 보정한 판 사진 · 빈 판 사진(없으면 204)
   GET  /api/run/points?sample=<id>&from=<n>   측정 점(새 점만)
+  GET  /api/temptest/points?from=<n>          온도 시험 점(새 점만)
   GET  /api/results          측정 기록 목록 · /api/results/record?id= 기록 하나 · /api/results/points?id=&sample= 점 · POST /api/results/png?id= 그림 저장
   GET  /api/state            상태 한 덩어리
   WS   /ws                   상태를 보내고(바뀔 때마다 + 1 초마다) 명령을 받는다: {"id", "cmd", "args"} → {"id", "ok", "msg" | "result"}
@@ -103,6 +104,11 @@ def create_app(ctrl: Controller) -> FastAPI:
     async def run_points(sample: int, frm: int = Query(0, alias="from")):
         """측정 중인(또는 이번 측정에서 잰) 샘플의 점 [온도, 저항, 단계] 중 from 번째부터. 점 데이터는 state 에 넣지 않는다."""
         return ctrl.runner.points(sample, frm)
+
+    @app.get("/api/temptest/points")
+    async def temptest_points(frm: int = Query(0, alias="from")):
+        """온도 시험의 점 [경과 s, 온도, 목표, 열선, 송풍, 단계] 중 from 번째부터(id = 시험 시작 시각 - 바뀌면 새 시험)."""
+        return ctrl.temptest.points(frm)
 
     # ---- 측정 결과 탭: 저장된 측정 기록 ----
     async def _res(fn, *args):

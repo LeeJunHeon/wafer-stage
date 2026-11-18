@@ -42,6 +42,7 @@ class State:
             "prep": None,                                            # 초기 설정 단계 상태(app/prep.py view)
             "samples": [],                                           # 찾은 샘플 목록
             "run": None,                                             # 측정 진행(app/jobs/run.py view). 점 데이터는 넣지 않는다
+            "temptest": None,                                        # 온도 시험 진행 · 결과(app/jobs/temptest.py view). 점 데이터는 넣지 않는다
         }
 
     # ---- 읽기 ----
