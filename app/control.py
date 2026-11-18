@@ -236,7 +236,7 @@ class Controller:
             self.logs.app("스테이지 위치 기억 · %s" % text, "info" if code == "restored" else "warn")
 
     def disconnect_stage(self):
-        """[연결 끊기]: 닫을 때와 같은 순서 - 측정 · 온도 시험 정지 → 이동 멈춤(st 로 확인) → 릴레이 끄기 → 위치 저장 → 스테이지 닫기."""
+        """[연결 끊기]: 닫을 때와 같은 순서 - 측정 · 온도 시험 정지 → 이동 멈춤(st 로 확인) → 릴레이 끄기 → 핀 맨 위 → 위치 저장 → 스테이지 닫기."""
         self._stop_jobs("연결 끊기")
         if self.stage.connected:
             self._halt_motion("연결 끊기")
@@ -244,6 +244,7 @@ class Controller:
                 self.stage.relays_off(None, prio=0)
             except StageError as e:
                 self.logs.app("연결 끊기 · 릴레이 끄기 실패 · %s" % e, "error")
+            self._park_pin("연결 끊기")
             self.save_position("연결 끊기")
         self.stage.disconnect()
         self.state.set_device("stage", "끊김", "", "")
@@ -278,6 +279,28 @@ class Controller:
             self.stage.call("st", None, stage_mod.is_st, 3.0 + stage_mod.LINE_TIMEOUT_S, prio=0)   # 끊긴 이동이 끝난 뒤의 위치
         except StageError as e:
             self.logs.app("%s · 위치 읽기 실패 · %s" % (why, e), "warn")
+
+    def _park_pin(self, why):
+        """닫기 · [연결 끊기]: 핀 맨 위(Z 0) - 판 위에 내려간 채 꺼지지 않게. 비상정지 잠금이면 움직이지 않는다 · Z 원점이 없으면 못 한다.
+        실패하면 로그를 남기고 그 자리로 위치 저장을 계속한다(닫기를 막지 않는다)."""
+        st = self.stage
+        if not st.connected:
+            return
+        if self.safety.locked:
+            self.logs.app("핀 올리기 건너뜀 · %s · 비상정지 잠금" % why, "warn")
+            return
+        if not st.homed.get("z"):
+            self.logs.app("핀 올리기 건너뜀 · %s · Z 원점 없음" % why, "warn")
+            return
+        g = self.safety.generation
+        try:
+            z = st.read_status(g)["pos"]["z"]
+            if z != 0:
+                st.goto("z", 0, g)
+                st.read_status(g)
+                self.logs.app("핀 맨 위 · %s · Z %.3f → 0 mm" % (why, z / PPMM))
+        except StageError as e:
+            self.logs.app("핀 올리기 실패 · %s · %s · 그 위치로 저장" % (why, e), "error")
 
     def save_position(self, why: str) -> bool:
         """위치 저장: save → st 로 DIRTY=0 확인. 스테이지가 응답하고 이동이 멈춰 있을 때만. 원점 없는 축이 있어도 한다(펌웨어가 원점 여부까지 적는다).
@@ -749,6 +772,9 @@ class Controller:
             self.stage.save(g)
             self.stage.read_status(g)
         self.calib.set_origin(axis, mode)                           # 등록한 때 · 방법(초기 설정 2단계 목록에 보인다)
+        self.logs.app("원점 등록 · %s · %s · 등록 뒤 X %s · Y %s · Z %s mm" % (
+            " · ".join(a.upper() for a in axis), "현재 위치" if mode == "here" else "끝단 접촉",
+            *("—" if self._mm(a) is None else "%.3f" % self._mm(a) for a in AXES)))
         self.prep.clear_pos_check()                                 # 원점을 다시 맞추면 위치 확인 경보가 풀린다
         self.prep.publish()
         return {"homed": dict(self.state.get("homed"))}
@@ -1405,7 +1431,26 @@ class Controller:
         else:
             self.state.clear_alarm("camera_format")
         self.state.clear_alarm("camera_lost")
+        self._check_focus(info)
         return {"index": idx, "actual": info["actual"], "fourcc": info["actual_fourcc"]}
+
+    def _check_focus(self, info):
+        """연결 때 초점: 자동 초점 끔 · 저장한 값 넣기(Camera.open) → 다시 읽은 값과 비교. 미설정(−1)이면 주의(켤 때마다 렌즈가 그 순간 자리에 굳는다)."""
+        req, got = info.get("focus_req"), info.get("focus_read")
+        if not self.cfg["camera_focus_fixed"]:
+            self.state.clear_alarm("focus")
+            return
+        if req is None:
+            self.state.alarm("focus", "초점 미설정 · 초기 설정 3 에서 초점 찾기", NOTICE)
+            self.logs.app("카메라 초점 미설정 · 렌즈가 지금 위치에 고정됨%s" % ("" if got is None else " · 읽음 %g" % got), "warn")
+        elif got is None:
+            self.state.clear_alarm("focus")
+            self.logs.app("카메라 초점 %d · 다시 읽기 미지원 · 확인 없이 사용" % req, "warn")
+        elif abs(got - req) > 0.5:
+            self.state.alarm("focus", "초점 값 불일치 · 요청 %d · 읽음 %g" % (req, got), NOTICE)
+            self.logs.app("카메라 초점 불일치 · 요청 %d · 읽음 %g" % (req, got), "warn")
+        else:
+            self.state.clear_alarm("focus")
 
     def disconnect_camera(self):
         self.camera.close()
@@ -1597,7 +1642,7 @@ class Controller:
 
     def shutdown(self):
         """닫을 때(창 닫기 · Ctrl+C · 서버 종료): 측정 · 온도 시험 정지 → 대기 조그 · 줄 선 이동 취소 · 이동 중이면 멈추고 st 로 확인 →
-        릴레이 끄기 → 위치 저장(save · DIRTY=0 확인 - 비상정지 잠금 중이면 하지 않음) → K2450 · 온도계 · 카메라 닫기 → 스테이지 닫기. 여러 번 불러도 한 번만 한다."""
+        릴레이 끄기 → 핀 맨 위(비상정지 잠금이 아니고 Z 원점이 있을 때) → 위치 저장(save · DIRTY=0 확인 - 비상정지 잠금 중이면 하지 않음) → K2450 · 온도계 · 카메라 닫기 → 스테이지 닫기. 여러 번 불러도 한 번만 한다."""
         with self._shut_lock:
             if self._shut:
                 return
@@ -1613,6 +1658,7 @@ class Controller:
             self.logs.app("종료 중 릴레이 끄기 실패 · %s" % e, "error")
         finally:
             self._heater_why = None
+        self._park_pin("종료")
         try:
             self.save_position("종료")
         except Exception as e:                                      # noqa: BLE001 - 저장 실패도 닫기는 계속한다(로그에 남긴다)
@@ -1639,6 +1685,7 @@ COMMANDS = {
     "empty_take": "prep.empty_take", "coord_set": "prep.coord_set", "coord_goto_d": "prep.coord_goto_d", "coord_clear": "prep.coord_clear",
     "marker_learn": "prep.marker_learn", "plate_goto": "prep.plate_goto", "coord_add_here": "prep.coord_add_here", "coord_remove": "prep.coord_remove",
     "samples_find": "prep.samples_find", "sample_use": "prep.sample_use",
+    "focus_find": "prep.focus_find", "focus_nudge": "prep.focus_nudge", "focus_apply": "prep.focus_apply",
     "cooler_only": "prep.cooler_only", "cooler_save": "prep.cooler_save", "cooler_cell": "prep.cooler_cell",
     "sample_rename": "prep.sample_rename", "batch_set": "prep.batch_set",
     # 측정(app/jobs/run.py)

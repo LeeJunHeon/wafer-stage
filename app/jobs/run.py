@@ -128,6 +128,8 @@ class Runner:
             out.append({"text": "세 축 원점", "step": 2})
         if not c.calib.d.get("plate"):
             out.append({"text": "판 영역", "step": 3})
+        elif not c.calib.plate_ok():                                 # 초점이 바뀌었다(calib.focus_changed): 꼭짓점은 남아 있지만 다시 확정 필요
+            out.append({"text": "판 영역 다시 확정", "step": 3})
         if not c.calib.coords_ready():
             out.append({"text": "좌표 보정", "step": 5})
         if c.cfg["contact_z_mm"] is None:

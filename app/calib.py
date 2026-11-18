@@ -52,7 +52,8 @@ class Calib:
                 if k in raw:
                     self.d[k] = raw[k]
             c = self.d.get("coords") or {}
-            self.d["coords"] = {"stage": dict(c.get("stage") or {}), "extra": list(c.get("extra") or [])}
+            # stage · extra 만 다시 만들고 그 밖의 키(등록한 때 t 등)는 그대로 둔다 - 버리면 다음 저장 때 파일에서도 사라진다
+            self.d["coords"] = dict(c, stage=dict(c.get("stage") or {}), extra=list(c.get("extra") or []))
             self.d["origin"] = dict(self.d.get("origin") or {})
 
     def save(self):
@@ -110,6 +111,24 @@ class Calib:
             if 0 <= int(index) < len(ex):
                 del ex[int(index)]
         self.save()
+
+    def focus_changed(self):
+        """초점 값이 바뀌었다: 사진 픽셀로 기억한 값은 배율 · 위치가 달라져 못 쓴다. 빈 판 사진 · 헤드 마커 · 보정 점은 버리고,
+        판 꼭짓점은 남기되 "초점 바뀜 · 다시 확정 필요"(plate.stale - plate_set 으로 다시 확정하면 풀린다). 반환: 버린 보정 점 수."""
+        with self._lock:
+            dropped = len(self.d["coords"]["extra"])
+            self.d["coords"]["extra"] = []
+            self.d["marker"] = None
+            self.d["empty"] = None
+            if self.d.get("plate"):
+                self.d["plate"] = dict(self.d["plate"], stale="focus")
+        self.save()
+        return dropped
+
+    def plate_ok(self):
+        """판 영역이 있고 다시 확정할 일이 없는가(초점이 바뀌면 다시 확정 필요)."""
+        p = self.d.get("plate")
+        return bool(p) and not p.get("stale")
 
     def clear_coords(self):
         with self._lock:
@@ -226,3 +245,14 @@ class Calib:
         except np.linalg.LinAlgError:
             return None
         return float(np.hypot(d[0], d[1]))
+
+    def head_offset_xy(self, marker_px):
+        """head_offset_mm 의 방향: (X mm, Y mm). 마커 기억이 없으면 None."""
+        m = self.d.get("marker")
+        if not m or marker_px is None:
+            return None
+        try:
+            d = np.linalg.solve(np.asarray(m["J"], float), np.asarray(marker_px, float) - np.asarray(m["px"], float))
+        except np.linalg.LinAlgError:
+            return None
+        return float(d[0]), float(d[1])

@@ -182,6 +182,47 @@ function buildStep2() {
   return pg;
 }
 
+/* ---------- 초점 찾기 결과 그래프(canvas): 가로 초점 값 · 세로 선명도 · 고른 값 ----------
+   글자는 축 밖 띠에만(왼쪽 = 선명도 · 아래 = 초점 값 · 위 = 고른 값) - 그래프 선과 겹치지 않는다. 고른 값은 위 띠의 글자에서 점까지 점선(지시선)으로 잇는다. */
+const FG = { W: 380, H: 150, L: 48, R: 12, T: 20, B: 20 };
+function focusGraph() {
+  const cv = h("canvas", { class: "fgraph", width: FG.W, height: FG.H });
+  const draw = (pts, best, lo, hi) => {
+    const g = cv.getContext("2d"), dpr = window.devicePixelRatio || 1;
+    if (cv.width !== FG.W * dpr) { cv.width = FG.W * dpr; cv.height = FG.H * dpr; cv.style.width = FG.W + "px"; cv.style.height = FG.H + "px"; }
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, FG.W, FG.H);
+    const x0 = FG.L, x1 = FG.W - FG.R, y0 = FG.T, y1 = FG.H - FG.B;
+    g.strokeStyle = "#C4CAD1"; g.lineWidth = 1;
+    g.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0);
+    g.fillStyle = "#5B636D"; g.font = "11px Pretendard, sans-serif";
+    g.textBaseline = "top"; g.textAlign = "left"; g.fillText(String(lo), x0, y1 + 4);
+    g.textAlign = "right"; g.fillText(String(hi), x1, y1 + 4);
+    g.textAlign = "center"; g.fillText("초점 값", (x0 + x1) / 2, y1 + 4);
+    if (!pts || !pts.length) return;
+    const smax = Math.max(...pts.map((p) => p[1])), smin = Math.min(...pts.map((p) => p[1]));
+    const span = Math.max(1e-9, smax - smin);
+    const X = (v) => x0 + (v - lo) / Math.max(1, hi - lo) * (x1 - x0), Y = (s) => y1 - 4 - (s - smin) / span * (y1 - y0 - 8);
+    g.textAlign = "right"; g.textBaseline = "top"; g.fillText(smax.toFixed(0), x0 - 4, y0);
+    g.textBaseline = "bottom"; g.fillText(smin.toFixed(0), x0 - 4, y1);
+    const srt = pts.slice().sort((a, b) => a[0] - b[0]);
+    g.strokeStyle = "#1F2329"; g.beginPath();
+    srt.forEach((p, i) => { if (i) g.lineTo(X(p[0]), Y(p[1])); else g.moveTo(X(p[0]), Y(p[1])); });
+    g.stroke();
+    for (const p of pts) { g.fillStyle = p[2] === "fine" ? "#1F2329" : "#9AA1A9"; g.beginPath(); g.arc(X(p[0]), Y(p[1]), 2.5, 0, 7); g.fill(); }
+    if (best != null) {
+      const bp = pts.find((p) => p[0] === best);
+      const bx = X(best);
+      g.strokeStyle = "#2A78D6"; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(bx, y0); g.lineTo(bx, bp ? Y(bp[1]) - 4 : y1); g.stroke(); g.setLineDash([]);
+      g.fillStyle = "#2A78D6"; g.textBaseline = "bottom";
+      const label = "선택 " + best;
+      g.textAlign = bx < x0 + 40 ? "left" : bx > x1 - 40 ? "right" : "center";
+      g.fillText(label, bx, y0 - 3);
+    }
+  };
+  return { el: cv, draw };
+}
+
 /* ---------- 3 · 카메라 · 판 영역 ---------- */
 function buildStep3() {
   const pg = { jog: jogPart(), pts: [], drag: -1, photoId: null, dirty: false, magT: 0 };
@@ -204,6 +245,18 @@ function buildStep3() {
   pg.sel = -1;                                                    // 고른 점(방향키로 옮긴다)
   pg.mag = h("div", { class: "mag hidden" }, h("i", { class: "cross-h" }), h("i", { class: "cross-v" }));
   pg.pb.box.append(pg.mag);                                     // 확대창은 사진 위 구석에 띄운다(누르는 자리의 반대쪽)
+  /* ---- 초점: [초점 찾기](판 영역 안 선명도) · 그래프 · 미세 조정 · [적용]. 판 영역이 없으면 사진에 범위 상자를 그린다 ---- */
+  pg.roi = null; pg.boxMode = false; pg.boxStart = null;
+  pg.fcur = h("div", {});
+  pg.fgraph = focusGraph();
+  pg.fres = h("div", { class: "small" });
+  pg.fnote = h("div", {});
+  pg.fnudge = h("span", { class: "small" });
+  pg.ffind = busyGate("초점 찾기", () => api("focus_find", { roi: P().plate ? null : pg.roi }));
+  pg.fbox = btn("범위 상자", () => { pg.boxMode = !pg.boxMode; pg.fbox.classList.toggle("on", pg.boxMode); });
+  pg.fminus = busyGate("−", () => api("focus_nudge", { d: -1 }));
+  pg.fplus = busyGate("+", () => api("focus_nudge", { d: 1 }));
+  pg.fapply = busyGate("적용", async () => { const r = await api("focus_apply"); if (r.ok && r.result.note) toast(r.result.note); });
   pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "3 · 카메라 · 판 영역" }),
     photoSplit(pg.pb, h("div", {},
       h("div", { class: "grp" }, h("h4", { text: "촬영 위치" }),
@@ -212,7 +265,11 @@ function buildStep3() {
       h("div", { class: "grp" }, h("h4", { text: "판 영역" }),
         h("div", { class: "row" }, pg.take.b, pg.big, pg.take.w),
         h("div", { class: "small", text: "꼭짓점을 왼쪽 위부터 시계 방향으로 선택" }),
-        pg.list, h("div", { class: "row" }, pg.redo, pg.apply.b, pg.apply.w)))));
+        pg.list, h("div", { class: "row" }, pg.redo, pg.apply.b, pg.apply.w)),
+      h("div", { class: "grp" }, h("h4", { text: "초점" }),
+        h("div", { class: "small", text: "샘플을 올려 둔 채 실행 권장 · 판 높이 기준" }),
+        pg.fcur, h("div", { class: "row" }, pg.ffind.b, pg.fbox, pg.ffind.w), pg.fgraph.el, pg.fres, pg.fnote,
+        h("div", { class: "row" }, pg.fminus.b, pg.fplus.b, pg.fnudge, pg.fapply.b), pg.fapply.w))));
 
   const photo = () => P().photo;
   function toPx(ev) { const ph = photo(); const [fx, fy] = pg.pb.toFrac(ev); return [Math.max(0, Math.min(ph.w - 1, fx * ph.w)), Math.max(0, Math.min(ph.h - 1, fy * ph.h))]; }
@@ -230,7 +287,9 @@ function buildStep3() {
     const ph = photo();
     if (!ph || !pg.pb.w) { setKids(pg.ov); return; }
     pg.pb.svg.setAttribute("viewBox", "0 0 " + ph.w + " " + ph.h);
-    setKids(pg.ov, ...cornerKids(ph.w / pg.pb.w));              // 화면 1px = 사진 ph.w / pg.pb.w 픽셀
+    const k = ph.w / pg.pb.w, r = pg.roi;                         // 화면 1px = 사진 ph.w / pg.pb.w 픽셀
+    setKids(pg.ov, ...cornerKids(k),
+      r && !P().plate ? svgEl("rect", { x: r[0], y: r[1], width: r[2], height: r[3], fill: "none", stroke: "#2A78D6", "stroke-width": 2 * k, "stroke-dasharray": 6 * k }) : null);
   }
   const ptsText = () => (pg.pts.length ? pg.pts.map((p, i) => CORNER[i] + " (" + Math.round(p[0]) + ", " + Math.round(p[1]) + ")").join("  ") : "선택한 점 없음");
   const nextText = () => (pg.pts.length < 4 ? "다음: " + CORNER[pg.pts.length] + " · " + CORNER_AT[pg.pts.length] : edgeDiffText(pg.pts));
@@ -292,7 +351,7 @@ function buildStep3() {
   function syncApply() {                                          // [이대로 정하기] · [다시 누르기] 를 누를 수 있는지와 그 이유
     const ph = photo(), pl = P().plate;
     pg.apply.set(!ph ? "촬영 필요" : pg.pts.length < 4 ? "꼭짓점 " + pg.pts.length + " / 4" : running() ? "측정 중 실행 불가" : "");
-    if (pg.pts.length === 4 && pl && !pg.dirty) pg.apply.w.textContent = "설정 완료 · " + fmtWhen(pl.t);
+    if (pg.pts.length === 4 && pl && !pg.dirty) pg.apply.w.textContent = pl.stale ? "초점 바뀜 · 다시 확정 필요" : "설정 완료 · " + fmtWhen(pl.t);
     pg.redo.disabled = !pg.pts.length;
   }
   function showMag(p) {
@@ -309,6 +368,11 @@ function buildStep3() {
     if (!ph || ev.button !== 0) return;
     ev.preventDefault();
     const p = toPx(ev), k = ph.w / Math.max(1, pg.pb.w);
+    if (pg.boxMode) {                                               // 초점 찾기 범위 상자(판 영역이 없을 때)
+      pg.boxStart = p; pg.roi = [Math.round(p[0]), Math.round(p[1]), 1, 1];
+      pg.pb.inner.setPointerCapture(ev.pointerId); drawPts();
+      return;
+    }
     const hit = pickAt(p, 14 * k);
     if (hit < 0) return;
     pg.drag = hit;
@@ -316,11 +380,19 @@ function buildStep3() {
     pg.magT = 0; showMag(pg.pts[hit]); drawPts(); renderPts();
   });
   pg.pb.inner.addEventListener("pointermove", (ev) => {
+    if (pg.boxStart) {
+      const p = toPx(ev), a = pg.boxStart;
+      pg.roi = [Math.round(Math.min(a[0], p[0])), Math.round(Math.min(a[1], p[1])), Math.max(1, Math.round(Math.abs(p[0] - a[0]))), Math.max(1, Math.round(Math.abs(p[1] - a[1])))];
+      drawPts();
+      return;
+    }
     if (pg.drag < 0) return;
     pg.pts[pg.drag] = toPx(ev);
     showMag(pg.pts[pg.drag]); drawPts(); renderPts();
   });
-  const endDrag = () => { if (pg.drag >= 0) { pg.drag = -1; pg.magT = 0; pg.mag.classList.add("hidden"); renderPts(); } };
+  const endDrag = () => {
+    if (pg.boxStart) { pg.boxStart = null; pg.boxMode = false; pg.fbox.classList.remove("on"); drawPts(); return; }
+    if (pg.drag >= 0) { pg.drag = -1; pg.magT = 0; pg.mag.classList.add("hidden"); renderPts(); } };
   pg.pb.inner.addEventListener("pointerup", endDrag);
   pg.pb.inner.addEventListener("pointercancel", endDrag);
 
@@ -340,8 +412,26 @@ function buildStep3() {
     pg.take.set(running() ? "측정 중 실행 불가" : whyCamera());
     pg.big.disabled = !ph;
     syncApply();
+    renderFocus();
     pg.jog.update();
   };
+  function renderFocus() {
+    const f = P().focus || {}, fc = P().focus_cfg || {}, active = !!f.active;
+    const saved = fc.value == null || fc.value < 0 ? "미설정" : String(fc.value);
+    pg.fcur.textContent = "현재 " + (f.value == null ? "—" : f.value) + " · 저장 " + saved + (active && f.phase ? " · " + f.phase : "");
+    pg.fcur.className = fc.value == null || fc.value < 0 ? "st-warn" : "";
+    const noPlate = !P().plate;
+    pg.fbox.classList.toggle("hidden", !noPlate);
+    const busy = running() ? "측정 중 실행 불가" : whyCamera() || (active ? "초점 찾기 중" : "");
+    pg.ffind.set(busy || whyStage(true, false) || whyHead() || (noPlate && !pg.roi ? "판 영역 없음 · [범위 상자] 로 사진에 상자 지정" : ""));
+    pg.fminus.set(busy); pg.fplus.set(busy);
+    pg.fapply.set(busy || (f.value == null ? "[초점 찾기] 필요" : ""));
+    pg.fgraph.draw(f.points || [], f.best, fc.lo, fc.hi);
+    pg.fres.textContent = (f.result || "") + (f.skipped && f.skipped.length ? " · 범위 밖 " + f.skipped.length + "개 건너뜀" : "");
+    pg.fnote.textContent = f.note || "";
+    pg.fnote.className = f.note ? "st-warn" : "";
+    pg.fnudge.textContent = f.nudge ? f.nudge.value + " · 선명도 " + f.nudge.sharp.toFixed(1) : "";
+  }
   renderPts();
   return pg;
 }

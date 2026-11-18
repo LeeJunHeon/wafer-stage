@@ -40,6 +40,7 @@ class Prep:
         self.find_info = None                       # {"t", "n", "notes", "path", "ms"}
         self.last_click = None                      # 판 사진에서 마지막으로 누른 자리 {"px": 사진 픽셀, "plate": 판 mm}
         self.contact = {"active": False, "z": None, "text": "", "result": None, "fail": ""}
+        self.focus = {"active": False, "points": [], "value": None}      # 초점 찾기 진행 · 결과(초기 설정 3)
         if self.c.calib.note:
             self.c.state.alarm("calib", self.c.calib.note, NOTICE)
 
@@ -140,6 +141,9 @@ class Prep:
         self.pos_off_mm = None if off is None else round(off, 2)
         if off is None:
             return
+        dx, dy = self.calib.head_offset_xy(m)
+        mk = self.calib.d["marker"]["px"]
+        self.c.logs.app("위치 확인 · 마커 (%.1f, %.1f) · 등록 (%.1f, %.1f) · 차이 X %+.2f · Y %+.2f mm · %.2f mm" % (m[0], m[1], mk[0], mk[1], dx, dy, off), "detail")
         text = "헤드 위치 %.1f mm 차이 · 원점 확인 필요" % off
         if off > float(self.cfg["pos_block_mm"]):
             self.pos_block = True
@@ -332,6 +336,219 @@ class Prep:
         return {"dropped": dropped, "note": note}
 
     # ------------------------------------------------------------------
+    # 3 · 초점 찾기: 판 영역 안의 선명도(원본 회색 사진의 라플라시안 분산)가 가장 큰 초점 값. 헤드 마커 둘레는 뺀다
+    # (마커는 판보다 높아 마커에 맞으면 판이 흐리다). 결과는 [적용] 으로 저장한다.
+    # ------------------------------------------------------------------
+    def _focus_mask(self, shape, roi, marker):
+        """선명도를 잴 자리(원본 픽셀 마스크): 판 꼭짓점 사각형을 focus_roi_inset 만큼 안쪽으로 줄인 영역(없으면 roi 상자) −
+        헤드 마커 둘레(반경 focus_marker_pad_mm × 판 배율 · 판 배율이 없으면 사진 가로의 6 %)."""
+        h, w = shape[:2]
+        mask = np.zeros((h, w), np.uint8)
+        p = self.calib.d.get("plate")
+        if p and list(p["size"]) == [w, h]:
+            q = np.asarray(p["corners"], np.float64)
+            ctr = q.mean(axis=0)
+            q = ctr + (q - ctr) * (1.0 - float(self.cfg["focus_roi_inset"]))
+            cv2.fillConvexPoly(mask, np.rint(q).astype(np.int32), 255)
+        elif roi is not None:
+            x, y, bw, bh = (int(v) for v in roi)
+            x, y = max(0, x), max(0, y)
+            mask[y:min(h, y + bh), x:min(w, x + bw)] = 255
+        if marker is not None:
+            ppmm = self.plate_ppmm()
+            r = float(self.cfg["focus_marker_pad_mm"]) * ppmm if ppmm else 0.06 * w
+            cv2.circle(mask, (int(round(marker[0])), int(round(marker[1]))), int(round(r)), 0, -1)
+        if not mask.any():
+            raise Rejected("선명도 잴 영역 없음 · 범위 상자 다시 지정")
+        return mask
+
+    @staticmethod
+    def sharpness(frame, mask):
+        """선명도 = 마스크 안 회색 원본의 라플라시안 분산(초점이 맞을수록 크다)."""
+        ys, xs = np.nonzero(mask)
+        y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+        g = frame[y0:y1, x0:x1]
+        g = cv2.cvtColor(g, cv2.COLOR_BGR2GRAY) if g.ndim == 3 else g
+        lap = cv2.Laplacian(g, cv2.CV_64F)
+        return float(lap[mask[y0:y1, x0:x1] > 0].var())
+
+    def _focus_wait(self, g, seconds):
+        """렌즈가 멈추기를 기다린다. 그동안 [정지] · 비상정지(세대가 바뀜)면 바로 멈춘다."""
+        end = self.c.clock() + float(seconds)
+        while True:
+            if self.c.safety.generation != g:
+                raise _FocusStop()
+            left = end - self.c.clock()
+            if left <= 0:
+                return
+            self.c.sleep(min(0.1, left))
+
+    def focus_find(self, roi=None):
+        """[초점 찾기]: 핀 맨 위 → 촬영 위치(판 밖) → 자동 초점 끔 → focus_coarse_step 간격으로 넓게 → 가장 선명한 곳 둘레를 focus_fine_step 간격으로.
+        값마다 focus_settle_s 기다린 뒤 새 프레임으로 잰다. 넣은 뒤 다시 읽어 안 바뀐 값(범위 밖)은 건너뛴다(다시 읽기 미지원이면 그대로 쓴다 · 화면 · 로그에 남김).
+        roi = 판 영역이 없을 때 사진에서 그린 상자 [x, y, w, h](원본 픽셀). [정지] · 비상정지면 원래 초점 값으로 되돌린다. 저장은 [적용](focus_apply)."""
+        c = self.cfg
+        self._need_camera()
+        self.c._no_run("초점 찾기")
+        if self.focus.get("active"):
+            raise Rejected("초점 찾기 중")
+        if c["photo_head_xy"] is None:
+            raise Rejected("촬영 위치 설정 필요 (초기 설정 3)")
+        if not self.calib.d.get("plate") and roi is None:
+            raise Rejected("판 영역 없음 · 사진에서 범위 상자 지정 필요")
+        lo, hi = int(c["focus_scan_min"]), int(c["focus_scan_max"])
+        big, small = int(c["focus_coarse_step"]), int(c["focus_fine_step"])
+        if not (lo < hi and small < big):
+            raise Rejected("초점 찾기 설정 확인 필요 · 시작 < 끝 · 작은 간격 < 큰 간격")
+        cam = self.c.camera
+        self.focus = {"active": True, "phase": "촬영 위치로 이동", "points": [], "best": None, "value": self.focus.get("value"),
+                      "orig": None, "readback": None, "skipped": [], "note": "", "result": "", "nudge": None, "roi": roi}
+        self.publish()
+        g = self.c.safety.generation
+        orig = None
+        changed = False
+        try:
+            head = c["photo_head_xy"]
+            self.c.goto(head[0], head[1])                            # 핀 맨 위 → 촬영 위치(판 밖 - 헤드가 판을 가리지 않게)
+            if self.c.safety.generation != g:
+                raise _FocusStop()
+            read0 = cam.get_focus()
+            readback = read0 is not None
+            orig = read0 if readback else (int(c["camera_focus_value"]) if int(c["camera_focus_value"]) >= 0 else None)
+            self.focus.update(orig=None if orig is None else int(round(orig)), readback=readback)
+            frame0, _t = self._fresh()
+            mask = self._focus_mask(frame0.shape, roi, geo.find_marker(frame0))
+            settle = float(c["focus_settle_s"])
+
+            def measure(v, phase):
+                nonlocal changed
+                if self.c.safety.generation != g:
+                    raise _FocusStop()
+                changed = True
+                rb = cam.set_focus(v)
+                if readback and (rb is None or abs(rb - v) > 0.5):   # 카메라가 받지 않은 값(범위 밖): 렌즈가 그대로라 잴 필요 없다
+                    self.focus["skipped"].append(v)
+                    return None
+                self._focus_wait(g, settle)
+                frame, _t2 = self._fresh()
+                s = self.sharpness(frame, mask)
+                self.focus["points"].append([int(v), round(s, 3), phase])
+                self.focus["value"] = int(v)
+                self.publish()
+                return s
+
+            self.focus["phase"] = "넓게 훑기"
+            coarse = list(range(lo, hi + 1, big))
+            if coarse[-1] != hi:
+                coarse.append(hi)
+            for v in coarse:
+                measure(v, "coarse")
+            pts = [p for p in self.focus["points"] if p[2] == "coarse"]
+            if not pts:
+                raise Rejected("초점 값이 바뀌지 않음 · 카메라 초점 조정 미지원 또는 범위 확인")
+            b0 = max(pts, key=lambda p: p[1])[0]
+            self.focus["phase"] = "촘촘히 훑기"
+            done = {p[0] for p in self.focus["points"]}
+            for v in range(max(lo, b0 - big + small), min(hi, b0 + big - small) + 1, small):
+                if v not in done:
+                    measure(v, "fine")
+            best = max(self.focus["points"], key=lambda p: p[1])
+            rb = cam.set_focus(best[0])                              # 렌즈를 고른 값에(저장은 [적용])
+            self._focus_wait(g, settle)
+            note = ""
+            top, ends = max(p[1] for p in pts), max(pts[0][1], pts[-1][1])
+            if top <= 0 or (top - ends) / top < float(c["focus_peak_min"]):
+                note = "봉우리 불분명 · 샘플 · 조명 확인"
+            if not readback:
+                note = (note + " · " if note else "") + "초점 다시 읽기 미지원"
+            self.focus.update(best=int(best[0]), value=int(best[0]), note=note, phase="",
+                              result="최적 %d · 선명도 %.1f" % (best[0], best[1]))
+            self.c.logs.app("초점 찾기 · 최적 %d · 선명도 %.1f · 넓게 %d점 · 촘촘히 %d점 · 범위 밖 %d개 건너뜀 · 다시 읽기 %s%s · 원래 %s" % (
+                best[0], best[1], len(pts), len(self.focus["points"]) - len(pts), len(self.focus["skipped"]),
+                "지원" if readback else "미지원", " · " + note if note else "", "—" if orig is None else "%d" % round(orig)))
+            return {"best": int(best[0]), "points": len(self.focus["points"]), "skipped": len(self.focus["skipped"]), "note": note,
+                    "readback": None if rb is None else rb}
+        except (_FocusStop, Rejected, CameraError) as e:
+            stopped = isinstance(e, _FocusStop) or self.c.safety.generation != g
+            back = ""
+            if changed and orig is not None and self.c.camera.connected:
+                try:
+                    cam.set_focus(int(round(orig)))                  # 원래 초점 값으로 되돌린다(이동이 아니라 비상정지 중에도 한다)
+                    back = " · 원래 값 %d 으로 복귀" % round(orig)
+                    self.focus["value"] = int(round(orig))
+                except CameraError as e2:
+                    back = " · 원래 값 복귀 실패 · %s" % e2
+            why = "정지" if stopped else str(e)
+            self.focus.update(phase="", result="중단 · %s%s" % (why, back))
+            self.c.logs.app("초점 찾기 중단 · %s%s" % (why, back), "warn")
+            raise Rejected("초점 찾기 %s%s" % ("정지" if stopped else "실패 · " + str(e), back))
+        finally:
+            self.focus["active"] = False
+            self.publish()
+
+    def focus_nudge(self, d):
+        """초점 미세 조정 [−] [+]: 지금 값 ± focus_nudge → 렌즈 대기 → 그 자리 선명도. 저장은 [적용]."""
+        self._need_camera()
+        self.c._no_run("초점 조정")
+        if self.focus.get("active"):
+            raise Rejected("초점 찾기 중")
+        cam = self.c.camera
+        cur = self.focus.get("value")
+        if cur is None:
+            rb = cam.get_focus()
+            cur = int(round(rb)) if rb is not None else int(self.cfg["camera_focus_value"])
+        if cur < 0:
+            raise Rejected("초점 값 없음 · [초점 찾기] 필요")
+        v = int(cur) + (1 if float(d) > 0 else -1) * int(self.cfg["focus_nudge"])
+        v = max(0, min(int(self.cfg["focus_scan_max"]), v))
+        rb = cam.set_focus(v)
+        if rb is not None and abs(rb - v) > 0.5:
+            raise Rejected("초점 %d 적용 안 됨 · 카메라 범위 밖" % v)
+        g = self.c.safety.generation
+        try:
+            self._focus_wait(g, float(self.cfg["focus_settle_s"]))
+        except _FocusStop:
+            raise Rejected("정지로 취소됨")
+        frame, _t = self._fresh()
+        if self.calib.d.get("plate") or self.focus.get("roi"):       # 초점 찾기와 같은 자리(판 영역 − 마커 둘레 · 또는 그린 상자)
+            mask = self._focus_mask(frame.shape, self.focus.get("roi"), geo.find_marker(frame))
+        else:
+            mask = np.full(frame.shape[:2], 255, np.uint8)
+        s = self.sharpness(frame, mask)
+        self.focus.update(value=v, nudge={"value": v, "sharp": round(s, 3)})
+        self.publish()
+        return {"value": v, "sharp": round(s, 3)}
+
+    def focus_apply(self):
+        """[적용]: 지금 초점 값을 camera_focus_value 로 저장 · 초점 고정 켬. 값이 바뀌면 사진 기준 값은 맞지 않으므로(배율 · 위치가 달라진다)
+        빈 판 사진 · 헤드 마커 · 보정 점은 버리고 판 영역은 "초점 바뀜 · 다시 확정 필요"(calib.focus_changed)."""
+        self._need_camera()
+        self.c._no_run("초점 적용")
+        if self.focus.get("active"):
+            raise Rejected("초점 찾기 중")
+        v = self.focus.get("value")
+        if v is None:
+            raise Rejected("[초점 찾기] 필요")
+        old = int(self.cfg["camera_focus_value"])
+        rb = self.c.camera.set_focus(int(v))
+        self.c._remember(camera_focus_value=int(v), camera_focus_fixed=True)
+        self.c.state.clear_alarm("focus")
+        note = ""
+        if int(v) != old:
+            dropped = self.calib.focus_changed()
+            self._empty = None
+            self.clear_pos_check()
+            self._refresh_samples()
+            note = "3 · 4단계와 마커 재등록 필요"
+            self.c.logs.app("초점 적용 · %d (이전 %s · 읽음 %s) · 빈 판 사진 · 헤드 마커 · 보정 점 %d개 버림 · 판 영역 다시 확정 필요" % (
+                int(v), old if old >= 0 else "미설정", "미지원" if rb is None else "%g" % rb, dropped), "warn")
+        else:
+            self.c.logs.app("초점 적용 · %d (같은 값)" % int(v))
+        self.focus["applied"] = int(v)
+        self.publish()
+        return {"value": int(v), "note": note}
+
+    # ------------------------------------------------------------------
     # 4 · 빈 판 사진
     # ------------------------------------------------------------------
     def empty_take(self):
@@ -385,8 +602,82 @@ class Prep:
         self.publish()
         return {}
 
+    def _marker_pair(self):
+        """지금 자리에서 새 프레임 두 장의 마커 위치. 두 장이 marker_pair_px 안에서 맞으면 평균. 안 맞으면 한 번 더 찍는다.
+        두 번 다 마커가 안 보이면 None(그 자리에서 안 보임). 보이는데 두 번 다 안 맞으면 Rejected(카메라 · 헤드가 흔들린다)."""
+        tol = float(self.cfg["marker_pair_px"])
+        diff = None
+        for _try in range(2):
+            m1 = geo.find_marker(self._fresh()[0])
+            m2 = geo.find_marker(self._fresh()[0])
+            if m1 is None or m2 is None:
+                continue
+            d = float(np.hypot(m1[0] - m2[0], m1[1] - m2[1]))
+            if d <= tol:
+                return ((m1[0] + m2[0]) / 2.0, (m1[1] + m2[1]) / 2.0)
+            diff = d
+        if diff is None:
+            return None
+        raise Rejected("마커 위치 흔들림 · 두 장 %.1f px 차이" % diff)
+
+    def plate_ppmm(self):
+        """판 배율(사진 px / mm) = 판 꼭짓점 네 변의 평균 픽셀 길이 ÷ 판 한 변. 판 영역이 없으면 None."""
+        p = self.calib.d.get("plate")
+        if not p:
+            return None
+        q = np.asarray(p["corners"], float)
+        sides = [float(np.hypot(*(q[(i + 1) % 4] - q[i]))) for i in range(4)]
+        return sum(sides) / 4.0 / self._size_mm()
+
+    def _plate_dirs(self):
+        """판 기준 방향: 스테이지 X+ · Y+ 로 1 mm 갈 때 사진에서 움직이는 방향(판 꼭짓점 사진 픽셀 + 꼭짓점 스테이지 좌표). 좌표 보정이 없으면 None."""
+        H = self.calib.stage_h()
+        if H is None:
+            return None
+        st = self.calib.d["coords"]["stage"]
+        cx = sum(st[n][0] for n in CORNERS) / 4.0
+        cy = sum(st[n][1] for n in CORNERS) / 4.0
+        try:
+            Hi = np.linalg.inv(np.asarray(H, float))
+        except np.linalg.LinAlgError:
+            return None
+        p0 = np.asarray(geo.apply1(Hi, cx, cy))
+        return np.asarray(geo.apply1(Hi, cx + 1.0, cy)) - p0, np.asarray(geo.apply1(Hi, cx, cy + 1.0)) - p0
+
+    def marker_problems(self, J):
+        """헤드 마커 "mm 당 픽셀" 행렬 검사. 반환 (문제 목록, 값 {"angle", "ratio", "scale"}). 기준은 모두 설정.
+        두 방향 사이 각 90° ± 허용 · 크기 비 · 판 배율 대비 크기 · 판 기준과 같은 방향(좌표 보정이 없으면 방향 검사는 건너뜀)."""
+        c = self.cfg
+        J = np.asarray(J, float)
+        vx, vy = J[:, 0], J[:, 1]
+        nx, ny = float(np.hypot(*vx)), float(np.hypot(*vy))
+        out, val = [], {"angle": None, "ratio": None, "scale": None}
+        if nx < 1e-9 or ny < 1e-9:
+            return ["마커 이동량 측정 실패"], val
+        ang = float(np.degrees(np.arccos(np.clip(np.dot(vx, vy) / (nx * ny), -1.0, 1.0))))
+        ratio = nx / ny
+        val.update(angle=ang, ratio=ratio)
+        if abs(ang - 90.0) > float(c["marker_angle_tol_deg"]):
+            out.append("마커 두 방향 %.0f° · 직각 아님" % ang)
+        if not float(c["marker_ratio_min"]) <= ratio <= float(c["marker_ratio_max"]):
+            out.append("마커 X · Y 크기 비 %.2f" % ratio)
+        ppmm = self.plate_ppmm()
+        if ppmm:
+            k = (nx + ny) / 2.0 / ppmm
+            val["scale"] = k
+            if not float(c["marker_scale_min"]) <= k <= float(c["marker_scale_max"]):
+                out.append("마커 크기 판 배율의 %.1f배" % k)
+        dirs = self._plate_dirs()
+        if dirs is not None:
+            for name, v, d in (("X", vx, dirs[0]), ("Y", vy, dirs[1])):
+                if float(np.dot(v, d)) <= 0:
+                    out.append("마커 %s 방향 반대 · 판 기준과 다름" % name)
+        return out, val
+
     def marker_learn(self):
-        """촬영 위치에서 헤드 마커 가운데 픽셀을 기억하고, X · Y 로 조금 옮겨 보며 "mm 당 픽셀" 2×2 행렬을 잰다."""
+        """촬영 위치에서 헤드 마커 가운데 픽셀을 기억하고, X · Y 로 조금 옮겨 보며 "mm 당 픽셀" 2×2 행렬을 잰다.
+        자리마다 새 프레임 두 장(marker_pair_px 안 · 아니면 한 번 더) · 끝에 촬영 위치로 돌아와 처음 자리와 marker_return_px 안 ·
+        행렬 검사(marker_problems). 하나라도 어긋나면 저장하지 않는다(기억한 마커 없음 → 위치 확인 안 함) - 이유 한 줄 + 로그."""
         head = self.cfg["photo_head_xy"]
         if head is None:
             raise Rejected("촬영 위치 설정 필요 (초기 설정 3)")
@@ -395,47 +686,66 @@ class Prep:
         if not all(self.c.stage.homed.get(a) for a in "xyz"):
             raise Rejected("세 축 원점 필요 (초기 설정 2)")
         step = float(self.cfg["marker_probe_mm"])
+        seen = {}
+
+        def fail(why):
+            raise Rejected(why)
 
         def see(x, y):
             self.c.goto(x, y)
-            frame, _t = self._fresh()
-            return geo.find_marker(frame)
+            return self._marker_pair()
 
-        m0 = see(head[0], head[1])
-        self.marker_seen = m0 is not None
-        if m0 is None:
+        try:
+            m0 = see(head[0], head[1])
+            self.marker_seen = m0 is not None
+            if m0 is None:
+                fail("마커 미검출")
+            seen["촬영 위치"] = m0
+            cols = []
+            for axis in (0, 1):
+                got = None
+                for sign in (1.0, -1.0):                             # +10 mm 에서 안 보이거나 범위 밖이면 −10 mm
+                    p = [head[0], head[1]]
+                    p[axis] += sign * step
+                    if p[axis] < 0 or p[axis] > float(self.cfg["%s_max_mm" % "xy"[axis]]):
+                        continue
+                    m = see(p[0], p[1])
+                    if m is not None:
+                        seen["%s 쪽" % "XY"[axis]] = m
+                        got = [(m[0] - m0[0]) / (sign * step), (m[1] - m0[1]) / (sign * step)]
+                        break
+                if got is None:
+                    self.c.goto(head[0], head[1])
+                    fail("이동 후 마커 미검출")
+                cols.append(got)
+            mr = see(head[0], head[1])                               # 촬영 위치로 돌아와 다시 본다(스테이지 · 카메라가 그대로인가)
+            if mr is None:
+                fail("복귀 후 마커 미검출")
+            seen["복귀"] = mr
+            back = float(np.hypot(mr[0] - m0[0], mr[1] - m0[1]))
+            if back > float(self.cfg["marker_return_px"]):
+                fail("복귀 후 마커 %.1f px 차이 · 스테이지 · 카메라 고정 확인" % back)
+        except Rejected as e:                                        # 미검출 · 흔들림 · 복귀 차이 · 이동 거절 · 정지 · 카메라 오류: 반쯤 잰 값을 남기지 않는다
             self.calib.set_marker(None, None)
+            self.clear_pos_check()
             self.publish()
-            raise Rejected("마커 미검출")
-        cols = []
-        for axis in (0, 1):
-            got = None
-            for sign in (1.0, -1.0):                                 # +10 mm 에서 안 보이거나 범위 밖이면 −10 mm
-                p = [head[0], head[1]]
-                p[axis] += sign * step
-                if p[axis] < 0 or p[axis] > float(self.cfg["%s_max_mm" % "xy"[axis]]):
-                    continue
-                m = see(p[0], p[1])
-                if m is not None:
-                    got = [(m[0] - m0[0]) / (sign * step), (m[1] - m0[1]) / (sign * step)]
-                    break
-            if got is None:
-                self.c.goto(head[0], head[1])
-                self.calib.set_marker(None, None)
-                self.publish()
-                raise Rejected("이동 후 마커 미검출")
-            cols.append(got)
-        self.c.goto(head[0], head[1])
+            self.c.logs.app("헤드 마커 등록 실패 · %s · %s" % (e, " · ".join("%s (%.1f, %.1f)" % (k, v[0], v[1]) for k, v in seen.items()) or "마커 없음"), "warn")
+            raise
         J = [[cols[0][0], cols[1][0]], [cols[0][1], cols[1][1]]]      # 열 = X · Y 로 1 mm 움직일 때 마커가 움직이는 픽셀
-        if abs(np.linalg.det(np.asarray(J))) < 1e-6:
+        bad, val = self.marker_problems(J)
+        self.c.logs.app("헤드 마커 · %s · X 1 mm (%.2f, %.2f) px · Y 1 mm (%.2f, %.2f) px · 각 %s · 크기 비 %s · 판 배율의 %s · %s" % (
+            " · ".join("%s (%.1f, %.1f)" % (k, v[0], v[1]) for k, v in seen.items()), cols[0][0], cols[0][1], cols[1][0], cols[1][1],
+            "—" if val["angle"] is None else "%.1f°" % val["angle"], "—" if val["ratio"] is None else "%.2f" % val["ratio"],
+            "—" if val["scale"] is None else "%.2f배" % val["scale"], "거절 · " + " · ".join(bad) if bad else "통과"), "warn" if bad else "info")
+        if bad:
             self.calib.set_marker(None, None)
+            self.clear_pos_check()
             self.publish()
-            raise Rejected("마커 이동량 측정 실패")
+            raise Rejected(bad[0])
         self.calib.set_marker(m0, J)
         self.clear_pos_check()
         self.c.state.clear_alarm("marker")
         self.publish()
-        self.c.logs.app("헤드 마커 기억 · 픽셀 (%.1f, %.1f) · mm 당 %.2f 픽셀" % (m0[0], m0[1], float(np.hypot(*cols[0]))))
         return {"px": [round(m0[0], 1), round(m0[1], 1)]}
 
     def plate_goto(self, x, y):
@@ -488,6 +798,8 @@ class Prep:
         """[사진 찍고 샘플 찾기]: 핀 맨 위 → 촬영 위치 → 촬영 → 위치 확인 → 샘플 찾기."""
         if not self.calib.d.get("plate"):
             raise Rejected("판 영역 설정 필요 (초기 설정 3)")
+        if not self.calib.plate_ok():
+            raise Rejected("초점 바뀜 · 판 영역 다시 확정 필요 (초기 설정 3)")
         t0 = time.monotonic()
         self.capture(move=True, need_head=True)
         cur = self.photo_rect()
@@ -675,7 +987,8 @@ class Prep:
         o_text = ("%s · %s" % (how.get(last["how"], last["how"]), when(last["t"])) if (o_done and last) else
                   "원점 있음" if o_done else "원점 없음: " + " · ".join(a.upper() for a in "xyz" if not homed.get(a)))
         plate, head = cal.get("plate"), c["photo_head_xy"]
-        p_text = ("판 영역 · %s" % when(plate["t"]) if plate else "판 영역 없음") if head is not None else "촬영 위치 없음"
+        p_text = (("초점 바뀜 · 다시 확정 필요" if plate.get("stale") else "판 영역 · %s" % when(plate["t"])) if plate else "판 영역 없음") \
+            if head is not None else "촬영 위치 없음"
         emp = cal.get("empty")
         ready = self.calib.coords_ready()
         n_ex = len(cal["coords"]["extra"])
@@ -687,7 +1000,7 @@ class Prep:
         return [
             {"done": dev_ok, "text": "전체 연결됨" if dev_ok else "%d / 4 연결" % n_dev},
             {"done": o_done, "text": o_text},
-            {"done": bool(plate) and head is not None, "text": p_text},
+            {"done": self.calib.plate_ok() and head is not None, "text": p_text, "warn": bool(plate and plate.get("stale"))},
             {"done": bool(emp) and not self._empty_unreadable(),
              "text": ("읽기 실패 · 재촬영 필요" if self._empty_unreadable() else "촬영 · %s" % when(emp["t"])) if emp else "없어도 측정 가능"},
             {"done": ready, "text": co_text},
@@ -738,6 +1051,8 @@ class Prep:
             "pos_block": self.pos_block,
             "find": self.find_info,
             "cooler": self._cooler_view(),
+            "focus": {k: v for k, v in self.focus.items() if k != "roi"},
+            "focus_cfg": {"value": self.cfg["camera_focus_value"], "lo": self.cfg["focus_scan_min"], "hi": self.cfg["focus_scan_max"]},
         }
 
     def _z_floor_view(self):
@@ -753,3 +1068,7 @@ class Prep:
 def _opposite(side):
     """반대쪽(먼 쪽 ↔ 모터 쪽)."""
     return side[0] + ("_motor" if side.endswith("far") else "_far")
+
+
+class _FocusStop(Exception):
+    """초점 찾기 도중 [정지] · 비상정지(세대가 바뀜)."""

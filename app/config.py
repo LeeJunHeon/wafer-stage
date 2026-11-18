@@ -78,8 +78,27 @@ ITEMS = (
               desc="고정 화이트밸런스 색온도\n조명을 바꿨을 때 변경"),
          Item("camera_focus_fixed", True, "bool", "초점 고정",
               desc="자동 초점 끔 · 촬영마다 초점이 변하지 않게 함"),
-         Item("camera_focus_value", -1, "int", "초점 값", "", -1, 1000, verify=True,
-              desc="고정 초점 값 · −1 은 카메라 현재 값 유지\n사진이 흐릴 때 변경"),
+         Item("camera_focus_value", -1, "int", "초점 값", "", -1, 4095, verify=True,
+              desc="고정 초점 값 · −1 은 미설정(켤 때마다 렌즈가 그 순간 자리에 굳음)\n초기 설정 3 [초점 찾기] 후 [적용] 으로 저장"),
+         # 초점 찾기(초기 설정 3): 판 영역 안의 선명도(라플라시안 분산)가 가장 큰 초점 값을 찾는다
+         Item("focus_scan_min", 0, "int", "초점 찾기 시작 값", "", 0, 4095,
+              desc="초점 찾기에서 훑는 가장 작은 초점 값"),
+         Item("focus_scan_max", 1023, "int", "초점 찾기 끝 값", "", 1, 4095,
+              desc="초점 찾기에서 훑는 가장 큰 초점 값 · 카메라가 받지 않는 값은 건너뜀"),
+         Item("focus_coarse_step", 64, "int", "초점 큰 간격", "", 2, 1024,
+              desc="처음 넓게 훑을 때의 간격"),
+         Item("focus_fine_step", 8, "int", "초점 작은 간격", "", 1, 256,
+              desc="가장 선명한 곳 둘레를 다시 훑을 때의 간격 · 큰 간격보다 작게"),
+         Item("focus_settle_s", 0.8, "float", "초점 이동 대기", "s", 0, 10, verify=True,
+              desc="초점 값을 넣은 뒤 렌즈가 멈출 때까지 대기\n선명도 그래프가 들쭉날쭉하면 늘림"),
+         Item("focus_nudge", 4, "int", "초점 미세 조정", "", 1, 256,
+              desc="초점 [−] [+] 한 번에 바꾸는 값"),
+         Item("focus_roi_inset", 0.1, "float", "초점 영역 줄임", "", 0, 0.4,
+              desc="판 영역을 안쪽으로 줄이는 비율 · 판 가장자리 · 바닥 제외"),
+         Item("focus_marker_pad_mm", 40.0, "float", "초점 마커 제외 반경", "mm", 0, 200,
+              desc="선명도에서 빼는 헤드 마커 둘레 반경 · 판 배율로 픽셀 환산"),
+         Item("focus_peak_min", 0.15, "float", "초점 봉우리 기준", "", 0, 1,
+              desc="가장 선명한 값이 양 끝 값보다 이 비율 넘게 커야 뚜렷한 봉우리\n작으면 주의 문구"),
          Item("preview_width", 1280, "int", "미리보기 가로", "px", 160, 4096,
               desc="실시간 화면으로 보내는 사진의 가로 크기\n화면이 느릴 때 줄임 · 카메라 재연결 후 적용"),
          Item("photo_head_xy", None, "xy", "촬영 위치", "mm",                           # 초기 설정 3 에서 정한다
@@ -192,6 +211,21 @@ ITEMS = (
               desc="좌표 보정 품질 주의 기준 · 직각 오차\n주의가 뜨면 꼭짓점 재등록"),
          Item("marker_probe_mm", 10.0, "float", "마커 기억 이동 거리", "mm", 1, 50,
               desc="헤드 마커 등록 때 헤드를 움직여 보는 거리\n보통 변경 안 함"),
+         # 헤드 마커 등록 검사(prep.marker_learn): 하나라도 어긋나면 저장하지 않는다
+         Item("marker_pair_px", 2.0, "float", "마커 두 장 허용", "px", 0.1, 50,
+              desc="마커 등록 때 같은 위치 두 장의 마커 위치 차이 허용\n넘으면 한 번 더 촬영 · 그래도 넘으면 실패"),
+         Item("marker_return_px", 2.0, "float", "마커 복귀 허용", "px", 0.1, 50,
+              desc="마커 등록 끝에 촬영 위치로 돌아와 본 마커가 처음 위치와 다를 수 있는 한도"),
+         Item("marker_angle_tol_deg", 15.0, "float", "마커 직각 허용", "°", 1, 45,
+              desc="X · Y 로 움직였을 때 마커가 움직인 두 방향 사이 각 · 90° ± 이 값"),
+         Item("marker_ratio_min", 0.8, "float", "마커 크기 비 최소", "", 0.1, 1,
+              desc="X 쪽 ÷ Y 쪽 이동 크기의 최소"),
+         Item("marker_ratio_max", 1.25, "float", "마커 크기 비 최대", "", 1, 10,
+              desc="X 쪽 ÷ Y 쪽 이동 크기의 최대"),
+         Item("marker_scale_min", 0.8, "float", "마커 배율 최소", "배", 0.1, 10,
+              desc="마커 1 mm 당 픽셀 ÷ 판 배율(판 꼭짓점 픽셀 ÷ 판 한 변)의 최소\n마커는 판보다 높아 조금 크게 보임"),
+         Item("marker_scale_max", 3.0, "float", "마커 배율 최대", "배", 1, 20,
+              desc="마커 1 mm 당 픽셀 ÷ 판 배율의 최대"),
          Item("pos_warn_mm", 2.0, "float", "헤드 위치 주의 거리", "mm", 0.1, 50,
               desc="촬영 때 헤드 마커가 등록 위치와 이만큼 다르면 주의"),
          Item("pos_block_mm", 10.0, "float", "헤드 위치 경보 거리", "mm", 0.5, 100,
@@ -400,6 +434,7 @@ def problems(v: dict) -> list:
     if not cycle < limit:
         out.append("읽기 한 회차 예상 %.2f초 · %.2f초 미만 필요 · 측정 간격과 평균 횟수 확인" % (cycle, limit))
     out += side_problems(v)
+    out += focus_problems(v)
     # ---- 접촉 값들의 크기 관계 ----
     if float(v["contact_step_mm"]) > float(v["contact_search_step_mm"]):
         out.append("하강 간격 %g mm · 탐색 간격 %g mm 이하 필요" % (v["contact_step_mm"], v["contact_search_step_mm"]))
@@ -448,6 +483,16 @@ def heat_problems(v: dict) -> list:
         out.append("목표 아래 허용 폭 %g °C · 0 보다 커야 함" % v["heater_band_c"])
     # ---- 릴레이 역할: 송풍 · 열선 · 쿨러가 서로 겹치지 않는다 · 쿨러 배치는 쿨러 릴레이만 ----
     out += role_problems(v)
+    return out
+
+
+def focus_problems(v: dict) -> list:
+    """초점 찾기 값의 크기 관계: 시작 값 < 끝 값 · 작은 간격 < 큰 간격."""
+    out = []
+    if not int(v["focus_scan_min"]) < int(v["focus_scan_max"]):
+        out.append("초점 찾기 시작 값 %d · 끝 값 %d 미만 필요" % (v["focus_scan_min"], v["focus_scan_max"]))
+    if not int(v["focus_fine_step"]) < int(v["focus_coarse_step"]):
+        out.append("초점 작은 간격 %d · 큰 간격 %d 미만 필요" % (v["focus_fine_step"], v["focus_coarse_step"]))
     return out
 
 

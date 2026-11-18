@@ -53,6 +53,7 @@ class Camera:
         self._want = 0                                # 새 프레임 요청 번호(올리면 읽기 스레드가 바로 한 장 가져온다)
         self._seq = 0                                 # 저장한 프레임 번호
         self._cv = threading.Condition()
+        self._cap_lock = threading.Lock()             # cap 을 읽기 스레드(grab · retrieve)와 초점 바꾸기(set · get)가 번갈아 쓴다
 
     # ---- 열기 ----
     def open(self, index, width, height, fourcc="MJPG", focus_fixed=True, focus_value=-1, preview_width=1280, exposure=None, wb_k=None):
@@ -78,15 +79,19 @@ class Camera:
                 errors.append("%s: 열렸지만 프레임이 없음" % name)
                 continue
             self.cap = cap
+            want_focus = int(focus_value) if focus_fixed and int(focus_value) >= 0 else None
             self.info = {"backend": name, "requested": [int(width), int(height)], "requested_fourcc": str(fourcc),
-                         "actual": [int(frame.shape[1]), int(frame.shape[0])], "actual_fourcc": fourcc_str(cap.get(cv2.CAP_PROP_FOURCC))}
+                         "actual": [int(frame.shape[1]), int(frame.shape[0])], "actual_fourcc": fourcc_str(cap.get(cv2.CAP_PROP_FOURCC)),
+                         "focus_req": want_focus, "focus_read": self._read_focus(cap)}
             self._store(frame)
             self.connected = True
             self._alive = True
             self._thread = threading.Thread(target=self._loop, daemon=True, name="camera")
             self._thread.start()
-            self.log("카메라 열림 · 요청 %dx%d %s → 실제 %dx%d %s (%s)" % (width, height, fourcc, self.info["actual"][0], self.info["actual"][1],
-                                                                       self.info["actual_fourcc"] or "?", name))
+            fr = self.info["focus_read"]
+            self.log("카메라 열림 · 요청 %dx%d %s → 실제 %dx%d %s (%s) · 초점 요청 %s · 읽음 %s" % (
+                width, height, fourcc, self.info["actual"][0], self.info["actual"][1], self.info["actual_fourcc"] or "?", name,
+                "미설정" if want_focus is None else want_focus, "미지원" if fr is None else "%g" % fr))
             return dict(self.info)
         self.log("카메라 %d 번 열기 실패 · %s" % (index, ", ".join(errors)))
         raise CameraError("카메라 %d 번 열기 실패 · 번호와 USB 확인 필요" % index)
@@ -154,6 +159,33 @@ class Camera:
         if wb_k is not None and int(wb_k) > 0:
             cap.set(cv2.CAP_PROP_WB_TEMPERATURE, int(wb_k))
 
+    @staticmethod
+    def _read_focus(cap):
+        """카메라가 알려 주는 지금 초점 값. 다시 읽기를 지원하지 않으면(음수 · 오류) None."""
+        try:
+            v = float(cap.get(cv2.CAP_PROP_FOCUS))
+        except Exception:                                           # noqa: BLE001 - 드라이버가 이 속성을 모른다 = 다시 읽기 미지원
+            return None
+        return v if v >= 0 else None
+
+    def get_focus(self):
+        """지금 초점 값(다시 읽기). 미지원이면 None."""
+        cap = self.cap
+        if not self.connected or cap is None:
+            raise CameraError("카메라 연결 안 됨")
+        with self._cap_lock:
+            return self._read_focus(cap)
+
+    def set_focus(self, value):
+        """자동 초점 끔 → 초점 값 넣기 → 다시 읽은 값(미지원이면 None). 렌즈가 멈추기를 기다리지 않는다(부르는 쪽이 기다린다)."""
+        cap = self.cap
+        if not self.connected or cap is None:
+            raise CameraError("카메라 연결 안 됨")
+        with self._cap_lock:
+            cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+            cap.set(cv2.CAP_PROP_FOCUS, int(value))
+            return self._read_focus(cap)
+
     def _first_frame(self, cap, pixels):
         """열린 뒤 프레임이 실제로 나오는지 확인한다(고해상도는 첫 장이 늦다 - 4백만 화소 넘으면 두 배로 기다린다)."""
         wait_s = 5.0 * (2.0 if pixels > 4_000_000 else 1.0)
@@ -189,13 +221,15 @@ class Camera:
             if cap is None:
                 break
             try:
-                ok = cap.grab()
+                with self._cap_lock:
+                    ok = cap.grab()
                 now = time.monotonic()
                 want = self._want
                 if ok and want > served:
                     skip += 1                                       # 요청 뒤에 들어온 프레임만 쓴다(드라이버에 쌓여 있던 옛 프레임 두 장은 버린다)
                 if ok and (now - last >= self.period_s or (want > served and skip > FRESH_SKIP)):
-                    ok, frame = cap.retrieve()
+                    with self._cap_lock:
+                        ok, frame = cap.retrieve()
                     if ok and frame is not None:
                         self._store(frame)
                         last = now
