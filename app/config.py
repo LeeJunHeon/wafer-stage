@@ -195,8 +195,10 @@ ITEMS = (
               desc="제어기가 쓰는 열선 출력 상한\n넘침이 크면 낮춤"),
          Item("heater_full_pct", 90, "int", "연속 판정 출력", "%", 1, 100,
               desc="열선 연속 최대 시간은 출력이 이 값 이상으로 이어진 시간\n출력 % 로 오래 조절하는 동안은 세지 않음"),
-         Item("heater_pwm_period_ms", 1000, "int", "열선 출력 주기", "ms", 200, 5000,
-              desc="열선 출력 % 의 한 주기(SSR) · 주기 × % 동안만 켬\n펌웨어 V12 에 연결 때 알려 줌"),
+         Item("heater_pwm_period_ms", 5000, "int", "열선 출력 주기", "ms", 200, 5000,
+              desc="열선 출력 % 의 한 주기(SSR) · 주기 × % 동안만 켬\n957DW: 켜기 직후 끊으면 H-E · 5 s 주기 정상 확인"),
+         Item("heater_boot_hold_s", 5.0, "float", "스테이션 켠 뒤 100 % 유지", "s", 0, 60,
+              desc="송풍(스테이션)을 새로 켠 뒤 이 시간 동안 열선 100 % · 그동안 끊으면 H-E\n그 사이 출력 % 요청은 끝날 때 적용"),
          Item("heat_model_k", None, "optfloat", "열 모델 이득", "°C/%", 0.01, 20, verify=True,
               desc="열선 출력 1 % 당 올라가는 온도 · 온도 시험 [반응 재기] 로 저장\n비우면 보수적인 기본값"),
          Item("heat_model_tau_s", None, "optfloat", "열 모델 시간 상수", "s", 1, 3600, verify=True,
@@ -370,7 +372,8 @@ PC_KEYS = frozenset({"stage_port", "k2110_addr", "k2450_addr", "data_dir", "auto
 
 # 장비 값: 장비(한 대)에 딸린 값 - 코드 기본값이 그 장비의 값이다(배선 · 설치가 바뀌면 코드 기본값도 바꾼다). 전체 설정에 "장비 값" 표시
 DEVICE_KEYS = frozenset({"cooler_grid", "machine_front_side", "machine_right_side", "view_rot", "view_flip", "camera_focus_value",
-                         "heater_fan_relay", "heater_element_relay", "cooler_relays", "heat_model_k", "heat_model_tau_s", "heat_model_theta_s"})
+                         "heater_fan_relay", "heater_element_relay", "cooler_relays", "heat_model_k", "heat_model_tau_s", "heat_model_theta_s",
+                         "heater_pwm_period_ms", "heater_boot_hold_s"})
 
 # 기본값 이력(키 → 예전 기본값들): 저장된 값이 예전 기본값과 같으면 "바꾼 적 없음" 으로 보고 지운다(새 기본값을 따른다 - Config.load 한 번 · 로그 한 줄씩).
 # 기본값을 바꿀 때 예전 값을 여기에 더한다. 없어진 키는 REMOVED_KEYS 에(읽을 때 버리고 로그).
@@ -379,6 +382,9 @@ DEFAULT_HISTORY = {
     "camera_focus_value": [-1],
     "cooler_grid": [[[2, 2, 2], [3, 3, 3], [4, 4, 4]]],
     "run_interval_s": [1.0],
+    "heater_pwm_period_ms": [1000],
+    "marker_pair_px": [2.0],
+    "marker_return_px": [2.0],
 }
 REMOVED_KEYS = {
     "cooler_view": "화면 방향은 문 기준 하나(view_rot · view_flip)",

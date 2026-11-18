@@ -115,7 +115,8 @@ function drawPlate() {
 function heatLine(run) {
   const ht = run.heat;
   if (!ht || (run.stage !== 3 && run.stage !== 4)) return "";
-  const el = "열선 " + (ht.element ? "켜짐" : "꺼짐");
+  const boot = bootText(S.heater);
+  const el = boot || "열선 " + (ht.pct != null ? ht.pct + " %" : ht.element ? "켜짐" : "꺼짐");
   return ht.mode === "ramp" ? (ht.wait ? "목표 대기 " : "목표 ") + Number(ht.sp).toFixed(1) + " °C · " + el : (run.line ? run.line + " · " : "") + el;
 }
 

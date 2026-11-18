@@ -126,6 +126,8 @@ class Controller:
         self._heater_off_logged = False                             # 이번 "히트건 끔" 을 이미 로그에 적었다(송풍이 늦게 꺼질 때 두 번 적지 않게)
         self._element_off_t = None                                  # 열선을 마지막으로 끈 시각(clock) - 송풍은 여기서 heater_fan_after_s 뒤에 끈다
         self._fan_off_at = None                                     # 송풍을 끌 시각(clock). 없으면 None
+        self._boot_until = None                                     # 스테이션(송풍)을 새로 켠 뒤 열선 100 % 유지가 끝나는 시각(clock) · 아니면 None
+        self._boot_pending = None                                   # 유지 중에 들어온 마지막 출력 %(끝나는 순간 적용)
         self._fan_off_epoch = None                                  # 같은 시각(화면용 epoch)
         self._folder_picker = None                                  # 폴더 선택 창을 띄우는 함수(창으로 실행했을 때 run.py 가 넘긴다)
         self._cam_lock = threading.Lock()                           # 카메라 열기(연결 · 목록용 열어 보기)는 한 번에 하나
@@ -416,6 +418,8 @@ class Controller:
             self._element_off_t = self.clock()
         if ev is False and self._element_off_t is None:
             self._element_off_t = self.clock()
+        if ev is False or fv is False:                              # 열선 · 송풍이 꺼졌다(끄기 · 차단 · 비상정지 · 통신 끊김): 켜기 유지도 끝
+            self._boot_until = self._boot_pending = None
         p = self.stage.heat_pct if (self.stage.heat_capable and not force_off) else None
         self.safety.element_full(ev is True and (p is None or p >= int(self.cfg["heater_full_pct"])))     # 열선 연속 최대 시간은 거의 최대 출력일 때만
         active = fv is True or ev is True
@@ -441,7 +445,8 @@ class Controller:
             fan, el, _ = self._roles()
             fv, ev = self.stage.relays[fan - 1], self.stage.relays[el - 1]
         self.state.set("heater", {"fan": fv, "element": ev, "fan_off_at": self._fan_off_epoch,
-                                  "pct": self.heater_pct() if self.stage.connected else None, "heat_fw": bool(self.stage.heat_capable)})
+                                  "pct": self.heater_pct() if self.stage.connected else None, "heat_fw": bool(self.stage.heat_capable),
+                                  "boot_left": round(self.boot_left(), 1), "boot_pending": self._boot_pending})
 
     def _apply_migration(self):
         """예전 settings.json 을 지금 규칙으로 옮긴 것(config._migrate)을 로그에 한 줄씩 남기고 파일에 저장한다.
@@ -890,6 +895,32 @@ class Controller:
         if not self.stage.heat_capable:
             raise Rejected(stage_mod.FW_NEED)
 
+    # ---- 스테이션 켠 뒤 100 % 유지(heater_boot_hold_s) ----
+    # 가열 장치는 MECHANIC 957DW 핫에어 스테이션(자체 폐루프)이다. R1(송풍 릴레이)이 스테이션을 켜고 R10(SSR)이 열선 줄을 끊는다.
+    # 스테이션은 켜진 직후 몇 초 동안 열선을 점검하고, 그 사이 열선이 끊기면 H-E(열선 오류)로 멈춘다(r 10 1 → 1 s → r 1 1 → 0.02 s 뒤 hp 30 이면 매번 H-E).
+    # 그래서 송풍을 새로 켰으면 이 시간 동안 열선을 100 % 로 두고, 그동안 들어온 출력 % 요청은 마지막 값을 기억했다가 끝나는 순간 적용한다.
+    # 끄기 · 차단 온도 · 온도 못 읽음 · 비상정지 · 통신 끊김은 유지와 상관없이 바로 끈다(열선이 꺼지면 유지도 끝 - _heater_sync).
+    def boot_left(self) -> float:
+        """스테이션 켠 뒤 100 % 유지가 남은 초(0 = 유지 아님)."""
+        u = self._boot_until
+        return 0.0 if u is None else max(0.0, u - self.clock())
+
+    def _boot_done(self):
+        """유지 시간이 지났다: 기억한 출력 % 를 적용한다(열선 · 송풍이 켜진 채일 때만)."""
+        with self._heater_lock:
+            if self._boot_until is None or self.clock() < self._boot_until:
+                return
+            pend, self._boot_until, self._boot_pending = self._boot_pending, None, None
+            if pend is None or not self._element_on() or not self._fan_on():
+                self._publish_heater()
+                return
+            try:
+                self.stage.heat(int(pend), self.safety.generation, prio=1)
+                self.logs.app("스테이션 켜기 유지 끝 · 열선 출력 %d %% 적용" % int(pend))
+            except StageError as e:
+                self.logs.app("스테이션 켜기 유지 뒤 출력 적용 실패 · %s" % e, "warn")
+            self._heater_sync()
+
     def heater_pct(self) -> int:
         """지금 열선 출력 %(V13 이 알려 준 값). 모르면(V11 · V12) 열선 켜짐 = 100 · 꺼짐 = 0."""
         p = self.stage.heat_pct if self.stage.heat_capable else None
@@ -913,6 +944,13 @@ class Controller:
                 if not self._element_on():
                     self._check_element_on(by)
                 self._heater_by = by
+            if self.boot_left() > 0:                                  # 스테이션 켜는 중: 끊으면 H-E - 마지막 값(0 포함)을 기억했다가 유지가 끝나면 적용(끄기 · 차단은 다른 길로 바로)
+                self._boot_pending = pct
+                self._heater_by = None
+                self._publish_heater()
+                return self._heater_reply()
+            if pct == 0:
+                self._boot_until = self._boot_pending = None         # 끄기는 바로(유지보다 안전이 먼저)
             g = self.safety.generation if pct > 0 else None
             try:
                 if not self.safety.gen_ok(g):
@@ -1017,7 +1055,10 @@ class Controller:
                 if why:
                     raise Rejected(why)
                 self._switch(fan, True, g)
-                self.logs.app("히트건 켬 · %s" % by)
+                hold = float(self.cfg["heater_boot_hold_s"])
+                if hold > 0 and self.stage.heat_capable:             # 스테이션을 새로 켰다: 열선 100 % 유지(끊으면 H-E)
+                    self._boot_until, self._boot_pending = self.clock() + hold, None
+                self.logs.app("히트건 켬 · %s%s" % (by, " · 열선 100 %% %g초 유지" % hold if self._boot_until is not None else ""))
         except Rejected:
             with self._heater_lock:
                 self._heater_abort("켜기 실패")
@@ -1108,6 +1149,8 @@ class Controller:
         trip = self.safety.heater_trip(now)
         if trip:
             self._heater_trip_off(*trip)
+        if self._boot_until is not None and self.clock() >= self._boot_until:
+            self._boot_done()
         due = self._fan_off_at
         if due is not None and (self.clock() if now is None else now) >= due:
             self._fan_off_due(now)

@@ -379,6 +379,10 @@ function renderAlarms() {
 const DIR_PAD = 16, DIR_BOXES = [];
 /* 화면 방향이 바뀌면 그림을 다시 받게 하는 꼬리표(서버가 회전한 그림 - 주소가 같으면 브라우저가 다시 받지 않는다) */
 function vq() { const c = (S && S.cfg) || {}; return "&r=" + (c.view_rot || 0) + (c.view_flip ? "f" : ""); }
+/* 스테이션 켠 뒤 100 % 유지 중이면 한 줄(아니면 "") - 수동 제어 · 온도 시험 · 자동 측정이 같이 쓴다 */
+function bootText(ht) {
+  return ht && ht.boot_left > 0 ? "스테이션 켜는 중 · " + Math.ceil(ht.boot_left) + "초 뒤 출력 적용" : "";
+}
 function renderDirs() {
   const d = (S && S.prep && S.prep.view && S.prep.view.dirs) || null;
   for (const pb of DIR_BOXES) for (const k of ["top", "bottom", "left", "right"]) { const t = d ? d[k] : ""; if (pb.dirs[k].textContent !== t) pb.dirs[k].textContent = t; }

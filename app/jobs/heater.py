@@ -107,6 +107,7 @@ class LineControl:
         self._behind_t = None
         self.pc = PowerControl(cd, float(T_from) if T_amb is None else T_amb)
         self.pct = None                                            # 마지막으로 보낸 출력 %
+        self._held = False                                         # 스테이션 켠 뒤 100 % 유지 중이었다(끝나면 지금 온도에서 다시 시작)
         self.on_change = on_change                                 # on_change(now, pct) - 출력을 바꿀 때(기록)
 
     def _clamp(self, v):
@@ -124,6 +125,11 @@ class LineControl:
         dt = max(0.0, now - self.t)
         self.t = now
         Tf = self.filtered(T, now)
+        if self._held and self.h.boot_hold <= 0:                   # 스테이션 켜기 유지가 끝났다: 목표선을 지금 온도에서 다시 시작(앞서 가 있으면) · 적분 0
+            self._held = False
+            self.sp = self._clamp(max(self.sp, float(T)) if self.sign > 0 else min(self.sp, float(T)))
+            self.pc.I, self.pc.t = 0.0, now
+            self._behind_t = None
         behind = (Tf < self.sp - self.lead) if self.sign > 0 else (Tf > self.sp + self.lead)
         if behind:
             if self._behind_t is None:
@@ -140,7 +146,17 @@ class LineControl:
         return self.sp
 
     def decide(self, T, sp, now):
-        """정한 목표로 출력 % 를 계산해 보낸다. 바꿨으면 True."""
+        """정한 목표로 출력 % 를 계산해 보낸다. 바꿨으면 True.
+        스테이션 켠 뒤 100 % 유지 중에는 적분하지 않고(앞먹임 값만 요청 - Controller 가 기억했다가 유지가 끝나면 적용) 끝나면 target 이 지금 온도에서 다시 시작한다."""
+        if self.h.boot_hold > 0:
+            self._held = True
+            self.pc.t = now
+            self.pc.I = 0.0
+            pct = int(round(max(0.0, min(self.pc.umax, self.pc.ff(sp, self.slope)))))
+            if pct != self.pct:
+                self.h.power(pct)
+                self.pct = pct
+            return False
         pct = int(round(self.pc.out(T, sp, self.slope, now)))
         if self.pct is not None and pct == self.pct and self.h.pct == pct:     # 실제 출력(펌웨어가 알려 준 값)과도 같을 때만 건너뛴다 - [정지] '!' 가 0 으로 만들었으면 다시 보낸다
             return False
@@ -273,6 +289,11 @@ class RelayHeater:
     def pct(self):
         """지금 열선 출력 %(펌웨어가 알려 준 값 · 모르면 열선 상태로 0 · 100)."""
         return self.c.heater_pct()
+
+    @property
+    def boot_hold(self):
+        """스테이션 켠 뒤 100 % 유지가 남은 초(0 = 유지 아님)."""
+        return self.c.boot_left()
 
     @property
     def fan_pending(self):
