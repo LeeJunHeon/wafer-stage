@@ -96,6 +96,51 @@ class Prep:
         except CameraError as e:
             raise Rejected(str(e))
 
+    @staticmethod
+    def _small_gray(frame):
+        g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        w = 320
+        if g.shape[1] > w:
+            g = cv2.resize(g, (w, max(1, int(round(g.shape[0] * w / g.shape[1])))), interpolation=cv2.INTER_AREA)
+        return g
+
+    def _wait_real(self, g, seconds):
+        """실제 시간으로 기다린다(카메라는 실제 시간으로 프레임을 낸다). g 가 있으면 [정지] · 비상정지(세대가 바뀜)에 바로 멈춘다."""
+        end = time.monotonic() + float(seconds)
+        while True:
+            if g is not None and self.c.safety.generation != g:
+                raise _FocusStop()
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(0.05, left))
+
+    def settled(self, why="이동", g=None, wait_s=None):
+        """이동 · 초점 변경 뒤의 사진 한 장(마커 등록 · 위치 확인 · 촬영 · 빈 판 · 재촬영 · 초점 찾기가 모두 이것을 쓴다):
+        cam_settle_wait_s 기다림 → 연속 새 프레임 두 장(줄인 회색 사진)의 평균 차이가 cam_still_diff 이하가 될 때까지 →
+        cam_still_timeout_s 안에 안 멈추면 Rejected "카메라 화면 안정 안 됨". 걸린 시간 · 장수는 로그에.
+        까닭: 4080×3060 MJPG(DSHOW) 프레임이 실제보다 늦어, 새 프레임 두 장만 버리면 이동 중 장면이 들어왔다(같은 자리 두 장의 마커가 61.6 · 110.1 px 달랐다)."""
+        c = self.cfg
+        t0 = time.monotonic()
+        self._wait_real(g, float(c["cam_settle_wait_s"]) if wait_s is None else wait_s)
+        limit = t0 + float(c["cam_still_timeout_s"])
+        prev, n, d = None, 0, None
+        while True:
+            if g is not None and self.c.safety.generation != g:
+                raise _FocusStop()
+            frame, t = self._fresh()
+            n += 1
+            sm = self._small_gray(frame)
+            if prev is not None and prev.shape == sm.shape:
+                d = float(cv2.absdiff(sm, prev).mean())
+                if d <= float(c["cam_still_diff"]):
+                    self.c.logs.app("화면 멈춤 · %s 뒤 %.2f s · %d장 · 차이 %.2f" % (why, time.monotonic() - t0, n, d), "detail")
+                    return frame, t
+            prev = sm
+            if time.monotonic() > limit:
+                self.c.logs.app("카메라 화면 안정 안 됨 · %s 뒤 %.1f s · %d장 · 마지막 차이 %s" % (why, time.monotonic() - t0, n, "—" if d is None else "%.2f" % d), "warn")
+                raise Rejected("카메라 화면 안정 안 됨")
+
     def capture(self, move=True, need_head=False):
         """사진 한 장. move 면 핀 맨 위 → 촬영 위치로 간 뒤, 이동이 끝나고 새로 들어온 프레임을 쓴다.
         need_head: 촬영 위치가 정해져 있지 않으면 거절(빈 판 · 샘플 사진). 아니면 지금 자리에서 찍는다(초기 설정 3단계)."""
@@ -111,10 +156,15 @@ class Prep:
                 if need_head:
                     raise Rejected("스테이지 연결 · 세 축 원점 필요")
             else:
+                moved = False
                 if not self._at(head) or self.c._mm("z") != 0:
                     self.c.goto(head[0], head[1])
+                    moved = True
                 at_head = True
-        frame, t = self._fresh()
+        if at_head:                                                  # 촬영 위치의 사진: 화면이 멈춘 뒤(방금 움직였으면 cam_settle_wait_s 도 기다린다)
+            frame, t = self.settled("이동" if moved else "촬영", wait_s=None if moved else 0.0)
+        else:
+            frame, t = self._fresh()
         with self._lock:
             self._photo_n += 1
             self.photo = {"frame": frame, "t": t, "id": self._photo_n, "at_head": at_head}
@@ -372,17 +422,6 @@ class Prep:
         lap = cv2.Laplacian(g, cv2.CV_64F)
         return float(lap[mask[y0:y1, x0:x1] > 0].var())
 
-    def _focus_wait(self, g, seconds):
-        """렌즈가 멈추기를 기다린다. 그동안 [정지] · 비상정지(세대가 바뀜)면 바로 멈춘다."""
-        end = self.c.clock() + float(seconds)
-        while True:
-            if self.c.safety.generation != g:
-                raise _FocusStop()
-            left = end - self.c.clock()
-            if left <= 0:
-                return
-            self.c.sleep(min(0.1, left))
-
     def focus_find(self, roi=None):
         """[초점 찾기]: 핀 맨 위 → 촬영 위치(판 밖) → 자동 초점 끔 → focus_coarse_step 간격으로 넓게 → 가장 선명한 곳 둘레를 focus_fine_step 간격으로.
         값마다 focus_settle_s 기다린 뒤 새 프레임으로 잰다. 넣은 뒤 다시 읽어 안 바뀐 값(범위 밖)은 건너뛴다(다시 읽기 미지원이면 그대로 쓴다 · 화면 · 로그에 남김).
@@ -416,7 +455,7 @@ class Prep:
             readback = read0 is not None
             orig = read0 if readback else (int(c["camera_focus_value"]) if int(c["camera_focus_value"]) >= 0 else None)
             self.focus.update(orig=None if orig is None else int(round(orig)), readback=readback)
-            frame0, _t = self._fresh()
+            frame0, _t = self.settled("이동", g)
             mask = self._focus_mask(frame0.shape, roi, geo.find_marker(frame0))
             settle = float(c["focus_settle_s"])
 
@@ -429,8 +468,7 @@ class Prep:
                 if readback and (rb is None or abs(rb - v) > 0.5):   # 카메라가 받지 않은 값(범위 밖): 렌즈가 그대로라 잴 필요 없다
                     self.focus["skipped"].append(v)
                     return None
-                self._focus_wait(g, settle)
-                frame, _t2 = self._fresh()
+                frame, _t2 = self.settled("초점", g, wait_s=settle)      # 렌즈가 멈춘 뒤(focus_settle_s 기다림 + 화면 멈춤)
                 s = self.sharpness(frame, mask)
                 self.focus["points"].append([int(v), round(s, 3), phase])
                 self.focus["value"] = int(v)
@@ -454,7 +492,7 @@ class Prep:
                     measure(v, "fine")
             best = max(self.focus["points"], key=lambda p: p[1])
             rb = cam.set_focus(best[0])                              # 렌즈를 고른 값에(저장은 [적용])
-            self._focus_wait(g, settle)
+            self.settled("초점", g, wait_s=settle)
             note = ""
             top, ends = max(p[1] for p in pts), max(pts[0][1], pts[-1][1])
             if top <= 0 or (top - ends) / top < float(c["focus_peak_min"]):
@@ -506,10 +544,9 @@ class Prep:
             raise Rejected("초점 %d 적용 안 됨 · 카메라 범위 밖" % v)
         g = self.c.safety.generation
         try:
-            self._focus_wait(g, float(self.cfg["focus_settle_s"]))
+            frame, _t = self.settled("초점", g, wait_s=float(self.cfg["focus_settle_s"]))
         except _FocusStop:
             raise Rejected("정지로 취소됨")
-        frame, _t = self._fresh()
         if self.calib.d.get("plate") or self.focus.get("roi"):       # 초점 찾기와 같은 자리(판 영역 − 마커 둘레 · 또는 그린 상자)
             mask = self._focus_mask(frame.shape, self.focus.get("roi"), geo.find_marker(frame))
         else:
@@ -693,6 +730,7 @@ class Prep:
 
         def see(x, y):
             self.c.goto(x, y)
+            self.settled("이동")                                     # 화면이 멈춘 뒤 두 장(프레임이 늦게 와 이동 중 장면이 섞이지 않게)
             return self._marker_pair()
 
         try:
@@ -768,7 +806,7 @@ class Prep:
         self.last_click = {"px": [round(photo_px[0], 1), round(photo_px[1], 1)], "plate": [round(px, 2), round(py, 2)], "sample": snapped}
         self.publish()
         self.c.goto(sx, sy)
-        return {"xy": [round(sx, 2), round(sy, 2)], "sample": snapped}
+        return {"xy": [round(sx, 2), round(sy, 2)], "sample": snapped, "pos": dict(self.c.state.get("pos"))}     # 화면이 좌표 이동 칸을 채운다
 
     def coord_add_here(self):
         """[보정 점 추가]: (마지막으로 누른 사진 좌표, 지금 스테이지 X · Y)를 보정 점으로 더하고 변환을 전체 점으로 다시 맞춘다."""
@@ -806,7 +844,9 @@ class Prep:
         if cur is None:
             raise Rejected("사진 크기 변경됨 · 초기 설정 3 재설정 필요")
         emp = self.empty_rect()
-        res = find_mod.find_samples(cur, emp, geo.RECT_PPMM, geo.RECT_MARGIN_MM, log=lambda t: self.c.logs.app("샘플 찾기 · " + t, "detail"))
+        c = self.cfg
+        res = find_mod.find_samples(cur, emp, geo.RECT_PPMM, geo.RECT_MARGIN_MM, log=lambda t: self.c.logs.app("샘플 찾기 · " + t, "detail"),
+                                    layout=c["sample_layout"], rows=c["sample_grid_rows"], cols=c["sample_grid_cols"])
         if emp is None and not self.calib.d.get("empty"):
             res["notes"].append("빈 판 사진 없음 · 사진 한 장으로 검출")
         # 빈 판 사진이 있다고 적혀 있는데 못 읽었으면 empty_frame 이 주의 "빈 판 사진 읽기 실패 · 초기 설정 4 재촬영 필요" 를 이미 띄웠다(같은 일을 두 번 알리지 않는다)

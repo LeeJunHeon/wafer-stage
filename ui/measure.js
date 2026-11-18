@@ -119,13 +119,19 @@ function heatLine(run) {
   return ht.mode === "ramp" ? (ht.wait ? "목표 대기 " : "목표 ") + Number(ht.sp).toFixed(1) + " °C · " + el : (run.line ? run.line + " · " : "") + el;
 }
 
+/* 샘플 크기 "9.8 × 4.1 mm"(긴 변 × 짧은 변 - "핀보다 작음" 판정을 확인할 수 있게) */
+function sizeText(s) {
+  if (!s || s.w == null || s.h == null) return "";
+  const a = Math.max(s.w, s.h), b = Math.min(s.w, s.h);
+  return a.toFixed(1) + " × " + b.toFixed(1) + " mm";
+}
 function progText(row, s, brief) {                               // brief: 덧붙는 글(주의 한 줄)을 뺀다
   const st = row.status;
   if (st === "완료") return "완료 · " + fmtDur(row.dur) + (!brief && row.notes.length ? " · " + row.notes[0] : "");
   if (st === "측정 중") return "측정 중 · " + (STAGE_NAMES[R().stage] || "") + (S.temp.value != null ? " " + S.temp.value.toFixed(1) + " °C" : "");
   if (st === "실패") return "실패 · " + row.reason;
   if (st === "중지") return "중지" + (row.reason ? " · " + row.reason : "");
-  if (st === "제외") return "제외" + (s && s.weak ? " · 미확인" : s && s.small ? " · 핀보다 작음" : "");
+  if (st === "제외") return "제외" + (s && s.weak ? " · 미확인" : s && s.small ? " · 핀보다 작음 · " + sizeText(s) : "");
   return st;
 }
 
@@ -234,7 +240,7 @@ function renderSample() {
   if (isNow) { setBand(run.stage, run.frac); ms.line.textContent = heatLine(run) || run.line || ""; }
   else {
     setBand(row.status === "완료" ? 6 : -1, 0);
-    ms.line.textContent = row.status === "제외" && s ? (s.weak ? "미확인 샘플 · 확인 후 [포함]" : s.small ? "핀보다 작음" : "") : row.notes.join(" · ");
+    ms.line.textContent = [s ? "크기 " + sizeText(s) : "", row.status === "제외" && s ? (s.weak ? "미확인 샘플 · 확인 후 [포함]" : s.small ? "핀보다 작음" : "") : row.notes.join(" · ")].filter(Boolean).join(" · ");
   }
   /* 그래프: 고른 샘플(진한 색) + 겹쳐 보기면 바로 앞에 끝난 두 샘플 */
   const series = [{ name: row.name, points: ptsOf(id), live: isNow, main: true }];

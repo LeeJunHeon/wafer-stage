@@ -54,6 +54,7 @@ class Camera:
         self._seq = 0                                 # 저장한 프레임 번호
         self._cv = threading.Condition()
         self._cap_lock = threading.Lock()             # cap 을 읽기 스레드(grab · retrieve)와 초점 바꾸기(set · get)가 번갈아 쓴다
+        self._grabs = []                              # 최근 2 초의 grab 시각(실제 초당 장수 - fps)
 
     # ---- 열기 ----
     def open(self, index, width, height, fourcc="MJPG", focus_fixed=True, focus_value=-1, preview_width=1280, exposure=None, wb_k=None):
@@ -224,6 +225,10 @@ class Camera:
                 with self._cap_lock:
                     ok = cap.grab()
                 now = time.monotonic()
+                if ok:
+                    self._grabs.append(now)
+                    while self._grabs and now - self._grabs[0] > 2.0:
+                        self._grabs.pop(0)
                 want = self._want
                 if ok and want > served:
                     skip += 1                                       # 요청 뒤에 들어온 프레임만 쓴다(드라이버에 쌓여 있던 옛 프레임 두 장은 버린다)
@@ -273,6 +278,14 @@ class Camera:
             self._frame_t = time.time()
             if ok:
                 self._jpeg = buf.tobytes()
+
+    @property
+    def fps(self):
+        """실제 초당 장수(최근 2 초의 grab 수). 아직 모르면 None."""
+        g = list(self._grabs)
+        if len(g) < 3 or g[-1] - g[0] < 0.5:
+            return None
+        return (len(g) - 1) / (g[-1] - g[0])
 
     # ---- 가져가기 ----
     def preview_jpeg(self) -> Optional[bytes]:

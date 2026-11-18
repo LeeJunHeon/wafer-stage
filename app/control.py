@@ -1405,6 +1405,14 @@ class Controller:
         self.logs.app("접촉 · 고정 높이 Z %.3f%s" % (res["z"], " · %s" % _ohm(res["ohm"]) if res["ohm"] else ""))
         return res
 
+    def contact_lower(self):
+        """수동 제어 탭 [접촉 높이로 내리기]: 지금 X · Y 에서 저장된 접촉 높이(contact_z_mm)까지 - 측정의 고정 높이 접촉과 같은 규칙 · 같은 한도
+        (contact_fixed - 마지막 approach_mm 는 느린 속도). 저항은 재지 않는다."""
+        self._no_run("접촉 높이로 내리기")
+        g = self.safety.generation
+        res = self.contact_fixed(self.cfg["contact_z_mm"], g, read=False)
+        return {"z": res["z"], "pos": dict(self.state.get("pos"))}
+
     def contact_find(self):
         """초기 설정 6 · 수동 제어 탭 [접촉 탐색]: 지금 높이부터 탐색 간격씩 내리며 찾는다. 접촉 방식이 전기 탐색일 때만 쓴다.
         연속 측정을 먼저 끄고 K2450 사용권을 얻는다(탐색 도중 다른 기능이 K2450 설정을 바꾸면 "안 닿음" 으로 읽고 한도까지 내려간다)."""
@@ -1514,6 +1522,14 @@ class Controller:
             self.state.clear_alarm("camera_format")
         self.state.clear_alarm("camera_lost")
         self._check_focus(info)
+
+        def log_fps():                                              # 열린 뒤 몇 초 지나 실제 초당 장수를 한 줄(이동 뒤 화면이 늦게 멈추는 까닭을 볼 수 있게)
+            f = self.camera.fps
+            if self.camera.connected:
+                self.logs.app("카메라 초당 %s장 · %s" % ("—" if f is None else "%.1f" % f, text))
+        t = threading.Timer(3.0, log_fps)
+        t.daemon = True
+        t.start()
         return {"index": idx, "actual": info["actual"], "fourcc": info["actual_fourcc"]}
 
     def _check_focus(self, info):
@@ -1798,6 +1814,14 @@ class Controller:
             steps = self._marker_steps()
             if steps:
                 plan = {"title": "마커 재등록", "purpose": "헤드 마커 위치 · 이동량 다시 재기", "steps": steps}
+        elif name == "contact_lower":
+            if c["contact_z_mm"] is not None:
+                z = self._mm("z") or 0.0
+                ap = float(c["approach_mm"])
+                plan = {"title": "접촉 높이로 내리기", "purpose": "현재 X · Y 에서 핀을 접촉 높이까지 내림", "steps": [
+                    "X %.2f · Y %.2f 그대로" % (self._mm("x") or 0.0, self._mm("y") or 0.0),
+                    "Z %.2f → %.2f mm 내림 · 마지막 %.1f mm 는 느리게" % (z, float(c["contact_z_mm"]), ap)],
+                        "note": "측정의 고정 높이 접촉과 같은 규칙 · 저항은 재지 않음"}
         elif name == "contact_find":
             if c["contact_mode"] == "search":
                 z = self._mm("z") or 0.0
@@ -1978,7 +2002,7 @@ COMMANDS = {
     "heater_power": "manual_heater_power", "heater_off_now": "manual_heater_off_now",
     "read_temp": "read_temp", "read_resistance": "read_resistance", "raw": "raw",
     "estop_release": "estop_release", "alarm_clear": "alarm_clear",
-    "contact_find": "contact_find", "contact_save": "contact_save", "contact_save_here": "contact_save_here",
+    "contact_find": "contact_find", "contact_save": "contact_save", "contact_save_here": "contact_save_here", "contact_lower": "contact_lower",
     # 초기 설정 단계 · 사진 · 좌표 · 샘플(app/prep.py)
     "photo_head_set": "prep.photo_head_set", "marker_check": "prep.marker_check", "photo_take": "prep.photo_take", "plate_set": "prep.plate_set",
     "empty_take": "prep.empty_take", "coord_set": "prep.coord_set", "coord_goto_d": "prep.coord_goto_d", "coord_clear": "prep.coord_clear",

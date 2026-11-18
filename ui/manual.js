@@ -25,7 +25,9 @@ function buildManual() {
   man.fixPart = h("span", { class: "row hidden" }, man.photoInfo, man.retake.b, man.bigView, man.retake.w);
   man.viewRaw = h("input", { type: "radio", name: "view", checked: true, onchange: () => setView("raw") });
   man.viewFix = h("input", { type: "radio", name: "view", onchange: () => setView("fix") });
-  man.clickGo = h("input", { type: "checkbox" });
+  man.clickGo = h("input", { type: "checkbox", onchange: () => {          // 켜면 "판 사진" 보기로 바꾼다(실시간 보기에서도 켤 수 있다)
+    if (man.clickGo.checked && man.view !== "fix") { man.viewFix.checked = true; setView("fix"); }
+  } });
   man.addHere = busyGate("보정 점 추가", () => api("coord_add_here"), "sm");
   man.camNote = h("span", { class: "why nowrap" });
   man.pb.inner.addEventListener("click", (ev) => {                 // 판 사진 보기에서 사진을 누르면 그 위치로 이동(핀을 맨 위로 올린 뒤)
@@ -45,6 +47,8 @@ function buildManual() {
   man.gx = goInput("X"); man.gy = goInput("Y"); man.gz = goInput("Z");
   man.head = btn("촬영 위치로 이동", () => { const p = S.cfg.photo_head_xy; if (p) api("goto", { x: p[0], y: p[1] }); });
   man.headNote = h("span", { class: "why" });
+  man.here = btn("지금 위치", () => fillHere());                                  // 좌표 이동 칸에 현재 X · Y · Z
+  man.lower = busyGate("접촉 높이로 내리기", () => apiMove("contact_lower"), "sm");   // 현재 X · Y 에서 접촉 높이까지(측정 접촉과 같은 규칙 · 확인 창)
   man.go = btn("이동", () => {
     const x = parseFloat(man.gx.value), y = parseFloat(man.gy.value), z = man.gz.value === "" ? null : parseFloat(man.gz.value);
     if (isNaN(x) || isNaN(y)) { toast("X · Y 입력 필요"); return; }
@@ -57,7 +61,8 @@ function buildManual() {
         h("div", { class: "row" }, man.head, man.headNote),
         small("좌표 이동"),
         h("div", { class: "row" }, "X", man.gx, "Y", man.gy),
-        h("div", { class: "row" }, "Z", man.gz, man.go))),
+        h("div", { class: "row" }, "Z", man.gz, man.go, man.here),
+        h("div", { class: "row" }, man.lower.b, man.lower.w))),
     man.moveWhy);
   const left = h("div", { class: "col", id: "man-left" }, camPanel, movePanel);
 
@@ -114,11 +119,18 @@ function buildManual() {
   setKids($("#tab-manual"), left, right);
 }
 /* 판 사진에서 누른 자리(사진의 비율 0~1)로 클릭 이동 - 작은 사진 · [크게 보기] 창이 같은 규칙([클릭 이동] 켬 · 측정 중 아님) */
-function plateClick(fx, fy) {
+async function plateClick(fx, fy) {
   if (!man.clickGo.checked || man.clickGo.disabled || running()) return;
   if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
   const sz = S.cfg.plate_size_mm;
-  api("plate_goto", { x: fx * sz, y: fy * sz });
+  const r = await api("plate_goto", { x: fx * sz, y: fy * sz });
+  if (r.ok) fillHere(r.result && r.result.pos);                               // 클릭 이동 뒤에도 좌표 이동 칸을 채운다
+}
+/* 좌표 이동 칸(X · Y · Z)에 현재 위치(또는 받은 위치) */
+function fillHere(pos) {
+  const p = pos || S.pos || {};
+  const put = (el, v) => { el.value = v == null ? "" : Number(v).toFixed(2); };
+  put(man.gx, p.x); put(man.gy, p.y); put(man.gz, p.z);
 }
 /* 판 사진 덧그림(판 mm 좌표 → 그림 좌표 u 배): 샘플 윤곽 · 이름 · 누른 위치 · 핀 십자. 작은 사진(u = 1, viewBox 가 mm) · [크게 보기](u = px/mm)가 같이 쓴다 */
 function plateOverlayKids(k, u) {
@@ -218,6 +230,8 @@ function renderManual() {
   man.head.disabled = !hp || busy || locked || !stage;
   man.headNote.textContent = hp ? "" : "초기 설정 3 에서 설정";
   man.go.disabled = busy || locked || !stage;
+  man.here.disabled = !stage;
+  man.lower.set(busy ? "측정 중 사용 불가" : !stage ? NEED.stage : locked ? "비상정지 해제 필요" : c.contact_z_mm == null ? "접촉 높이 필요 (초기 설정 6)" : !S.homed.z ? "Z 원점 필요 (초기 설정 2)" : "");
   setWhy(man.moveWhy, "");                                        // 이동 패드의 이유 한 줄(jogPart)이 스테이지 · 측정 · 비상정지를 알린다
 
   /* 수동 측정: 온도 1회 = 온도계 · 저항 1회 · 연속 측정 = 저항계 */
@@ -280,10 +294,11 @@ function renderManual() {
     man.retake.set(whyStage(true, true) || whyCamera() || whyHead());
     man.bigView.disabled = !has;
   }
-  man.clickGo.disabled = !fix || !ready || busy || locked || !stage;
+  man.clickGo.disabled = !hasPlate || !ready || busy || locked || !stage;     // 실시간 보기에서도 켤 수 있다(켜면 판 사진 보기로)
   if (man.clickGo.disabled) man.clickGo.checked = false;
   man.addHere.b.disabled = busy || !ready || !pr.last_click || !stage;
-  man.camNote.textContent = !hasPlate ? "초기 설정 3 · 5 후 사용 가능" : !ready ? "초기 설정 5 후 사용 가능" : !stage && fix ? NEED.stage
+  man.camNote.textContent = !hasPlate ? "초기 설정 3 · 5 후 사용 가능" : !ready ? "초기 설정 5 후 사용 가능" : !stage ? NEED.stage
+    : busy ? "측정 중 사용 불가" : locked ? "비상정지 해제 필요"
     : fix && !pr.last_click ? "판 사진에서 위치 선택 필요" : fix ? "십자 = 핀 · 원 = 선택 위치" : "";
   drawManualOverlay();
   man.jog.update();

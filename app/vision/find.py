@@ -3,7 +3,10 @@
 - 입력: 원본에서 판 영역만 잘라 위에서 본 모습으로 보정한 사진(1 mm = ppmm 픽셀). 빈 판 사진도 같은 변환으로 보정한 것.
   검출기는 안에서 샘플 긴 변이 60 픽셀이 되게 줄여서 찾는다(v2 가 쓰던 작업 해상도 그대로).
 - 빈 판 사진과 비교가 잘 안 되면(v2 의 정렬 잔차 기준) 막지 않고 사진 한 장으로 찾는 방식으로 넘어간다. 빈 판 사진이 없어도 같다.
+- 배치(layout): "free"(기본 · 샘플을 자유롭게 놓는다 - 격자 예측 없음) · "grid"(rows × cols 격자 - 빈 자리를 예측). 검출기의 튜닝 값(fixed_detect.DEFAULTS)은 그대로다.
+  예전에는 검출기 기본(layout auto · 3 × 5 · emit_predicted)이 실제로 없는 자리에 "미확인" 샘플을 만들고 판 밖에도 냈다.
 - 격자 예측으로만 만든 약한 후보(source = predicted)는 "확인 필요"(weak)로 표시한다(부르는 쪽이 기본으로 빼 둔다).
+- 판 사각형 밖(가운데가 0 ~ 한 변 밖)의 샘플은 어떤 배치에서도 내지 않는다.
 - 출력(샘플마다, 판 mm): 가운데 · 윤곽 · 가로 세로 · 넓이 · 약함 여부. 순서는 사진에서 윗줄부터 왼쪽 → 오른쪽.
 """
 
@@ -22,11 +25,19 @@ def _quiet(*_a, **_k):
     pass
 
 
-def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None):
+def layout_params(layout="free", rows=3, cols=5):
+    """검출기에 넘길 배치 값(튜닝 값은 DEFAULTS 그대로 · 배치만 덮는다)."""
+    if layout == "grid":
+        return {"fixed": {"layout": "grid", "grid_rows": int(rows), "grid_cols": int(cols), "emit_predicted": True}}
+    return {"fixed": {"layout": "free", "emit_predicted": False}}
+
+
+def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None, layout="free", rows=3, cols=5):
     """cur · empty = 보정한 판 사진(BGR, 같은 크기, 새겨진 사각형 바깥을 margin_mm 만큼 더 담은 것). empty 는 None 이어도 된다.
     반환 {"samples": [...], "notes": [주의 문구], "path": "빈 판 비교" | "사진 한 장", "ms": 걸린 시간}. 샘플 좌표는 판 mm(사각형 꼭짓점 A = 0, 0)."""
     t0 = time.perf_counter()
     lg = log or _quiet
+    params = layout_params(layout, rows, cols)
     mm_px = 1.0 / float(ppmm)
     H, W = cur.shape[:2]
     m = int(round(float(margin_mm) * ppmm))
@@ -43,17 +54,23 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None):
             a = {"ok": False, "msg": str(e).splitlines()[0][:60], "resid": 9.9}
         if a["ok"]:
             ref_w = refdiff.warp_ref_roi(empty, a["M"], (0, 0, W, H))
-            res = refdiff.detect_crop(cur, ref_w, valid, mm_px, PARAMS, area, lg)
+            res = refdiff.detect_crop(cur, ref_w, valid, mm_px, params, area, lg)
             path = "빈 판 비교"
             lg("빈 판 사진 정렬 · 이동 %.1f, %.1f px · 잔차 %.2f" % (a["dx"], a["dy"], a["resid"]))
         else:
             notes.append("빈 판 사진 불일치 · 사진 한 장으로 검출")
             lg("빈 판 사진 정렬 실패 · %s" % a.get("msg", ""))
     if res is None:
-        res = fixed_detect.detect(cur, PARAMS, mm_px, valid, None, area, lg)
+        res = fixed_detect.detect(cur, params, mm_px, valid, None, area, lg)
     L = float(res.diag.get("chip_long_px") or (fixed_detect.DEFAULTS["chip_mm"] * ppmm)) * mm_px       # 샘플 긴 변(mm)
     out = []
+    size_x, size_y = (W - 2 * m) * mm_px, (H - 2 * m) * mm_px          # 판 사각형 한 변(mm)
+    outside = 0
     for sm in res.samples:
+        px, py = float(sm["x_px"]) * mm_px - margin_mm, float(sm["y_px"]) * mm_px - margin_mm
+        if not (0.0 <= px <= size_x and 0.0 <= py <= size_y):
+            outside += 1                                                # 판 사각형 밖: 내지 않는다
+            continue
         cnt = np.asarray(sm["_cnt"], np.float32).reshape(-1, 1, 2)
         poly = cv2.approxPolyDP(cnt, 0.15 * ppmm, True).reshape(-1, 2)                                 # 0.15 mm 안에서 꼭짓점을 줄인다
         if len(poly) < 3:
@@ -65,6 +82,8 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None):
             "source": sm["source"], "weak": sm["source"] == "predicted",
         })
     out = order_rows(out, L)
+    if outside:
+        lg("판 밖 후보 %d개 제외" % outside)
     if any(s["weak"] for s in out):
         notes.append("미확인 샘플 %d개 · 확인 필요" % sum(1 for s in out if s["weak"]))
     return {"samples": out, "notes": notes, "path": path, "ms": round((time.perf_counter() - t0) * 1000.0)}
