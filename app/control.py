@@ -511,6 +511,7 @@ class Controller:
         """어떤 일 중이든 기다리지 않는다: 세대 올리기 → '!' → (이동이 멈추면) r all 0 → K2450 출력 끄기."""
         t0 = time.monotonic()
         heater_was_on = self._heater_on()
+        pct0 = self.heater_pct() if self.stage.heat_capable else 0
         self.safety.begin_estop()                                   # 세대 올림 · 잠금 · 히트건 감시는 이 순간부터 "꺼짐"
         self._fan_off_at = self._fan_off_epoch = None               # 송풍도 r all 0 이 같이 끈다(늦게 끄기 없음)
         self.state.set("heater_on_since", None)
@@ -537,6 +538,8 @@ class Controller:
                 self.state.alarm("estop_relay", "릴레이 끄기 실패 · 히트건과 쿨러 전원 직접 차단 필요", ALARM)
                 self.logs.app("비상정지 뒤 릴레이 끄기 실패 · %s" % e, "error")
         self._heater_sync("비상정지", force_off=True)
+        if banged:
+            self._after_bang(pct0, "비상정지")                       # r all 0 의 rs 로도 맞지만 출력 % 까지 다시 읽는다
         dev = self.k2450
         if dev is not None:
             try:
@@ -611,6 +614,7 @@ class Controller:
             raise Rejected("측정 중 · 측정 중지 또는 비상정지 사용")
         self._need_stage()
         t0 = time.monotonic()
+        pct0 = self.heater_pct() if self.stage.heat_capable else 0     # '!' 를 받으면 펌웨어 V12 가 열선 출력을 0 으로 만든다 - 뒤에서 rs 로 맞춘다
         self.safety.cancel_pending()
         with self._plock:
             self._jog_pending = None
@@ -624,7 +628,22 @@ class Controller:
             self.stage.call("st", None, stage_mod.is_st, 3.0, prio=0)   # 끊긴 이동이 끝난 뒤의 위치를 다시 읽는다
         except StageError as e:
             raise Rejected("위치 읽기 실패 · %s" % e)
+        self._after_bang(pct0, "정지")
         return {"pos": dict(self.state.get("pos")), "locked": self.safety.locked}
+
+    def _after_bang(self, pct0, why):
+        """'!' 뒤: 펌웨어 V12 는 열선 출력을 0 으로 만든다 → rs 를 다시 읽어 화면 · 안전 감시의 히트건(출력 % · 열선)을 맞춘다.
+        출력이 0 이 됐으면 로그 한 줄. 온도 시험이 도는 중이면 시험의 제어기는 실제 출력(heater_pct)과 비교해 다시 보낸다(LineControl.decide)."""
+        if not self.stage.heat_capable:
+            return
+        try:
+            self.stage.read_relays(None)
+        except StageError as e:
+            self.logs.app("%s 뒤 릴레이 상태 읽기 실패 · %s" % (why, e), "warn")
+            return
+        self._heater_sync()
+        if pct0 > 0 and self.heater_pct() == 0:
+            self.logs.app("%s로 열선 출력 0 · 이전 %d %%" % (why, pct0), "warn")
 
     def _mm(self, ax):
         p = self.stage.pos.get(ax)

@@ -142,7 +142,7 @@ class LineControl:
     def decide(self, T, sp, now):
         """정한 목표로 출력 % 를 계산해 보낸다. 바꿨으면 True."""
         pct = int(round(self.pc.out(T, sp, self.slope, now)))
-        if self.pct is not None and pct == self.pct:
+        if self.pct is not None and pct == self.pct and self.h.pct == pct:     # 실제 출력(펌웨어가 알려 준 값)과도 같을 때만 건너뛴다 - [정지] '!' 가 0 으로 만들었으면 다시 보낸다
             return False
         self.h.power(pct)
         self.pct = pct
