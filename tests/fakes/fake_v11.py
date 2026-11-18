@@ -30,8 +30,8 @@ N_RELAY = 10
 
 
 class FakeV11:
-    def __init__(self, time_scale=0.05, homed=True, banner=True, eeprom=None, firmware="V12"):
-        self.firmware = firmware                    # "V12"(기본 - 열선 출력 % hp · hpp · hcfg) 또는 "V11"
+    def __init__(self, time_scale=0.05, homed=True, banner=True, eeprom=None, firmware="V13"):
+        self.firmware = firmware                    # "V13"(기본 - 열선 출력 % hp · hpp · hcfg · 주기 위치 유지) · "V12" · "V11"
         self.hp_pct, self.hp_period, self.hp_fan, self.hp_el = 0, 1000, 0, 9     # 열선 출력 % · 주기 ms · 송풍 · 열선 인덱스(0 부터)
         self.timeout = 0.2
         self.write_timeout = None                   # pyserial 모양: 쓰기가 이 시간 안에 못 끝나면 SerialTimeoutException
@@ -249,7 +249,7 @@ class FakeV11:
 
     def _set_relays(self, relays):
         r = list(relays)
-        if getattr(self, "firmware", "V11") == "V12":               # 펌웨어 V12 relaySet 과 같다: 송풍이 꺼지면 열선도 끔(출력 0) · 열선 릴레이의 논리 상태 = 출력 > 0
+        if getattr(self, "firmware", "V11") in ("V12", "V13"):               # 펌웨어 V12 relaySet 과 같다: 송풍이 꺼지면 열선도 끔(출력 0) · 열선 릴레이의 논리 상태 = 출력 > 0
             prev = getattr(self, "relay", [False] * N_RELAY)
             if prev[self.hp_fan] and not r[self.hp_fan]:
                 r[self.hp_el] = False
@@ -274,7 +274,7 @@ class FakeV11:
         self._emit("HP P=%d T=%d F=%d E=%d" % (self.hp_pct, self.hp_period, self.hp_fan + 1, self.hp_el + 1))
 
     def _rs(self):
-        tail = " HP=%d" % self.hp_pct if self.firmware == "V12" else ""
+        tail = " HP=%d" % self.hp_pct if self.firmware in ("V12", "V13") else ""
         self._emit("RS " + " ".join("R%d=%d" % (i + 1, 1 if on else 0) for i, on in enumerate(self.relay)) + tail)
 
     split_st = 0                                            # 시험: 다음 ST 몇 개를 줄 중간에서 둘로 나눠 보낸다(앞 조각은 줄바꿈 없음 - pyserial 이 0.2 s 에 줄 중간까지만 주는 경우)
@@ -362,12 +362,12 @@ class FakeV11:
         self.abort_flag = False                           # 펌웨어는 명령마다 abortFlag 를 지운다
         num = lambda i, d=0: float(tok[i]) if len(tok) > i else d       # noqa: E731
         if c == "!":
-            if self.firmware == "V12":
+            if self.firmware in ("V12", "V13"):
                 self._heat_set(0)
                 self._emit("  (이동 중에만 유효) · 열선 출력 0")
             else:
                 self._emit("  (이동 중에만 유효)")
-        elif c in ("hp", "hpp", "hcfg") and self.firmware == "V12":
+        elif c in ("hp", "hpp", "hcfg") and self.firmware in ("V12", "V13"):
             self._hp_cmd(c, tok)
         elif c == "st":
             self._st()
@@ -536,7 +536,7 @@ class FakeV11:
             return
         r = list(self.relay)
         r[n - 1] = on
-        if self.firmware == "V12" and n - 1 == self.hp_el:          # 열선 릴레이: 켬 = 출력 100 % · 끔 = 0 %
+        if self.firmware in ("V12", "V13") and n - 1 == self.hp_el:          # 열선 릴레이: 켬 = 출력 100 % · 끔 = 0 %
             self.hp_pct = 100 if on else 0
             self._heat_set(self.hp_pct)
         else:
@@ -655,7 +655,7 @@ class FakeV11:
             el = (time.monotonic() - t0) / sc
             if self._peek_abort() or self.abort_flag:                 # 64 펄스 경계(또는 첫 펄스 전)에서만 보인다
                 aborted = True
-                if self.firmware == "V12" and self.hp_pct:
+                if self.firmware in ("V12", "V13") and self.hp_pct:
                     self._heat_set(0)                                   # 펌웨어 V12: 이동 중 '!' 도 열선 출력 0
                 p_el = pa(el)
                 t_arr = None

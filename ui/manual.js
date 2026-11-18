@@ -257,9 +257,9 @@ function renderManual() {
   man.hEl.disabled = busy || ttOn || !stage || !ht.fan || (!ht.element && locked);        // 송풍이 켜진 동안만(끄기는 비상정지 중에도)
   man.hOff.disabled = busy || ttOn || !stage || !hOn;
   man.hNow.disabled = !stage || !hOn;                                        // 즉시 끄기는 측정 · 온도 시험 중에도 된다(끄기)
-  const v12 = !!ht.v12;
+  const v12 = !!ht.heat_fw;
   man.hPct.disabled = man.hPctGo.disabled = !!relayBlock || !ht.fan || !v12;
-  man.hPctNow.textContent = !stage ? "" : !v12 ? "펌웨어 V12 필요" : !ht.fan ? "송풍 켠 뒤 적용" : "현재 " + (ht.pct == null ? "—" : ht.pct) + " %";
+  man.hPctNow.textContent = !stage ? "" : !v12 ? "펌웨어 V13 필요" : !ht.fan ? "송풍 켠 뒤 적용" : "현재 " + (ht.pct == null ? "—" : ht.pct) + " %";
   man.hState.textContent = heaterText(ht);
   man.hState.className = "small nowrap" + (hOn ? " st-warn" : "");
   const cool = c.cooler_relays || [];

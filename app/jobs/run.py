@@ -8,7 +8,7 @@
   3. 냉각  : 쿨러를 켠다. 온도가 시작 온도보다 높으면 내려갈 때까지 기다린다(기록하지 않는다). 회차마다 가열 전에 같은 조건을 본다.
              정체로 시작 온도에 못 닿으면 가열하지 않고 측정 전체를 멈춘다 - 그 샘플은 "대기" 로 남아 [측정 재개] 로 다시 시작한다.
   4. 가열  : K2450 출력을 켜고 기록 시작. 히트건을 켠다(열선 → 송풍 · 송풍이 켜져 있으면 열선만).
-가열 방식(run_heat_mode) "ramp"(기본) - 송풍을 켜 둔 채 열선 출력 %(heater.LineControl - PI + 앞먹임 · 펌웨어 V12 hp)로 목표선(시작 온도 + 가열 속도 × 경과)을 따른다.
+가열 방식(run_heat_mode) "ramp"(기본) - 송풍을 켜 둔 채 열선 출력 %(heater.LineControl - PI + 앞먹임 · 펌웨어 V13 hp)로 목표선(시작 온도 + 가열 속도 × 경과)을 따른다.
                                         가열 끝 온도에 닿으면 유지 시간(run_heat_hold_s) 동안 같은 방식으로 유지한 뒤 끝.
                                 "full" - 열선을 계속 켜 두고 가열 끝 온도에서 끈다.
              점마다 목표 온도 · 열선 · 송풍 상태를 <이름>_<전압>V_control.csv 에 남긴다(LabVIEW .dat 는 그대로).
@@ -40,7 +40,7 @@ from app.devices import meters
 from app.jobs import analysis, files
 from app.jobs import heater as heater_mod
 from app.jobs.heater import LineControl, RelayHeater, Stall
-from app.devices.stage import V12_NEED
+from app.devices.stage import FW_NEED
 from app.safety import Rejected
 from app.state import ALARM, NOTICE
 
@@ -164,7 +164,7 @@ class Runner:
             if c.temptest.active:                                   # 온도 시험이 히트건 · 쿨러를 쓰는 중(온도 시험 시작도 이 잠금 안에서 측정을 본다)
                 raise Rejected("온도 시험 중 실행 불가")
             if c.stage.connected and not c.stage.heat_capable:      # 열선 출력 % 제어가 필요하다
-                raise Rejected(V12_NEED)
+                raise Rejected(FW_NEED)
             miss = self.gate()
             if miss:
                 raise Rejected("필요 항목: " + " · ".join(m["text"] for m in miss))
@@ -213,7 +213,7 @@ class Runner:
             if self.c.temptest.active:
                 raise Rejected("온도 시험 중 실행 불가")
             if self.c.stage.connected and not self.c.stage.heat_capable:
-                raise Rejected(V12_NEED)
+                raise Rejected(FW_NEED)
             miss = self.gate()
             if miss:
                 raise Rejected("필요 항목: " + " · ".join(m["text"] for m in miss))

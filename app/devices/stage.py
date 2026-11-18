@@ -1,6 +1,7 @@
-"""stage.py - 아두이노 Mega + 펌웨어 V12(또는 V11) 드라이버.
-V12 = V11 + 열선 출력 %(hp <0~100> · hpp <주기 ms> · hcfg <송풍> <열선> · rs 줄 끝 HP=). V11 도 연결은 한다(이동 · 쿨러) -
-열선 출력 제어가 필요한 일(측정 · 온도 시험 · 수동 열선 출력)은 Controller 가 V12_NEED 로 거절한다(heat_capable).
+"""stage.py - 아두이노 Mega + 펌웨어 V13(또는 V11 · V12) 드라이버.
+V12 = V11 + 열선 출력 %(hp <0~100> · hpp <주기 ms> · hcfg <송풍> <열선> · rs 줄 끝 HP=). V13 = V12 + 출력 % 를 바꿀 때 주기를 다시 시작하지 않음
+(V12 는 hp 마다 주기를 0 부터 다시 시작해 0.5 s 마다 % 를 보내면 열선이 사실상 계속 켜졌다). V11 · V12 도 연결은 한다(이동 · 쿨러) -
+열선 출력 제어가 필요한 일(측정 · 온도 시험 · 수동 열선 출력)은 Controller 가 FW_NEED 로 거절한다(heat_capable = V13).
 
 규칙(펌웨어 때문에 지킨다)
 - 시리얼은 일꾼 스레드 하나가 맡는다. 명령은 한 번에 하나씩 보내고, 응답이 끝난 뒤 다음 명령을 보낸다.
@@ -166,8 +167,9 @@ def is_move_done(ln):
     return " | X=" in ln or "이미 그 위치" in ln
 
 
-FIRMWARES = ("V11", "V12")
-V12_NEED = "펌웨어 V12 필요 · firmware/stage_v12 업로드"
+FIRMWARES = ("V11", "V12", "V13")
+HEAT_FW = "V13"                                    # 열선 출력 % 를 쓰는 펌웨어(주기 위치를 유지하는 hp)
+FW_NEED = "펌웨어 V13 필요 · firmware/stage_v13 업로드"
 
 
 def is_hp(ln):
@@ -219,7 +221,7 @@ class Stage:
         self.homed = {"x": False, "y": False, "z": False}
         self.dirty = None
         self.relays = [None] * 10
-        self.heat_pct = None                                        # 열선 출력 %(V12 - rs 의 HP= · hp 응답) · 모르면 None
+        self.heat_pct = None                                        # 열선 출력 %(V12 · V13 - rs 의 HP= · hp 응답) · 모르면 None
         self.heat_el = None                                         # 펌웨어가 알려 준 열선 릴레이 번호(hp 응답 E=)
         self.speed = FW_DEFAULT_SPEED
         self._q = queue.PriorityQueue()
@@ -236,12 +238,12 @@ class Stage:
     # ---- 연결 ----
     @property
     def heat_capable(self):
-        """열선 출력 % 를 쓸 수 있는 펌웨어(V12)."""
-        return self.connected and self.firmware == "V12"
+        """열선 출력 % 를 쓸 수 있는 펌웨어(V13)."""
+        return self.connected and self.firmware == HEAT_FW
 
     def connect(self, port_name: str, speed=FW_DEFAULT_SPEED, wd_ms: int = 2000, banner_wait_s: float = 6.0, heater=None):
-        """포트를 열고(보드가 재시작한다) 배너로 V11 · V12 를 확인한 뒤 wd · 속도 · st · rs 를 읽는다. 그 밖이면 연결을 거절한다.
-        heater = (송풍 릴레이, 열선 릴레이, 출력 주기 ms) - V12 면 hcfg · hpp 로 알려 준다."""
+        """포트를 열고(보드가 재시작한다) 배너로 V11 · V12 · V13 을 확인한 뒤 wd · 속도 · st · rs 를 읽는다. 그 밖이면 연결을 거절한다.
+        heater = (송풍 릴레이, 열선 릴레이, 출력 주기 ms) - V13 이면 hcfg · hpp 로 알려 준다."""
         if self.connected:
             raise StageError("이미 연결됨")
         try:
@@ -273,10 +275,10 @@ class Stage:
             raise
         if fw is None:
             self._close_port()
-            raise StageError("펌웨어 V11 · V12 확인 실패")
+            raise StageError("펌웨어 V11 · V12 · V13 확인 실패")
         if fw not in FIRMWARES:
             self._close_port()
-            raise StageError("펌웨어 %s · V12 필요" % fw)
+            raise StageError("펌웨어 %s · V13 필요" % fw)
         self.heat_pct = None
         self.heat_el = None
         self.firmware = fw
@@ -290,7 +292,7 @@ class Stage:
             if tuple(speed) != FW_DEFAULT_SPEED:
                 self.set_speed(*speed)
             self.speed = tuple(speed)
-            if fw == "V12" and heater is not None:
+            if fw == HEAT_FW and heater is not None:
                 self.heat_config(heater[0], heater[1], heater[2])
             self.read_status()
             self.read_relays()
@@ -647,11 +649,11 @@ class Stage:
             raise StageRejected(state["no"].replace("[거부]", "").strip())
 
     def heat(self, pct, gen, prio=5):
-        """열선 출력 %(V12 hp). 0 보다 크면 펌웨어가 송풍이 켜져 있는지 본다(아니면 StageRejected)."""
+        """열선 출력 %(V13 hp). 0 보다 크면 펌웨어가 송풍이 켜져 있는지 본다(아니면 StageRejected)."""
         self._hp_call("hp %d" % max(0, min(100, int(pct))), gen, prio)
 
     def heat_config(self, fan, el, period_ms, gen=None):
-        """송풍 · 열선 릴레이 번호(hcfg)와 출력 주기(hpp)를 알려 준다(V12 · 연결 때 · 릴레이 역할을 바꿨을 때)."""
+        """송풍 · 열선 릴레이 번호(hcfg)와 출력 주기(hpp)를 알려 준다(V13 · 연결 때 · 릴레이 역할을 바꿨을 때)."""
         self._hp_call("hcfg %d %d" % (int(fan), int(el)), gen, prio=0)
         self._hp_call("hpp %d" % int(period_ms), gen, prio=0)
 

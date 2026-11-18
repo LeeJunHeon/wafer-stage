@@ -2,7 +2,7 @@
 
 시험 셋(mode): test = 자동 측정과 같은 가열 · 냉각(열선 출력 % 제어 - heater.LineControl) · step = [반응 재기](출력 0 → temp_step_pct → 0 %,
 기록에서 열 모델 K · τ · θ 를 맞춰 설정 heat_model_* 에 저장 - heater.fit_fopdt) · max = [최대 속도 재기](출력 최대로 가열 끝 온도까지 → 0 % 로
-냉각 끝 온도까지, 5 °C 구간마다 최대 가열 · 냉각 속도를 calib speed_max 에 저장 - heater.speed_table). 펌웨어 V12 필요(열선 출력 %).
+냉각 끝 온도까지, 5 °C 구간마다 최대 가열 · 냉각 속도를 calib speed_max 에 저장 - heater.speed_table). 펌웨어 V13 필요(열선 출력 %).
 가열 · 냉각 속도 = 목표 점 간격 ÷ temp_test_interval_s × 60(config.heat_rate_c_min).
 
 목적: "몇 °C 까지 몇 초에 도달하는지" · 최대 가열 속도 · 넘침(열선을 끈 뒤 더 오르는 정도) · 냉각 시간을 보고 히트건 · 가열 제어 값을 정한다.
@@ -35,7 +35,7 @@ from app import config as config_mod
 from app import imgio
 from app.devices import meters
 from app.jobs import analysis
-from app.devices.stage import V12_NEED
+from app.devices.stage import FW_NEED
 from app.jobs import heater as heater_mod
 from app.jobs.heater import LineControl, RelayHeater, Stall
 from app.safety import Rejected
@@ -348,7 +348,7 @@ class TempTest:
         if not c.stage.connected:
             return "스테이지 연결 필요"
         if not c.stage.heat_capable:
-            return V12_NEED
+            return FW_NEED
         if c.k2110 is None or not c.k2110.is_open:
             return "온도계 연결 필요"
         why = c.safety.reject_relay_on()

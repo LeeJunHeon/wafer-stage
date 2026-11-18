@@ -232,10 +232,10 @@ class Controller:
         self._stage_status()
         self.logs.app("스테이지 연결 · %s · 펌웨어 %s" % (port, self.stage.firmware))
         if self.stage.heat_capable:
-            self.state.clear_alarm("fw_v12")
+            self.state.clear_alarm("fw_heat")
         else:                                                       # V11: 이동 · 쿨러는 되고 열선 출력 % 가 필요한 일은 거절한다
-            self.state.alarm("fw_v12", stage_mod.V12_NEED, NOTICE)
-            self.logs.app("스테이지 펌웨어 %s · 열선 출력 제어 불가 · %s" % (self.stage.firmware, stage_mod.V12_NEED), "warn")
+            self.state.alarm("fw_heat", stage_mod.FW_NEED, NOTICE)
+            self.logs.app("스테이지 펌웨어 %s · 열선 출력 제어 불가 · %s" % (self.stage.firmware, stage_mod.FW_NEED), "warn")
         self._note_eeprom(self.stage.eeprom)
         return {"port": port, "firmware": self.stage.firmware}
 
@@ -441,7 +441,7 @@ class Controller:
             fan, el, _ = self._roles()
             fv, ev = self.stage.relays[fan - 1], self.stage.relays[el - 1]
         self.state.set("heater", {"fan": fv, "element": ev, "fan_off_at": self._fan_off_epoch,
-                                  "pct": self.heater_pct() if self.stage.connected else None, "v12": bool(self.stage.heat_capable)})
+                                  "pct": self.heater_pct() if self.stage.connected else None, "heat_fw": bool(self.stage.heat_capable)})
 
     def _apply_migration(self):
         """예전 settings.json 을 지금 규칙으로 옮긴 것(config._migrate)을 로그에 한 줄씩 남기고 파일에 저장한다.
@@ -614,7 +614,7 @@ class Controller:
             raise Rejected("측정 중 · 측정 중지 또는 비상정지 사용")
         self._need_stage()
         t0 = time.monotonic()
-        pct0 = self.heater_pct() if self.stage.heat_capable else 0     # '!' 를 받으면 펌웨어 V12 가 열선 출력을 0 으로 만든다 - 뒤에서 rs 로 맞춘다
+        pct0 = self.heater_pct() if self.stage.heat_capable else 0     # '!' 를 받으면 펌웨어 V13 가 열선 출력을 0 으로 만든다 - 뒤에서 rs 로 맞춘다
         self.safety.cancel_pending()
         with self._plock:
             self._jog_pending = None
@@ -632,7 +632,7 @@ class Controller:
         return {"pos": dict(self.state.get("pos")), "locked": self.safety.locked}
 
     def _after_bang(self, pct0, why):
-        """'!' 뒤: 펌웨어 V12 는 열선 출력을 0 으로 만든다 → rs 를 다시 읽어 화면 · 안전 감시의 히트건(출력 % · 열선)을 맞춘다.
+        """'!' 뒤: 펌웨어 V13 는 열선 출력을 0 으로 만든다 → rs 를 다시 읽어 화면 · 안전 감시의 히트건(출력 % · 열선)을 맞춘다.
         출력이 0 이 됐으면 로그 한 줄. 온도 시험이 도는 중이면 시험의 제어기는 실제 출력(heater_pct)과 비교해 다시 보낸다(LineControl.decide)."""
         if not self.stage.heat_capable:
             return
@@ -884,14 +884,14 @@ class Controller:
     #   송풍이 꺼진 채 송풍만 켜는 길은 없다(히트건 인터락: 송풍을 먼저 켜고 열선을 켜면 히트건이 오류를 낸다).
     #   비상정지 · 통신 끊김 · 종료는 r all 0(전부 끔). 안전 판단(차단 온도 · 온도 못 읽음 · 열선 연속 최대 시간)은 열선만 바로 끄고 송풍은 뒤에.
     # ------------------------------------------------------------------
-    # ---- 열선 출력 %(펌웨어 V12 hp) ----
-    def _need_v12(self):
+    # ---- 열선 출력 %(펌웨어 V13 hp) ----
+    def _need_heat_fw(self):
         self._need_stage()
         if not self.stage.heat_capable:
-            raise Rejected(stage_mod.V12_NEED)
+            raise Rejected(stage_mod.FW_NEED)
 
     def heater_pct(self) -> int:
-        """지금 열선 출력 %(V12 가 알려 준 값). 모르면(V11) 열선 켜짐 = 100 · 꺼짐 = 0."""
+        """지금 열선 출력 %(V13 이 알려 준 값). 모르면(V11 · V12) 열선 켜짐 = 100 · 꺼짐 = 0."""
         p = self.stage.heat_pct if self.stage.heat_capable else None
         if p is not None:
             return int(p)
@@ -901,7 +901,7 @@ class Controller:
         """송풍이 켜진 동안 열선 출력 %(0 = 열선 끔). 측정(LineControl) · 온도 시험 · 수동 [적용] 이 같이 쓴다.
         0 보다 크게 하려면 송풍이 켜져 있어야 한다(인터락 - 송풍이 꺼져 있으면 [켜기] 로 열선 → 송풍 순서부터). 열선이 꺼져 있다 켜지면 켜기 판정(차단 온도 · 온도 읽기)을 본다.
         상한 heater_max_pct. 펌웨어도 송풍이 꺼져 있으면 거부한다."""
-        self._need_v12()
+        self._need_heat_fw()
         pct = max(0, min(int(self.cfg["heater_max_pct"]), int(round(float(pct)))))
         fan = self._roles()[0]
         with self._heater_lock:
@@ -1626,7 +1626,7 @@ class Controller:
             self.logs.app("릴레이 역할 변경 · %s" % " · ".join("%s %s → %s" % (config_mod.BY_KEY[k].label, old[k], new[k]) for k in roles_changed))
             if self.stage.connected:
                 try:
-                    if self.stage.heat_capable:                     # 펌웨어 V12 의 송풍 · 열선 번호(hp 의 송풍 검사 · 열선 출력 핀)도 새 번호로
+                    if self.stage.heat_capable:                     # 펌웨어 V13 의 송풍 · 열선 번호(hp 의 송풍 검사 · 열선 출력 핀)도 새 번호로
                         fan, el = self._roles()[:2]
                         self.stage.heat_config(fan, el, int(self.cfg["heater_pwm_period_ms"]))
                     self.stage.read_relays()                        # rs 를 다시 읽어 안전 감시가 새 번호의 릴레이를 기준으로 보게 한다
