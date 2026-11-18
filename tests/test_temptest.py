@@ -130,7 +130,8 @@ def test_stop_while_heating(make_ctrl):
     """가열 중 [정지]: 열선 바로 끔 → 송풍은 heater_fan_after_s(30 초) 뒤 끔 · 쿨러 끔 · 그때까지 기록과 요약 저장."""
     ctrl = _ctrl(make_ctrl, run_heat_rate_c_min=2.0)
     ctrl.run_command("temptest_start")
-    assert wait_for(lambda: ctrl.temptest.phase == tt.HEAT and ctrl.fake_fw.relay[9] and ctrl.fake_fw.relay[0], 20)
+    assert wait_for(lambda: ctrl.temptest.phase == tt.HEAT and ctrl.fake_fw.relay[9] and ctrl.fake_fw.relay[0]
+                    and any(p[5] == tt.HEAT for p in ctrl.temptest.pts), 20), "가열 점 기록"
     ctrl.run_command("temptest_stop")
     assert wait_for(lambda: not ctrl.temptest.active, 10)
     t = ctrl.temptest

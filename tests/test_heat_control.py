@@ -27,7 +27,7 @@ def _finish(ctrl, timeout=60):
 def _rows(ctrl, sid):
     """control.csv 의 줄: [회차, 단계, 경과, 온도, 저항, 목표, 열선, 송풍]."""
     it = ctrl.runner.items[sid]
-    text = (ctrl.runner.folder / (it["name"] + "_1.00V_control.csv")).read_text(encoding="utf-8-sig").splitlines()
+    text = (ctrl.runner.folder / (it["name"] + "_0.10V_control.csv")).read_text(encoding="utf-8-sig").splitlines()
     out = []
     for r in text[1:]:
         c = r.split(",")
@@ -116,7 +116,9 @@ def test_default_ramp_follows_the_target_to_the_end(ready_ctrl):
     reach = next(r["t"] for r in heat if r["T"] >= 85.0) - t0
     last = heat[-1]                                                  # 온도가 먼저 닿으면 가열이 끝난다 - 목표선이 85 에 닿을 시각은 마지막 목표에서 이어 셈
     line_at = last["t"] + (85.0 - last["sp"]) / 3.0 * 60.0 - t0
-    assert abs(reach - line_at) < 0.1 * expect, "85 °C 에 닿은 시각 %.0f초 · 목표선 %.0f초" % (reach, line_at)
+    ahead = max(0.0, max(r["T"] - r["sp"] for r in heat))           # 온도가 목표선보다 앞섰던 가장 큰 폭(히트건 지연으로 끈 뒤에도 오른다 - 기록 기준)
+    allow = 0.1 * expect + ahead / 3.0 * 60.0
+    assert abs(reach - line_at) < allow, "85 °C 에 닿은 시각 %.0f초 · 목표선 %.0f초 · 허용 %.0f초" % (reach, line_at, allow)
     assert sum(1 for i in range(1, len(heat)) if heat[i]["el"] != heat[i - 1]["el"]) > 10, "열선을 켜고 끈다"
     e = _min_on_off(it["element_log"], 1, 2.0, 2.0, cut=heat[-1]["t"])
     assert e[0][1] == 1 and len(e) > 10
@@ -250,10 +252,13 @@ def test_ramp_cooling_follows_the_line(ready_ctrl):
 
 
 def test_line_waits_when_the_temperature_lags(ready_ctrl):
-    """목표선 기다림: 가열 속도 60 °C/분은 히트건이 못 따라가고(높은 온도에서 느려진다), 냉각 속도 60 °C/분은 낮은 온도의 자연 냉각이 못 따라간다.
+    """목표선 기다림: 시험용 세계의 히트건을 약하게(오래 켜 두면 70 °C) · 쿨러를 약하게(20 °C) 한다.
+    히트건의 가열 속도는 (70 − 온도) °C/분 쯤이라 30 °C 위에서는 40 °C/분을 못 따라가고, 자연 냉각은 (온도 − 20) °C/분 쯤이라
+    60 °C 아래에서는 40 °C/분보다 느리다 - 가열 · 냉각 모두 목표선이 처음부터 앞서 나가려 한다.
     목표선은 온도보다 heater_lead_c 넘게 앞서지 않는다(기다린다) - 한 회차에 나아가는 만큼만 넘을 수 있다."""
-    ctrl, sid = _one_sample(ready_ctrl, run_heat_rate_c_min=60.0, run_cool_rate_c_min=60.0)
-    lead = ctrl.cfg["heater_lead_c"]
+    ctrl, sid = _one_sample(ready_ctrl, run_heat_rate_c_min=40.0, run_cool_rate_c_min=40.0, run_heater_off_c=60.0, run_cool_end_c=30.0)
+    ctrl.lab.t_heat, ctrl.lab.t_cool = 70.0, 20.0
+    lead, rate, top = ctrl.cfg["heater_lead_c"], 40.0, 60.0
     ctrl.run_command("run_start")
     _finish(ctrl, 90)
     it = ctrl.runner.items[sid]
@@ -262,13 +267,13 @@ def test_line_waits_when_the_temperature_lags(ready_ctrl):
     heat = [r for r in rows if r["phase"] == "가열"]
     cool = [r for r in rows if r["phase"] == "냉각"]
     gap = max(b["t"] - a["t"] for a, b in zip(rows, rows[1:]))          # 실제로 기록된 한 회차(컴퓨터 속도에 따라 다르다)
-    adv = 60.0 * gap / 60.0                                             # 한 회차에 목표선이 나아갈 수 있는 만큼
+    adv = rate * gap / 60.0                                             # 한 회차에 목표선이 나아갈 수 있는 만큼
     assert max(r["sp"] - r["T"] for r in heat) <= lead + adv + 1e-6, "가열: 목표선이 온도보다 너무 앞서지 않는다"
     assert max(r["T"] - r["sp"] for r in cool) <= lead + adv + 1e-6, "냉각: 목표선이 온도보다 너무 앞서지 않는다"
     t0 = heat[0]["t"]
-    assert any(r["sp"] < min(85.0, heat[0]["sp"] + 60.0 * (r["t"] - t0) / 60.0) - 2.0 for r in heat), "가열 중에 목표선이 기다렸다"
+    assert any(r["sp"] < min(top, heat[0]["sp"] + rate * (r["t"] - t0) / 60.0) - 2.0 for r in heat), "가열 중에 목표선이 기다렸다"
     c0 = cool[0]["t"]
-    assert any(r["sp"] > max(30.0, cool[0]["sp"] - 60.0 * (r["t"] - c0) / 60.0) + 2.0 for r in cool), "냉각 중에 목표선이 기다렸다"
+    assert any(r["sp"] > max(30.0, cool[0]["sp"] - rate * (r["t"] - c0) / 60.0) + 2.0 for r in cool), "냉각 중에 목표선이 기다렸다"
 
 
 def test_point_spacing_summary(ready_ctrl):

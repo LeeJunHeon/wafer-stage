@@ -86,9 +86,9 @@ python run.py --port 8001    # 서버 포트 바꾸기(기본 8000)
   calib\calib.json · empty_plate.png          초기 설정 단계에서 정한 값
   logs\YYYY-MM-DD\app.log · serial.log · visa.log
   YYYY-MM-DD\HHMMSS_<묶음>\
-    <이름>_1.00V_0.dat        회차 파일(LabVIEW 와 같은 형식: 첫 줄 "Temp   Resistance   ", 탭 · CRLF)
-    <이름>_1.00V_merged.dat   머리글 없이 이어 붙인 것
-    <이름>_1.00V_control.csv  가열 제어 기록(점마다 경과 · 온도 · 저항 · 목표 온도 · 열선 · 송풍) - PC 에만
+    <이름>_0.10V_0.dat        회차 파일(LabVIEW 와 같은 형식: 첫 줄 "Temp   Resistance   ", 탭 · CRLF)
+    <이름>_0.10V_merged.dat   머리글 없이 이어 붙인 것
+    <이름>_0.10V_control.csv  가열 제어 기록(점마다 경과 · 온도 · 저항 · 목표 온도 · 열선 · 송풍) - PC 에만
     run.json · summary.csv · plate.jpg · graph_<시각>.png
     이전_<HHMMSS>\             같은 기록 안에서 다시 잰 샘플의 예전 .dat · merged · control.csv (새 파일은 원래 이름으로 쓴다)
 ```

@@ -148,3 +148,18 @@ def test_server_connect_and_manual_commands(make_ctrl):
         r = c.post("/api/cmd/raw", json={"target": "stage", "line": "st"}).json()
         assert r["ok"] and "ST " in r["result"]["reply"]
         assert c.put("/api/settings", json={"x_max_mm": -1}).status_code == 400
+
+
+def test_meter_volt_default_is_labview_set_voltage(tmp_path):
+    """측정 전압 기본값 0.1 V(기존 LabVIEW Set voltage · 파일 이름 _0.10V_). 이미 저장된 사용자 설정은 그대로 둔다."""
+    import json
+    from app.config import Config
+    from app.jobs import files
+    assert Config(tmp_path / "none.json").load()["meter_volt"] == 0.1, "설정 파일이 없으면 새 기본값"
+    assert files.cycle_name("1-1_", 0.1, 1) == "1-1_0.10V_0.dat" and files.merged_name("1-1_", 0.1) == "1-1_0.10V_merged.dat"
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"meter_volt": 1.0}), encoding="utf-8")
+    c = Config(p).load()
+    assert c["meter_volt"] == 1.0, "저장된 값은 바꾸지 않는다"
+    c.save()
+    assert json.loads(p.read_text(encoding="utf-8"))["meter_volt"] == 1.0

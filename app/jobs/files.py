@@ -1,8 +1,8 @@
 """files.py - 측정 파일(기존 LabVIEW 프로그램과 같은 형식)과 NAS 복사. v2 backend/rt.py 의 함수를 그대로 옮겼다.
 
   File name = 샘플 이름 + "_"   (LabVIEW 의 File name 은 "1-1_" 처럼 밑줄까지다)
-  회차 파일  <File name><전압 소수 2자리>V_<회차−1>.dat     예) 1-1_1.00V_0.dat   (회차 번호는 0 부터)
-  합친 파일  <File name><전압>V_merged.dat                 예) 1-1_1.00V_merged.dat (머리글 없음)
+  회차 파일  <File name><전압 소수 2자리>V_<회차−1>.dat     예) 1-1_0.10V_0.dat   (회차 번호는 0 부터)
+  합친 파일  <File name><전압>V_merged.dat                 예) 1-1_0.10V_merged.dat (머리글 없음)
   회차 파일 첫 줄 "Temp   Resistance   "(Temp 뒤 공백 3 · Resistance 뒤 공백 3 · 탭 없음), 값은 LabVIEW %.7E(지수에 0 을 채우지 않음,
   예 2.3691786E+1), 온도와 저항 사이는 탭, 줄끝은 CRLF(마지막 줄도).
   NAS 폴더 = 기본 폴더 / 연도 / YYYYMMDD(측정 시작 날짜) / 묶음. .dat 파일만, 별도 스레드로 복사한다(못 쓰면 주의만 · 측정은 계속).
@@ -21,7 +21,7 @@ BAD_NAME_CHARS = '\\/:*?"<>|'
 
 
 def file_stem(file_name, volt):
-    """[File name][Set voltage 소수 2자리]V_  (예: 1-1_1.00V_)"""
+    """[File name][Set voltage 소수 2자리]V_  (예: 1-1_0.10V_)"""
     return "%s%.2fV_" % (file_name, float(volt))
 
 

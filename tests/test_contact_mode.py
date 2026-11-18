@@ -78,7 +78,7 @@ def test_default_is_fixed_height_and_run_goes_exactly_to_the_saved_height(ready_
     it = run.items[sid]
     assert it["status"] == DONE, "닿지 않아도 접촉 단계에서 실패시키지 않는다: %s" % it["reason"]
     ct = it["contact"]
-    assert ct["mode"] == "fixed" and ct["z"] == cz and ct["volt"] == 1.0
+    assert ct["mode"] == "fixed" and ct["z"] == cz and ct["volt"] == 0.1
     assert ct["ohm"] is not None and ct["ohm"] > 1e9, "안 닿은 샘플(열린 회로)의 값도 판정 없이 기록만 한다"
     rec = json.loads((run.folder / "run.json").read_text(encoding="utf-8"))
     assert rec["cond"]["contact_mode"] == "fixed" and rec["cond"]["contact_fixed_read"] is True

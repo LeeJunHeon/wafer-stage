@@ -24,7 +24,10 @@ def _sig(x):
 
 
 def _measured(ready_ctrl, tmp_path, n=2, **cfg):
-    ctrl = ready_ctrl(time_scale=FAST, **dict(SEARCH, **dict(RAMP, **cfg)))      # 전기 탐색으로 접촉(고정 높이로는 일부 샘플만 닿는다)
+    # 전기 탐색으로 접촉(고정 높이로는 일부 샘플만 닿는다). 이 파일은 파일을 다시 읽어 낸 요약(전이 온도 · 저항 비)이 모델과 맞는지를 본다 -
+    # 냉각은 자연 냉각으로 한다: 냉각 속도 제어는 시험용 히트건 · 판의 지연과 Windows 의 긴 회차(배율 200 에서 3~10 초) 때문에 온도가
+    # ±7 °C 오르내려 같은 온도를 여러 번 지나고, 전이 온도가 그 폭만큼 흔들린다(따라가는 정도는 tests/test_heat_control.py 가 본다)
+    ctrl = ready_ctrl(time_scale=FAST, **dict(SEARCH, **dict(RAMP, **dict({"run_cool_mode": "free"}, **cfg))))
     ctrl.run_command("samples_find")
     use = [s for s in ctrl.prep.samples if s["use"]]
     for s in use[n:]:
@@ -41,7 +44,7 @@ def _allowance(ctrl, folder, name, phase, t_model):
       back = 그 구간에서 온도가 거꾸로 간 가장 큰 폭(가열 중 내려감 · 냉각 중 올라감) - 속도 제어로 열선을 켜고 끄면 온도가 오르내리고,
              같은 온도를 여러 번 지나므로 저항이 가장 빨리 변하는 온도가 그 폭만큼 어긋날 수 있다
     반환 (lag, step, back)."""
-    rows = [r.split(",") for r in (folder / ("%s_1.00V_control.csv" % name)).read_text(encoding="utf-8-sig").splitlines()[1:]]
+    rows = [r.split(",") for r in (folder / ("%s_0.10V_control.csv" % name)).read_text(encoding="utf-8-sig").splitlines()[1:]]
     pts = [(float(r[2]), float(r[3])) for r in rows if r[0] == "1" and r[1] == phase]
     near = [i for i in range(1, len(pts)) if min(abs(pts[i][1] - t_model), abs(pts[i - 1][1] - t_model)) <= 5.0]
     step = max(abs(pts[i][1] - pts[i - 1][1]) for i in near)
@@ -53,6 +56,15 @@ def _allowance(ctrl, folder, name, phase, t_model):
         best = max(best, t) if sign > 0 else min(best, t)
         back = max(back, (best - t) * sign)
     return ctrl.lab.tau_sensor * rate, step, back
+
+
+def _first_heat(ctrl, folder, name):
+    """첫 점에서 판(시료)이 있었을 수 있는 가장 높은 온도: 기록된 첫 가열 점 온도 + 첫 두 점 사이 온도 차 + 온도계 지연 × 그 변화율."""
+    rows = [r.split(",") for r in (folder / ("%s_0.10V_control.csv" % name)).read_text(encoding="utf-8-sig").splitlines()[1:]]
+    pts = [(float(r[2]), float(r[3])) for r in rows if r[0] == "1" and r[1] == "가열"][:2]
+    (t0, T0), (t1, T1) = pts
+    rate = abs(T1 - T0) / (t1 - t0) if t1 > t0 else 0.0
+    return T0 + abs(T1 - T0) + ctrl.lab.tau_sensor * rate
 
 
 def _model(ctrl, sid):
@@ -99,11 +111,15 @@ def test_results_from_a_finished_run(ready_ctrl, tmp_path, monkeypatch):
     rec = results.load_record(data, rid)
     assert [s["id"] for s in rec["samples"]] == ids and all(s["status"] == "완료" for s in rec["samples"])
     assert {"run.json", "summary.csv", "plate.jpg"} <= set(rec["files"])
-    assert all("%s_1.00V_control.csv" % run.items[i]["name"] in rec["files"] for i in ids), "가열 제어 기록도 저장 파일 목록에 보인다"
+    assert all("%s_0.10V_control.csv" % run.items[i]["name"] in rec["files"] for i in ids), "가열 제어 기록도 저장 파일 목록에 보인다"
     assert rec["cond"]["run_heater_off_c"] == ctrl.cfg["run_heater_off_c"] and rec["nas"]["ok"] is True
     for s in rec["samples"]:
         m, a = _model(ctrl, s["id"]), s["sum"]
-        assert abs(a["ratio"] - m["r_hi"] / m["r_lo"]) < 0.02 * m["r_hi"] / m["r_lo"], "저항 비"
+        # 저항 비 = 첫 점 저항 ÷ 최고 온도 저항. 첫 점은 히트건을 켠 뒤 첫 회차에 찍힌다 - 컴퓨터가 느리면 판이 그만큼 더 데워진 뒤다.
+        # 시험용 모델의 절연 쪽 저항은 25 °C 위로 1 °C 마다 10^-0.004 배 → 기댓값 범위를 기록된 첫 점 온도(+ 온도계 지연 + 점 간격)로 정한다
+        hot = _first_heat(ctrl, run.folder, s["name"])
+        lo_ratio = m["r_hi"] / m["r_lo"] * 10.0 ** (-0.004 * max(0.0, hot - 25.0))
+        assert lo_ratio * 0.98 < a["ratio"] < m["r_hi"] / m["r_lo"] * 1.02, ("저항 비", a["ratio"], lo_ratio, m["r_hi"] / m["r_lo"], hot)
         assert abs(a["r_peak"] - m["r_lo"]) < 0.01 * m["r_lo"], "최고 온도 저항 = 금속 쪽 저항"
         # 온도계는 샘플보다 늦게 따라간다 → 가열 때는 모델보다 조금 낮게, 냉각 때는 조금 높게 보인다.
         # 허용 폭 = 기록된 점에서 계산한 지연(lag) + 점 간격(step) + 모델 곡선 폭에서 오는 0.5 °C(점이 촘촘하고 지연이 없을 때의 오차 - test_analysis_matches_model_curve)
@@ -217,7 +233,7 @@ def test_repeat_run_graph_gets_every_cycle_and_table_uses_the_first(ready_ctrl, 
     name = run.items[ids[0]]["name"]
     meta = json.loads((run.folder / "run.json").read_text(encoding="utf-8"))
     cyc = meta["samples"][0]["cycles"]
-    assert [c["file"] for c in cyc] == [name + "_1.00V_0.dat", name + "_1.00V_1.dat"] and all(c["rows"] > 50 for c in cyc)
+    assert [c["file"] for c in cyc] == [name + "_0.10V_0.dat", name + "_0.10V_1.dat"] and all(c["rows"] > 50 for c in cyc)
     rec = results.load_record(data, rid)
     row = rec["samples"][0]
     assert row["cycles"] == 2 and row["n"] == cyc[0]["rows"], "표는 첫 회차 점으로 계산"

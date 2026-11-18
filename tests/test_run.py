@@ -109,8 +109,8 @@ def test_run_two_samples_to_the_end(ready_ctrl, tmp_path):
     assert folder.parent.parent == ctrl.cfg.data_path() and re.match(r"\d{4}-\d{2}-\d{2}$", folder.parent.name) and re.match(r"\d{6}_1$", folder.name)
     for sid in ids:
         name = run.items[sid]["name"]
-        cyc = (folder / ("%s_1.00V_0.dat" % name)).read_bytes()
-        mer = (folder / ("%s_1.00V_merged.dat" % name)).read_bytes()
+        cyc = (folder / ("%s_0.10V_0.dat" % name)).read_bytes()
+        mer = (folder / ("%s_0.10V_merged.dat" % name)).read_bytes()
         assert cyc.startswith(b"Temp   Resistance   \r\n"), "머리글: 공백 3 · 탭 없음 · CRLF"
         body = cyc[len(b"Temp   Resistance   \r\n"):]
         assert body == mer, "merged 는 머리글 없이 같은 줄"
@@ -118,7 +118,7 @@ def test_run_two_samples_to_the_end(ready_ctrl, tmp_path):
         lines = body.decode("ascii").split("\r\n")[:-1]
         assert len(lines) == len(run.items[sid]["points"]) > 50
         # 가열 제어 기록(control.csv): 점마다 한 줄 · 가열 점에는 목표 온도 · 열선 · 송풍
-        ctl = (folder / ("%s_1.00V_control.csv" % name)).read_text(encoding="utf-8-sig").splitlines()
+        ctl = (folder / ("%s_0.10V_control.csv" % name)).read_text(encoding="utf-8-sig").splitlines()
         assert ctl[0] == "회차,단계,경과(s),온도(°C),저항(Ω),목표 온도(°C),열선,송풍" and len(ctl) - 1 == len(lines)
         heat = [r.split(",") for r in ctl[1:] if r.split(",")[1] == "가열"]
         assert len(heat) == run.items[sid]["cycles"][0]["heat_rows"] and all(r[5] and r[7] == "1" for r in heat), "가열 중에는 목표 온도 · 송풍 켜짐"
@@ -208,7 +208,7 @@ def test_skip_pause_resume_stop_requeue(ready_ctrl):
     ctrl.run_command("run_skip")                                     # 첫 샘플 건너뛰기
     assert wait_for(lambda: run.cur == ids[1], 20)
     assert run.items[ids[0]]["status"] == SKIPPED
-    assert (run.folder / (run.items[ids[0]]["name"] + "_1.00V_0.dat")).stat().st_size > 60, "건너뛴 샘플도 받은 데이터는 파일로 남는다"
+    assert (run.folder / (run.items[ids[0]]["name"] + "_0.10V_0.dat")).stat().st_size > 60, "건너뛴 샘플도 받은 데이터는 파일로 남는다"
     ctrl.run_command("run_pause_after", {"on": True})                # 이 샘플 끝나면 멈춤
     _finish(ctrl)
     assert run.state == "stopped" and run.items[ids[1]]["status"] == DONE and run.items[ids[2]]["status"] == WAIT
@@ -229,9 +229,9 @@ def test_skip_pause_resume_stop_requeue(ready_ctrl):
     _finish(ctrl, 60)
     assert run.items[ids[0]]["status"] == DONE and run.state == "done", "남은 '대기'가 없으면 끝(멈춘 샘플은 요약에 남는다)"
     name = run.items[ids[0]]["name"]
-    assert sorted(p.name for p in folder.glob(name + "_*.dat")) == [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"], "다시 잰 파일도 원래 이름으로"
+    assert sorted(p.name for p in folder.glob(name + "_*.dat")) == [name + "_0.10V_0.dat", name + "_0.10V_merged.dat"], "다시 잰 파일도 원래 이름으로"
     old = [p for p in folder.iterdir() if p.is_dir() and p.name.startswith("이전_")]
-    assert len(old) == 1 and sorted(p.name for p in old[0].iterdir()) == [name + "_1.00V_0.dat", name + "_1.00V_control.csv", name + "_1.00V_merged.dat"], \
+    assert len(old) == 1 and sorted(p.name for p in old[0].iterdir()) == [name + "_0.10V_0.dat", name + "_0.10V_control.csv", name + "_0.10V_merged.dat"], \
         "건너뛰기 전에 받은 데이터(가열 제어 기록 포함)는 이전_ 폴더에 남는다"
     assert ctrl.state.get("run", "summary") == "3개 중 2개 완료 · 중지 1"
 
@@ -249,7 +249,7 @@ def test_estop_during_run(ready_ctrl):
     _all_off(ctrl)
     assert ctrl.state.get("pos", "z") == z > 0, "비상정지면 핀을 올리지 않는다"
     assert alarm_codes(ctrl) == ["estop"], "비상정지 뒤 경보는 비상정지 하나뿐: %s" % alarm_lines(ctrl)
-    assert (run.folder / (run.items[ids[0]]["name"] + "_1.00V_0.dat")).stat().st_size > 60, "받은 데이터는 파일로 남는다"
+    assert (run.folder / (run.items[ids[0]]["name"] + "_0.10V_0.dat")).stat().st_size > 60, "받은 데이터는 파일로 남는다"
     with pytest.raises(Rejected):
         ctrl.run_command("run_resume")                               # 비상정지를 풀기 전에는 이어서 못 한다
     assert wait_for(lambda: not ctrl.state.get("estop_hold"), 5), "정지 뒤 2초(측정 시계)가 지나면 해제할 수 있다"
@@ -373,8 +373,8 @@ def test_phase_time_limit_fails_sample(ready_ctrl):
     # 그때까지 받은 데이터는 남는다: 받은 점 수(컴퓨터 속도에 따라 다르다)가 있고, 파일의 줄과 하나하나 같다
     n = len(it["points"])
     assert n > 0 and it["cycles"][0]["rows"] == n
-    cyc = (run.folder / (it["name"] + "_1.00V_0.dat")).read_bytes().decode("ascii").split("\r\n")
-    mer = (run.folder / (it["name"] + "_1.00V_merged.dat")).read_bytes().decode("ascii").split("\r\n")
+    cyc = (run.folder / (it["name"] + "_0.10V_0.dat")).read_bytes().decode("ascii").split("\r\n")
+    mer = (run.folder / (it["name"] + "_0.10V_merged.dat")).read_bytes().decode("ascii").split("\r\n")
     assert cyc[0] == files.HEADER and cyc[-1] == "" and mer[-1] == "" and cyc[1:] == mer
     assert [files.data_line(t, r) for t, r, _ph in it["points"]] == cyc[1:-1], "화면 점 = 파일 줄"
     _all_off(ctrl)
@@ -383,7 +383,9 @@ def test_phase_time_limit_fails_sample(ready_ctrl):
 
 def test_cooling_stall_ends_phase_normally(ready_ctrl):
     """가열 뒤 냉각이 냉각 끝 온도 전에 정체하면 그 회차를 끝내고 "냉각 끝 온도 미도달" 주의(기록 유지)."""
-    ctrl, ids = _prepare(ready_ctrl, 1, run_cool_end_c=5.0, run_stall_s=30.0)          # 쿨러로는 5 °C 까지 못 내려간다
+    # 쿨러로는 5 °C 까지 못 내려간다. 자연 냉각으로 본다(정체 판정 heater.Stall 은 냉각 방식과 상관없이 같다): 냉각 속도 제어에서는 시험용 히트건의 지연과
+    # Windows 의 긴 회차(배율 200 에서 3~10 초)로 온도가 오르내려 30 초짜리 정체 창 안에서 안 내려간 것처럼 보일 수 있다(실장비 정체 시간 기본 180 초)
+    ctrl, ids = _prepare(ready_ctrl, 1, run_cool_end_c=5.0, run_stall_s=30.0, run_cool_mode="free")
     ctrl.run_command("run_start")
     _finish(ctrl, 60)
     it = ctrl.runner.items[ids[0]]
@@ -407,7 +409,13 @@ def test_start_temperature_not_reached_stops_the_run_and_resume_restarts_that_sa
     ctrl.run_command("run_resume")
     _finish(ctrl, 90)
     assert a["status"] == DONE and b["status"] == DONE, (a["status"], a["reason"], b["status"], b["reason"])
-    assert a["points"][0][0] <= 5.0 + 0.5, "시작 온도 이하에서 가열 시작"
+    # 첫 점은 히트건을 켠 뒤(열선 → 1 초 → 송풍) 한 회차 뒤에 찍힌다. 켠 순간 온도 ≤ 시작 온도인지를 기록으로 본다:
+    # 첫 점 온도 − (첫 점 경과 − 열선을 켠 경과) × 기록된 가장 빠른 가열 속도 ≤ 시작 온도
+    rows = [r.split(",") for r in (run.folder / (a["name"] + "_0.10V_control.csv")).read_text(encoding="utf-8-sig").splitlines()[1:]]
+    heat = [(float(r[2]), float(r[3])) for r in rows if r[0] == "1" and r[1] == "가열"]
+    t_on = next(x[0] for x in a["element_log"] if x[1] == 1 and x[2] == 1)
+    fast = max((y[1] - x[1]) / (y[0] - x[0]) for x, y in zip(heat, heat[1:]) if y[0] > x[0])
+    assert heat[0][1] - (heat[0][0] - t_on) * fast <= 5.0 + 1e-6, "시작 온도 이하에서 가열 시작 · 첫 점 %.2f °C · 켠 뒤 %.1f초" % (heat[0][1], heat[0][0] - t_on)
 
 
 def test_each_cycle_starts_at_the_start_temperature(ready_ctrl):
@@ -476,8 +484,8 @@ def test_remeasure_moves_old_files_and_keeps_labview_names(ready_ctrl, tmp_path)
     ctrl.run_command("run_start")
     _finish(ctrl)
     folder, name = run.folder, run.items[ids[0]]["name"]
-    want = [name + "_1.00V_0.dat", name + "_1.00V_merged.dat"]
-    ctl = name + "_1.00V_control.csv"                                # 가열 제어 기록(PC 에만 - NAS 에는 .dat 만)
+    want = [name + "_0.10V_0.dat", name + "_0.10V_merged.dat"]
+    ctl = name + "_0.10V_control.csv"                                # 가열 제어 기록(PC 에만 - NAS 에는 .dat 만)
     first = {n: (folder / n).read_bytes() for n in want + [ctl]}
     nas_dir = Path(json.loads((folder / "run.json").read_text(encoding="utf-8"))["nas"]["dir"])
     assert sorted(p.name for p in nas_dir.iterdir()) == want and all((nas_dir / n).read_bytes() == first[n] for n in want)
@@ -526,18 +534,18 @@ def test_nas_does_not_overwrite_another_records_file(ready_ctrl, tmp_path):
     import time as _t
     other = Path(files.nas_target(str(nas), True, ctrl.cfg["batch_name"], _t.time()))
     other.mkdir(parents=True)
-    (other / (name + "_1.00V_0.dat")).write_bytes(b"other record")
+    (other / (name + "_0.10V_0.dat")).write_bytes(b"other record")
     ctrl.run_command("run_start")
     _finish(ctrl)
-    assert (other / (name + "_1.00V_0.dat")).read_bytes() == b"other record", "다른 기록의 파일은 그대로"
-    assert (other / (name + "_1.00V_0_1.dat")).read_bytes() == (run.folder / (name + "_1.00V_0.dat")).read_bytes()
+    assert (other / (name + "_0.10V_0.dat")).read_bytes() == b"other record", "다른 기록의 파일은 그대로"
+    assert (other / (name + "_0.10V_0_1.dat")).read_bytes() == (run.folder / (name + "_0.10V_0.dat")).read_bytes()
     meta = json.loads((run.folder / "run.json").read_text(encoding="utf-8"))
-    assert meta["nas"]["names"][name + "_1.00V_0.dat"] == name + "_1.00V_0_1.dat"
+    assert meta["nas"]["names"][name + "_0.10V_0.dat"] == name + "_0.10V_0_1.dat"
     assert ctrl.state.has_alarm("nas")
     # 측정 결과 탭 [다시 복사]도 이 기록이 쓴 이름으로만 덮어쓴다
     ctrl.run_command("result_nas_copy", {"id": "%s/%s" % (run.folder.parent.name, run.folder.name)})
-    assert (other / (name + "_1.00V_0.dat")).read_bytes() == b"other record"
-    assert sorted(p.name for p in other.iterdir()) == sorted([name + "_1.00V_0.dat", name + "_1.00V_0_1.dat", name + "_1.00V_merged.dat"])
+    assert (other / (name + "_0.10V_0.dat")).read_bytes() == b"other record"
+    assert sorted(p.name for p in other.iterdir()) == sorted([name + "_0.10V_0.dat", name + "_0.10V_0_1.dat", name + "_0.10V_merged.dat"])
 
 
 def test_fast_rise_is_only_a_notice_and_changed_limits_apply_to_the_next_run(ready_ctrl):

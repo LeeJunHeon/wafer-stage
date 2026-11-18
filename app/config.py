@@ -219,8 +219,8 @@ ITEMS = (
          Item("contact_open_a", 1e-9, "float", "미접촉 판정 전류", "A", 1e-13, 1e-3,
               desc="전류가 이 값보다 작으면 미접촉으로 판정\n측정 중 핀 떨어짐 판정에도 사용"))
     + _g("측정 조건",
-         Item("meter_volt", 1.0, "float", "측정 전압", "V", 0.01, 20,
-              desc="저항을 잴 때 샘플에 거는 전압 · 파일 이름에 들어감\n자동 측정 [조건] 에서도 변경 가능"),
+         Item("meter_volt", 0.1, "float", "측정 전압", "V", 0.01, 20,                 # 기존 LabVIEW Set voltage(파일 이름 _0.10V_)
+              desc="저항을 잴 때 샘플에 거는 전압 · 파일 이름에 들어감\n기존 LabVIEW Set voltage 와 같음 · 기존 데이터와 비교할 때 같은 값 사용"),
          Item("meter_four_wire", True, "bool", "4단자",
               desc="4단자로 측정 · 끄면 2단자"),
          Item("meter_avg_count", 10, "int", "평균 횟수", "회", 1, 100,

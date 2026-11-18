@@ -39,7 +39,9 @@ def test_stop_during_long_goto_halts_before_target_and_does_not_lock(make_ctrl):
     ctrl = make_ctrl(scale=0.4)
     fw = ctrl.fake_fw
     t, out = _move_in_thread(lambda: ctrl.goto(200.0, 10.0))
-    assert wait_for(lambda: ctrl.stage.moving, 5), "이동이 시작되지 않았다"
+    # goto 는 먼저 Z 를 맨 위로 올린다(Z 0 이면 "이미 그 위치"). X 이동이 보드 기록에 보이고 보드가 움직이는 중에 정지를 보낸다 -
+    # 컴퓨터가 느리면 Z 단계가 길어져 그 사이에 정지하면 X 는 0 에서 시작도 안 한 채 끝난다(시험이 보려는 "목표 전에 멈춤" 이 아니다)
+    assert wait_for(lambda: ctrl.stage.moving and fw.busy and fw.log and fw.log[-1].startswith("gx"), 5), "X 이동이 시작되지 않았다"
     n_bang = len(fw.bang_times)
     r = ctrl.run_command("motion_stop")
     t.join(10)
