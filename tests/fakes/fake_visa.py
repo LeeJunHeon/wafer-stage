@@ -115,7 +115,8 @@ class Lab:
         self.t_last = now
         if dt <= 0:
             return
-        heat, any_cool = bool(self.heater_fn()), bool(self.cooler_fn())
+        power, any_cool = max(0.0, min(1.0, float(self.heater_fn()))), bool(self.cooler_fn())     # 히트건 출력(0~1 - 열선 출력 % 의 시간 평균)
+        heat = power > 0
         if heat != self._heat_prev:
             self._heat_prev = heat
             self.heater_log.append((now, heat))
@@ -127,7 +128,7 @@ class Lab:
         d = dt / n
         k = 1.0 - math.exp(-d / self.tau)
         for _ in range(n):
-            self.g += ((1.0 if heat else 0.0) - self.g) * (1.0 - math.exp(-d / self.tau_heater))
+            self.g += (power - self.g) * (1.0 - math.exp(-d / self.tau_heater))
             for key in keys:
                 c = self._cell(key)
                 cooled = any_cool if (key is None or on is None) else (w.zone_relay(key) in on)

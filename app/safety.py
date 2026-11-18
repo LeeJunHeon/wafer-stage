@@ -46,7 +46,8 @@ class Safety:
         self._lock = threading.Lock()
         self.generation = 0
         self.estop_t: Optional[float] = None            # 마지막으로 비상정지를 받은 시각(clock)
-        self.element_on_t: Optional[float] = None       # 열선을 켠 시각(clock) - 연속으로 켜진 시간의 시작. 꺼져 있으면 None
+        self.element_on_t: Optional[float] = None       # 열선을 켠 시각(clock) - 출력이 0 보다 커진 때. 꺼져 있으면 None
+        self.full_on_t: Optional[float] = None          # 열선 출력이 heater_full_pct 이상이 된 시각 - "열선 연속 최대 시간" 의 시작(출력 % 로 조절하는 동안은 세지 않는다)
         self.heater_by: Optional[str] = None            # 히트건(송풍 또는 열선)을 켠 주체(BY_MANUAL · BY_RUN). 둘 다 꺼지면 None
         self.last_temp_t: Optional[float] = None        # 마지막으로 온도를 읽은 시각
         self.last_temp: Optional[float] = None
@@ -195,10 +196,19 @@ class Safety:
 
     def element_turned_off(self):
         self.element_on_t = None
+        self.full_on_t = None
+
+    def element_full(self, full: bool, now: Optional[float] = None):
+        """열선 출력이 heater_full_pct 이상인가(V11 · 출력을 모르면 열선 켜짐 = 100 %). 이어진 시간만 센다."""
+        if full and self.full_on_t is None and self.element_on_t is not None:
+            self.full_on_t = self.clock() if now is None else now
+        elif not full:
+            self.full_on_t = None
 
     def heater_released(self):
         """송풍 · 열선이 모두 꺼졌다: 켠 주체를 잊는다."""
         self.element_on_t = None
+        self.full_on_t = None
         self.heater_by = None
 
     def heater_trip(self, now: Optional[float] = None):
@@ -214,7 +224,7 @@ class Safety:
             since = max(self.element_on_t, self.last_temp_t if self.last_temp_t is not None else -1e18)
             if now - since > float(self.cfg["temp_stale_s"]):
                 return TRIP_NO_TEMP, "온도 측정 실패 · 히트건 차단"
-        if now - self.element_on_t >= float(self.cfg["heater_max_on_s"]):
+        if self.full_on_t is not None and now - self.full_on_t >= float(self.cfg["heater_max_on_s"]):
             return TRIP_MAX_ON, "열선 %g초 연속 가동 · 차단" % self.cfg["heater_max_on_s"]
         return None
 

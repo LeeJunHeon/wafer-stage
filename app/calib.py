@@ -33,7 +33,8 @@ class Calib:
         self.path = self.dir / "calib.json"
         self.empty_path = self.dir / "empty_plate.png"
         self._lock = threading.RLock()
-        self.d = {"origin": {}, "plate": None, "empty": None, "coords": {"stage": {}, "extra": []}, "marker": None, "contact": None, "cooler": None}
+        self.d = {"origin": {}, "plate": None, "empty": None, "coords": {"stage": {}, "extra": []}, "marker": None, "contact": None, "cooler": None,
+                  "speed_max": None}                                # speed_max: 온도 시험 [최대 속도 재기]의 5 °C 구간별 최대 가열 · 냉각 속도 {"t", "rows"}
         self.note = ""
         self.on_change = None                               # 값이 바뀌어 저장한 뒤 부르는 함수(측정 시작 조건을 다시 계산한다 - Controller 가 정한다)
         self.load()
@@ -149,6 +150,11 @@ class Calib:
     def set_cooler(self):
         with self._lock:
             self.d["cooler"] = {"t": time.time()}
+        self.save()
+
+    def set_speed_max(self, rows):
+        with self._lock:
+            self.d["speed_max"] = {"t": time.time(), "rows": [list(r) for r in rows]}
         self.save()
 
     def clear_cooler(self):

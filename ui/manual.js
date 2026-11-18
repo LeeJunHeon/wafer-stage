@@ -81,6 +81,10 @@ function buildManual() {
   man.hOn = btn("켜기", () => api("heater_on"));
   man.hEl = btn("열선 끄기", () => api("heater_element", { on: !(S.heater && S.heater.element) }));
   man.hOff = btn("끄기", () => api("heater_off"));
+  man.hNow = btn("즉시 끄기", () => api("heater_off_now"));                    // 열선 · 송풍 바로 끔(확인 창 없음)
+  man.hPct = h("input", { type: "number", class: "num", min: "0", max: "100", step: "1", value: "30" });
+  man.hPctGo = btn("적용", () => { const v = parseInt(man.hPct.value, 10); if (!isFinite(v)) { toast("출력 % 숫자 필요"); return; } api("heater_power", { pct: v }); });
+  man.hPctNow = h("span", { class: "small nowrap" });
   man.hState = h("span", { class: "small nowrap" });
   man.coolBox = h("span", { class: "relays" });
   man.coolSig = "";
@@ -89,8 +93,9 @@ function buildManual() {
   man.tt = btn("온도 시험", openTempTest);
   man.ttLine = h("span", { class: "small nowrap" });
   const relay = h("div", { class: "panel" }, h("h3", { text: "릴레이 시험" }),
-    h("div", { class: "row" }, h("span", { class: "lbl small", text: "히트건" }), man.hOn, man.hEl, man.hOff, man.hState),
-    h("div", { class: "small", text: "켜는 순서: 열선 → 송풍(자동)" }),
+    h("div", { class: "row" }, h("span", { class: "lbl small", text: "히트건" }), man.hOn, man.hEl, man.hOff, man.hNow, man.hState),
+    h("div", { class: "row" }, h("span", { class: "lbl small", text: "열선 출력" }), man.hPct, small("%"), man.hPctGo, man.hPctNow),
+    h("div", { class: "small", text: "켜는 순서: 열선 → 송풍(자동) · 출력은 송풍 켜진 동안만" }),
     h("div", { class: "row" }, h("span", { class: "lbl small", text: "쿨러" }), man.coolBox, h("span", { class: "sp" }), man.allOff),
     h("div", { class: "row" }, h("span", { class: "lbl small", text: "온도" }), man.tt, man.ttLine),
     man.relWhy);
@@ -194,7 +199,7 @@ function setWhy(el, text) { el.textContent = text || ""; el.classList.toggle("hi
 /* 히트건 상태 한 줄: 송풍 · 열선 · 송풍을 끄기까지 남은 초 */
 function heaterText(ht) {
   if (ht.fan == null && ht.element == null) return "—";
-  if (ht.element) return "송풍 " + (ht.fan ? "켜짐" : "꺼짐") + " · 열선 켜짐";
+  if (ht.element) return "송풍 " + (ht.fan ? "켜짐" : "꺼짐") + " · 열선 " + (ht.pct == null ? "켜짐" : ht.pct + " %");
   if (ht.fan) return ht.fan_off_at ? "열선 꺼짐 · 송풍 " + Math.max(0, Math.ceil(ht.fan_off_at - Date.now() / 1000)) + "초 뒤 끔" : "송풍 켜짐 · 열선 꺼짐";
   return "꺼짐";
 }
@@ -236,6 +241,10 @@ function renderManual() {
   man.hEl.textContent = ht.element ? "열선 끄기" : "열선 켜기";
   man.hEl.disabled = busy || ttOn || !stage || !ht.fan || (!ht.element && locked);        // 송풍이 켜진 동안만(끄기는 비상정지 중에도)
   man.hOff.disabled = busy || ttOn || !stage || !hOn;
+  man.hNow.disabled = !stage || !hOn;                                        // 즉시 끄기는 측정 · 온도 시험 중에도 된다(끄기)
+  const v12 = !!ht.v12;
+  man.hPct.disabled = man.hPctGo.disabled = !!relayBlock || !ht.fan || !v12;
+  man.hPctNow.textContent = !stage ? "" : !v12 ? "펌웨어 V12 필요" : !ht.fan ? "송풍 켠 뒤 적용" : "현재 " + (ht.pct == null ? "—" : ht.pct) + " %";
   man.hState.textContent = heaterText(ht);
   man.hState.className = "small nowrap" + (hOn ? " st-warn" : "");
   const cool = c.cooler_relays || [];

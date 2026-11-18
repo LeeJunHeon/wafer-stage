@@ -292,10 +292,14 @@ input.settext.withbtn { width: 272px; }                              /* [찾아�
 /* ---- 온도 시험 창(수동 제어 탭 [온도 시험]): 왼쪽 조건 · 결과(넘치면 그 칸 안에서 스크롤) / 오른쪽 진행 · 그래프(남는 자리 전부) ---- */
 #dlg .box.tt-box { width: calc(100vw - 64px); max-width: 1400px; height: calc(100vh - 120px); }
 .tt-box .dlg-body { flex: 1 1 0; overflow: hidden; }
-.tt { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 16px; height: 100%; min-height: 0; }
+.tt, .tt2 { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 16px; height: 100%; min-height: 0; }
+.tt2 { grid-template-columns: minmax(0, 1fr) 320px; }                     /* 온도 시험: 그래프 크게(왼쪽) · 결과 + 접은 조건(오른쪽) */
+.tt-main { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
+.tt-side { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; padding-right: 4px; }
+.tt-side details > summary { cursor: pointer; font-size: 12px; color: var(--ink2); font-weight: 600; }
 .tt-left { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; padding-right: 4px; }
 .tt-right { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
-.tt h4 { margin: 0; font-size: 12px; color: var(--ink2); font-weight: 600; }
+.tt h4, .tt2 h4 { margin: 0; font-size: 12px; color: var(--ink2); font-weight: 600; }
 .tt-sec { display: flex; flex-direction: column; gap: 4px; }
 .tt-cond { display: grid; grid-template-columns: 120px max-content; gap: 4px 8px; align-items: center; }
 .tt-cond input[type=number] { width: 80px; text-align: right; }

@@ -219,7 +219,8 @@ class Controller:
         self.state.set_device("stage", "연결 중", "", port)
         try:
             speed = (self.cfg["move_speed_pps"], self.cfg["move_accel_pps2"], self.cfg["move_start_pps"])
-            self.stage.connect(port, speed, self.cfg["watchdog_ms"])
+            fan, el = self._roles()[:2]
+            self.stage.connect(port, speed, self.cfg["watchdog_ms"], heater=(fan, el, int(self.cfg["heater_pwm_period_ms"])))
         except StageError as e:
             self.state.set_device("stage", "오류", str(e), port)
             detail = getattr(e, "detail", "")                       # 포트 열기 실패: 화면은 한글 한 줄, 원래 예외 전체는 로그에
@@ -230,6 +231,11 @@ class Controller:
         self.state.clear_alarm("stage_lost")
         self._stage_status()
         self.logs.app("스테이지 연결 · %s · 펌웨어 %s" % (port, self.stage.firmware))
+        if self.stage.heat_capable:
+            self.state.clear_alarm("fw_v12")
+        else:                                                       # V11: 이동 · 쿨러는 되고 열선 출력 % 가 필요한 일은 거절한다
+            self.state.alarm("fw_v12", stage_mod.V12_NEED, NOTICE)
+            self.logs.app("스테이지 펌웨어 %s · 열선 출력 제어 불가 · %s" % (self.stage.firmware, stage_mod.V12_NEED), "warn")
         self._note_eeprom(self.stage.eeprom)
         return {"port": port, "firmware": self.stage.firmware}
 
@@ -410,6 +416,8 @@ class Controller:
             self._element_off_t = self.clock()
         if ev is False and self._element_off_t is None:
             self._element_off_t = self.clock()
+        p = self.stage.heat_pct if (self.stage.heat_capable and not force_off) else None
+        self.safety.element_full(ev is True and (p is None or p >= int(self.cfg["heater_full_pct"])))     # 열선 연속 최대 시간은 거의 최대 출력일 때만
         active = fv is True or ev is True
         if active and not self._heater_active:
             self._heater_active = True
@@ -432,7 +440,8 @@ class Controller:
         if fv is None and ev is None:
             fan, el, _ = self._roles()
             fv, ev = self.stage.relays[fan - 1], self.stage.relays[el - 1]
-        self.state.set("heater", {"fan": fv, "element": ev, "fan_off_at": self._fan_off_epoch})
+        self.state.set("heater", {"fan": fv, "element": ev, "fan_off_at": self._fan_off_epoch,
+                                  "pct": self.heater_pct() if self.stage.connected else None, "v12": bool(self.stage.heat_capable)})
 
     def _apply_migration(self):
         """예전 settings.json 을 지금 규칙으로 옮긴 것(config._migrate)을 로그에 한 줄씩 남기고 파일에 저장한다.
@@ -856,6 +865,74 @@ class Controller:
     #   송풍이 꺼진 채 송풍만 켜는 길은 없다(히트건 인터락: 송풍을 먼저 켜고 열선을 켜면 히트건이 오류를 낸다).
     #   비상정지 · 통신 끊김 · 종료는 r all 0(전부 끔). 안전 판단(차단 온도 · 온도 못 읽음 · 열선 연속 최대 시간)은 열선만 바로 끄고 송풍은 뒤에.
     # ------------------------------------------------------------------
+    # ---- 열선 출력 %(펌웨어 V12 hp) ----
+    def _need_v12(self):
+        self._need_stage()
+        if not self.stage.heat_capable:
+            raise Rejected(stage_mod.V12_NEED)
+
+    def heater_pct(self) -> int:
+        """지금 열선 출력 %(V12 가 알려 준 값). 모르면(V11) 열선 켜짐 = 100 · 꺼짐 = 0."""
+        p = self.stage.heat_pct if self.stage.heat_capable else None
+        if p is not None:
+            return int(p)
+        return 100 if self._element_on() else 0
+
+    def heater_power(self, pct, by: str = BY_MANUAL):
+        """송풍이 켜진 동안 열선 출력 %(0 = 열선 끔). 측정(LineControl) · 온도 시험 · 수동 [적용] 이 같이 쓴다.
+        0 보다 크게 하려면 송풍이 켜져 있어야 한다(인터락 - 송풍이 꺼져 있으면 [켜기] 로 열선 → 송풍 순서부터). 열선이 꺼져 있다 켜지면 켜기 판정(차단 온도 · 온도 읽기)을 본다.
+        상한 heater_max_pct. 펌웨어도 송풍이 꺼져 있으면 거부한다."""
+        self._need_v12()
+        pct = max(0, min(int(self.cfg["heater_max_pct"]), int(round(float(pct)))))
+        fan = self._roles()[0]
+        with self._heater_lock:
+            if pct > 0:
+                if self._heater_starting:
+                    raise Rejected("히트건 켜는 중")
+                if not self._relay_is_on(fan):
+                    raise Rejected("송풍 꺼짐 · 히트건 [켜기] 필요")
+                if not self._element_on():
+                    self._check_element_on(by)
+                self._heater_by = by
+            g = self.safety.generation if pct > 0 else None
+            try:
+                if not self.safety.gen_ok(g):
+                    raise Rejected(self._cancel_text())
+                self.stage.heat(pct, g, prio=1 if pct == 0 else 5)
+            except stage_mod.StageRejected as e:
+                raise Rejected(str(e))
+            except stage_mod.Discarded:
+                raise Rejected(self._cancel_text())
+            except StageError as e:
+                raise Rejected("스테이지 오류 · %s" % e)
+            finally:
+                self._heater_by = None
+            if pct > 0:
+                self._fan_off_at = self._fan_off_epoch = None
+                self._heater_off_logged = False
+            self._heater_sync()
+        return self._heater_reply()
+
+    def manual_heater_power(self, pct):
+        """수동 제어 탭 열선 출력 % [적용](송풍이 켜진 동안만 · 수동 규칙)."""
+        return self.heater_power(pct, BY_MANUAL)
+
+    def manual_heater_off_now(self):
+        """수동 제어 탭 [즉시 끄기]: 열선 · 송풍 바로 끔(송풍 늦게 끄기 없음 · 확인 창 없음)."""
+        self._need_stage()
+        fan, el = self._roles()[:2]
+        with self._heater_lock:
+            was = self._heater_on()
+            for n in (el, fan):                                     # 열선 먼저(끄는 쪽은 순서 제약이 없지만 켤 때와 거꾸로)
+                if self.stage.relays[n - 1] is not False:
+                    self._switch(n, False, None, prio=0)
+            self._fan_off_at = self._fan_off_epoch = None
+            if was:
+                self._heater_off_logged = True
+                self.logs.app("히트건 즉시 끔 · 수동 · 열선 · 송풍 끔")
+            self._publish_heater()
+        return self._heater_reply()
+
     def manual_heater_on(self):
         """수동 제어 탭 히트건 [켜기]: "수동" 규칙(온도계 조건을 보지 않는다)."""
         return self.heater_on(BY_MANUAL)
@@ -1514,6 +1591,9 @@ class Controller:
             self.logs.app("릴레이 역할 변경 · %s" % " · ".join("%s %s → %s" % (config_mod.BY_KEY[k].label, old[k], new[k]) for k in roles_changed))
             if self.stage.connected:
                 try:
+                    if self.stage.heat_capable:                     # 펌웨어 V12 의 송풍 · 열선 번호(hp 의 송풍 검사 · 열선 출력 핀)도 새 번호로
+                        fan, el = self._roles()[:2]
+                        self.stage.heat_config(fan, el, int(self.cfg["heater_pwm_period_ms"]))
                     self.stage.read_relays()                        # rs 를 다시 읽어 안전 감시가 새 번호의 릴레이를 기준으로 보게 한다
                 except StageError as e:
                     self.logs.app("릴레이 상태 읽기 실패 · %s" % e, "warn")
@@ -1895,6 +1975,7 @@ COMMANDS = {
     "jog": "jog", "goto": "goto", "z_top": "z_top", "set_origin": "set_origin", "motion_stop": "motion_stop",
     "relay_on": "relay_on", "relay_off": "relay_off", "relays_off": "relays_off",
     "heater_on": "manual_heater_on", "heater_off": "manual_heater_off", "heater_element": "manual_heater_element",
+    "heater_power": "manual_heater_power", "heater_off_now": "manual_heater_off_now",
     "read_temp": "read_temp", "read_resistance": "read_resistance", "raw": "raw",
     "estop_release": "estop_release", "alarm_clear": "alarm_clear",
     "contact_find": "contact_find", "contact_save": "contact_save", "contact_save_here": "contact_save_here",
@@ -1918,11 +1999,12 @@ COMMANDS = {
 
 # 온도 시험 중에 거절하는 명령: 자동 측정 · 접촉 탐색 · 쿨러 [켜 보기] · 히트건 수동 버튼 · 개별 릴레이 버튼(시험이 히트건 · 쿨러를 쓴다).
 # [전체 끄기] 는 시험을 [정지] 한 뒤 끈다(끄기는 언제나 된다). 비상정지는 명령 줄을 거치지 않는다.
-TEMPTEST_BLOCKED = {"run_start", "run_resume", "contact_find", "cooler_only", "heater_on", "heater_off", "heater_element", "relay_on", "relay_off"}
+TEMPTEST_BLOCKED = {"run_start", "run_resume", "contact_find", "cooler_only", "heater_on", "heater_off", "heater_element", "heater_power",
+                    "relay_on", "relay_off"}
 
 
 # 측정 중에도 되는 명령(읽기 · 측정 조작 · 경보 지우기). 그 밖의 명령은 측정 중에 거절한다. 비상정지는 명령 줄을 거치지 않는다.
-RUN_ALLOWED = {"move_plan", "quit_plan", "app_quit", "estop_release", "alarm_clear", "motion_stop", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_requeue",
+RUN_ALLOWED = {"heater_off_now", "move_plan", "quit_plan", "app_quit", "estop_release", "alarm_clear", "motion_stop", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_requeue",
                "sample_rename", "batch_set", "result_open_folder", "result_nas_copy"}
 
 

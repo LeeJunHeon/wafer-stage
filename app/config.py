@@ -164,25 +164,39 @@ ITEMS = (
               desc="히트건을 켤 때 열선을 켜고 송풍을 켜기까지 대기\n히트건이 켜기 순서 오류를 내면 늘림"),
          Item("heater_fan_after_s", 30.0, "float", "열선 끈 뒤 송풍", "s", 0, 600, verify=True,
               desc="히트건을 끌 때 열선을 끄고 송풍을 더 켜 두는 시간 · 열선 식힘\n열선이 뜨거운 채 멈추면 늘림"))
-    + _g("가열 제어",                                                                      # 측정 중 가열: 송풍을 켜 둔 채 열선을 켜고 꺼서 가열 속도를 따른다
+    + _g("가열 제어",                                                                      # 열선 출력 %(펌웨어 V12 hp): 목표선 기준 PI + 앞먹임(heater.PowerControl) · 계수는 열 모델에서 자동
          Item("run_heat_mode", "ramp", "choice", "가열 방식", choices=(("ramp", "가열 속도 제어"), ("full", "계속 가열")),
-              desc="가열 속도 제어는 목표선을 따라 열선을 켜고 끔\n계속 가열은 가열 끝 온도까지 열선을 켜 둠"),
-         Item("run_heat_rate_c_min", 3.0, "float", "가열 속도", "°C/분", 0.1, 60, verify=True,
-              desc="가열 속도 제어의 목표선 기울기 · 목표 = 시작 온도 + 속도 × 경과\n느릴수록 온도계 지연 오차가 작음"),
-         Item("heater_band_c", 0.5, "float", "목표 아래 허용 폭", "°C", 0, 20, verify=True,
-              desc="온도가 목표 − 이 값보다 낮으면 열선 켬 · 목표보다 높으면 끔\n열선이 너무 자주 바뀌면 늘림 · 0 보다 커야 함"),
-         Item("heater_min_on_s", 2.0, "float", "열선 최소 켜짐", "s", 0, 60, verify=True,
-              desc="가열 속도 제어에서 열선을 켠 뒤 끄기까지 최소 시간\n릴레이가 너무 자주 바뀌면 늘림"),
-         Item("heater_min_off_s", 2.0, "float", "열선 최소 꺼짐", "s", 0, 60, verify=True,
-              desc="가열 속도 제어에서 열선을 끈 뒤 다시 켜기까지 최소 시간\n릴레이가 너무 자주 바뀌면 늘림"),
+              desc="가열 속도 제어는 목표선을 따라 열선 출력 % 조절\n계속 가열은 가열 끝 온도까지 최대 출력"),
+         Item("run_point_step_c", 0.27, "float", "목표 점 간격", "°C", 0.02, 5,
+              desc="한 점마다 오를 · 내릴 온도 · 가열 · 냉각 속도 = 점 간격 ÷ 읽기 간격 × 60\n기존 LabVIEW 데이터 약 0.27 °C"),
+         Item("cool_rate_separate", False, "bool", "냉각 속도 따로",
+              desc="켜면 냉각만 아래 냉각 속도 사용 · 끄면 가열과 같은 점 간격"),
+         Item("run_cool_rate_c_min", 3.0, "float", "냉각 속도", "°C/분", 0.1, 60,
+              desc="냉각 속도 따로 켰을 때의 냉각 목표선 기울기"),
          Item("run_heat_hold_s", 0.0, "float", "가열 끝 유지 시간", "s", 0, 3600, verify=True,
               desc="가열 끝 온도에 닿은 뒤 그 온도로 유지하는 시간 · 가열 속도 제어만\n0 이면 닿는 즉시 냉각"),
          Item("run_cool_mode", "ramp", "choice", "냉각 방식", choices=(("ramp", "냉각 속도 제어"), ("free", "자연 냉각")),
-              desc="냉각 속도 제어는 송풍을 켜 둔 채 열선을 켜고 꺼서 목표선을 따라 내려감\n자연 냉각은 열선을 끄고 그대로 식힘 · 높은 온도에서 빨리 떨어짐"),
-         Item("run_cool_rate_c_min", 3.0, "float", "냉각 속도", "°C/분", 0.1, 60, verify=True,
-              desc="냉각 속도 제어의 목표선 기울기 · 목표 = 가열 끝 온도 − 속도 × 경과\n가열 속도와 같게 두면 두 곡선을 같은 조건에서 비교"),
+              desc="냉각 속도 제어는 송풍을 켜 둔 채 열선 출력 % 로 목표선을 따라 내려감\n자연 냉각은 열선을 끄고 그대로 식힘"),
          Item("heater_lead_c", 3.0, "float", "목표선 기다림 폭", "°C", 0.5, 50, verify=True,
-              desc="온도가 목표선보다 이만큼 넘게 뒤처지면 목표선이 기다림\n가열은 히트건이 못 따라갈 때 · 냉각은 자연 냉각이 느릴 때"),
+              desc="걸러진 온도가 목표선보다 이만큼 넘게 계속 뒤처지면 목표선이 기다림"),
+         Item("heater_lead_filter_s", 3.0, "float", "기다림 평균 창", "s", 0, 60,
+              desc="목표선 기다림 판단에 쓰는 온도 평균 시간 · 순간 튐 무시"),
+         Item("heater_lead_hold_s", 5.0, "float", "기다림 지속 시간", "s", 0, 120,
+              desc="이 시간 넘게 계속 뒤처질 때만 목표선이 기다림"),
+         Item("heater_max_pct", 100, "int", "열선 최대 출력", "%", 1, 100,
+              desc="제어기가 쓰는 열선 출력 상한\n넘침이 크면 낮춤"),
+         Item("heater_full_pct", 90, "int", "연속 판정 출력", "%", 1, 100,
+              desc="열선 연속 최대 시간은 출력이 이 값 이상으로 이어진 시간\n출력 % 로 오래 조절하는 동안은 세지 않음"),
+         Item("heater_pwm_period_ms", 1000, "int", "열선 출력 주기", "ms", 200, 5000,
+              desc="열선 출력 % 의 한 주기(SSR) · 주기 × % 동안만 켬\n펌웨어 V12 에 연결 때 알려 줌"),
+         Item("heat_model_k", None, "optfloat", "열 모델 이득", "°C/%", 0.01, 20, verify=True,
+              desc="열선 출력 1 % 당 올라가는 온도 · 온도 시험 [반응 재기] 로 저장\n비우면 보수적인 기본값 · 장비 값"),
+         Item("heat_model_tau_s", None, "optfloat", "열 모델 시간 상수", "s", 1, 3600, verify=True,
+              desc="출력을 바꾼 뒤 온도가 63 % 따라가는 시간 · [반응 재기] 로 저장 · 장비 값"),
+         Item("heat_model_theta_s", None, "optfloat", "열 모델 지연", "s", 0, 300, verify=True,
+              desc="출력을 바꾼 뒤 온도가 움직이기 시작할 때까지 · [반응 재기] 로 저장 · 장비 값"),
+         Item("reversal_c", 0.3, "float", "역전 기준", "°C", 0.01, 10,
+              desc="가열 중 내려감 · 냉각 중 올라감이 이 값 넘으면 역전 1회로 셈"),
          Item("run_fan_during_cool", True, "bool", "냉각 중 송풍",
               desc="자연 냉각 동안 송풍을 켜 둠 · 냉각 속도 제어는 항상 켬\n끄면 열선 끈 뒤 송풍 시간이 지나면 끔"))
     + _g("쿨러",
@@ -197,6 +211,10 @@ ITEMS = (
               desc="온도 시험에서 온도를 읽고 기록하는 간격\n온도 읽기 시간 이상 · 온도 못 읽음 허용 시간보다 충분히 짧게"),
          Item("temp_test_mark_c", 5.0, "float", "도달 표 온도 간격", "°C", 0.5, 50,
               desc="도달 표에 걸린 시간을 적는 온도 간격 · 5 면 35 · 40 · 45 °C …\n촘촘히 볼 때 줄임"),
+         Item("temp_step_pct", 30, "int", "반응 재기 출력", "%", 5, 100,
+              desc="[반응 재기] 에서 0 → 이 출력 → 0 % 로 바꿔 열 모델을 잼"),
+         Item("temp_step_s", 240.0, "float", "반응 재기 유지 시간", "s", 20, 1800,
+              desc="[반응 재기] 에서 출력을 유지하는 시간 · 끈 뒤에도 같은 시간 기록\n온도가 거의 멈출 만큼 길게 · 가열 끝 온도에 닿으면 먼저 끝"),
          Item("temp_test_precool", True, "bool", "온도 시험 예비 냉각",
               desc="가열 전에 쿨러로 시작 온도까지 냉각\n끄면 쿨러만 켜고 바로 가열"))
     + _g("판 · 핀",
@@ -292,8 +310,8 @@ ITEMS = (
               desc="이 온도까지 냉각하면 그 샘플 측정 완료"),
          Item("run_repeat", 1, "int", "반복", "회", 1, 20,
               desc="샘플마다 가열 · 냉각을 반복하는 횟수\n회차마다 파일 하나"),
-         Item("run_interval_s", 1.0, "float", "측정 간격", "s", 0.05, 60,
-              desc="온도와 저항을 읽는 간격\n점 간격(°C) ≈ 속도(°C/분) × 한 점 시간(s) ÷ 60 · 촘촘하게 하려면 속도를 낮춤 · 대신 시간이 늘어남"),
+         Item("run_interval_s", 0.9, "float", "측정 간격", "s", 0.05, 60,               # 기본 = 기본 설정의 읽기 시간 예상(온도 0.3 + 저항 0.6)
+              desc="한 점(온도 · 저항)의 주기 · 읽기 시간 예상보다 짧으면 거절\n가열 · 냉각 속도 = 목표 점 간격 ÷ 이 값 × 60"),
          Item("batch_name", "1", "str", "묶음",
               desc="묶음 이름 · 기록 폴더와 샘플 기본 이름에 사용"))
     + _g("측정 한계",                                                                     # v2 backend/rt.py 에서 쓰던 값
@@ -340,8 +358,14 @@ DEFAULT_HISTORY = {
     "meter_volt": [1.0],
     "camera_focus_value": [-1],
     "cooler_grid": [[[2, 2, 2], [3, 3, 3], [4, 4, 4]]],
+    "run_interval_s": [1.0],
 }
-REMOVED_KEYS = {}
+REMOVED_KEYS = {
+    "heater_min_on_s": "열선 출력 % 제어(SSR)라 최소 켜짐 없음",
+    "heater_min_off_s": "열선 출력 % 제어(SSR)라 최소 꺼짐 없음",
+    "heater_band_c": "켜기 · 끄기 판정 대신 출력 % 제어",
+    "run_heat_rate_c_min": "가열 속도 = 목표 점 간격 ÷ 읽기 간격 × 60",
+}
 
 
 N_RELAY = 10                                       # 보드의 릴레이 수(펌웨어 V11 · R1~R10)
@@ -454,6 +478,9 @@ def problems(v: dict) -> list:
     limit = float(v["temp_stale_s"]) * float(v["stale_use_ratio"])
     if not cycle < limit:
         out.append("읽기 한 회차 예상 %.2f초 · %.2f초 미만 필요 · 측정 간격과 평균 횟수 확인" % (cycle, limit))
+    rt = read_time_s(v)
+    if float(v["run_interval_s"]) < rt - 1e-9:                  # 측정 간격 = 한 점의 주기 - 읽기가 더 걸리면 점 간격이 설정보다 넓어진다
+        out.append("측정 간격 %g초 · 읽기 시간 %.2f초 이상 필요" % (v["run_interval_s"], rt))
     out += side_problems(v)
     out += focus_problems(v)
     # ---- 접촉 값들의 크기 관계 ----
@@ -498,10 +525,8 @@ def heat_problems(v: dict) -> list:
         cool_s = cool_time_s(v)
         if not cool_s < float(v["run_phase_limit_s"]):
             out.append("예상 냉각 시간 %.0f초 · 한 단계 시간 한도 %g초 미만 필요 · 냉각 속도 확인" % (cool_s, v["run_phase_limit_s"]))
-    if not float(v["heater_min_on_s"]) < float(v["heater_max_on_s"]):
-        out.append("열선 최소 켜짐 %g초 · 열선 연속 최대 시간 %g초 미만 필요" % (v["heater_min_on_s"], v["heater_max_on_s"]))
-    if not float(v["heater_band_c"]) > 0:
-        out.append("목표 아래 허용 폭 %g °C · 0 보다 커야 함" % v["heater_band_c"])
+    if not int(v["heater_full_pct"]) <= int(v["heater_max_pct"]):
+        out.append("연속 판정 출력 %d %% · 열선 최대 출력 %d %% 이하 필요" % (v["heater_full_pct"], v["heater_max_pct"]))
     # ---- 릴레이 역할: 송풍 · 열선 · 쿨러가 서로 겹치지 않는다 · 쿨러 배치는 쿨러 릴레이만 ----
     out += role_problems(v)
     return out
@@ -566,16 +591,43 @@ def temptest_problems(v: dict) -> list:
     return out
 
 
-def heat_time_s(v: dict) -> float:
+def heat_rate_c_min(v: dict, interval_key="run_interval_s") -> float:
+    """가열 속도(°C/분) = 목표 점 간격 ÷ 읽기 간격 × 60(측정 run_interval_s · 온도 시험 temp_test_interval_s)."""
+    return float(v["run_point_step_c"]) / max(1e-6, float(v[interval_key])) * 60.0
+
+
+def cool_rate_c_min(v: dict, interval_key="run_interval_s") -> float:
+    """냉각 속도(°C/분): "냉각 속도 따로" 면 run_cool_rate_c_min · 아니면 가열과 같은 점 간격."""
+    return float(v["run_cool_rate_c_min"]) if v["cool_rate_separate"] else heat_rate_c_min(v, interval_key)
+
+
+def read_time_s(v: dict) -> float:
+    """측정 한 점의 읽기 시간 예상(초) = 온도 읽기 + 저항 읽기(meters.read_time_s). 측정 간격은 이보다 짧을 수 없다."""
+    from app.devices.meters import read_time_s as r_s
+    return float(v["temp_read_s"]) + r_s(v["meter_nplc"], v["meter_avg_count"], v["line_hz"], v["meter_conv_factor"], v["read_overhead_s"])
+
+
+def expect(v: dict, interval_key="run_interval_s") -> dict:
+    """예상 점 수 · 시간(화면 · 시작 전): 가열 (끝 − 시작) ÷ 점 간격 · 냉각 (가열 끝 − 냉각 끝) ÷ 냉각 점 간격."""
+    iv = float(v[interval_key])
+    hr, cr = heat_rate_c_min(v, interval_key), cool_rate_c_min(v, interval_key)
+    hs = max(0.0, float(v["run_heater_off_c"]) - float(v["run_start_c"]))
+    cs = max(0.0, float(v["run_heater_off_c"]) - float(v["run_cool_end_c"]))
+    return {"heat_rate": round(hr, 2), "cool_rate": round(cr, 2), "interval": iv,
+            "heat_n": int(round(hs / max(1e-6, hr * iv / 60.0))), "cool_n": int(round(cs / max(1e-6, cr * iv / 60.0))),
+            "heat_s": round(hs / hr * 60.0 + float(v["run_heat_hold_s"]), 1), "cool_s": round(cs / cr * 60.0, 1)}
+
+
+def heat_time_s(v: dict, interval_key="run_interval_s") -> float:
     """가열 속도 제어의 예상 가열 시간(초) = (가열 끝 온도 − 시작 온도) ÷ 가열 속도 + 유지 시간."""
     span = max(0.0, float(v["run_heater_off_c"]) - float(v["run_start_c"]))
-    return span / float(v["run_heat_rate_c_min"]) * 60.0 + float(v["run_heat_hold_s"])
+    return span / heat_rate_c_min(v, interval_key) * 60.0 + float(v["run_heat_hold_s"])
 
 
-def cool_time_s(v: dict) -> float:
+def cool_time_s(v: dict, interval_key="run_interval_s") -> float:
     """냉각 속도 제어의 예상 냉각 시간(초) = (가열 끝 온도 − 냉각 끝 온도) ÷ 냉각 속도."""
     span = max(0.0, float(v["run_heater_off_c"]) - float(v["run_cool_end_c"]))
-    return span / float(v["run_cool_rate_c_min"]) * 60.0
+    return span / cool_rate_c_min(v, interval_key) * 60.0
 
 
 def cycle_time_s(v: dict) -> float:

@@ -30,7 +30,9 @@ N_RELAY = 10
 
 
 class FakeV11:
-    def __init__(self, time_scale=0.05, homed=True, banner=True, eeprom=None):
+    def __init__(self, time_scale=0.05, homed=True, banner=True, eeprom=None, firmware="V12"):
+        self.firmware = firmware                    # "V12"(기본 - 열선 출력 % hp · hpp · hcfg) 또는 "V11"
+        self.hp_pct, self.hp_period, self.hp_fan, self.hp_el = 0, 1000, 0, 9     # 열선 출력 % · 주기 ms · 송풍 · 열선 인덱스(0 부터)
         self.timeout = 0.2
         self.write_timeout = None                   # pyserial 모양: 쓰기가 이 시간 안에 못 끝나면 SerialTimeoutException
         self.block_until = 0.0                      # 이 시각까지 쓰기가 막힘(USB 막힘 흉내)
@@ -198,6 +200,7 @@ class FakeV11:
             self.px = self.py = self.pz = 0
         self.dirty = False
         self.hx = self.hy = self.hz = (self.eeprom == "restored")
+        self.hp_pct = 0
         self._set_relays([False] * N_RELAY)
         self.v, self.a, self.b = 6000, 40000, 300
         self.wd_ms = 0
@@ -235,7 +238,7 @@ class FakeV11:
         self.v, self.a, self.b = 6000, 40000, 300
 
     def _banner(self):
-        self._emit("=== 3-AXIS V11 ===")
+        self._emit("=== 3-AXIS %s ===" % self.firmware)
         self._emit("  X 0~%d  Y 0~%d  Z 0~%d   (160 pulse = 1mm, Z: 0 = 맨 위)" % (X_MAX, Y_MAX, Z_MAX))
         self._emit({"restored": "  EEPROM: 마지막 저장 위치 복원  (꺼진 동안 손으로 밀었다면 fz 로 재등록)",
                     "unsaved": "  EEPROM: save 하지 않고 꺼짐 → 위치 불신",
@@ -245,12 +248,34 @@ class FakeV11:
     on_relay = None                                         # 시험: 릴레이가 바뀔 때마다 부를 함수(릴레이 목록) - 시험용 히트건이 본다
 
     def _set_relays(self, relays):
-        self.relay = list(relays)
+        r = list(relays)
+        if getattr(self, "firmware", "V11") == "V12":               # 펌웨어 V12 relaySet 과 같다: 송풍이 꺼지면 열선도 끔(출력 0) · 열선 릴레이의 논리 상태 = 출력 > 0
+            prev = getattr(self, "relay", [False] * N_RELAY)
+            if prev[self.hp_fan] and not r[self.hp_fan]:
+                r[self.hp_el] = False
+            if not r[self.hp_el]:
+                self.hp_pct = 0
+            elif self.hp_pct == 0:
+                self.hp_pct = 100
+        self.relay = r
         if self.on_relay is not None:
-            self.on_relay(list(self.relay))
+            self.on_relay(list(self.relay), getattr(self, "hp_pct", None))
+
+    def _heat_set(self, pct):
+        """열선 출력 %(heatSet): 0 이면 열선 끔 · 0 보다 크면 열선 켬(논리)."""
+        self.hp_pct = int(pct)
+        r = list(self.relay)
+        r[self.hp_el] = self.hp_pct > 0
+        self.relay = r
+        if self.on_relay is not None:
+            self.on_relay(list(self.relay), self.hp_pct)
+
+    def _hp_line(self):
+        self._emit("HP P=%d T=%d F=%d E=%d" % (self.hp_pct, self.hp_period, self.hp_fan + 1, self.hp_el + 1))
 
     def _rs(self):
-        self._emit("RS " + " ".join("R%d=%d" % (i + 1, 1 if on else 0) for i, on in enumerate(self.relay)))
+        tail = " HP=%d" % self.hp_pct if self.firmware == "V12" else ""
+        self._emit("RS " + " ".join("R%d=%d" % (i + 1, 1 if on else 0) for i, on in enumerate(self.relay)) + tail)
 
     split_st = 0                                            # 시험: 다음 ST 몇 개를 줄 중간에서 둘로 나눠 보낸다(앞 조각은 줄바꿈 없음 - pyserial 이 0.2 s 에 줄 중간까지만 주는 경우)
     trunc_st = False                                        # 시험: 나눈 앞 조각을 줄바꿈으로 끝낸다(잘린 ST 줄) - 뒤에 바른 줄을 따로 보낸다
@@ -337,7 +362,13 @@ class FakeV11:
         self.abort_flag = False                           # 펌웨어는 명령마다 abortFlag 를 지운다
         num = lambda i, d=0: float(tok[i]) if len(tok) > i else d       # noqa: E731
         if c == "!":
-            self._emit("  (이동 중에만 유효)")
+            if self.firmware == "V12":
+                self._heat_set(0)
+                self._emit("  (이동 중에만 유효) · 열선 출력 0")
+            else:
+                self._emit("  (이동 중에만 유효)")
+        elif c in ("hp", "hpp", "hcfg") and self.firmware == "V12":
+            self._hp_cmd(c, tok)
         elif c == "st":
             self._st()
         elif c == "p":
@@ -446,6 +477,46 @@ class FakeV11:
         self._emit("--- 원점 설정 완료 (저장됨) ---")
         self._st()
 
+    def _hp_cmd(self, c, tok):
+        """펌웨어 V12 hpCmd · hppCmd · hcfgCmd 와 같다."""
+        if c == "hp":
+            if len(tok) < 2:
+                self._hp_line()
+                return
+            if not tok[1].isdigit() or int(tok[1]) > 100:
+                self._emit("  [거부] hp <0~100>")
+                return
+            p = int(tok[1])
+            if p > 0 and not self.relay[self.hp_fan]:
+                self._emit("  [거부] 송풍 꺼짐 · 송풍 켠 뒤 hp")
+                self._hp_line()
+                return
+            self._heat_set(p)
+            self._hp_line()
+        elif c == "hpp":
+            if len(tok) < 2:
+                self._hp_line()
+                return
+            v = int(tok[1]) if tok[1].isdigit() else -1
+            if not 200 <= v <= 5000:
+                self._emit("  [거부] hpp <200~5000> ms")
+                return
+            self.hp_period = v - v % 10
+            self._hp_line()
+        else:
+            f = int(tok[1]) if len(tok) > 1 and tok[1].isdigit() else 0
+            e = int(tok[2]) if len(tok) > 2 and tok[2].isdigit() else 0
+            if not (1 <= f <= N_RELAY and 1 <= e <= N_RELAY and f != e):
+                self._emit("  [거부] hcfg <송풍 1~10> <열선 1~10> · 서로 다른 번호")
+                self._hp_line()
+                return
+            self._heat_set(0)
+            self.hp_fan, self.hp_el = f - 1, e - 1
+            r = list(self.relay)
+            r[self.hp_el] = False
+            self.relay = r
+            self._hp_line()
+
     def _relay(self, tok):
         if len(tok) < 3 or tok[2] not in ("0", "1"):
             self._emit("  [거부] r <1~10> <1|0>  또는  r all 0")
@@ -465,7 +536,11 @@ class FakeV11:
             return
         r = list(self.relay)
         r[n - 1] = on
-        self._set_relays(r)
+        if self.firmware == "V12" and n - 1 == self.hp_el:          # 열선 릴레이: 켬 = 출력 100 % · 끔 = 0 %
+            self.hp_pct = 100 if on else 0
+            self._heat_set(self.hp_pct)
+        else:
+            self._set_relays(r)
         self._emit("  릴레이 R%d %s" % (n, "켜짐" if on else "꺼짐"))
         self._rs()
 
@@ -580,6 +655,8 @@ class FakeV11:
             el = (time.monotonic() - t0) / sc
             if self._peek_abort() or self.abort_flag:                 # 64 펄스 경계(또는 첫 펄스 전)에서만 보인다
                 aborted = True
+                if self.firmware == "V12" and self.hp_pct:
+                    self._heat_set(0)                                   # 펌웨어 V12: 이동 중 '!' 도 열선 출력 0
                 p_el = pa(el)
                 t_arr = None
                 if self.bang_times and self.bang_times[-1] >= t0:

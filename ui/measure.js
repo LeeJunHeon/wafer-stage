@@ -230,7 +230,7 @@ function renderSample() {
     if (run.state !== "running" && ["완료", "실패", "건너뜀", "중지"].includes(row.status)) b.push(btn("재측정", () => api("run_requeue", { id })));
     setKids(ms.act, ...b);
   }
-  ms.spacing.textContent = spacingText(row.spacing);
+  ms.spacing.textContent = row.curve ? [curveText(row.curve, "heat"), curveText(row.curve, "cool")].filter(Boolean).join(" / ") : spacingText(row.spacing);
   if (isNow) { setBand(run.stage, run.frac); ms.line.textContent = heatLine(run) || run.line || ""; }
   else {
     setBand(row.status === "완료" ? 6 : -1, 0);
@@ -289,7 +289,7 @@ function openRunCond() {
     run_cooler_mode: h("select", {}, ...[["zone", "샘플 아래 구역"], ["all", "전체"], ["none", "사용 안 함"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_cooler_mode === v }))),
     run_cooler_during_heat: chk("run_cooler_during_heat"),
     run_heat_mode: h("select", {}, ...[["ramp", "가열 속도 제어"], ["full", "계속 가열"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_heat_mode === v }))),
-    run_heat_rate_c_min: num("run_heat_rate_c_min", "0.1"), run_fan_during_cool: chk("run_fan_during_cool"),
+    run_point_step_c: num("run_point_step_c", "0.01"), run_fan_during_cool: chk("run_fan_during_cool"), cool_rate_separate: chk("cool_rate_separate"),
     run_cool_mode: h("select", {}, ...[["ramp", "냉각 속도 제어"], ["free", "자연 냉각"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_cool_mode === v }))),
     run_cool_rate_c_min: num("run_cool_rate_c_min", "0.1"), heater_lead_c: num("heater_lead_c", "0.5"),
     contact_mode: h("select", {}, ...[["fixed", "고정 높이"], ["search", "전기 탐색"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.contact_mode === v }))),
@@ -314,8 +314,8 @@ function openRunCond() {
     h("h4", { text: "온도" }), "시작 온도 (°C)", f.run_start_c, "가열 끝 온도 (°C)", f.run_heater_off_c,
     "냉각 끝 온도 (°C)", f.run_cool_end_c, "반복 (회)", f.run_repeat, "측정 간격 (s)", f.run_interval_s);
   const right = h("div", { class: "form" },
-    h("h4", { text: "가열 · 냉각" }), "가열 방식", f.run_heat_mode, "가열 속도 (°C/분)", f.run_heat_rate_c_min,
-    "냉각 방식", f.run_cool_mode, "냉각 속도 (°C/분)", f.run_cool_rate_c_min, "목표선 기다림 폭 (°C)", f.heater_lead_c, "냉각 중 송풍", f.run_fan_during_cool,
+    h("h4", { text: "가열 · 냉각" }), "가열 방식", f.run_heat_mode, "목표 점 간격 (°C)", f.run_point_step_c,
+    "냉각 방식", f.run_cool_mode, "냉각 속도 따로", f.cool_rate_separate, "냉각 속도 (°C/분)", f.run_cool_rate_c_min, "목표선 기다림 폭 (°C)", f.heater_lead_c, "냉각 중 송풍", f.run_fan_during_cool,
     h("div", { style: "grid-column: 1 / -1" }, expect),
     h("h4", { text: "쿨러" }), "쿨러", f.run_cooler_mode, "가열 중 쿨러 켬", f.run_cooler_during_heat,
     h("h4", { text: "접촉" }), "접촉 방식", f.contact_mode,

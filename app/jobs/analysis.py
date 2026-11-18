@@ -71,3 +71,38 @@ def analyze(points):
     if out["t_heat"] is not None and out["t_cool"] is not None:
         out["hyst"] = round(out["t_heat"] - out["t_cool"], 2)
     return out
+
+
+def curve_stats(rows, lo, hi, sign, reversal_c):
+    """가열(sign +1) 또는 냉각(sign −1) 한 단계의 결과: rows = [(경과 s, 온도, 목표 | None)] (기록 순서).
+    점 수 = lo ≤ 온도 ≤ hi 인 점(시작~끝 온도 구간) · 실제 평균 속도(°C/분 - 그 구간 첫 점 → 끝 점) · 점 간격 평균 · 흔들림(표준편차) ·
+    역전(가열 중 내려감 · 냉각 중 올라감이 reversal_c 넘는 일)의 횟수 · 최대 폭 · 자리(그 점의 경과 · 온도) · 목표선과의 차이(평균 · 최대 - 절댓값)."""
+    pts = [r for r in rows if lo - 1e-9 <= r[1] <= hi + 1e-9]
+    out = {"n": len(pts), "rate_c_min": None, "step_mean": None, "step_sd": None, "rev_n": 0, "rev_max": 0.0, "rev_at": [],
+           "sp_err_mean": None, "sp_err_max": None}
+    if len(pts) >= 2:
+        dt = pts[-1][0] - pts[0][0]
+        if dt > 0:
+            out["rate_c_min"] = round(sign * (pts[-1][1] - pts[0][1]) / dt * 60.0, 3)
+        steps = [sign * (b[1] - a[1]) for a, b in zip(pts, pts[1:])]
+        m = sum(steps) / len(steps)
+        out["step_mean"] = round(m, 4)
+        out["step_sd"] = round(math.sqrt(sum((s - m) ** 2 for s in steps) / len(steps)), 4)
+    best, in_rev = None, False
+    for r in rows:
+        v = sign * r[1]
+        if best is None or v > best:
+            best, in_rev = v, False
+            continue
+        drop = best - v
+        if drop > reversal_c:
+            if not in_rev:
+                out["rev_n"] += 1
+                out["rev_at"].append([round(r[0], 2), round(r[1], 3)])
+                in_rev = True
+            out["rev_max"] = round(max(out["rev_max"], drop), 3)
+    err = [abs(r[1] - r[2]) for r in pts if r[2] is not None]
+    if err:
+        out["sp_err_mean"] = round(sum(err) / len(err), 3)
+        out["sp_err_max"] = round(max(err), 3)
+    return out

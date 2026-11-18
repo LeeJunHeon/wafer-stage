@@ -15,7 +15,7 @@ app/state.py            화면에 보낼 상태 한 덩어리 + 경보 목록(al
 app/safety.py           안전 규칙의 판정(한 곳)
 app/control.py          명령 → 안전 규칙 → 장비. 서버 · 시험이 같이 쓰는 입구 run_command(name, args)
 app/server.py           FastAPI + WebSocket (127.0.0.1:8000)
-app/devices/            stage.py(아두이노 V11) · meters.py(K2110 · K2450) · camera.py(OpenCV)
+app/devices/            stage.py(아두이노 V12 · V11) · meters.py(K2110 · K2450) · camera.py(OpenCV)
 app/geometry.py         좌표 변환(호모그래피) · 보정 사진 · 헤드 마커 찾기
 app/imgio.py            이미지 파일 읽기 · 쓰기 한 곳(바이트 + imdecode/imencode · 원자적 쓰기) - cv2.imread · cv2.imwrite 금지
 app/calib.py            초기 설정 단계에서 정한 값(calib/calib.json · calib/empty_plate.png)
@@ -27,8 +27,8 @@ app/jobs/               측정: run.py(순서 · 한계 · 가열 제어 · 정�
 app/results.py          측정 결과 탭: 저장된 기록 읽기 · 그림 저장 · NAS 다시 복사 · 폴더 열기
 ui/                     화면(빌드 없는 HTML · CSS · JS): core.js · jog.js · graph.js · prep.js · manual.js(수동 제어 탭) · temptest.js(온도 시험 창) · measure.js · results.js · settings.js · app.js
 tests/                  pytest 빠른 시험(전체 2 분 안) · conftest.py(시험용 장비 · 시계 꽂기 · 초기 설정 값 넣기)
-tests/fakes/            시험용 장비(시험만 쓴다): world.py(세계 하나 · 배선) · fake_v11.py · fake_visa.py(+ 열 모델) · fake_camera.py · fake_heatgun.py(인터락)
-firmware/stage_v11/     펌웨어(고치지 않는다)
+tests/fakes/            시험용 장비(시험만 쓴다): world.py(세계 하나 · 배선) · fake_v11.py(V12 · V11 보드 - 기본 V12) · fake_visa.py(+ 열 모델) · fake_camera.py · fake_heatgun.py(인터락 · 출력 %)
+firmware/stage_v12/     펌웨어 V12(지금 쓰는 것 - V11 + 열선 출력 %). firmware/stage_v11/ 은 예전 것 그대로 둔다(고치지 않는다)
 ```
 - 데이터 폴더 기본값 `..\data_v3`. 경로는 pathlib. 측정 PC 는 Windows 11 + Python 3.12.
 - 로그 세 가지(프로그램 app · 시리얼 serial · VISA visa)는 설정과 상관없이 항상 저장한다(끄는 설정을 만들지 않는다).
@@ -52,7 +52,11 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
   imgio 는 파이썬이 바이트를 읽고 쓰고(유니코드 경로) OpenCV 는 메모리에서만 해석 · 변환한다. 쓰기는 임시 파일 → `os.replace`(원자적). 못 읽으면 None 이 아니라 `ImageIOError`.
 
 ## 2. 하드웨어 값 (확정)
-- 아두이노 Mega + 펌웨어 V11, 115200, 줄끝 `\n`. 포트는 settings `stage_port`(측정 PC 는 COM5).
+- 아두이노 Mega + 펌웨어 V12(V11 도 연결은 된다), 115200, 줄끝 `\n`. 포트는 settings `stage_port`(측정 PC 는 COM5).
+  **펌웨어 V12 열선 출력 %**: `hp <0~100>`(0 보다 크면 송풍이 켜져 있어야 함 - 아니면 거부) · `hp`(보고 "HP P= T= F= E=") · `hpp <200~5000 ms>`(주기 · 기본 1000) ·
+  `hcfg <송풍> <열선>`(프로그램이 연결 때 · 릴레이 역할을 바꿀 때 `Stage.heat_config`). 타이머1 인터럽트(10 ms)가 주기마다 주기 × % 동안만 열선 SSR 을 켠다(블로킹 이동 중에도).
+  송풍이 꺼지면(r · r all 0 · 통신 감시) 출력 0 · '!' 비상정지 · 열선 r 명령도 출력 0(또는 r 열선 1 = 100 %). rs 줄 끝 " HP=n". EEPROM 형식은 V11 과 같다.
+  V11 이면 이동 · 쿨러는 되고 열선 출력이 필요한 일(측정 · 온도 시험 · 수동 열선 출력)은 "펌웨어 V12 필요 · firmware/stage_v12 업로드"(`stage.V12_NEED`) · 연결 때 주의 `fw_v12`.
   **포트를 자동으로 찾거나 여러 개 열지 않는다**(열면 보드가 재시작하고 COM4 는 다른 장비다). 사람이 고른 하나만 열고, 프로그램이 도는 동안 유지한다.
   여는 것은 [연결] 과 시작 때의 설정값 자동 연결뿐이다. 장비 목록을 읽을 때도 포트 · 측정 장비는 열지 않는다(5번 "장비 목록").
   **사용 안 할 포트**(settings `blocked_ports`, 기본 `["COM4"]` - LabVIEW 용 Uno): 선택 상자에는 "COM4 · … (사용 안 함)" 으로 보이지만 고를 수 없고,
@@ -70,14 +74,14 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
   미설정이면 주의 "초점 미설정 · 초기 설정 3 에서 초점 찾기". 카메라 열림 로그에 초점 요청 · 읽은 값을 붙인다. cap 은 읽기 스레드와 초점 바꾸기가 `_cap_lock` 으로 번갈아 쓴다.
 - **모르는 값은 지어내지 않는다.** settings 기본값으로 두고 "실장비 확인 필요"(`verify`)로 표시한다. 지금 표시된 것:
   `plate_size_mm`(154) · `pin_long_axis`("y") · `slow_speed_pps` ·
-  `heater_start_gap_s`(1 s) · `heater_fan_after_s`(30 s) · 가열 제어 값(`run_heat_rate_c_min` 3 °C/분 · `run_cool_rate_c_min` 3 °C/분 · `heater_band_c` 0.5 · `heater_lead_c` 3 °C ·
-  `heater_min_on_s` · `heater_min_off_s` 2 s · `run_heat_hold_s` 0).
+  `heater_start_gap_s`(1 s) · `heater_fan_after_s`(30 s) · 열 모델(`heat_model_k` · `heat_model_tau_s` · `heat_model_theta_s` - [반응 재기] 로 저장) ·
+  `heater_lead_c` 3 °C · `run_heat_hold_s` 0.
 
 ## 3. 스테이지 드라이버 규칙 (펌웨어 때문에)
 - 시리얼은 일꾼 스레드 하나. 명령은 한 번에 하나, 응답을 받은 뒤 다음 명령. 예외는 `!`(줄 서지 않고 `Stage.bang()` 이 바로 쓴다).
 - **이동 중에는 `!` 말고 어떤 줄도 안 나간다**(펌웨어는 이동 중 줄을 처리하지 않고 수신 버퍼가 64 바이트다).
 - 이동 완료 = `" | X="` · `이미 그 위치` · `[거부]` · `[!] 중단`. 시간 한도 = 계산 시간 × 1.5 + 2 s. 넘으면 `!` → 입력 비움 → `st` 로 맞춤.
-- 연결: 배너로 V11 확인(아니면 거절) → `wd 2000` → `st` · `rs`. 쉬는 동안 0.5 초마다 `st`. 배너가 다시 보이면 보드 재시작(비상정지처럼 처리).
+- 연결: 배너로 V12 · V11 확인(아니면 거절) → `wd 2000` → (V12 면 `hcfg` · `hpp`) → `st` · `rs`. 쉬는 동안 0.5 초마다 `st`. 배너가 다시 보이면 보드 재시작(비상정지처럼 처리).
 - 원점: 지금 자리 `zx zy zz z` 또는 끝단 밀기 `fz x|y|z`, 끝나면 `save`. 로그 한 줄 "원점 등록 · 축 · 방식 · 등록 뒤 X · Y · Z mm". 조그 `jx/jy/jz`(원점 없어도 됨), 절대 이동 `gx/gy/gz`(원점 필요).
 - **위치 기억**(펌웨어 V11): 위치는 RAM 에만 있고 EEPROM 에는 "save 이후 움직였는가" 만 적는다(첫 이동 때 ok=0 · save 때 ok=1). 포트를 열면 보드가 재시작하고
   ok=0 이면 "save 하지 않고 꺼짐 → 위치 불신" 으로 세 축 원점이 없어진다. 그래서 **위치 저장**(`Controller.save_position` = `save` → `st` 로 DIRTY=0 확인)을
@@ -248,20 +252,34 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
   `heater.Stall`)면 가열하지 않고 **측정 전체를 멈춘다**("측정 중지 · 시작 온도 미도달 · 쿨러 · 주위 온도 확인 필요" - `StartTempAbort`).
   그 샘플은 "대기"(사유 "시작 온도 미도달")로 남아 [측정 재개] 가 그 샘플부터 다시 한다(주위 온도 · 쿨러 문제면 다음 샘플도 같으므로 넘어가지 않는다).
 - 가열: K2450 출력을 켜고 기록 시작 → 히트건을 켠다(열선 → 송풍 · 송풍이 켜져 있으면 열선만). 가열 방식 `run_heat_mode`:
-  - **`ramp`(기본 · 가열 속도 제어)**: 송풍을 켜 둔 채 열선을 켜고 꺼서 목표선(가열 시작 온도에서 `run_heat_rate_c_min` 로 오름, 상한 가열 끝 온도)을 따른다.
-    온도 < SP − `heater_band_c` → 열선 켬 · 온도 > SP → 끔 · 그 사이 그대로. `heater_min_on_s` · `heater_min_off_s` 를 지킨다(판정 `heater.element_decision`).
-    가열 끝 온도에 닿으면 `run_heat_hold_s` 동안 같은 방식으로 유지한 뒤 끝.
-  - **`full`**: 열선을 계속 켜 두고 가열 끝 온도에서 끈다(예전 동작).
+  - **`ramp`(기본 · 가열 속도 제어)**: 송풍을 켜 둔 채 **열선 출력 %**(펌웨어 V12 hp)로 목표선(가열 시작 온도에서 가열 속도로 오름, 상한 가열 끝 온도)을 따른다.
+    배경: 켜기/끄기(최소 2 s) 제어는 한 번 켤 때마다 3~4 s 만에 +10~40 °C 튀고 40~70 s 걸려 내려와 톱니가 됐다(R10 을 SSR 로 바꿔 빠른 켜고 끄기가 된다).
+    제어기 하나(`heater.PowerControl` - 가열 · 냉각 공통): 목표선 기준 PI + 앞먹임 + 적분 포화 방지 + 0 ~ `heater_max_pct`.
+    계수는 손으로 맞추지 않는다 - 열 모델(1차 + 지연 `ThermalModel`: K °C/% · τ · θ)에서 SIMC(τc = θ · Kc = τ ÷ (K (τc + θ)) · Ti = min(τ, 4 (τc + θ))).
+    앞먹임 = (목표 − 시작 주위 온도) ÷ K + τ × 목표선 기울기 ÷ K → 목표 온도 · 속도를 바꿔도 같은 값으로 동작. 모델이 없으면 `DEFAULT_MODEL`(보수적) + 주의 "열 모델 없음 · [반응 재기] 필요".
+    출력은 1 % 넘게 바뀔 때만 보낸다. 가열 끝 온도에 닿으면 `run_heat_hold_s` 동안 같은 제어로 유지한 뒤 끝.
+  - **`full`**: 최대 출력(`heater_max_pct`)으로 가열 끝 온도까지.
+  - 열선 최소 켜짐 · 꺼짐 · 허용 폭 · 가열 속도 설정은 없앴다(`config.REMOVED_KEYS`). **열선 연속 최대 시간**은 출력이 `heater_full_pct`(90 %) 이상으로 이어진 시간만 센다
+    (`Safety.full_on_t` - 출력 % 로 조절하는 긴 가열을 끊지 않게). 차단 온도 · 온도 못 읽음은 출력이 0 보다 큰 동안 그대로.
+  - **속도 = 점 수 기준**: 가열 · 냉각 속도 = `run_point_step_c`(목표 점 간격 0.27 °C - LabVIEW 데이터) ÷ 읽기 간격(측정 `run_interval_s` · 온도 시험 `temp_test_interval_s`) × 60
+    (`config.heat_rate_c_min` · `cool_rate_c_min`). `cool_rate_separate` 를 켜면 냉각만 `run_cool_rate_c_min`. `run_interval_s` 는 한 점의 주기 -
+    읽기 시간 예상(`config.read_time_s` = 온도 읽기 + 저항 읽기)보다 짧으면 거절(기본 0.9 s = 기본 설정의 예상). 시작 전 화면에 예상 점 수 · 속도 · 시간(`config.expect` · `core.js expectText`).
+  - **최대 속도 주의**: 측정 · 온도 시험 시작 때 설정 속도가 최대 속도 표(calib `speed_max`)의 그 구간 최대보다 빠르면 주의 `speed_max`(어느 구간 · 얼마 - 막지 않는다 · `heater.speed_warnings`).
 - 냉각: 가열 끝 → 열선 끔. 냉각 방식 `run_cool_mode`:
-  - **`ramp`(기본 · 냉각 속도 제어)**: 가열이 끝난 순간 온도에서 `run_cool_rate_c_min` 로 내려가는 목표선(하한 냉각 끝 온도). 송풍 · 쿨러는 켜 둔 채
-    같은 `element_decision` 으로 열선을 켜고 끈다(온도 < SP − 허용 폭 = 너무 빨리 식음 → 켬). 송풍은 냉각 내내 켬(송풍이 꺼지면 열선을 못 켠다 - 인터락).
+  - **`ramp`(기본 · 냉각 속도 제어)**: 가열이 끝난 순간 온도에서 냉각 속도로 내려가는 목표선(하한 냉각 끝 온도). 송풍 · 쿨러는 켜 둔 채
+    같은 출력 % 제어(목표선이 내려갈 뿐). 송풍은 냉각 내내 켬(송풍이 꺼지면 열선을 못 켠다 - 인터락).
     안전 규칙이 열선을 끄거나 켜기를 거절하면 그 회차는 자연 냉각으로 이어 간다(주의 "냉각 중 열선 차단"). 안전 규칙이 가열을 끊은 회차도 자연 냉각.
   - **`free`**: 자연 냉각(예전 동작). 냉각 중 송풍 `run_fan_during_cool`(free 에만): 켬이면 냉각 동안 유지, 끔이면 `heater_fan_after_s` 뒤 끔.
   - 냉각 끝: 온도 < 냉각 끝 온도(또는 정체 → "냉각 끝 온도 미도달" 주의 · 기록 유지) → 열선 끔 → 송풍은 열선 끈 뒤 `heater_fan_after_s` 에 끔.
     반복 때 송풍이 켜져 있으면 열선만 다시 켠다. 다음 샘플로 X · Y 이동하기 전에 송풍이 꺼질 때까지 기다린다("송풍 끄는 중 · n초").
-- **목표선 기다림**(`heater_lead_c`, 가열 · 냉각 모두 - `heater.LineControl`): 온도가 목표선보다 이만큼 넘게 뒤처지면(가열 - 아래 · 냉각 - 위) 목표선이 그 자리에서 기다리고,
+- **목표선 기다림**(`heater_lead_c`, 가열 · 냉각 모두 - `heater.LineControl`): **걸러진 온도**(`heater_lead_filter_s` 평균)가 목표선보다 이만큼 넘게 뒤처진 채
+  `heater_lead_hold_s` 넘게 이어지면(가열 - 아래 · 냉각 - 위) 목표선이 그 자리에서 기다리고(순간값으로 판단해 냉각 때 켠 열선의 튐에 목표선이 섰던 일 - 냉각이 11 °C/분에 그쳤다),
   다시 따라오면 그 지점부터 같은 속도로 이어 간다(목표선은 회차마다 앞으로 간다 - 경과 시간의 식이 아니다). 자동 측정과 온도 시험이 같은 LineControl · Stall 을 쓴다.
-- 끈 뒤 더 오르는 구간도 기록한다. 화면 오른쪽(가열 · 냉각 중) 한 줄 "목표 52.3 °C · 열선 켜짐" · 기다리면 "목표 대기 …"(`state.run.heat`).
+- 끈 뒤 더 오르는 구간도 기록한다. 화면 오른쪽(가열 · 냉각 중) 한 줄 "목표 52.3 °C · 열선 켜짐" · 기다리면 "목표 대기 …"(`state.run.heat` - 출력 % `pct` 포함).
+- **결과 요약**(`analysis.curve_stats` - 측정 · 온도 시험 공통): 가열 · 냉각 점 수(가열 = 시작 ~ 가열 끝 · 냉각 = 냉각 끝 ~ 가열 끝 온도 구간) · 실제 평균 속도 ·
+  점 간격 평균 · 흔들림(표준편차) · 역전(가열 중 내려감 · 냉각 중 올라감이 `reversal_c` 0.3 °C 넘는 일 - 횟수 · 최대 폭 · 자리) · 목표선과의 차이(평균 · 최대).
+  측정: run.json `sum.curve` · summary.csv · 측정 화면 행(`curve`). control.csv 의 열선 열은 출력 %. element_log = [경과, 출력 %, 회차].
+  기준(LabVIEW 11/17 샘플 5-1~5-3): 25~85 °C 가열 약 204점 · 냉각 약 226점 · 점 간격 약 0.27 °C(±0.06) · 역전 없음 · 한 회 5분 27초 이하.
 - **점 간격**(`analysis.spacing` 하나): 가열 · 냉각 각각 "점 n개 · 평균 x.xx °C 마다 1점" = (최고 − 최저) ÷ (점 수 − 1). 측정 화면(행 `spacing`) ·
   run.json 샘플 `sum.spacing` · summary.csv · 측정 결과 탭(점 간격 칸) · 온도 시험(창 · summary.txt). 점 간격(°C) ≈ 속도(°C/분) × 한 점 시간(s) ÷ 60.
 - 예상 시간 한 줄(측정 [조건] · 온도 시험 창 - `core.js expectText`): 가열 (끝 − 시작) ÷ 가열 속도 + 유지 · 냉각 (가열 끝 − 냉각 끝) ÷ 냉각 속도 · 자동 측정은 × 샘플 수 × 반복.
@@ -284,8 +302,13 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
 
 ## 6-1. 온도 시험 (app/jobs/temptest.py · 수동 제어 탭 [온도 시험])
 - 목적: 샘플 · 저항계 · 모터 없이 히트건 · 쿨러의 온도 거동만 잰다(도달 시간 · 최대 가열 속도 · 넘침 · 냉각 시간 → 히트건 · 가열 제어 값 정하기).
-- 조건은 자동 측정과 같은 설정(`run_start_c` · `run_heater_off_c` · `run_cool_end_c` · `run_heat_mode` · `run_heat_rate_c_min` · `heater_band_c` ·
-  `heater_min_on_s` · `heater_min_off_s` · `run_heat_hold_s` · `run_fan_during_cool` · `run_stall_s` · `run_stall_c` · `run_phase_limit_s`) +
+- **시험 셋**(`temptest_start(mode)` · 펌웨어 V12 필요): [시작](test - 아래 순서) · **[반응 재기]**(step - 예비 냉각 → 히트건 켜기 → 출력 `temp_step_pct` 를
+  `temp_step_s` 동안(가열 끝 온도에 닿으면 먼저 끝) → 출력 0 % 로 같은 시간 기록 → `heater.fit_fopdt` 로 K · τ · θ 를 맞춰 설정 heat_model_* 에 저장 · 화면 · 로그) ·
+  **[최대 속도 재기]**(max - 출력 최대로 가열 끝 온도까지 → 출력 0 %(쿨러 · 송풍)로 냉각 끝 온도까지 → 5 °C 구간마다 최대 가열 · 냉각 속도(4 s 창 기울기) →
+  calib `speed_max` · 화면 · 로그). 폴더 이름 뒤에 "_반응" · "_최대속도".
+- 창 배치: 왼쪽 = 진행 한 줄 + 그래프(크게 · 역전 자리 작은 삼각형 · 아래 띠 = 열선 출력 %) · 오른쪽 = 가열 · 냉각 결과 · 열 모델 · 최대 속도 표 · 도달 표(값이 있는 줄만) · 예상 · 조건(접어 둠).
+- 조건은 자동 측정과 같은 설정(`run_start_c` · `run_heater_off_c` · `run_cool_end_c` · `run_heat_mode` · `run_point_step_c` · `cool_rate_separate` · heater_lead_* ·
+  `heater_max_pct` · heat_model_* · `run_heat_hold_s` · `run_fan_during_cool` · `run_stall_s` · `run_stall_c` · `run_phase_limit_s`) +
   `temp_test_coolers`(쿨러 릴레이 안 · 빈 목록 가능) · `temp_test_interval_s`(≥ 온도 읽기 시간 · < 온도 못 읽음 허용 × 사용 비율) · `temp_test_mark_c` · `temp_test_precool`
   (`config.temptest_problems` · 시작 때 `heat_problems` 도). 창에서 가열 방식 · 속도를 바로, 나머지는 [조건] 으로 고친다(같은 설정 값).
 - 순서: 쿨러 켬 → 예비 냉각(시작 온도까지 · 정체면 가열하지 않고 "중단 · 시작 온도 미도달 · 현재 xx.x °C") → 히트건 켜기(Controller 히트건 함수 · 측정 주체 규칙) →
@@ -361,7 +384,7 @@ firmware/stage_v11/     펌웨어(고치지 않는다)
 - **수동 제어 탭**: 카메라 사진은 왼쪽 열의 남는 높이를 다 쓴다(이동 패널은 조그 옆에 촬영 위치 · 좌표 이동). 직접 명령은 오른쪽 맨 아래 작게
   (장비 선택 · 빠른 버튼 · 한 줄 입력 · 결과는 최근 5줄 상자, 넘치면 그 상자 안에서만 스크롤 · 안내 글은 화면 글꼴).
   장비가 없으면 그 장비가 필요한 버튼을 끄고 이유 한 줄: 이동 패드 · Z · 좌표 이동 · 촬영 위치 이동 · 릴레이 · 히트건 = 스테이지 · 온도 1회 = 온도계 · 저항 1회 · 연속 측정 = 저항계.
-  릴레이 시험: 히트건 줄 [켜기](열선 → 송풍) [열선 끄기 · 열선 켜기](송풍 켜진 동안만) [끄기](열선 끔 → 송풍 n초 뒤 끔 · 남은 초 표시) + 상태 · 쿨러 줄 = `cooler_relays` 버튼만.
+  릴레이 시험: 히트건 줄 [켜기](열선 → 송풍) [열선 끄기 · 열선 켜기](송풍 켜진 동안만) [끄기](열선 끔 → 송풍 n초 뒤 끔 · 남은 초 표시) [즉시 끄기](열선 · 송풍 바로 · 확인 창 없음 · 측정 중에도 됨) + 상태 · 열선 출력 줄 = % 입력 [적용](`heater_power` · 송풍 켜진 동안만 · V12) + 지금 % · 쿨러 줄 = `cooler_relays` 버튼만.
 - 수동 제어 탭 카메라: "실시간" = 미리보기, "판 사진" = 마지막으로 찍은 판 사진(자동 측정 탭과 같은 사진) + 샘플 윤곽 · 이름 + 지금 핀 자리 십자(`state.prep.coords.to_plate` 로 옮긴다. 판 밖이면 안 그린다).
   [크게 보기] = 같은 zoomView 창(확대 · 이동 · 돋보기)에 판 사진 · 같은 덧그림. 누른 자리로 클릭 이동(꼭짓점 · 확정 없음 · [클릭 이동] 켬 · 측정 중 아님 - 작은 사진과 같은 규칙).
   실시간 화면을 보정해 보여 주지 않는다(헤드가 판 위에 있으면 판을 가린다).
