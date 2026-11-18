@@ -48,7 +48,9 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None, layout="free", rows=
     res = None
     path = "사진 한 장"
     if empty is not None and empty.shape == cur.shape:
+        bright = None
         try:
+            empty, bright = match_light(empty, cur, valid)               # 정렬 전에 밝기 · 대비를 맞춘다(문을 열어 빛이 바뀌면 정렬이 실패했다)
             a = refdiff.align(empty, cur, valid)
         except cv2.error as e:
             a = {"ok": False, "msg": str(e).splitlines()[0][:60], "resid": 9.9}
@@ -58,8 +60,10 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None, layout="free", rows=
             path = "빈 판 비교"
             lg("빈 판 사진 정렬 · 이동 %.1f, %.1f px · 잔차 %.2f" % (a["dx"], a["dy"], a["resid"]))
         else:
-            notes.append("빈 판 사진 불일치 · 사진 한 장으로 검출")
-            lg("빈 판 사진 정렬 실패 · %s" % a.get("msg", ""))
+            why = "밝기 차이 %s %% · 잔차 %s · 이동 %s px" % ("—" if bright is None else "%.0f" % bright, "%.2f" % a["resid"] if a.get("resid") is not None else "—",
+                                                     "%.0f" % float(np.hypot(a.get("dx") or 0.0, a.get("dy") or 0.0)) if "dx" in a else "—")
+            notes.append("빈 판 사진 불일치 · %s · 조명 · 문 상태 확인" % why)
+            lg("빈 판 사진 정렬 실패 · %s · %s" % (a.get("msg", ""), why))
     if res is None:
         res = fixed_detect.detect(cur, params, mm_px, valid, None, area, lg)
     L = float(res.diag.get("chip_long_px") or (fixed_detect.DEFAULTS["chip_mm"] * ppmm)) * mm_px       # 샘플 긴 변(mm)
@@ -87,6 +91,23 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None, layout="free", rows=
     if any(s["weak"] for s in out):
         notes.append("미확인 샘플 %d개 · 확인 필요" % sum(1 for s in out if s["weak"]))
     return {"samples": out, "notes": notes, "path": path, "ms": round((time.perf_counter() - t0) * 1000.0)}
+
+
+def match_light(ref, cur, valid):
+    """빈 판 사진(ref)의 밝기 · 대비를 지금 사진(cur)에 맞춘다: 찾을 곳(valid) 안에서 채널마다 평균 · 표준편차를 같게.
+    반환 (맞춘 ref, 맞추기 전 밝기 차이 % = |평균 차이| ÷ ref 평균). 검출기의 값(v2)은 그대로 - 입력만 맞춘다."""
+    m = valid > 0
+    out = ref.astype(np.float32).copy()
+    c32 = cur.astype(np.float32)
+    mr_all, mc_all = float(out[m].mean()), float(c32[m].mean())
+    for ch in range(out.shape[2] if out.ndim == 3 else 1):
+        a = out[:, :, ch] if out.ndim == 3 else out
+        b = c32[:, :, ch] if c32.ndim == 3 else c32
+        ma, sa = float(a[m].mean()), float(a[m].std())
+        mb, sb = float(b[m].mean()), float(b[m].std())
+        a[:] = (a - ma) * (sb / sa if sa > 1e-6 else 1.0) + mb
+    diff = abs(mc_all - mr_all) / max(1e-6, mr_all) * 100.0
+    return np.clip(out, 0, 255).astype(np.uint8), diff
 
 
 def order_rows(samples, long_mm):

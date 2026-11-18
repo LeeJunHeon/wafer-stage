@@ -185,6 +185,7 @@ table.ctab tr:hover td { background: none; }
 .cboard { display: grid; grid-template-columns: 16px max-content 16px; gap: 4px; align-items: center; justify-items: center; margin: 8px 0; }
 .cboard .cgrid { grid-column: 2; grid-row: 2; }
 .vfy.pc { color: var(--ink2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 4px; }      /* 전체 설정의 PC 값 표시 */
+.photo-box.cmp-photo { width: 360px; height: 360px; flex: none; }          /* 초기 설정 4 비교용 마지막 판 사진 */
 .photo-box.with-dirs { position: relative; }                            /* 사진 칸 둘레 방향 글(문 기준) */
 .pdir { position: absolute; font-size: 11px; color: var(--ink2); line-height: 16px; height: 16px; text-align: center; white-space: nowrap; pointer-events: none; }
 .pdir.left, .pdir.right { width: 16px; height: auto; display: flex; align-items: center; justify-content: center; writing-mode: vertical-rl; }

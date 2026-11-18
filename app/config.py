@@ -254,10 +254,10 @@ ITEMS = (
          Item("marker_probe_mm", 10.0, "float", "마커 기억 이동 거리", "mm", 1, 50,
               desc="헤드 마커 등록 때 헤드를 움직여 보는 거리\n보통 변경 안 함"),
          # 헤드 마커 등록 검사(prep.marker_learn): 하나라도 어긋나면 저장하지 않는다
-         Item("marker_pair_px", 2.0, "float", "마커 두 장 허용", "px", 0.1, 50,
-              desc="마커 등록 때 같은 위치 두 장의 마커 위치 차이 허용\n넘으면 한 번 더 촬영 · 그래도 넘으면 실패"),
-         Item("marker_return_px", 2.0, "float", "마커 복귀 허용", "px", 0.1, 50,
-              desc="마커 등록 끝에 촬영 위치로 돌아와 본 마커가 처음 위치와 다를 수 있는 한도"),
+         Item("marker_pair_mm", 0.5, "float", "마커 두 장 허용", "mm", 0.01, 10,
+              desc="같은 위치 두 장의 마커 위치 차이 허용 · 판 배율로 px 환산\n넘으면 한 번 더 촬영 · 그래도 넘으면 실패"),
+         Item("marker_return_mm", 0.5, "float", "마커 복귀 허용", "mm", 0.01, 10,
+              desc="마커 등록 끝에 촬영 위치로 돌아와 본 마커와 처음 위치의 차이 한도 · 판 배율로 px 환산"),
          Item("marker_angle_tol_deg", 15.0, "float", "마커 직각 허용", "°", 1, 45,
               desc="X · Y 로 움직였을 때 마커가 움직인 두 방향 사이 각 · 90° ± 이 값"),
          Item("marker_ratio_min", 0.8, "float", "마커 크기 비 최소", "", 0.1, 1,
@@ -383,10 +383,10 @@ DEFAULT_HISTORY = {
     "cooler_grid": [[[2, 2, 2], [3, 3, 3], [4, 4, 4]]],
     "run_interval_s": [1.0],
     "heater_pwm_period_ms": [1000],
-    "marker_pair_px": [2.0],
-    "marker_return_px": [2.0],
 }
 REMOVED_KEYS = {
+    "marker_pair_px": "마커 두 장 허용은 mm(marker_pair_mm) · 지연 대기 뒤 2.9 · 5.7 px(약 0.2~0.3 mm)가 2 px 로 거절됐다",
+    "marker_return_px": "마커 복귀 허용은 mm(marker_return_mm)",
     "cooler_view": "화면 방향은 문 기준 하나(view_rot · view_flip)",
     "heater_min_on_s": "열선 출력 % 제어(SSR)라 최소 켜짐 없음",
     "heater_min_off_s": "열선 출력 % 제어(SSR)라 최소 꺼짐 없음",

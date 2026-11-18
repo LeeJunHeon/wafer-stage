@@ -719,9 +719,9 @@ class Prep:
         return {}
 
     def _marker_pair(self):
-        """지금 자리에서 새 프레임 두 장의 마커 위치. 두 장이 marker_pair_px 안에서 맞으면 평균. 안 맞으면 한 번 더 찍는다.
+        """지금 자리에서 새 프레임 두 장의 마커 위치. 두 장이 marker_pair_mm(판 배율로 px) 안에서 맞으면 평균. 안 맞으면 한 번 더 찍는다.
         두 번 다 마커가 안 보이면 None(그 자리에서 안 보임). 보이는데 두 번 다 안 맞으면 Rejected(카메라 · 헤드가 흔들린다)."""
-        tol = float(self.cfg["marker_pair_px"])
+        tol = self._mm_px(self.cfg["marker_pair_mm"])
         diff = None
         for _try in range(2):
             m1 = geo.find_marker(self._fresh()[0])
@@ -734,7 +734,12 @@ class Prep:
             diff = d
         if diff is None:
             return None
-        raise Rejected("마커 위치 흔들림 · 두 장 %.1f px 차이" % diff)
+        raise Rejected("마커 위치 흔들림 · 두 장 %.2f mm 차이" % (diff / (self.plate_ppmm() or geo.RECT_PPMM)))
+
+    def _mm_px(self, mm):
+        """마커 허용(mm) → 사진 px(판 배율 = 판 꼭짓점 픽셀 ÷ 판 한 변). 판 영역이 없으면 보정 사진 배율(RECT_PPMM)."""
+        k = self.plate_ppmm()
+        return float(mm) * (k if k else geo.RECT_PPMM)
 
     def plate_ppmm(self):
         """판 배율(사진 px / mm) = 판 꼭짓점 네 변의 평균 픽셀 길이 ÷ 판 한 변. 판 영역이 없으면 None."""
@@ -792,7 +797,7 @@ class Prep:
 
     def marker_learn(self):
         """촬영 위치에서 헤드 마커 가운데 픽셀을 기억하고, X · Y 로 조금 옮겨 보며 "mm 당 픽셀" 2×2 행렬을 잰다.
-        자리마다 새 프레임 두 장(marker_pair_px 안 · 아니면 한 번 더) · 끝에 촬영 위치로 돌아와 처음 자리와 marker_return_px 안 ·
+        자리마다 새 프레임 두 장(marker_pair_mm 안 · 아니면 한 번 더) · 끝에 촬영 위치로 돌아와 처음 자리와 marker_return_mm 안(mm 는 판 배율로 px) ·
         행렬 검사(marker_problems). 하나라도 어긋나면 저장하지 않는다(기억한 마커 없음 → 위치 확인 안 함) - 이유 한 줄 + 로그."""
         head = self.cfg["photo_head_xy"]
         if head is None:
@@ -840,8 +845,8 @@ class Prep:
                 fail("복귀 후 마커 미검출")
             seen["복귀"] = mr
             back = float(np.hypot(mr[0] - m0[0], mr[1] - m0[1]))
-            if back > float(self.cfg["marker_return_px"]):
-                fail("복귀 후 마커 %.1f px 차이 · 스테이지 · 카메라 고정 확인" % back)
+            if back > self._mm_px(self.cfg["marker_return_mm"]):
+                fail("복귀 후 마커 %.2f mm 차이 · 스테이지 · 카메라 고정 확인" % (back / (self.plate_ppmm() or geo.RECT_PPMM)))
         except Rejected as e:                                        # 미검출 · 흔들림 · 복귀 차이 · 이동 거절 · 정지 · 카메라 오류: 반쯤 잰 값을 남기지 않는다
             self.calib.set_marker(None, None)
             self.clear_pos_check()

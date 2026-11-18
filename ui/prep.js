@@ -444,18 +444,29 @@ function buildStep4() {
   pg.pb = photoBox({ ar: 1, note: "빈 판 사진 없음", dirs: true });
   pg.take = busyGate("빈 판 촬영", () => apiMove("empty_take"), "on");
   pg.txt = h("div", {});
+  /* 비교: 마지막 판 사진(보정 사진 · 같은 방향)을 나란히 - 조명 · 문 상태 · 판 위치가 달라 정렬이 실패하는지 눈으로 본다 */
+  pg.cmp = photoBox({ ar: 1, note: "판 사진 없음", cls: "cmp-photo" });
+  pg.cmpTxt = h("div", { class: "small" });
+  pg.findNote = h("div", { class: "small" });
   pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "4 · 빈 판 사진" }),
     photoSplit(pg.pb, h("div", {},
       h("div", { class: "grp" },
         h("div", { class: "small", text: "샘플 제거 후 촬영" }),
         h("div", { class: "row" }, pg.take.b, pg.take.w), pg.txt,
-        h("div", { class: "small", text: "없어도 측정 가능" })))));
+        h("div", { class: "small", text: "없어도 측정 가능" })),
+      h("div", { class: "grp" }, h("h4", { text: "마지막 판 사진 (비교)" }), pg.cmp.box, pg.cmpTxt, pg.findNote))));
   pg.render = () => {
     const e = P().empty, pl = P().plate;
     pg.take.set(whyStage(true, true) || whyCamera() || whyHead());
     pg.txt.textContent = e ? "촬영 " + fmtWhen(e.t) : "";
     pg.pb.setNote(e ? (pl ? "사진을 불러오는 중" : "판 영역 설정 필요 (초기 설정 3)") : "빈 판 사진 없음");
     pg.pb.show(e && pl ? "/api/img/empty.jpg?v=" + e.t + "-" + pl.t : "");
+    const ph = P().photo, fd = P().find;
+    pg.cmp.show(pl && ph && ph.rect ? "/api/img/plate.jpg?v=" + ph.id + "-" + pl.t : "");
+    pg.cmpTxt.textContent = ph ? "촬영 " + fmtWhen(ph.t) : "";
+    const bad = fd && (fd.notes || []).find((t) => t.startsWith("빈 판 사진 불일치"));         // 마지막 샘플 검출의 정렬 결과(숫자 · 할 일)
+    pg.findNote.textContent = bad || (fd && fd.path === "빈 판 비교" ? "마지막 검출 · 빈 판 비교 정상" : "");
+    pg.findNote.className = bad ? "st-warn" : "small";
   };
   return pg;
 }
