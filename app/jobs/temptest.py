@@ -287,11 +287,16 @@ def draw_png(pts, elog, ev, cd, title, rev=()):
     # 열선 출력 %: 아래 띠(높이 = 출력)
     by0, by1 = y1 + 50, y1 + 96
     cv2.rectangle(img, (x0, by0), (x1, by1), GRID, 1)
-    seq = list(elog) + [[t_max, 0]]
-    for (ta, pa), (tb, _pb) in zip(seq, seq[1:]):
-        if pa:
-            top = int(round(by1 - 1 - (by1 - by0 - 2) * min(100.0, float(pa)) / 100.0))
-            cv2.rectangle(img, (X(ta), top), (max(X(ta) + 1, X(tb)), by1 - 1), PINK, -1)
+    # 띠는 점의 출력 열(p[3] - 펌웨어가 알려 준 실제 출력)로 그린다(화면 ui/temptest.js 와 같은 방식). elog 는 요청한 값이라
+    # 켜기 유지 중 요청이 100 % 로 남고, 마지막 elog 시각이 마지막 점보다 늦어 띠가 오른쪽 라벨을 덮었다. 가로는 x0 ~ x1 안으로 자른다.
+    for i, p in enumerate(pts):
+        pa = float(p[3] or 0)
+        if pa <= 0:
+            continue
+        xa = min(x1, max(x0, X(p[0])))
+        xb = min(x1, max(x0, X(pts[i + 1][0]) if i + 1 < len(pts) else xa + 1))
+        top = int(round(by1 - 1 - (by1 - by0 - 2) * min(100.0, pa) / 100.0))
+        cv2.rectangle(img, (xa, top), (max(xa + 1, xb), by1 - 1), PINK, -1)
     cv2.putText(img, "heater %", (x1 + 12, by1 - 4), font, 0.45, PINK, 1, cv2.LINE_AA)
     cv2.putText(img, "100", (x0 - 34, by0 + 10), font, 0.4, INK, 1, cv2.LINE_AA)
     cv2.putText(img, "0", (x0 - 16, by1), font, 0.4, INK, 1, cv2.LINE_AA)
