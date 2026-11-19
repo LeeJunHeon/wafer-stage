@@ -130,6 +130,7 @@ class Controller:
         self._fan_off_at = None                                     # 송풍을 끌 시각(clock). 없으면 None
         self._boot_until = None                                     # 스테이션(송풍)을 새로 켠 뒤 열선 100 % 유지가 끝나는 시각(clock) · 아니면 None
         self._boot_pending = None                                   # 유지 중에 들어온 마지막 출력 %(끝나는 순간 적용)
+        self.heat_q = 1.0                                           # 목표선 제어가 배운 배율(RelayHeater.q) - 프로그램을 켜면 1
         self._fan_off_epoch = None                                  # 같은 시각(화면용 epoch)
         self._folder_picker = None                                  # 폴더 선택 창을 띄우는 함수(창으로 실행했을 때 run.py 가 넘긴다)
         self._cam_lock = threading.Lock()                           # 카메라 열기(연결 · 목록용 열어 보기)는 한 번에 하나

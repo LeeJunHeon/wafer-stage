@@ -6,12 +6,18 @@
 
 열선 출력 %(펌웨어 V14 hp - 0.1 % 단위 · 몰아 켜기 / 고르게 나눠 켜기):
   열선 줄(SSR + 스테이션)은 명령한 % 를 그대로 통과시키지 않는다 - 같은 % 라도 고르게 켜기 칸에 따라 들어가는 열이 2~3배 다르고 출력과 온도가 직선이 아니다.
-  그래서 출력 % 를 계산하는 제어기 하나(PowerControl - 목표선 기준 PI + 앞먹임 + 적분 포화 방지 + 0 ~ heater_max_pct 제한)를 가열 · 냉각이 같이 쓰고
+  그래서 출력 % 를 계산하는 제어기 하나(PowerControl - 배율 × 앞먹임 + PI + 적분 포화 방지 + 0 ~ heater_max_pct 제한)를 가열 · 냉각이 같이 쓰고
   (냉각은 목표선이 내려갈 뿐), 앞먹임과 이득은 실제로 잰 출력별 온도 표(heat_curve - [히트건 맞추기]가 고른 칸으로 잰 정지 온도)에서 읽는다:
   앞먹임 = hold(목표)(그 온도를 유지하는 출력 - 표를 온도 → 출력으로 보간) + τ × 기울기 ÷ gain(목표)(그 온도 구간의 °C/%).
-  계수는 손으로 맞추지 않는다: 열 모델(1차 + 지연 τ · θ - ThermalModel)에서 SIMC 규칙(τc = max(θ, heater_tc_s) - 클수록 느슨함) · 이득은 회차마다 gain(목표).
-  표가 없으면 예전 식(앞먹임 = (목표 − 시작 주위 온도) ÷ K + τ × 기울기 ÷ K · 이득 K). 열 모델도 없으면 보수적인 기본값(DEFAULT_MODEL).
-  PI 는 순간 온도가 아니라 걸러진 온도(heater_lead_filter_s 평균)로 계산한다 - 칸마다 다른 흔들림에 출력이 따라 출렁이지 않게.
+  계수는 손으로 맞추지 않는다: 열 모델(1차 + 지연 τ · θ - ThermalModel)에서 SIMC 규칙(지연 = θ + 평균 창의 절반 · τc = max(지연, heater_tc_s)) · 이득은 회차마다 gain(목표).
+  표가 없으면 예전 식(앞먹임 = (목표 − 시작 주위 온도) ÷ K + τ × 기울기 ÷ K · 이득 K · 배율 1). 열 모델도 없으면 보수적인 기본값(DEFAULT_MODEL).
+  배율 q(실시간 맞춤): 같은 출력 · 같은 방식인데 히트건이 내는 열이 스스로 1.8~2.3 배 바뀐다(10~17 분에 한 번쯤 · 15 초 안에) → 고정된 표로는 2 배 어긋난다.
+    출력 = q × 앞먹임 + Kc e + J(적분 보정 %) · Kc = q × 표의 이득. 앞먹임이 FF_ADAPT 이상이면 J 를 Q_MOVE_S 시정수로 q 에 옮긴다(Q_MIN ~ Q_MAX).
+    배운 q 는 RelayHeater.q(= Controller.heat_q · 프로그램을 켜면 1)에 두어 다음 단계 · 샘플 · 작업이 이어받는다.
+  PI 는 온도가 아니라 오차(목표 − 온도)의 heater_pi_filter_s 평균으로 계산한다 - 늘 있는 ± 1 °C · 7~10 s 흔들림 한 주기(3 s 평균 온도 PI 는 흔들림을 키웠다).
+  온도 급변: 걸러진 온도(heater_lead_filter_s 평균)가 목표선에서 heater_jump_c 넘게 벗어났는데 출력에 여유가 있었으면 q 를 바로 한 단(× JUMP_DOWN · × JUMP_UP) 바꾸고 J 를 지운다.
+    같은 쪽으로 JUMP_AGAIN_S 뒤에도 안 나아지면 한 단 더 · 절반 아래로 JUMP_CALM_S 이어지면 끝 · 단계 시작 JUMP_SKIP_S 는 보지 않는다. 급변은 LineControl.jumps 에 남는다
+    (온도 시험 · 측정이 "온도 급변" 메모 · 로그로 보인다 - 멈추지 않는다).
 목표선(LineControl): 가열 = 시작 온도 + 속도 × 경과(상한 가열 끝 온도) · 냉각 = 가열 끝 순간 온도 − 속도 × 경과(하한 냉각 끝 온도).
   기다림(heater_lead_c): 순간값이 아니라 걸러진 온도(heater_lead_filter_s 평균)가 lead 넘게 뒤처진 채 heater_lead_hold_s 이상 이어질 때만 목표선을 세운다
   (냉각을 늦추려 켠 열선이 순간 온도를 목표선 위로 튀게 해 목표선이 섰던 일 - 냉각이 11 °C/분에 그쳤다).
@@ -36,6 +42,13 @@ def ramp_setpoint(t_start_c, rate_c_min, elapsed_s, top_c):
 
 
 GAIN_MIN = 0.2                                      # 출력별 온도 표의 기울기 하한(°C/%) - 평평한 구간에서 계수가 터지지 않게
+Q_MIN, Q_MAX = 0.3, 3.5                             # 배율(표에서 읽은 출력에 곱하는 값)의 범위
+FF_ADAPT = 8.0                                      # 표에서 읽은 출력이 이 % 이상일 때만 적분 보정을 배율로 옮긴다(낮은 출력에서는 기준 온도 오차가 더 크다)
+Q_MOVE_S = 10.0                                     # 적분 보정을 배율로 옮기는 시정수(s)
+JUMP_DOWN, JUMP_UP = 0.75, 1.33                     # 온도 급변: 너무 뜨거우면 배율 × 0.75 · 너무 차가우면 × 1.33
+JUMP_AGAIN_S = 6.0                                  # 급변이 이어지면 이 시간마다 한 번 더
+JUMP_CALM_S = 5.0                                   # 벗어난 폭이 기준의 절반 아래로 이 시간 이어지면 급변 끝
+JUMP_SKIP_S = 12.0                                  # 단계를 시작하고 이 시간은 급변으로 보지 않는다(가열 → 냉각으로 꺾일 때 출력이 한 번에 바뀐다)
 
 
 class ThermalModel:
@@ -52,6 +65,7 @@ class ThermalModel:
         self.curve = config_mod.heat_curve(cd.get("heat_curve"))
         self.has_curve = len(self.curve) >= 2
         self.tc = float(cd.get("heater_tc_s", 5.0))
+        self.fil = float(cd.get("heater_pi_filter_s", 8.0))                 # PI 가 쓰는 오차의 평균 창(흔들림 한 주기) - 지연 = 창의 절반
 
     def hold(self, T):
         """그 온도를 유지하는 출력 %: 표를 온도 → 출력으로 직선 보간. 첫 점 온도 이하 0 · 마지막 점 위는 마지막 구간 기울기로 연장."""
@@ -78,11 +92,13 @@ class ThermalModel:
         return max(GAIN_MIN, (tb - ta) / (pb - pa))
 
     def gains(self, K=None):
-        """SIMC PI: τc = max(θ, heater_tc_s) · Kc = τ ÷ (K (τc + θ)) [%/°C] · Ti = max(1, min(τ, 4 (τc + θ))) [s]. K 를 주면 그 이득으로."""
+        """SIMC PI: 지연 = θ + 평균 창의 절반 · τc = max(지연, heater_tc_s) · Kc = τ ÷ (K (τc + 지연)) [%/°C] · Ti = max(1, min(τ, 4 (τc + 지연))) [s].
+        K 를 주면 그 이득으로."""
         k = self.K if K is None else float(K)
-        tc = max(self.theta, self.tc)
-        kc = self.tau / (k * (tc + self.theta))
-        ti = max(1.0, min(self.tau, 4.0 * (tc + self.theta)))
+        th = self.theta + self.fil / 2.0                            # 평균 창의 지연까지 넣은 지연
+        tc = max(th, self.tc)
+        kc = self.tau / (k * (tc + th))
+        ti = max(1.0, min(self.tau, 4.0 * (tc + th)))
         return kc, ti
 
     def text(self):
@@ -92,36 +108,48 @@ class ThermalModel:
 
 
 class PowerControl:
-    """열선 출력 % = 앞먹임 + Kc (e + ∫e dt ÷ Ti), 0 ~ u_max 로 자른다. 출력이 한계에 걸린 채 오차가 그쪽으로 커지면 적분하지 않는다(포화 방지).
-    출력별 온도 표가 있으면 앞먹임 = hold(목표) + τ × 기울기 ÷ gain(목표) · Kc 는 회차마다 gains(K=gain(목표))(T_amb 는 쓰지 않는다)."""
+    """열선 출력 % = 배율 q × 앞먹임(표) + Kc e + J, 0 ~ u_max 로 자른다. J = 적분 보정(%) - 출력이 한계에 걸린 채 오차가 그쪽으로 커지면 쌓지 않는다.
+    출력별 온도 표가 있으면: 앞먹임 = hold(목표) + τ × 기울기 ÷ gain(목표) · Kc = q × gains(K=gain(목표)) · 앞먹임이 FF_ADAPT 이상이면 J 를 조금씩 q 로 옮긴다
+    (히트건이 내는 열이 표와 몇 배 다르든 q 가 따라가고, 목표가 올라가도 그 비율이 유지된다). 표가 없으면 q = 1 인 예전 PI."""
 
-    def __init__(self, cd, T_amb):
+    def __init__(self, cd, T_amb, q=1.0):
         self.m = ThermalModel(cd)
         self.kc, self.ti = self.m.gains()
         self.umax = float(cd.get("heater_max_pct", 100))
         self.T_amb = float(T_amb)
-        self.I = 0.0
+        self.q = min(Q_MAX, max(Q_MIN, float(q))) if self.m.has_curve else 1.0
+        self.J = 0.0
         self.t = None
         self.u = 0.0
 
     def ff(self, sp, slope_c_s):
-        """앞먹임: 목표 온도를 유지하는 출력 + 목표선 기울기만큼의 출력."""
+        """앞먹임(배율 전): 목표 온도를 유지하는 출력 + 목표선 기울기만큼의 출력."""
         if self.m.has_curve:
             return self.m.hold(sp) + self.m.tau * float(slope_c_s) / self.m.gain(sp)
         return ((float(sp) - self.T_amb) + self.m.tau * float(slope_c_s)) / self.m.K
+
+    def scale(self, f):
+        """배율을 f 배로(온도 급변 - LineControl 이 부른다). 표가 없으면 그대로."""
+        if self.m.has_curve:
+            self.q = min(Q_MAX, max(Q_MIN, self.q * float(f)))
 
     def out(self, T, sp, slope_c_s, now):
         dt = 0.0 if self.t is None else max(0.0, now - self.t)
         self.t = now
         if self.m.has_curve:
-            self.kc, self.ti = self.m.gains(K=self.m.gain(sp))
+            kc0, self.ti = self.m.gains(K=self.m.gain(sp))
+            self.kc = kc0 * self.q
         e = float(sp) - float(T)
         ff = self.ff(sp, slope_c_s)
-        raw = ff + self.kc * (e + self.I / self.ti)
+        raw = self.q * ff + self.kc * e + self.J
         sat_hi, sat_lo = raw > self.umax, raw < 0.0
         if not ((sat_hi and e > 0) or (sat_lo and e < 0)):
-            self.I += e * dt
-            raw = ff + self.kc * (e + self.I / self.ti)
+            self.J += self.kc * e * dt / self.ti
+            if self.m.has_curve and ff >= FF_ADAPT and dt > 0:      # 적분 보정을 배율로 옮긴다(그 순간 출력은 그대로)
+                q2 = min(Q_MAX, max(Q_MIN, self.q + self.J * min(1.0, dt / Q_MOVE_S) / ff))
+                self.J -= (q2 - self.q) * ff
+                self.q = q2
+            raw = self.q * ff + self.kc * e + self.J
         self.u = max(0.0, min(self.umax, raw))
         return self.u
 
@@ -130,7 +158,9 @@ class LineControl:
     """목표선 + 열선 출력(가열 또는 냉각 한 단계). sign = +1 가열(상한 end_c) · −1 냉각(하한 end_c).
     목표선은 경과 시간이 아니라 회차마다 앞으로 간다: 걸러진 온도가 lead 넘게 뒤처진 채 hold 초 이상이면 그 회차는 기다린다.
     step() 이 목표를 정하고 출력 % 를 계산해 heater.power 로 보낸다(0.1 % 단위 · 0.05 넘게 바뀔 때만 - 거절은 Rejected 그대로 올라간다).
-    PI 는 target() 이 구한 걸러진 온도(self.Tf)로 계산한다(없으면 순간 온도). 목표 도달 판정 등은 부르는 쪽이 순간 온도로 한다."""
+    PI 는 온도가 아니라 오차(목표 − 온도)의 heater_pi_filter_s 평균으로 계산한다(온도 흔들림 한 주기 - 흔들림에 출력이 따라 출렁이지 않고,
+    목표선이 움직여도 평균 때문에 뒤처지지 않는다). 온도 급변(_jump_check)은 heater_lead_filter_s 평균으로 본다.
+    배운 배율은 heater.q 에 두어 다음 단계 · 다음 샘플이 이어받는다. 목표 도달 판정 등은 부르는 쪽이 순간 온도로 한다."""
 
     def __init__(self, heater, cd, T_from, end_c, sign, now, rate_c_min, T_amb=None, on_change=None):
         self.h = heater
@@ -142,13 +172,25 @@ class LineControl:
         self.hold = float(cd.get("heater_lead_hold_s", 0.0))
         self.sp = self._clamp(float(T_from))
         self.t = now
+        self.t_start = now
         self.waiting = False                                       # 이번 회차에 목표선이 기다렸다
         self.waits = 0                                             # 기다린 회차 수(기록용)
         self.slope = 0.0                                           # 이번 회차 목표선 기울기(°C/s - 앞먹임)
         self._buf = deque()
-        self.Tf = None                                             # 마지막 걸러진 온도(heater_lead_filter_s 평균 - PI 가 쓴다)
+        self.Tf = None                                             # 마지막 걸러진 온도(heater_lead_filter_s 평균 - 기다림 판정)
         self._behind_t = None
-        self.pc = PowerControl(cd, float(T_from) if T_amb is None else T_amb)
+        self.pc = PowerControl(cd, float(T_from) if T_amb is None else T_amb, q=getattr(heater, "q", 1.0))
+        self.jump_c = float(cd.get("heater_jump_c", 4.0))          # 온도 급변 기준(걸러진 온도가 목표선에서 이만큼)
+        self.jumps = []                                            # [{"t", "sp", "T", "d"}] - 급변마다 하나(d = 가장 크게 벗어난 폭 · 부호 있음 · 이어지는 동안 갱신)
+        self._jump = None                                          # 이어지는 급변
+        self._jump_step_t = None
+        self._jump_d = 0.0
+        self._jump_dir = 0
+        self._calm_t = None
+        self._pbuf = deque()                                       # (시각, 목표 − 온도) - PI 용 평균(heater_pi_filter_s · 흔들림 한 주기)
+        self._dbuf = deque()                                       # (시각, 온도 − 목표) - 급변 판정용 평균(heater_lead_filter_s)
+        self.pwin = float(cd.get("heater_pi_filter_s", 8.0))
+        self.dev = 0.0                                             # 걸러진 (온도 − 목표)
         self.pct = None                                            # 마지막으로 보낸 출력 %
         self._held = False                                         # 스테이션 켠 뒤 100 % 유지 중이었다(끝나면 지금 온도에서 다시 시작)
         self.on_change = on_change                                 # on_change(now, pct) - 출력을 바꿀 때(기록)
@@ -172,7 +214,7 @@ class LineControl:
         if self._held and self.h.boot_hold <= 0:                   # 스테이션 켜기 유지가 끝났다: 목표선을 지금 온도에서 다시 시작(앞서 가 있으면) · 적분 0
             self._held = False
             self.sp = self._clamp(max(self.sp, float(T)) if self.sign > 0 else min(self.sp, float(T)))
-            self.pc.I, self.pc.t = 0.0, now
+            self.pc.J, self.pc.t = 0.0, now
             self._behind_t = None
         behind = (Tf < self.sp - self.lead) if self.sign > 0 else (Tf > self.sp + self.lead)
         if behind:
@@ -191,18 +233,27 @@ class LineControl:
 
     def decide(self, T, sp, now):
         """정한 목표로 출력 % 를 계산해 보낸다. 바꿨으면 True.
-        스테이션 켠 뒤 100 % 유지 중에는 적분하지 않고(앞먹임 값만 요청 - Controller 가 기억했다가 유지가 끝나면 적용) 끝나면 target 이 지금 온도에서 다시 시작한다."""
+        스테이션 켠 뒤 100 % 유지 중에는 적분하지 않고(배율 × 앞먹임 값만 요청 - Controller 가 기억했다가 유지가 끝나면 적용) 끝나면 target 이 지금 온도에서 다시 시작한다."""
         if self.h.boot_hold > 0:
             self._held = True
             self.pc.t = now
-            self.pc.I = 0.0
-            pct = round(max(0.0, min(self.pc.umax, self.pc.ff(sp, self.slope))), 1)
+            self.pc.J = 0.0
+            pct = round(max(0.0, min(self.pc.umax, self.pc.q * self.pc.ff(sp, self.slope))), 1)
             if self.pct is None or abs(pct - self.pct) > 0.05:
                 self.h.power(pct)
                 self.pct = pct
             return False
-        Tc = self.Tf if self.Tf is not None else T                 # 걸러진 온도로 PI(칸마다 다른 흔들림에 출력이 출렁이지 않게)
-        pct = round(self.pc.out(Tc, sp, self.slope, now), 1)       # 0.1 % 단위(V14)
+        err = float(sp) - float(T)                                 # 온도가 아니라 오차를 평균한다(목표선이 움직여도 평균 때문에 뒤처지지 않게)
+        e_p = self._mean(self._pbuf, now, err, self.pwin)
+        self.dev = self._mean(self._dbuf, now, -err, self.win)
+        self._jump_check(T, sp, now)
+        e_use = -self.dev if self._jump is not None else e_p       # 급변 중에는 짧은 평균(빨리 따라가야 한다) · 평소에는 흔들림 한 주기 평균
+        pct = round(self.pc.out(float(sp) - e_use, sp, self.slope, now), 1)     # 0.1 % 단위(V14)
+        if hasattr(self.h, "q"):
+            try:
+                self.h.q = self.pc.q                               # 다음 단계 · 다음 샘플이 이 배율에서 시작한다
+            except AttributeError:
+                pass
         if self.pct is not None and abs(pct - self.pct) <= 0.05 and abs(float(self.h.pct) - pct) <= 0.05:     # 실제 출력과도 같을 때만 건너뛴다 - [정지] '!' 가 0 으로 만들었으면 다시 보낸다
             return False
         self.h.power(pct)
@@ -210,6 +261,50 @@ class LineControl:
         if self.on_change is not None:
             self.on_change(now, pct)
         return True
+
+    @staticmethod
+    def _mean(buf, now, v, win):
+        buf.append((now, float(v)))
+        while buf and now - buf[0][0] > win:
+            buf.popleft()
+        return sum(x for _t, x in buf) / len(buf)
+
+    def _jump_check(self, T, sp, now):
+        """온도 급변: 걸러진 (온도 − 목표)가 jump_c 넘게 벗어났는데 출력에 여유가 있었다(더 줄이거나 더 올릴 수 있었다).
+        배율을 바로 한 단 바꾸고 적분 보정을 지운다. 같은 쪽으로 JUMP_AGAIN_S 뒤에도 나아지지 않았으면(1 °C 도 안 줄었으면) 한 단 더.
+        반대쪽으로 넘어간 것은 PI 에 맡긴다(같은 급변 안에서 배율을 되돌리지 않는다). 벗어난 폭이 절반 아래로 JUMP_CALM_S 이어지면 끝."""
+        d = self.dev
+        if now - self.t_start < JUMP_SKIP_S:
+            return
+        last = 0.0 if self.pct is None else float(self.pct)
+        room = (d > 0 and last > 0.05) or (d < 0 and last < self.pc.umax - 0.05)
+        j = self._jump
+        if j is None:
+            if abs(d) >= self.jump_c and room:
+                self._jump = j = {"t": now, "sp": float(sp), "T": float(T), "d": d}
+                self.jumps.append(j)
+                self._jump_dir = 1 if d > 0 else -1
+                self._jump_step(d, now)
+            return
+        if abs(d) > abs(j["d"]) and (d > 0) == (self._jump_dir > 0):
+            j["d"] = d
+        if abs(d) < self.jump_c / 2.0:
+            if self._calm_t is None:
+                self._calm_t = now
+            elif now - self._calm_t >= JUMP_CALM_S:
+                self._jump = None
+                self._pbuf.clear()                                 # 급변 동안의 오차가 평균에 남지 않게
+            return
+        self._calm_t = None
+        if (d > 0) == (self._jump_dir > 0) and abs(d) >= self.jump_c and room and now - self._jump_step_t >= JUMP_AGAIN_S \
+                and abs(d) > abs(self._jump_d) - 1.0:
+            self._jump_step(d, now)
+
+    def _jump_step(self, d, now):
+        self.pc.scale(JUMP_DOWN if d > 0 else JUMP_UP)
+        self.pc.J = 0.0
+        self._jump_step_t, self._jump_d = now, d
+        self._calm_t = None
 
     def step(self, T, now):
         sp = self.target(T, now)
@@ -342,6 +437,15 @@ class RelayHeater:
     def boot_hold(self):
         """스테이션 켠 뒤 100 % 유지가 남은 초(0 = 유지 아님)."""
         return self.c.boot_left()
+
+    @property
+    def q(self):
+        """목표선 제어가 배운 배율(표에서 읽은 출력에 곱하는 값) - 다음 단계 · 다음 샘플 · 다음 작업이 여기서 시작한다. 프로그램을 켜면 1."""
+        return float(getattr(self.c, "heat_q", 1.0))
+
+    @q.setter
+    def q(self, v):
+        self.c.heat_q = float(v)
 
     @property
     def fan_pending(self):

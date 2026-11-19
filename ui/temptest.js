@@ -153,7 +153,7 @@ function renderTempTest() {
   if (act) {
     const ht = S.heater || {};
     setKids(tt.prog, h("b", { text: (t.mode_text || "") + " · " + (t.phase || "") }), " · " + fmtDur(t.t || 0) + " · 현재 " + ttFmt(t.T, 1, " °C") + (t.sp != null ? " · 목표 " + ttFmt(t.sp, 1, " °C") : ""),
-      " · 열선 " + (ht.pct == null ? (ht.element ? "켜짐" : "꺼짐") : Number(ht.pct).toFixed(1) + " %" + (ht.method ? " (" + ht.method + ")" : "")) + " · 송풍 " + (ht.fan ? "켜짐" : "꺼짐") + " · 쿨러 " + ttCoolers(t.coolers),
+      " · 열선 " + (ht.pct == null ? (ht.element ? "켜짐" : "꺼짐") : Number(ht.pct).toFixed(1) + " %" + (ht.method ? " (" + ht.method + ")" : "")) + (t.q != null ? " · 배율 " + Number(t.q).toFixed(2) : "") + " · 송풍 " + (ht.fan ? "켜짐" : "꺼짐") + " · 쿨러 " + ttCoolers(t.coolers),
       t.step_text ? h("b", { text: " · " + t.step_text }) : null,
       bootText(ht) ? h("span", { class: "st-warn", text: " · " + bootText(ht) }) : null);
   } else if (t.result) {

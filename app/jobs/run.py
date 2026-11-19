@@ -56,7 +56,7 @@ COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "
              "run_heat_mode", "run_point_step_c", "cool_rate_separate", "run_heat_hold_s",
              "run_fan_during_cool", "heater_start_gap_s", "heater_fan_after_s", "run_cool_mode", "run_cool_rate_c_min", "heater_lead_c",
              "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct", "heater_pwm_period_ms",
-             "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "heat_curve", "heater_tc_s", "reversal_c")
+             "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "heat_curve", "heater_tc_s", "heater_pi_filter_s", "heater_jump_c", "reversal_c")
 CONTROL_HEADER = ("회차", "단계", "경과(s)", "온도(°C)", "저항(Ω)", "목표 온도(°C)", "열선 출력(%)", "송풍")     # <이름>_<전압>V_control.csv 의 첫 줄
 
 
@@ -414,6 +414,7 @@ class Runner:
             self._close_files(it)
             it["sum"] = analysis.analyze(self._first_cycle(it))
             it["sum"]["curve"] = curve_summary(it.pop("_tl", []), cd_of(self.cond, c.cfg.values))
+            it["sum"]["jumps"] = [{"phase": ph, "sp": round(j["sp"], 1), "d": round(j["d"], 1)} for ph, j in it.pop("_jumps", [])]     # 온도 급변(d = 끝난 뒤의 최대 폭)
             self._save_json()
             self.publish()
         if abort is not None:
@@ -710,6 +711,7 @@ class Runner:
                         self._check(g)
                         c.logs.app("샘플 %s · 열선 켜기 거절 · %s" % (it["name"], e), "warn")
                         return False
+                    self._note_jumps(it, ctl, "가열")
                 self.frac = max(0.0, min(1.0, (T - T_start) / max(1e-6, off_c - T_start)))
             if now - t0 > float(cd["run_phase_limit_s"]):
                 raise SampleFail("가열 %g초 초과" % cd["run_phase_limit_s"])
@@ -760,11 +762,26 @@ class Runner:
                     except Rejected as e:
                         self._check(g)
                         ctl = self._ctl_off(it, "냉각 중 열선 켜기 거절 · %s" % e)
+                    else:
+                        self._note_jumps(it, ctl, "냉각")
                 self.frac = max(0.0, min(1.0, frac(T)))
             if now - t0 > float(cd["run_phase_limit_s"]):
                 raise SampleFail("%s %g초 초과" % (what, cd["run_phase_limit_s"]))
             self.publish()
             c.sleep(max(0.0, interval - (c.clock() - t_it)))
+
+    def _note_jumps(self, it, ctl, phase):
+        """제어기에 새로 생긴 온도 급변: 샘플 메모(같은 글은 한 번) · 로그 · 요약용으로 모음(it["_jumps"]). 측정은 멈추지 않는다."""
+        seen = it.setdefault("_jumps", [])
+        known = {id(j) for _ph, j in seen}
+        for j in ctl.jumps:
+            if id(j) in known:
+                continue
+            seen.append((phase, j))
+            txt = "온도 급변 · %s %.0f °C" % (phase, j["sp"])
+            if txt not in it["notes"]:
+                it["notes"].append(txt)
+            self.c.logs.app("샘플 %s · 온도 급변 · %s %.1f °C · 목표선에서 %+.1f °C" % (it["name"], phase, j["sp"], j["d"]), "warn")
 
     def _ctl_off(self, it, why):
         """냉각 속도 제어를 그만두고 자연 냉각으로(열선은 끈 채). 기록 · 로그 한 줄."""
@@ -951,7 +968,7 @@ class Runner:
         elif self.cond.get("nas_dir"):
             nas = {"dir": files.nas_target(self.cond.get("nas_dir"), self.cond.get("nas_date_folder"), self.batch, self.t0), "ok": None, "pending": [], "done": []}
         return {"batch": self.batch, "started": self.t0, "saved": time.time(), "state": state or self.state, "msg": self.msg, "cond": self.cond, "nas": nas,
-                "samples": [{k: v for k, v in self.items[i].items() if k not in ("points", "_st", "_tl")} | {"order": n + 1} for n, i in enumerate(self.order)]}
+                "samples": [{k: v for k, v in self.items[i].items() if k not in ("points", "_st", "_tl", "_jumps")} | {"order": n + 1} for n, i in enumerate(self.order)]}
 
     def _save_json(self, state=None):
         if self.folder is None:
