@@ -26,7 +26,7 @@ class FakeHeatGun:
 
     def update(self, relays, pct=None):
         if pct is not None:
-            self.pct = int(pct)
+            self.pct = float(pct)                                   # V14 는 0.1 % 단위
         fan, el = bool(relays[self.fan_n - 1]), bool(relays[self.el_n - 1])
         with self._lock:
             if (fan, el) == (self.fan, self.element):

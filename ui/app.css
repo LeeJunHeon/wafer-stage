@@ -315,6 +315,7 @@ input.settext.withbtn { width: 272px; }                              /* [찾아�
 table.tb.tt-marks { width: auto; }
 table.tb.tt-marks tr { cursor: default; }
 table.tb.tt-marks td { max-width: none; }
+table.tb.tt-tune tr.sel td { font-weight: 700; }                         /* 히트건 맞추기 - 고른 방식
 
 /* ---- 크게 보고 고르기(ui/zoom.js zoomView): 초기 설정 3 [크게 선택] · 수동 제어 탭 [크게 보기] ---- */
 #dlg .box.full-box { position: absolute; left: 0; right: 0; top: 52px; bottom: 0; max-width: none; max-height: none; border-radius: 0; border: 0; }

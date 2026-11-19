@@ -87,8 +87,8 @@ function buildManual() {
   man.hEl = btn("열선 끄기", () => api("heater_element", { on: !(S.heater && S.heater.element) }));
   man.hOff = btn("끄기", () => api("heater_off"));
   man.hNow = btn("즉시 끄기", () => api("heater_off_now"));                    // 열선 · 송풍 바로 끔(확인 창 없음)
-  man.hPct = h("input", { type: "number", class: "num", min: "0", max: "100", step: "1", value: "30" });
-  man.hPctGo = btn("적용", () => { const v = parseInt(man.hPct.value, 10); if (!isFinite(v)) { toast("출력 % 숫자 필요"); return; } api("heater_power", { pct: v }); });
+  man.hPct = h("input", { type: "number", class: "num", min: "0", max: "100", step: "0.1", value: "30" });          // 0.1 % 단위(V14)
+  man.hPctGo = btn("적용", () => { const v = parseFloat(man.hPct.value); if (!isFinite(v)) { toast("출력 % 숫자 필요"); return; } api("heater_power", { pct: Math.round(v * 10) / 10 }); });
   man.hPctNow = h("span", { class: "small nowrap" });
   man.hState = h("span", { class: "small nowrap" });
   man.coolBox = h("span", { class: "relays" });
@@ -259,8 +259,8 @@ function renderManual() {
   man.hNow.disabled = !stage || !hOn;                                        // 즉시 끄기는 측정 · 온도 시험 중에도 된다(끄기)
   const v12 = !!ht.heat_fw;
   man.hPct.disabled = man.hPctGo.disabled = !!relayBlock || !ht.fan || !v12;
-  man.hPctNow.textContent = !stage ? "" : !v12 ? "펌웨어 V13 필요" : bootText(ht) ? bootText(ht) + (ht.boot_pending != null ? " · " + ht.boot_pending + " %" : "")
-    : !ht.fan ? "송풍 켠 뒤 적용" : "현재 " + (ht.pct == null ? "—" : ht.pct) + " %";
+  man.hPctNow.textContent = !stage ? "" : !v12 ? "펌웨어 V14 필요" : bootText(ht) ? bootText(ht) + (ht.boot_pending != null ? " · " + Number(ht.boot_pending).toFixed(1) + " %" : "")
+    : !ht.fan ? "송풍 켠 뒤 적용" : "현재 " + (ht.pct == null ? "—" : Number(ht.pct).toFixed(1)) + " %" + (ht.method ? " · " + ht.method : "");
   man.hState.textContent = heaterText(ht);
   man.hState.className = "small nowrap" + (hOn ? " st-warn" : "");
   const cool = c.cooler_relays || [];

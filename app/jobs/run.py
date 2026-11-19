@@ -182,6 +182,8 @@ class Runner:
             c.k2450_begin_run()                                     # 연속 측정을 끄고 K2450 사용권을 얻는다(측정이 끝나면 _main 이 놓는다)
             try:
                 self.cond = {k: c.cfg[k] for k in COND_KEYS}
+                if c.stage.heat_capable:
+                    c.heater_method_restore()                       # 설정의 열선 출력 방식으로(맞추기 · 수동이 바꿨을 수 있다)
                 heat_notices(c, self.cond, "run_interval_s", "측정")
                 self.batch = str(c.cfg["batch_name"])
                 self.t0 = time.time()
@@ -537,7 +539,7 @@ class Runner:
 
     def _elog(self, it, now, pct):
         """열선 출력을 바꾼 기록(run.json element_log): [경과 s(control.csv 와 같은 기준), 출력 %(0 = 끔), 회차]."""
-        it.setdefault("element_log", []).append([round(now - (self._t_rec if self._t_rec is not None else now), 3), int(pct), self.cycle])
+        it.setdefault("element_log", []).append([round(now - (self._t_rec if self._t_rec is not None else now), 3), round(float(pct), 1), self.cycle])
 
     # ---- 읽기 ----
     def _read_temp(self):
@@ -578,7 +580,7 @@ class Runner:
         line = files.data_line(T, R) + files.CRLF
         c = self.c
         t_rel = c.clock() - (self._t_rec or c.clock())
-        ctl = "%d,%s,%.2f,%s,%s,%s,%d,%d\r\n" % (self.cycle, "가열" if phase == 0 else "냉각", t_rel, files.fmt_e(T), files.fmt_e(R),
+        ctl = "%d,%s,%.2f,%s,%s,%s,%.1f,%d\r\n" % (self.cycle, "가열" if phase == 0 else "냉각", t_rel, files.fmt_e(T), files.fmt_e(R),
                                               "" if sp is None else "%.3f" % sp, c.heater_pct(), 1 if c._fan_on() else 0)
         if len(it.setdefault("_tl", [])) < MAX_POINTS:
             it["_tl"].append((round(t_rel, 3), float(T), None if sp is None else float(sp), phase, self.cycle))     # 요약(점 수 · 속도 · 역전 · 목표선 차이)용
@@ -1064,7 +1066,7 @@ def heat_notices(c, cd, interval_key, who):
     """측정 · 온도 시험 시작 때 주의(막지 않는다): 열 모델이 없으면 "반응 재기 필요" · 설정 속도가 최대 속도 표의 그 구간 최대보다 빠르면 그 구간."""
     m = heater_mod.ThermalModel(cd)
     if not m.measured:
-        c.state.alarm("heat_model", "열 모델 없음 · 온도 시험 [반응 재기] 필요", NOTICE, dismiss=True)
+        c.state.alarm("heat_model", "열 모델 없음 · 온도 시험 [히트건 맞추기] 필요", NOTICE, dismiss=True)
     else:
         c.state.clear_alarm("heat_model")
     sp = c.calib.d.get("speed_max") or {}

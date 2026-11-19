@@ -195,16 +195,20 @@ ITEMS = (
               desc="제어기가 쓰는 열선 출력 상한\n넘침이 크면 낮춤"),
          Item("heater_full_pct", 90, "int", "연속 판정 출력", "%", 1, 100,
               desc="열선 연속 최대 시간은 출력이 이 값 이상으로 이어진 시간\n출력 % 로 오래 조절하는 동안은 세지 않음"),
-         Item("heater_pwm_period_ms", 5000, "int", "열선 출력 주기", "ms", 200, 5000,
-              desc="열선 출력 % 의 한 주기(SSR) · 주기 × % 동안만 켬\n957DW: 켜기 직후 끊으면 H-E · 5 s 주기 정상 확인"),
+         Item("heater_out_mode", "window", "choice", "열선 출력 방식", choices=(("window", "몰아 켜기"), ("spread", "고르게 나눠 켜기")),
+              desc="고르게 = 칸마다 나눠 켜서 출렁임이 작음 · 몰아 켜기 = 주기 앞쪽에 몰아 켬\n[히트건 맞추기] 가 정함 · 펌웨어 V14"),
+         Item("heater_pwm_period_ms", 5000, "int", "몰아 켜기 주기", "ms", 200, 5000,
+              desc="몰아 켜기의 한 주기 · 주기 앞쪽 (주기 × %) 동안만 켬\n5 s 주기는 30 % 에서 ±3 °C 출렁였다"),
+         Item("heater_slot_ms", 10, "int", "고르게 켜기 칸", "ms", 10, 1000,
+              desc="고르게 나눠 켜기의 칸 길이 · 칸마다 켬 · 끔을 누적으로 정함\n10 의 배수(SSR 제로크로스 · 10 ms 타이머)"),
          Item("heater_boot_hold_s", 5.0, "float", "스테이션 켠 뒤 100 % 유지", "s", 0, 60,
               desc="송풍(스테이션)을 새로 켠 뒤 이 시간 동안 열선 100 % · 그동안 끊으면 H-E\n그 사이 출력 % 요청은 끝날 때 적용"),
          Item("heat_model_k", None, "optfloat", "열 모델 이득", "°C/%", 0.01, 20, verify=True,
-              desc="열선 출력 1 % 당 올라가는 온도 · 온도 시험 [반응 재기] 로 저장\n비우면 보수적인 기본값"),
+              desc="열선 출력 1 % 당 올라가는 온도 · 온도 시험 [히트건 맞추기] 로 저장\n비우면 보수적인 기본값"),
          Item("heat_model_tau_s", None, "optfloat", "열 모델 시간 상수", "s", 1, 3600, verify=True,
-              desc="출력을 바꾼 뒤 온도가 63 % 따라가는 시간 · [반응 재기] 로 저장"),
+              desc="출력을 바꾼 뒤 온도가 63 % 따라가는 시간 · [히트건 맞추기] 로 저장"),
          Item("heat_model_theta_s", None, "optfloat", "열 모델 지연", "s", 0, 300, verify=True,
-              desc="출력을 바꾼 뒤 온도가 움직이기 시작할 때까지 · [반응 재기] 로 저장"),
+              desc="출력을 바꾼 뒤 온도가 움직이기 시작할 때까지 · [히트건 맞추기] 로 저장"),
          Item("reversal_c", 0.3, "float", "역전 기준", "°C", 0.01, 10,
               desc="가열 중 내려감 · 냉각 중 올라감이 이 값 넘으면 역전 1회로 셈"),
          Item("run_fan_during_cool", True, "bool", "냉각 중 송풍",
@@ -221,10 +225,10 @@ ITEMS = (
               desc="온도 시험에서 온도를 읽고 기록하는 간격\n온도 읽기 시간 이상 · 온도 못 읽음 허용 시간보다 충분히 짧게"),
          Item("temp_test_mark_c", 5.0, "float", "도달 표 온도 간격", "°C", 0.5, 50,
               desc="도달 표에 걸린 시간을 적는 온도 간격 · 5 면 35 · 40 · 45 °C …\n촘촘히 볼 때 줄임"),
-         Item("temp_step_pct", 30, "int", "반응 재기 출력", "%", 5, 100,
-              desc="[반응 재기] 에서 0 → 이 출력 → 0 % 로 바꿔 열 모델을 잼"),
-         Item("temp_step_s", 240.0, "float", "반응 재기 유지 시간", "s", 20, 1800,
-              desc="[반응 재기] 에서 출력을 유지하는 시간 · 끈 뒤에도 같은 시간 기록\n온도가 거의 멈출 만큼 길게 · 가열 끝 온도에 닿으면 먼저 끝"),
+         Item("temp_step_pct", 30, "int", "맞추기 출력", "%", 5, 100,
+              desc="[히트건 맞추기] 비교 · 계단 위쪽 출력\n스테이션이 스스로 줄이기 시작하는 출력(약 45 %)보다 낮게"),
+         Item("temp_step_s", 90.0, "float", "맞추기 계단 유지", "s", 20, 1800,
+              desc="[히트건 맞추기] 계단(내림 · 올림) 하나를 유지하는 시간\n온도가 거의 멈출 만큼 길게"),
          Item("temp_test_precool", True, "bool", "온도 시험 예비 냉각",
               desc="가열 전에 쿨러로 시작 온도까지 냉각\n끄면 쿨러만 켜고 바로 가열"))
     + _g("판 · 핀",
@@ -373,7 +377,7 @@ PC_KEYS = frozenset({"stage_port", "k2110_addr", "k2450_addr", "data_dir", "auto
 # 장비 값: 장비(한 대)에 딸린 값 - 코드 기본값이 그 장비의 값이다(배선 · 설치가 바뀌면 코드 기본값도 바꾼다). 전체 설정에 "장비 값" 표시
 DEVICE_KEYS = frozenset({"cooler_grid", "machine_front_side", "machine_right_side", "view_rot", "view_flip", "camera_focus_value",
                          "heater_fan_relay", "heater_element_relay", "cooler_relays", "heat_model_k", "heat_model_tau_s", "heat_model_theta_s",
-                         "heater_pwm_period_ms", "heater_boot_hold_s"})
+                         "heater_pwm_period_ms", "heater_boot_hold_s", "heater_out_mode", "heater_slot_ms"})
 
 # 기본값 이력(키 → 예전 기본값들): 저장된 값이 예전 기본값과 같으면 "바꾼 적 없음" 으로 보고 지운다(새 기본값을 따른다 - Config.load 한 번 · 로그 한 줄씩).
 # 기본값을 바꿀 때 예전 값을 여기에 더한다. 없어진 키는 REMOVED_KEYS 에(읽을 때 버리고 로그).
@@ -383,6 +387,7 @@ DEFAULT_HISTORY = {
     "cooler_grid": [[[2, 2, 2], [3, 3, 3], [4, 4, 4]]],
     "run_interval_s": [1.0],
     "heater_pwm_period_ms": [1000],
+    "temp_step_s": [240.0],
 }
 REMOVED_KEYS = {
     "marker_pair_px": "마커 두 장 허용은 mm(marker_pair_mm) · 지연 대기 뒤 2.9 · 5.7 px(약 0.2~0.3 mm)가 2 px 로 거절됐다",
@@ -609,6 +614,10 @@ def temptest_problems(v: dict) -> list:
     bad = sorted({int(n) for n in v["temp_test_coolers"]} - {int(n) for n in v["cooler_relays"]})
     if bad:
         out.append("온도 시험 쿨러 %s · 쿨러 릴레이 아님" % " · ".join("R%d" % n for n in bad))
+    if not int(v["temp_step_pct"]) > 10:                        # 맞추기 계단 아래쪽은 10 %(temptest.TUNE_LOW_PCT)
+        out.append("맞추기 출력 %d %% · 10 %% 초과 필요" % v["temp_step_pct"])
+    if int(v["heater_slot_ms"]) % 10:
+        out.append("고르게 켜기 칸 %d ms · 10 의 배수 필요" % v["heater_slot_ms"])
     iv = float(v["temp_test_interval_s"])
     if iv < float(v["temp_read_s"]):
         out.append("온도 시험 읽기 간격 %g초 · 온도 읽기 시간 %g초 이상 필요" % (iv, v["temp_read_s"]))

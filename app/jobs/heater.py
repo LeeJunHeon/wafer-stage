@@ -9,7 +9,7 @@
   (PowerControl - 목표선 기준 PI + 앞먹임 + 적분 포화 방지 + 0 ~ heater_max_pct 제한)를 가열 · 냉각이 같이 쓴다(냉각은 목표선이 내려갈 뿐).
   계수는 손으로 맞추지 않는다: 열 모델(1차 + 지연: 이득 K °C/% · 시간 상수 τ · 지연 θ - ThermalModel)에서 SIMC 규칙으로 계산한다.
   앞먹임 = 그 온도를 유지하는 출력((목표 − 시작 주위 온도) ÷ K) + 목표선 기울기만큼의 출력(τ × 기울기 ÷ K). 목표 온도 · 속도를 바꿔도 같은 값으로 동작한다.
-  열 모델은 온도 시험 [반응 재기](fit_fopdt)로 잰다. 없으면 보수적인 기본값(DEFAULT_MODEL - 이득을 크게 · 지연을 길게 봐서 계수가 작다).
+  열 모델은 온도 시험 [히트건 맞추기](fit_fopdt - 내림 · 올림 계단)로 잰다. 없으면 보수적인 기본값(DEFAULT_MODEL - 이득을 크게 · 지연을 길게 봐서 계수가 작다).
 목표선(LineControl): 가열 = 시작 온도 + 속도 × 경과(상한 가열 끝 온도) · 냉각 = 가열 끝 순간 온도 − 속도 × 경과(하한 냉각 끝 온도).
   기다림(heater_lead_c): 순간값이 아니라 걸러진 온도(heater_lead_filter_s 평균)가 lead 넘게 뒤처진 채 heater_lead_hold_s 이상 이어질 때만 목표선을 세운다
   (냉각을 늦추려 켠 열선이 순간 온도를 목표선 위로 튀게 해 목표선이 섰던 일 - 냉각이 11 °C/분에 그쳤다).
@@ -88,7 +88,7 @@ class PowerControl:
 class LineControl:
     """목표선 + 열선 출력(가열 또는 냉각 한 단계). sign = +1 가열(상한 end_c) · −1 냉각(하한 end_c).
     목표선은 경과 시간이 아니라 회차마다 앞으로 간다: 걸러진 온도가 lead 넘게 뒤처진 채 hold 초 이상이면 그 회차는 기다린다.
-    step() 이 목표를 정하고 출력 % 를 계산해 heater.power 로 보낸다(1 % 넘게 바뀔 때만 - 거절은 Rejected 그대로 올라간다)."""
+    step() 이 목표를 정하고 출력 % 를 계산해 heater.power 로 보낸다(0.1 % 단위 · 0.05 넘게 바뀔 때만 - 거절은 Rejected 그대로 올라간다)."""
 
     def __init__(self, heater, cd, T_from, end_c, sign, now, rate_c_min, T_amb=None, on_change=None):
         self.h = heater
@@ -152,13 +152,13 @@ class LineControl:
             self._held = True
             self.pc.t = now
             self.pc.I = 0.0
-            pct = int(round(max(0.0, min(self.pc.umax, self.pc.ff(sp, self.slope)))))
-            if pct != self.pct:
+            pct = round(max(0.0, min(self.pc.umax, self.pc.ff(sp, self.slope))), 1)
+            if self.pct is None or abs(pct - self.pct) > 0.05:
                 self.h.power(pct)
                 self.pct = pct
             return False
-        pct = int(round(self.pc.out(T, sp, self.slope, now)))
-        if self.pct is not None and pct == self.pct and self.h.pct == pct:     # 실제 출력(펌웨어가 알려 준 값)과도 같을 때만 건너뛴다 - [정지] '!' 가 0 으로 만들었으면 다시 보낸다
+        pct = round(self.pc.out(T, sp, self.slope, now), 1)        # 0.1 % 단위(V14)
+        if self.pct is not None and abs(pct - self.pct) <= 0.05 and abs(float(self.h.pct) - pct) <= 0.05:     # 실제 출력과도 같을 때만 건너뛴다 - [정지] '!' 가 0 으로 만들었으면 다시 보낸다
             return False
         self.h.power(pct)
         self.pct = pct
@@ -189,15 +189,18 @@ class Stall:
 # ----------------------------------------------------------------------
 # 열 모델 맞추기 · 최대 속도 표 · 속도 주의
 # ----------------------------------------------------------------------
-def fit_fopdt(rows, u_pct):
-    """[반응 재기]의 출력 단계 기록 rows = [(출력을 올린 뒤 경과 s, 온도)] (출력 u_pct 를 유지한 구간) → (K °C/%, τ s, θ s, 맞춤 오차 °C) 또는 None.
-    T(t) = T0 + K u (1 − exp(−(t − θ)/τ)) (t > θ). θ · τ 는 격자에서 고르고 K 는 그때마다 최소제곱으로 바로 푼다."""
-    if len(rows) < 8 or u_pct <= 0:
+def fit_fopdt(rows, du_pct, T0=None):
+    """[히트건 맞추기]의 출력 계단 기록 rows = [(경과 s, 온도)] (출력을 du_pct 만큼 바꾼 뒤 유지한 구간) → (K °C/%, τ s, θ s, 맞춤 오차 °C) 또는 None.
+    T(t) = T0 + K du (1 − exp(−(t − θ)/τ)) (t > θ). du 가 음수(내린 계단)면 ys 와 du 의 부호를 같이 뒤집어 같은 식으로 맞춘다.
+    T0 = 기준 온도(계단 직전 평균 - 없으면 첫 점). θ · τ 는 격자에서 고르고 K 는 그때마다 최소제곱으로 바로 푼다."""
+    if len(rows) < 8 or not du_pct:
         return None
     t0 = rows[0][0]
-    T0 = rows[0][1]
+    base = rows[0][1] if T0 is None else float(T0)
+    sgn = 1.0 if du_pct > 0 else -1.0
     ts = [t - t0 for t, _ in rows]
-    ys = [T - T0 for _, T in rows]
+    ys = [sgn * (T - base) for _, T in rows]
+    u_pct = abs(float(du_pct))
     if max(ys) < 1.0:
         return None
     best = None
@@ -217,7 +220,7 @@ def fit_fopdt(rows, u_pct):
     if best is None or best[1] <= 0:
         return None
     sse, A, tau, th = best
-    return A / float(u_pct), tau, th, math.sqrt(sse / len(ys))
+    return A / u_pct, tau, th, math.sqrt(sse / len(ys))         # K = A ÷ |du|(부호를 같이 뒤집었으므로 K 는 양수)
 
 
 def _slopes(seq, win=SPEED_WIN_S):

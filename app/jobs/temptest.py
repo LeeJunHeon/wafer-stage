@@ -1,8 +1,9 @@
 """temptest.py - 온도 시험(수동 제어 탭 [온도 시험]): 샘플 · 저항계 · 모터 없이 히트건과 쿨러의 온도 거동만 잰다.
 
-시험 셋(mode): test = 자동 측정과 같은 가열 · 냉각(열선 출력 % 제어 - heater.LineControl) · step = [반응 재기](출력 0 → temp_step_pct → 0 %,
-기록에서 열 모델 K · τ · θ 를 맞춰 설정 heat_model_* 에 저장 - heater.fit_fopdt) · max = [최대 속도 재기](출력 최대로 가열 끝 온도까지 → 0 % 로
-냉각 끝 온도까지, 5 °C 구간마다 최대 가열 · 냉각 속도를 calib speed_max 에 저장 - heater.speed_table). 펌웨어 V13 필요(열선 출력 %).
+시험 셋(mode): test = 자동 측정과 같은 가열 · 냉각(열선 출력 % 제어 - heater.LineControl) ·
+tune = [히트건 맞추기](_run_tune - 출력 방식(TUNE_METHODS)을 같은 출력에서 비교해 출렁임이 가장 작은 것을 고르고, 내림 · 올림 계단을
+heater.fit_fopdt 로 맞춰 열 모델 K · τ · θ - 고른 방식 · 열 모델을 설정에 저장) · max = [최대 속도 재기](출력 최대로 가열 끝 온도까지 → 0 % 로
+냉각 끝 온도까지, 5 °C 구간마다 최대 가열 · 냉각 속도를 calib speed_max 에 저장 - heater.speed_table). 펌웨어 V14 필요(열선 출력 0.1 % · 출력 방식).
 가열 · 냉각 속도 = 목표 점 간격 ÷ temp_test_interval_s × 60(config.heat_rate_c_min).
 
 목적: "몇 °C 까지 몇 초에 도달하는지" · 최대 가열 속도 · 넘침(열선을 끈 뒤 더 오르는 정도) · 냉각 시간을 보고 히트건 · 가열 제어 값을 정한다.
@@ -41,17 +42,24 @@ from app.jobs.heater import LineControl, RelayHeater, Stall
 from app.safety import Rejected
 from app.state import ALARM, NOTICE
 
-PRECOOL, HEAT, HOLD, COOL = 0, 1, 2, 3
-PHASES = ("예비 냉각", "가열", "유지", "냉각")
+PRECOOL, HEAT, HOLD, COOL, SETTLE, COMPARE, STEP = 0, 1, 2, 3, 4, 5, 6
+PHASES = ("예비 냉각", "가열", "유지", "냉각", "안정", "비교", "계단")      # 안정 · 비교 · 계단 = [히트건 맞추기](가열 · 냉각 요약은 이 단계 점을 쓰지 않는다)
 DONE, STOPPED, ESTOPPED, ABORTED = "완료", "정지", "비상정지", "중단"
-CSV_HEADER = ("시각", "경과(s)", "단계", "온도(°C)", "목표(°C)", "열선 출력(%)", "송풍", "쿨러")
+CSV_HEADER = ("시각", "경과(s)", "단계", "온도(°C)", "목표(°C)", "열선 출력(%)", "출력 방식", "송풍", "쿨러")
 COND_KEYS = ("run_start_c", "run_heater_off_c", "run_cool_end_c", "run_heat_mode", "run_point_step_c", "cool_rate_separate",
              "run_heat_hold_s", "run_fan_during_cool", "run_stall_s", "run_stall_c", "run_phase_limit_s",
              "temp_test_coolers", "temp_test_interval_s", "temp_test_mark_c", "temp_test_precool", "temp_step_pct", "temp_step_s",
              "heater_max_c", "heater_max_on_s", "temp_stale_s", "heater_start_gap_s", "heater_fan_after_s", "heater_fan_relay", "heater_element_relay",
              "run_cool_mode", "run_cool_rate_c_min", "heater_lead_c", "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct",
              "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "reversal_c")
-MODES = {"test": "온도 시험", "step": "반응 재기", "max": "최대 속도 재기"}
+MODES = {"test": "온도 시험", "tune": "히트건 맞추기", "max": "최대 속도 재기"}
+# [히트건 맞추기]: 비교할 출력 방식(안전한 것 → 잘게 켜는 것 순) · 시간 · 계단 아래쪽 출력 · H-E 의심 기준
+TUNE_METHODS = (("window", 5000), ("window", 1000), ("spread", 100), ("spread", 10))
+TUNE_SETTLE_S, TUNE_SEG_S, TUNE_SKIP_S, TUNE_LOW_PCT, TUNE_HE_DROP_C = 40, 60, 20, 10, 10
+
+
+def method_name(mode, ms):
+    return ("고르게 %d ms" if mode == "spread" else "몰아 켜기 %d ms") % int(ms)
 IV = "temp_test_interval_s"
 T_MISS_N = 3                                      # 온도를 이만큼 연속으로 못 읽으면 중단(열전대 끊김) - 자동 측정과 같다
 MAX_POINTS = 200000
@@ -160,8 +168,25 @@ def _f(v, fmt="%.1f", none="—"):
     return none if v is None else fmt % v
 
 
+def tune_lines(tn):
+    """[히트건 맞추기] 결과 줄: 방식 표 · 고른 방식 · 계단 둘 · 저장한 값."""
+    L = ["", "[히트건 맞추기] 방식 · 평균 °C · 출렁임 °C · 판정"]
+    for s in tn.get("segs") or []:
+        L.append("%s · %s · %s · %s" % (s["name"], _f(s["mean_c"], "%.2f"), _f(s["ripple_c"], "%.2f"),
+                                        "H-E 의심" if s["he"] else "선택" if s["name"] == tn.get("pick") else "-"))
+    L.append("고른 방식 · %s" % (tn.get("pick") or "없음"))
+    for st in tn.get("steps") or []:
+        L.append("계단 %g → %g %% · K %s · τ %s s · θ %s s · 오차 %s °C" % (st["from"], st["to"], _f(st["K"], "%.4f"), _f(st["tau"], "%.1f"),
+                                                                     _f(st["theta"], "%.1f"), _f(st["err"], "%.2f")))
+    m = tn.get("model")
+    if m:
+        L.append("열 모델 · K %.4f °C/%% · τ %.1f s · θ %.1f s · 오차 %.2f °C" % (m["K"], m["tau"], m["theta"], m["err"]))
+    L.append("저장 · %s" % ("고른 방식%s" % (" · 열 모델" if m else "") if tn.get("saved") else "안 함"))
+    return L
+
+
 def summary_lines(cd, res, result, started, notes):
-    """summary.txt 의 줄(조건 + 결과)."""
+    """summary.txt 의 줄(조건 + 결과). [히트건 맞추기] 는 조건 뒤에 맞추기 결과만."""
     L = ["온도 시험 · %s" % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started)), "결과 · %s" % result, ""]
     L.append("[조건]")
     L.append("가열 방식 · %s" % mode_text(cd))
@@ -173,6 +198,12 @@ def summary_lines(cd, res, result, started, notes):
                                                   " · ".join("R%d" % n for n in cd["temp_test_coolers"]) or "없음"))
     L.append("냉각 정체 %g s · %g °C · 한 단계 한도 %g s · 읽기 간격 %g s" % (cd["run_stall_s"], cd["run_stall_c"], cd["run_phase_limit_s"], cd["temp_test_interval_s"]))
     L.append("차단 온도 %g °C · 열선 연속 최대 %g s · 열선 후 송풍 %g s · 열선 끈 뒤 송풍 %g s" % (cd["heater_max_c"], cd["heater_max_on_s"], cd["heater_start_gap_s"], cd["heater_fan_after_s"]))
+    if res.get("tune") is not None:
+        L.append("맞추기 출력 %g %% · 계단 유지 %g s · 계단 아래 %d %%" % (cd["temp_step_pct"], cd["temp_step_s"], TUNE_LOW_PCT))
+        L += tune_lines(res["tune"])
+        if notes:
+            L += ["", "[메모]"] + list(notes)
+        return L
     L += ["", "[예비 냉각]"]
     pre = res.get("pre")
     if pre is None:
@@ -210,9 +241,6 @@ def summary_lines(cd, res, result, started, notes):
         L.append("%s · 점 %d개 · 평균 %s °C/분 · 점 간격 %s ± %s °C · 역전 %d회 · 최대 %s °C · 목표선 차이 평균 %s · 최대 %s °C" % (
             name, cs["n"], _f(cs["rate_c_min"], "%.2f"), _f(cs["step_mean"], "%.3f"), _f(cs["step_sd"], "%.3f"), cs["rev_n"], _f(cs["rev_max"], "%.2f"),
             _f(cs["sp_err_mean"], "%.2f"), _f(cs["sp_err_max"], "%.2f")))
-    if res.get("model"):
-        m = res["model"]
-        L += ["", "[반응 재기]", "출력 %d %% · K %.4f °C/%% · τ %.1f s · θ %.1f s · 맞춤 오차 %.2f °C" % (m["u"], m["K"], m["tau"], m["theta"], m["err"])]
     if res.get("speed"):
         L += ["", "[최대 속도] 구간 · 가열 · 냉각 °C/분"]
         for lo, hv, cv in res["speed"]:
@@ -315,7 +343,9 @@ class TempTest:
         self._stop = self._estop = False
         self.feeding = False                        # 시험이 온도를 읽어 안전 감시에 넘기는 중(감시 스레드가 따로 읽지 않는다)
         self.cond = {}
-        self.mode = "test"                          # test · step(반응 재기) · max(최대 속도 재기)
+        self.mode = "test"                          # test · tune(히트건 맞추기) · max(최대 속도 재기)
+        self.tune = None                            # [히트건 맞추기] 결과 {"segs", "pick", "steps", "model", "saved"}
+        self.step_text = ""                         # 지금 하는 일 한 줄(맞추기 - "비교 3/4 · 고르게 100 ms")
         self.folder = None
         self.pts = []                               # [경과 s, 온도, 목표 | None, 열선 출력 %, 송풍, 단계]
         self.elog = []                              # [경과 s, 출력 %] 열선 출력을 바꾼 때
@@ -328,7 +358,7 @@ class TempTest:
         self.coolers = []
         self.last_T = None
         self.sp = None
-        self.model = None                           # [반응 재기] 결과 {"u", "K", "tau", "theta", "err"}
+        self.model = None                           # [히트건 맞추기] 결과 {"u", "K", "tau", "theta", "err"}
         self.speed = None                           # [최대 속도 재기] 결과 [[구간 아래, 가열, 냉각], …]
         self._miss = 0
         self._f = None
@@ -361,7 +391,7 @@ class TempTest:
         return ""
 
     def start(self, mode="test"):
-        """mode: test(온도 시험) · step([반응 재기]) · max([최대 속도 재기])."""
+        """mode: test(온도 시험) · tune([히트건 맞추기]) · max([최대 속도 재기])."""
         c = self.c
         if mode not in MODES:
             raise Rejected("시험 종류 오류")
@@ -381,7 +411,9 @@ class TempTest:
                 self._open_folder()
                 self.pts, self.elog, self.ev, self.notes = [], [], {}, []
                 self.phase, self.result, self.last_T, self.sp, self._miss = PRECOOL, "", None, None, 0
-                self.model, self.speed = None, None
+                self.model, self.speed, self.tune, self.step_text = None, None, None, ""
+                if c.stage.heat_capable:
+                    c.heater_method_restore()                       # 설정의 출력 방식으로 시작(맞추기는 안에서 바꾼다)
                 self.coolers = [int(n) for n in self.cond["temp_test_coolers"]]
                 self._stop = self._estop = False
                 self.t0 = c.clock()
@@ -428,7 +460,7 @@ class TempTest:
     # ---- 파일 ----
     def _open_folder(self):
         base = self.c.cfg.data_path() / "temp_test"
-        name = time.strftime("%Y%m%d_%H%M%S", time.localtime(self.started)) + {"test": "", "step": "_반응", "max": "_최대속도"}[self.mode]
+        name = time.strftime("%Y%m%d_%H%M%S", time.localtime(self.started)) + {"test": "", "tune": "_맞추기", "max": "_최대속도"}[self.mode]
         try:
             base.mkdir(parents=True, exist_ok=True)
             for i in range(100):
@@ -455,8 +487,8 @@ class TempTest:
         on = [n for n in self.coolers if c._relay_is_on(n)]
         ph = self.phase
         lt = time.localtime()
-        row = "%s.%d,%.2f,%s,%.3f,%s,%d,%d,%s\r\n" % (time.strftime("%H:%M:%S", lt), int((time.time() % 1) * 10), t, PHASES[ph], T,
-                                                      "" if sp is None else "%.3f" % sp, pct, fan, " ".join("R%d" % n for n in on))
+        row = "%s.%d,%.2f,%s,%.3f,%s,%.1f,%s,%d,%s\r\n" % (time.strftime("%H:%M:%S", lt), int((time.time() % 1) * 10), t, PHASES[ph], T,
+                                                           "" if sp is None else "%.3f" % sp, pct, c.stage.method_text(), fan, " ".join("R%d" % n for n in on))
         try:
             self._f.write(row)
             self._f.flush()
@@ -466,7 +498,7 @@ class TempTest:
             self.pts.append([round(t, 3), round(float(T), 3), None if sp is None else round(float(sp), 3), pct, fan, ph])
 
     def _elog(self, now, pct):
-        self.elog.append([round(now - self.t0, 3), int(pct)])
+        self.elog.append([round(now - self.t0, 3), round(float(pct), 1)])
 
     def _finish_files(self, res):
         f, self._f = self._f, None
@@ -482,7 +514,7 @@ class TempTest:
             self.c.logs.app("온도 시험 summary.txt 저장 실패 · %s" % e, "error")
         try:
             kind = {"test": "ramp %.1f C/min" % config_mod.heat_rate_c_min(self.cond, IV) if self.cond["run_heat_mode"] == "ramp" else "full",
-                    "step": "step %d %%" % int(self.cond["temp_step_pct"]), "max": "max speed"}[self.mode]
+                    "tune": "heater tune", "max": "max speed"}[self.mode]
             title = "temperature test %s | %s | target %g C" % (time.strftime("%Y-%m-%d %H:%M", time.localtime(self.started)), kind,
                                                             float(self.cond["run_heater_off_c"]))
             cv = res.get("curve") or {}
@@ -496,6 +528,7 @@ class TempTest:
         if res is not None:
             res["model"] = self.model
             res["speed"] = self.speed
+            res["tune"] = self.tune if self.mode == "tune" else None
         return res
 
     # ---- 시험 스레드 ----
@@ -505,7 +538,7 @@ class TempTest:
         c.logs.app("%s 시작 · %s · %g → %g → %g °C · %s" % (MODES[self.mode], mode_text(cd), cd["run_start_c"], cd["run_heater_off_c"], cd["run_cool_end_c"], self.folder))
         kind, text = "done", ""
         try:
-            {"test": self._run, "step": self._run_step, "max": self._run_max}[self.mode](g)
+            {"test": self._run, "tune": self._run_tune, "max": self._run_max}[self.mode](g)
         except _End as e:
             kind, text = e.kind, e.text
         except Exception as e:                                      # noqa: BLE001 - 예상 못 한 오류도 정리 · 저장을 거친다
@@ -537,23 +570,33 @@ class TempTest:
             self.publish()
 
     def _results(self, kind):
-        """[반응 재기] → 열 모델 저장(설정 heat_model_*) · [최대 속도 재기] → 최대 속도 표 저장(calib speed_max). 끝까지 갔을 때만."""
+        """[히트건 맞추기] → 고른 출력 방식 · 열 모델 저장(설정) · [최대 속도 재기] → 최대 속도 표 저장(calib speed_max). 끝까지 갔을 때만."""
         c = self.c
-        if self.mode == "step" and kind == "done":
-            t1, t2 = self.ev.get("t_step"), self.ev.get("t_step_end")
-            rows = [(p[0], p[1]) for p in self.pts if t1 is not None and t1 <= p[0] <= (t2 if t2 is not None else 1e18)]
-            u = int(self.cond["temp_step_pct"])
-            fit = heater_mod.fit_fopdt(rows, u)
-            if fit is None:
-                self.notes.append("열 모델 맞추기 실패 · 온도 변화 부족 · 반응 재기 출력 · 유지 시간 늘림")
-                c.logs.app("반응 재기 · 맞추기 실패 · 점 %d" % len(rows), "warn")
-                return
-            K, tau, th, err = fit
-            self.model = {"u": u, "K": round(K, 5), "tau": round(tau, 2), "theta": round(th, 2), "err": round(err, 3)}
-            c._remember(heat_model_k=round(K, 5), heat_model_tau_s=round(tau, 2), heat_model_theta_s=round(th, 2))   # 장비 값 - 코드 기본값에도 옮기면 GitHub 로 관리된다
-            c.state.clear_alarm("heat_model")
-            c.logs.app("반응 재기 · 열 모델 저장 · K %.4f °C/%% · τ %.1f s · θ %.1f s · 맞춤 오차 %.2f °C · %s" % (K, tau, th, err,
-                                                                                                  heater_mod.ThermalModel(c.cfg.values).text()))
+        tn = self.tune
+        if self.mode == "tune" and kind == "done" and tn and tn.get("pick"):
+            seg = next(s for s in tn["segs"] if s["name"] == tn["pick"])
+            kw = {"heater_out_mode": seg["mode"]}
+            kw["heater_pwm_period_ms" if seg["mode"] == "window" else "heater_slot_ms"] = int(seg["ms"])
+            fits = [s for s in tn["steps"] if s["K"] is not None]
+            if len(fits) == 2:
+                m = {"K": round(sum(s["K"] for s in fits) / 2, 5), "tau": round(sum(s["tau"] for s in fits) / 2, 2),
+                     "theta": round(sum(s["theta"] for s in fits) / 2, 2), "err": max(s["err"] for s in fits)}
+                tn["model"] = m
+                kw.update(heat_model_k=m["K"], heat_model_tau_s=m["tau"], heat_model_theta_s=m["theta"])
+                if abs(fits[0]["K"] - fits[1]["K"]) > 0.3 * max(fits[0]["K"], fits[1]["K"]):
+                    self.notes.append("내림 · 올림 반응 차이 큼")
+            else:
+                self.notes.append("열 모델 맞추기 실패 · 출력 방식만 저장")
+            c._remember(**kw)                                       # 장비 값 - 코드 기본값에도 옮기면 GitHub 로 관리된다
+            tn["saved"] = True
+            if tn["model"]:
+                c.state.clear_alarm("heat_model")
+            if c.stage.heat_capable:
+                try:
+                    c.heater_method_restore()                       # 저장한 방식을 펌웨어에도
+                except Rejected as e:
+                    c.logs.app("히트건 맞추기 · 출력 방식 보내기 실패 · %s" % e, "warn")
+            c.logs.app("히트건 맞추기 · 고른 방식 %s · 열 모델 %s" % (tn["pick"], heater_mod.ThermalModel(c.cfg.values).text() if tn["model"] else "저장 안 함"))
         if self.mode == "max" and kind == "done":
             heat = [(p[0], p[1]) for p in self.pts if p[5] == HEAT]
             cool = [(p[0], p[1]) for p in self.pts if p[5] == COOL]
@@ -645,20 +688,24 @@ class TempTest:
         if stalled:
             self.notes.append("냉각 끝 온도 미도달")
 
-    def _run_step(self, g):
-        """[반응 재기]: 예비 냉각 → 히트건 켜기 → 출력 temp_step_pct 유지(temp_step_s · 가열 끝 온도에 닿으면 먼저 끝) → 출력 0 % 로 같은 시간 기록."""
-        c, cd = self.c, self.cond
-        start_c, off_c = float(cd["run_start_c"]), float(cd["run_heater_off_c"])
-        hold = float(cd["temp_step_s"])
-        self._coolers_on(g)
-        self.feeding = True
-        self._precool(g, start_c)
-        trips0 = c.heater_trips
-        self._heater_start(g)
-        self._power(g, cd["temp_step_pct"])
+    # ---- [히트건 맞추기] ----
+    def _method(self, g, mode, ms):
+        """펌웨어 출력 방식만 바꾼다(설정은 그대로 - 끝에 _cleanup 이 설정값으로 되돌린다)."""
+        try:
+            self.c.heater_method(mode, ms)
+        except Rejected as e:
+            self._check(g)
+            raise _End("abort", "출력 방식 바꾸기 실패 · %s" % e)
+
+    def _hold_for(self, g, trips0, secs=None, until=None, he=None):
+        """기록만 하며 기다린다(출력은 그대로). secs 초가 지나거나 until() 이 참이면 끝. 반환 [(구간 경과 s, 온도)].
+        he = 방식 이름이면 H-E 의심을 본다: 구간 시작 15 s 뒤부터 5 s 이동 평균의 최고값을 따라가다가 지금 이동 평균이 그보다 TUNE_HE_DROP_C 넘게 낮으면 중단."""
+        c = self.c
         t1 = c.clock()
-        self.ev["t_step"] = round(t1 - self.t0, 3)
-        while True:                                                 # 출력 유지
+        rows = []
+        top = None
+        limit = float(self.cond["run_phase_limit_s"])
+        while True:
             self._check(g)
             if c.heater_trips != trips0:
                 raise _End("abort", c.heater_trip or "히트건 차단")
@@ -667,24 +714,94 @@ class TempTest:
             now = c.clock()
             if T is not None:
                 self._record(T, None)
-                if T >= off_c:
-                    self.notes.append("가열 끝 온도 도달 · 유지 %.0f s 에서 끝" % (now - t1))
-                    break
-            if now - t1 >= hold:
-                break
+                rows.append((now - t1, float(T)))
+                if he is not None and now - t1 >= 15.0:
+                    w = [v for t, v in rows if t >= rows[-1][0] - 5.0]
+                    ma = sum(w) / len(w)
+                    top = ma if top is None or ma > top else top
+                    if top - ma > TUNE_HE_DROP_C:
+                        if self.tune and self.tune["segs"]:
+                            self.tune["segs"][-1]["he"] = True
+                        raise _End("abort", "H-E 의심 · %s · 스테이션 화면 확인" % he)
+            if secs is not None and now - t1 >= secs:
+                return rows
+            if until is not None and until():
+                return rows
+            if now - t1 > limit:
+                raise _End("abort", "%s %g초 초과" % (PHASES[self.phase], limit))
             self._tick(t_it)
-        t2 = c.clock()
-        self.ev["t_step_end"] = round(t2 - self.t0, 3)
-        self.ev["t_heat_end"] = self.ev["t_step_end"]
-        self._power(g, 0)
-        self.phase = COOL
-        while c.clock() - t2 < hold:                                # 출력 0 % 기록(끄는 쪽 반응 · 확인용)
-            self._check(g)
-            t_it = c.clock()
-            T = self._read()
-            if T is not None:
-                self._record(T, None)
-            self._tick(t_it)
+
+    @staticmethod
+    def _seg_eval(rows):
+        """앞 TUNE_SKIP_S 를 뺀 구간: 평균 온도 · 출렁임(직선 추세를 뺀 나머지의 최고 − 최저)."""
+        r = [(t, v) for t, v in rows if t >= TUNE_SKIP_S]
+        if len(r) < 3:
+            return None, None
+        n = len(r)
+        mt, mv = sum(t for t, _ in r) / n, sum(v for _, v in r) / n
+        den = sum((t - mt) ** 2 for t, _ in r)
+        b = sum((t - mt) * (v - mv) for t, v in r) / den if den > 0 else 0.0
+        res = [v - (mv + b * (t - mt)) for t, v in r]
+        return round(mv, 3), round(max(res) - min(res), 3)
+
+    @staticmethod
+    def _last_mean(rows, span=5.0):
+        if not rows:
+            return None
+        w = [v for t, v in rows if t >= rows[-1][0] - span]
+        return sum(w) / len(w)
+
+    def _run_tune(self, g):
+        """[히트건 맞추기]: 예비 냉각 → (가장 안전한 방식으로) 히트건 켜기 → 출력 temp_step_pct → 켜기 유지 끝 → 안정 TUNE_SETTLE_S →
+        방식마다 TUNE_SEG_S 비교(평균 · 출렁임 · H-E 의심) → 출렁임이 가장 작은 방식(0.05 °C 안이면 더 잘게 켜는 쪽) → 안정 20 s →
+        계단: TUNE_LOW_PCT 로 내림 temp_step_s → 다시 temp_step_pct 로 올림 temp_step_s → 두 계단을 열 모델로 맞춘다. 저장은 끝까지 갔을 때만(_results)."""
+        c, cd = self.c, self.cond
+        up = float(cd["temp_step_pct"])
+        low = float(TUNE_LOW_PCT)
+        self.tune = {"segs": [], "pick": None, "steps": [], "model": None, "saved": False}
+        self._coolers_on(g)
+        self.feeding = True
+        self._precool(g, float(cd["run_start_c"]))
+        self._method(g, *TUNE_METHODS[0])                           # 켜는 동안은 가장 안전한 방식(몰아 켜기 5 s)
+        trips0 = c.heater_trips
+        self._heater_start(g)
+        self._power(g, up)                                          # 켠 뒤 100 % 유지 중이면 끝날 때 적용(Controller)
+        self.phase = SETTLE
+        self.step_text = "스테이션 켜는 중"
+        self._hold_for(g, trips0, until=lambda: c.boot_left() <= 0)
+        self.step_text = "안정 · %d초" % TUNE_SETTLE_S
+        self._hold_for(g, trips0, secs=TUNE_SETTLE_S)
+        self.phase = COMPARE
+        for i, (mode, ms) in enumerate(TUNE_METHODS):
+            name = method_name(mode, ms)
+            self._method(g, mode, ms)
+            self.step_text = "비교 %d/%d · %s" % (i + 1, len(TUNE_METHODS), name)
+            seg = {"mode": mode, "ms": ms, "name": name, "mean_c": None, "ripple_c": None, "he": False}
+            self.tune["segs"].append(seg)
+            rows = self._hold_for(g, trips0, secs=TUNE_SEG_S, he=name)
+            seg["mean_c"], seg["ripple_c"] = self._seg_eval(rows)
+        ok = [s for s in self.tune["segs"] if not s["he"] and s["ripple_c"] is not None]
+        if not ok:
+            raise _End("abort", "비교 기록 부족")
+        lo_r = min(s["ripple_c"] for s in ok)
+        pick = [s for s in ok if s["ripple_c"] <= lo_r + 0.05][-1]   # 0.05 °C 안이면 목록 뒤쪽(더 잘게 켜는 쪽)
+        self.tune["pick"] = pick["name"]
+        self._method(g, pick["mode"], pick["ms"])
+        self.phase = SETTLE
+        self.step_text = "안정 · %s" % pick["name"]
+        rows = self._hold_for(g, trips0, secs=20.0)
+        self.phase = STEP
+        for a, b in ((up, low), (low, up)):
+            base = self._last_mean(rows)
+            self.step_text = "계단 %g → %g %%" % (a, b)
+            self._power(g, b)
+            rows = self._hold_for(g, trips0, secs=float(cd["temp_step_s"]))
+            fit = heater_mod.fit_fopdt(rows, b - a, T0=base)
+            st = {"from": a, "to": b, "K": None, "tau": None, "theta": None, "err": None}
+            if fit is not None:
+                st.update(K=round(fit[0], 5), tau=round(fit[1], 2), theta=round(fit[2], 2), err=round(fit[3], 3))
+            self.tune["steps"].append(st)
+        self.step_text = ""
 
     def _run_max(self, g):
         """[최대 속도 재기]: 예비 냉각 → 출력 최대로 가열 끝 온도까지 → 출력 0 %(쿨러 · 송풍)로 냉각 끝 온도까지(정체면 거기까지)."""
@@ -839,6 +956,11 @@ class TempTest:
         except Rejected as e:
             c.state.alarm("heater_off_fail", "히트건 끄기 실패 · 전원 직접 차단 필요", ALARM)
             c.logs.app("온도 시험 뒤 히트건 끄기 실패 · %s" % e, "error")
+        if c.stage.connected and c.stage.heat_capable:
+            try:
+                c.heater_method_restore()                           # 맞추기가 바꾼 출력 방식을 설정값으로 되돌린다
+            except Rejected as e:
+                c.logs.app("온도 시험 뒤 출력 방식 되돌리기 실패 · %s" % e, "warn")
         if self.ev.get("t_heat") is not None and self.ev.get("t_heat_end") is None:
             self.ev["t_heat_end"] = round(c.clock() - self.t0, 3)       # 가열 중에 끝났다 - 넘침 · 켜진 시간은 여기까지
         if self.elog and self.elog[-1][1]:
@@ -868,7 +990,8 @@ class TempTest:
                 "summary": self._summary(),
                 "expect": config_mod.expect(cfg, IV),                                   # 지금 설정의 예상 점 수 · 시간(시작 전)
                 "model_text": heater_mod.ThermalModel(cfg).text(), "model_measured": heater_mod.ThermalModel(cfg).measured,
-                "speed_max": sp_max.get("rows"), "speed_t": sp_max.get("t")}
+                "speed_max": sp_max.get("rows"), "speed_t": sp_max.get("t"),
+                "step_text": self.step_text if self._busy else "", "tune": self.tune if self.mode == "tune" else None}
 
     def publish(self):
         self.c.state.set("temptest", self.view())
