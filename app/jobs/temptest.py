@@ -60,13 +60,17 @@ COND_KEYS = ("run_start_c", "run_heater_off_c", "run_cool_end_c", "run_heat_mode
 MODES = {"test": "온도 시험", "tune": "히트건 맞추기", "max": "최대 속도 재기"}
 # [히트건 맞추기]
 #   맞춤: TUNE_ADJ_S 마다 최근 TUNE_AVG_S 평균을 보고 비교 온도 ± TUNE_TOL_C 면 끝 · TUNE_FIND_S 넘으면 "맞춤 덜 됨" ·
-#         비교 온도 + TUNE_HOT_C 를 넘으면 바로 출력 × 0.6(TUNE_MIN_PCT 이상)
+#         아니면 아래 · 위 기록이 다 있으면 그 사이를 온도로 보간(20 ~ 80 %) · 없으면 (비교 − 기준) ÷ (지금 − 기준) 의 0.8 제곱을 곱함(0.5 ~ 2 배)
+#         비교 온도 + TUNE_HOT_C 를 넘으면 한 번 크게 줄임(아래 · 위 기록 사이 30 % 지점 · 없으면 × 0.5 · TUNE_MIN_PCT 이상) ·
+#         그 뒤에는 TUNE_HOT_WAIT_S 가 지나고 온도가 그때보다 TUNE_HOT_RISE_C 넘게 더 올랐을 때만 다시 줄임
 #   측정 TUNE_MEAS_S · 고르기 = 평균이 비교 온도 ± TUNE_PICK_C 안인 후보 중 흔들림이 가장 작은 것
-#   출력별 온도 표: 맞춘 출력 p 에서 위로 p × TUNE_UP · 아래로 p × TUNE_DOWN · 0 %
+#   출력별 온도 표: 맞춘 출력 p 에서 위로 p × TUNE_UP(최대 8단 · 가열 끝 온도까지 덮게) · 아래로 p × TUNE_DOWN · 0 % ·
+#         차단 온도 근처 확인은 올라가는 단에서만(표는 최대 12점 = 기준 1 + 아래 2 + p + 위 8 - config.curve_problems 한도 안)
 #   기준 온도: 시작 온도 도달 뒤 최근 TUNE_BASE_WIN_S 동안 TUNE_BASE_DROP_C 미만으로 내려가면(최대 TUNE_BASE_MAX_S) 마지막 TUNE_BASE_AVG_S 평균
 TUNE_ADJ_S, TUNE_AVG_S, TUNE_FIND_S, TUNE_TOL_C, TUNE_HOT_C, TUNE_MIN_PCT = 20, 10, 120, 3, 20, 0.3
 TUNE_MEAS_S, TUNE_PICK_C = 60, 6
-TUNE_UP, TUNE_DOWN = (1.35, 1.7, 2.05, 2.4), (0.65, 0.3)
+TUNE_UP, TUNE_DOWN = (1.35, 1.7, 2.05, 2.4, 2.9, 3.5, 4.2, 5.0), (0.65, 0.3)
+TUNE_HOT_WAIT_S, TUNE_HOT_RISE_C = 5, 0.5           # 뜨거워서 줄인 뒤: 이 시간이 지나고 온도가 그때보다 이만큼 더 올랐을 때만 다시 줄인다
 TUNE_BASE_WIN_S, TUNE_BASE_DROP_C, TUNE_BASE_MAX_S, TUNE_BASE_AVG_S = 20, 0.5, 120, 5
 TUNE_NOHEAT_PCT, TUNE_NOHEAT_C = 30, 3              # 출력이 이만큼인데 기준보다 이만큼도 안 오르면 중단(H-E 의심)
 TUNE_STOP_OVER_C, TUNE_CUT_MARGIN_C = 5, 8          # 표 위로: 정지 온도 ≥ 가열 끝 + 5 °C 면 그만 · 유지 중 차단 온도 − 8 °C 면 그 단을 끝내고 그만
@@ -842,14 +846,39 @@ class TempTest:
                 raise _End("abort", "%s %g초 초과" % (PHASES[self.phase], limit))
             self._tick(t_it)
 
+    def _tune_next(self, pct, lo, hi, base, target, m):
+        """다음 출력: 아래 · 위 기록이 다 있으면 그 사이를 온도로 보간(구간의 20 ~ 80 % 안) · 아니면 (비교 − 기준) ÷ (지금 − 기준) 의 0.8 제곱을 곱한다(0.5 ~ 2 배)."""
+        if lo is not None and hi is not None and hi[0] > lo[0] and hi[1] > lo[1]:
+            f = min(0.8, max(0.2, (target - lo[1]) / (hi[1] - lo[1])))
+            return self._clip_pct(lo[0] + (hi[0] - lo[0]) * f)
+        r = (target - base) / max(m - base, 1.0)
+        return self._clip_pct(pct * min(2.0, max(0.5, r ** 0.8)))
+
     def _tune_fit(self, g, trips0, pct, base, target, head):
-        """출력을 조절해 비교 온도에 맞춘다. 반환 (맞춘 출력, 맞췄나). 못 맞추고 TUNE_FIND_S 가 지나면 (그 출력, False)."""
+        """출력을 조절해 비교 온도에 맞춘다. 반환 (맞춘 출력, 맞췄나). 못 맞추고 TUNE_FIND_S 가 지나면 (그 출력, False).
+        lo = 너무 낮았던 출력 중 가장 큰 것 (출력, 온도) · hi = 너무 높았던 출력 중 가장 작은 것."""
         c = self.c
         limit = float(self.cond["run_phase_limit_s"])
         pct = self._clip_pct(pct)
         self._power(g, pct)
         t_start = t_adj = c.clock()
         rows = []
+        lo = hi = None
+        t_hot = None                                                # (뜨거워서 줄인 시각, 그때 온도)
+
+        def note(p, T):
+            nonlocal lo, hi
+            if T < target:
+                if lo is None or p > lo[0]:
+                    lo = (p, T)
+                if hi is not None and hi[0] <= lo[0]:
+                    hi = None
+            else:
+                if hi is None or p < hi[0]:
+                    hi = (p, T)
+                if lo is not None and lo[0] >= hi[0]:
+                    lo = None
+
         while True:
             self._check(g)
             if c.heater_trips != trips0:
@@ -861,11 +890,16 @@ class TempTest:
             if T is not None:
                 self._record(T, target)
                 rows.append((now, float(T)))
-                if T > target + TUNE_HOT_C:                         # 너무 뜨겁다: 바로 줄이고 조절 시계를 다시
-                    new = self._clip_pct(pct * 0.6)
+                if T > target + TUNE_HOT_C and (t_hot is None or (now - t_hot[0] >= TUNE_HOT_WAIT_S and T > t_hot[1] + TUNE_HOT_RISE_C)):
+                    note(pct, float(T))                             # 너무 뜨겁다: 크게 줄인다 · 그 뒤에는 온도가 아직 오르고 있을 때만(TUNE_HOT_WAIT_S 뒤) 다시 줄인다
+                    if lo is not None and hi is not None and hi[0] > lo[0]:
+                        new = self._clip_pct(lo[0] + (hi[0] - lo[0]) * 0.3)
+                    else:
+                        new = self._clip_pct(pct * 0.5)
                     if new < pct:
                         pct = new
                         self._power(g, pct)
+                    t_hot = (now, float(T))
                     t_adj, rows = now, []
             if now - t_adj >= TUNE_ADJ_S and rows:
                 m = self._mean_after(rows, now - TUNE_AVG_S)
@@ -875,8 +909,8 @@ class TempTest:
                     raise _End("abort", "가열 안 됨 · 스테이션 화면 확인(H-E 의심)")
                 if now - t_start >= TUNE_FIND_S:
                     return pct, False
-                r = (target - base) / max(m - base, 1.0)
-                new = self._clip_pct(pct * min(2.0, max(0.5, r ** 0.8)))
+                note(pct, m)
+                new = self._tune_next(pct, lo, hi, base, target, m)
                 if new != pct:
                     pct = new
                     self._power(g, pct)
@@ -940,6 +974,7 @@ class TempTest:
     def _tune_curve(self, g, trips0, p, base):
         """출력별 온도 표: 단마다 temp_step_s 유지 · 정지 온도 = 뒤쪽 1/3 평균. p(표에만) → 위로 p × TUNE_UP → 아래로 p × TUNE_DOWN → 0 %.
         위로는 정지 온도 ≥ 가열 끝 + TUNE_STOP_OVER_C · 유지 중 차단 온도 − TUNE_CUT_MARGIN_C(그 단은 표에서 뺌) · 최대 출력에서 그만.
+        차단 온도 근처 확인은 올라가는 단에서만(내려가는 단은 앞 단 열이 남아 첫 읽기부터 걸린다).
         단을 바꿀 때마다 fit_fopdt(그 단 기록, 출력 차이, T0 = 앞 단 정지 온도)."""
         cd, tn = self.cond, self.tune
         hold_s = float(cd["temp_step_s"])
@@ -959,8 +994,9 @@ class TempTest:
                 continue
             self.step_text = "표 %d/%d · %.1f %%" % (i + 1, len(plan), u)
             self._power(g, u)
-            rows = self._hold_for(g, trips0, secs=hold_s, until=lambda: self.last_T is not None and self.last_T >= cut_c)
-            hot = bool(rows) and rows[-1][1] >= cut_c and rows[-1][0] < hold_s
+            rising = kind in ("p", "up")                            # 차단 온도 근처 확인은 올라가는 단에서만(내려가는 단은 앞 단 열이 남아 있다)
+            rows = self._hold_for(g, trips0, secs=hold_s, until=(lambda: self.last_T is not None and self.last_T >= cut_c) if rising else None)
+            hot = rising and bool(rows) and rows[-1][1] >= cut_c and rows[-1][0] < hold_s
             T_stop = None if hot else self._mean_after(rows, rows[-1][0] * 2.0 / 3.0) if rows else None
             if prev is not None and T_stop is not None:
                 fit = heater_mod.fit_fopdt(rows, u - prev[0], T0=prev[1])
