@@ -204,11 +204,15 @@ ITEMS = (
          Item("heater_boot_hold_s", 5.0, "float", "스테이션 켠 뒤 100 % 유지", "s", 0, 60,
               desc="송풍(스테이션)을 새로 켠 뒤 이 시간 동안 열선 100 % · 그동안 끊으면 H-E\n그 사이 출력 % 요청은 끝날 때 적용"),
          Item("heat_model_k", None, "optfloat", "열 모델 이득", "°C/%", 0.01, 20, verify=True,
-              desc="열선 출력 1 % 당 올라가는 온도 · 온도 시험 [히트건 맞추기] 로 저장\n비우면 보수적인 기본값"),
+              desc="열선 출력 1 % 당 올라가는 온도 · [히트건 맞추기] 로 저장\n출력별 온도 표가 있으면 이득은 표에서 읽음"),
          Item("heat_model_tau_s", None, "optfloat", "열 모델 시간 상수", "s", 1, 3600, verify=True,
               desc="출력을 바꾼 뒤 온도가 63 % 따라가는 시간 · [히트건 맞추기] 로 저장"),
          Item("heat_model_theta_s", None, "optfloat", "열 모델 지연", "s", 0, 300, verify=True,
               desc="출력을 바꾼 뒤 온도가 움직이기 시작할 때까지 · [히트건 맞추기] 로 저장"),
+         Item("heat_curve", "", "str", "출력별 온도 표",
+              desc="\"출력%:온도\" 를 빈칸으로 이은 글 · 예 0:26.1 2.0:35.4 4.0:47.8\n[히트건 맞추기] 가 저장 · 제어의 유지 출력 · 이득"),
+         Item("heater_tc_s", 5.0, "float", "제어 응답 시간", "s", 1, 60,
+              desc="클수록 느슨함(흔들림에 덜 반응)\n열 모델 지연보다 작으면 지연 사용"),
          Item("reversal_c", 0.3, "float", "역전 기준", "°C", 0.01, 10,
               desc="가열 중 내려감 · 냉각 중 올라감이 이 값 넘으면 역전 1회로 셈"),
          Item("run_fan_during_cool", True, "bool", "냉각 중 송풍",
@@ -225,10 +229,14 @@ ITEMS = (
               desc="온도 시험에서 온도를 읽고 기록하는 간격\n온도 읽기 시간 이상 · 온도 못 읽음 허용 시간보다 충분히 짧게"),
          Item("temp_test_mark_c", 5.0, "float", "도달 표 온도 간격", "°C", 0.5, 50,
               desc="도달 표에 걸린 시간을 적는 온도 간격 · 5 면 35 · 40 · 45 °C …\n촘촘히 볼 때 줄임"),
-         Item("temp_step_pct", 30, "int", "맞추기 출력", "%", 5, 100,
-              desc="[히트건 맞추기] 비교 · 계단 위쪽 출력\n스테이션이 스스로 줄이기 시작하는 출력(약 45 %)보다 낮게"),
+         Item("temp_tune_c", 55.0, "float", "맞추기 비교 온도", "°C", 30, 100,
+              desc="[히트건 맞추기] 후보 칸마다 이 온도에 맞춘 뒤 흔들림을 잼"),
+         Item("temp_tune_start_pct", 5.0, "float", "맞추기 시작 출력", "%", 0.5, 50,
+              desc="첫 후보에서 처음 넣는 출력 · 그 뒤는 스스로 조절"),
+         Item("temp_tune_slots", "20,30,70,100,150,200,300", "str", "맞추기 후보 칸",
+              desc="고르게 켜기 칸(ms) 목록 · 쉼표로 구분\n비우면 비교 없이 현재 출력 방식으로 표만 잼"),
          Item("temp_step_s", 90.0, "float", "맞추기 계단 유지", "s", 20, 1800,
-              desc="[히트건 맞추기] 계단(내림 · 올림) 하나를 유지하는 시간\n온도가 거의 멈출 만큼 길게"),
+              desc="출력별 온도 표의 한 단을 유지하는 시간\n온도가 거의 멈출 만큼 길게"),
          Item("temp_test_precool", True, "bool", "온도 시험 예비 냉각",
               desc="가열 전에 쿨러로 시작 온도까지 냉각\n끄면 쿨러만 켜고 바로 가열"))
     + _g("판 · 핀",
@@ -377,7 +385,7 @@ PC_KEYS = frozenset({"stage_port", "k2110_addr", "k2450_addr", "data_dir", "auto
 # 장비 값: 장비(한 대)에 딸린 값 - 코드 기본값이 그 장비의 값이다(배선 · 설치가 바뀌면 코드 기본값도 바꾼다). 전체 설정에 "장비 값" 표시
 DEVICE_KEYS = frozenset({"cooler_grid", "machine_front_side", "machine_right_side", "view_rot", "view_flip", "camera_focus_value",
                          "heater_fan_relay", "heater_element_relay", "cooler_relays", "heat_model_k", "heat_model_tau_s", "heat_model_theta_s",
-                         "heater_pwm_period_ms", "heater_boot_hold_s", "heater_out_mode", "heater_slot_ms"})
+                         "heater_pwm_period_ms", "heater_boot_hold_s", "heater_out_mode", "heater_slot_ms", "heat_curve"})
 
 # 기본값 이력(키 → 예전 기본값들): 저장된 값이 예전 기본값과 같으면 "바꾼 적 없음" 으로 보고 지운다(새 기본값을 따른다 - Config.load 한 번 · 로그 한 줄씩).
 # 기본값을 바꿀 때 예전 값을 여기에 더한다. 없어진 키는 REMOVED_KEYS 에(읽을 때 버리고 로그).
@@ -397,6 +405,7 @@ REMOVED_KEYS = {
     "heater_min_off_s": "열선 출력 % 제어(SSR)라 최소 꺼짐 없음",
     "heater_band_c": "켜기 · 끄기 판정 대신 출력 % 제어",
     "run_heat_rate_c_min": "가열 속도 = 목표 점 간격 ÷ 읽기 간격 × 60",
+    "temp_step_pct": "맞추기는 비교 온도에 맞는 출력을 스스로 찾는다 · temp_tune_c · temp_tune_start_pct",
 }
 
 
@@ -559,9 +568,81 @@ def heat_problems(v: dict) -> list:
             out.append("예상 냉각 시간 %.0f초 · 한 단계 시간 한도 %g초 미만 필요 · 냉각 속도 확인" % (cool_s, v["run_phase_limit_s"]))
     if not int(v["heater_full_pct"]) <= int(v["heater_max_pct"]):
         out.append("연속 판정 출력 %d %% · 열선 최대 출력 %d %% 이하 필요" % (v["heater_full_pct"], v["heater_max_pct"]))
+    out += curve_problems(v)
     # ---- 릴레이 역할: 송풍 · 열선 · 쿨러가 서로 겹치지 않는다 · 쿨러 배치는 쿨러 릴레이만 ----
     out += role_problems(v)
     return out
+
+
+# ---- [히트건 맞추기] 후보 칸 · 출력별 온도 표(글자 설정 → 값) ----
+def _parse_slots(s):
+    """"20,30,70" → [20, 30, 70]. 빈 값 → []. 숫자가 아니면 ValueError."""
+    return [int(x.strip()) for x in str(s or "").split(",") if x.strip()]
+
+
+def _parse_curve(s):
+    """"0:26.1 2.0:35.4" → [(0.0, 26.1), (2.0, 35.4)]. 빈 값 → []. 모양이 틀리면 ValueError."""
+    out = []
+    for tok in str(s or "").split():
+        a, b = tok.split(":")
+        out.append((float(a), float(b)))
+    return out
+
+
+def tune_slots(v) -> list:
+    """맞추기 후보 칸(ms) 목록. 못 읽으면 [](설정 저장 · 시작 검사가 tune_slot_problems 로 거절한다)."""
+    try:
+        return _parse_slots(v)
+    except ValueError:
+        return []
+
+
+def heat_curve(v) -> list:
+    """출력별 온도 표 [(출력 %, 온도 °C)]. 빈 값이나 못 읽으면 [](설정 저장 · 시작 검사가 curve_problems 로 거절한다)."""
+    try:
+        return _parse_curve(v)
+    except ValueError:
+        return []
+
+
+def curve_text(pts) -> str:
+    """[(출력 %, 온도)] → "0:26.1 2.0:35.4"(heat_curve 저장 형식)."""
+    return " ".join("%g:%.1f" % (round(float(p), 1), float(T)) for p, T in pts)
+
+
+def curve_problems(v: dict) -> list:
+    """출력별 온도 표: 2~12점 · 첫 점 출력 0 · 출력과 온도 모두 앞 점보다 큼. 빈 값은 문제 아님(표 없음)."""
+    s = str(v.get("heat_curve") or "").strip()
+    if not s:
+        return []
+    try:
+        pts = _parse_curve(s)
+    except ValueError:
+        return ["출력별 온도 표 · \"출력:온도\" 를 빈칸으로 이은 글 필요"]
+    if not 2 <= len(pts) <= 12:
+        return ["출력별 온도 표 %d점 · 2~12점 필요" % len(pts)]
+    if pts[0][0] != 0:
+        return ["출력별 온도 표 · 첫 점 출력 0 필요"]
+    for (pa, ta), (pb, tb) in zip(pts, pts[1:]):
+        if not (pb > pa and tb > ta):
+            return ["출력별 온도 표 · %g %% 뒤 출력 · 온도 모두 커야 함" % pa]
+    return []
+
+
+def tune_slot_problems(v: dict) -> list:
+    """맞추기 후보 칸: 10~1000 · 10 의 배수 · 중복 없이 · 10개 이하."""
+    try:
+        ms = _parse_slots(v.get("temp_tune_slots"))
+    except ValueError:
+        return ["맞추기 후보 칸 · 쉼표로 이은 숫자 필요"]
+    if len(ms) > 10:
+        return ["맞추기 후보 칸 %d개 · 10개 이하 필요" % len(ms)]
+    if len(set(ms)) != len(ms):
+        return ["맞추기 후보 칸 · 중복 없이 필요"]
+    bad = [m for m in ms if not 10 <= m <= 1000 or m % 10]
+    if bad:
+        return ["맞추기 후보 칸 %d ms · 10~1000 · 10 의 배수 필요" % bad[0]]
+    return []
 
 
 def focus_problems(v: dict) -> list:
@@ -614,8 +695,7 @@ def temptest_problems(v: dict) -> list:
     bad = sorted({int(n) for n in v["temp_test_coolers"]} - {int(n) for n in v["cooler_relays"]})
     if bad:
         out.append("온도 시험 쿨러 %s · 쿨러 릴레이 아님" % " · ".join("R%d" % n for n in bad))
-    if not int(v["temp_step_pct"]) > 10:                        # 맞추기 계단 아래쪽은 10 %(temptest.TUNE_LOW_PCT)
-        out.append("맞추기 출력 %d %% · 10 %% 초과 필요" % v["temp_step_pct"])
+    out += tune_slot_problems(v)
     if int(v["heater_slot_ms"]) % 10:
         out.append("고르게 켜기 칸 %d ms · 10 의 배수 필요" % v["heater_slot_ms"])
     iv = float(v["temp_test_interval_s"])

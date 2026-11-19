@@ -56,7 +56,7 @@ COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "
              "run_heat_mode", "run_point_step_c", "cool_rate_separate", "run_heat_hold_s",
              "run_fan_during_cool", "heater_start_gap_s", "heater_fan_after_s", "run_cool_mode", "run_cool_rate_c_min", "heater_lead_c",
              "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct", "heater_pwm_period_ms",
-             "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "reversal_c")
+             "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "heat_curve", "heater_tc_s", "reversal_c")
 CONTROL_HEADER = ("회차", "단계", "경과(s)", "온도(°C)", "저항(Ω)", "목표 온도(°C)", "열선 출력(%)", "송풍")     # <이름>_<전압>V_control.csv 의 첫 줄
 
 
@@ -1063,9 +1063,9 @@ def curve_summary(tl, cd):
 
 
 def heat_notices(c, cd, interval_key, who):
-    """측정 · 온도 시험 시작 때 주의(막지 않는다): 열 모델이 없으면 "반응 재기 필요" · 설정 속도가 최대 속도 표의 그 구간 최대보다 빠르면 그 구간."""
+    """측정 · 온도 시험 시작 때 주의(막지 않는다): 열 모델이나 출력별 온도 표가 없으면 "[히트건 맞추기] 필요" · 설정 속도가 최대 속도 표의 그 구간 최대보다 빠르면 그 구간."""
     m = heater_mod.ThermalModel(cd)
-    if not m.measured:
+    if not m.measured or not m.has_curve:
         c.state.alarm("heat_model", "열 모델 없음 · 온도 시험 [히트건 맞추기] 필요", NOTICE, dismiss=True)
     else:
         c.state.clear_alarm("heat_model")

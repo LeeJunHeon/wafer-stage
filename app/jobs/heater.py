@@ -4,12 +4,14 @@
 - 가열 하드웨어가 바뀌면 여기만 고친다. 켜고 끄는 순서(열선 → 송풍 · 열선 끔 → 송풍은 뒤에)와 안전 규칙은 Controller 의 히트건 함수
 (heater_on · heater_power · heater_element · heater_off)가 한 곳에서 지킨다. 여기서는 "측정" 주체로 부르기만 한다.
 
-열선 출력 %(펌웨어 V13 hp - 열선 SSR 을 주기마다 주기 × % 동안만 켠다):
-  예전 켜기/끄기(최소 2 s) 제어는 한 번 켤 때마다 3~4 s 만에 +10~40 °C 튀고 40~70 s 걸려 내려와 톱니가 됐다. 그래서 출력 % 를 계산하는 제어기 하나
-  (PowerControl - 목표선 기준 PI + 앞먹임 + 적분 포화 방지 + 0 ~ heater_max_pct 제한)를 가열 · 냉각이 같이 쓴다(냉각은 목표선이 내려갈 뿐).
-  계수는 손으로 맞추지 않는다: 열 모델(1차 + 지연: 이득 K °C/% · 시간 상수 τ · 지연 θ - ThermalModel)에서 SIMC 규칙으로 계산한다.
-  앞먹임 = 그 온도를 유지하는 출력((목표 − 시작 주위 온도) ÷ K) + 목표선 기울기만큼의 출력(τ × 기울기 ÷ K). 목표 온도 · 속도를 바꿔도 같은 값으로 동작한다.
-  열 모델은 온도 시험 [히트건 맞추기](fit_fopdt - 내림 · 올림 계단)로 잰다. 없으면 보수적인 기본값(DEFAULT_MODEL - 이득을 크게 · 지연을 길게 봐서 계수가 작다).
+열선 출력 %(펌웨어 V14 hp - 0.1 % 단위 · 몰아 켜기 / 고르게 나눠 켜기):
+  열선 줄(SSR + 스테이션)은 명령한 % 를 그대로 통과시키지 않는다 - 같은 % 라도 고르게 켜기 칸에 따라 들어가는 열이 2~3배 다르고 출력과 온도가 직선이 아니다.
+  그래서 출력 % 를 계산하는 제어기 하나(PowerControl - 목표선 기준 PI + 앞먹임 + 적분 포화 방지 + 0 ~ heater_max_pct 제한)를 가열 · 냉각이 같이 쓰고
+  (냉각은 목표선이 내려갈 뿐), 앞먹임과 이득은 실제로 잰 출력별 온도 표(heat_curve - [히트건 맞추기]가 고른 칸으로 잰 정지 온도)에서 읽는다:
+  앞먹임 = hold(목표)(그 온도를 유지하는 출력 - 표를 온도 → 출력으로 보간) + τ × 기울기 ÷ gain(목표)(그 온도 구간의 °C/%).
+  계수는 손으로 맞추지 않는다: 열 모델(1차 + 지연 τ · θ - ThermalModel)에서 SIMC 규칙(τc = max(θ, heater_tc_s) - 클수록 느슨함) · 이득은 회차마다 gain(목표).
+  표가 없으면 예전 식(앞먹임 = (목표 − 시작 주위 온도) ÷ K + τ × 기울기 ÷ K · 이득 K). 열 모델도 없으면 보수적인 기본값(DEFAULT_MODEL).
+  PI 는 순간 온도가 아니라 걸러진 온도(heater_lead_filter_s 평균)로 계산한다 - 칸마다 다른 흔들림에 출력이 따라 출렁이지 않게.
 목표선(LineControl): 가열 = 시작 온도 + 속도 × 경과(상한 가열 끝 온도) · 냉각 = 가열 끝 순간 온도 − 속도 × 경과(하한 냉각 끝 온도).
   기다림(heater_lead_c): 순간값이 아니라 걸러진 온도(heater_lead_filter_s 평균)가 lead 넘게 뒤처진 채 heater_lead_hold_s 이상 이어질 때만 목표선을 세운다
   (냉각을 늦추려 켠 열선이 순간 온도를 목표선 위로 튀게 해 목표선이 섰던 일 - 냉각이 11 °C/분에 그쳤다).
@@ -20,6 +22,7 @@
 import math
 from collections import deque
 
+from app import config as config_mod
 from app.safety import BY_RUN
 
 DEFAULT_MODEL = (1.2, 40.0, 10.0)                   # 열 모델이 없을 때(K °C/% · τ s · θ s): 이득을 크게 · 지연을 길게 - PI 계수가 작아 보수적이다
@@ -32,8 +35,12 @@ def ramp_setpoint(t_start_c, rate_c_min, elapsed_s, top_c):
     return min(float(top_c), float(t_start_c) + float(rate_c_min) * max(0.0, float(elapsed_s)) / 60.0)
 
 
+GAIN_MIN = 0.2                                      # 출력별 온도 표의 기울기 하한(°C/%) - 평평한 구간에서 계수가 터지지 않게
+
+
 class ThermalModel:
-    """열 모델(1차 + 지연): τ dT/dt = −(T − T_주위) + K · u(t − θ). cd 의 heat_model_k · tau · theta(없으면 DEFAULT_MODEL)."""
+    """열 모델(1차 + 지연): τ dT/dt = −(T − T_주위) + K · u(t − θ). cd 의 heat_model_k · tau · theta(없으면 DEFAULT_MODEL)
+    + 출력별 온도 표 heat_curve(있으면 유지 출력 hold · 이득 gain 을 표에서) + 제어 응답 시간 heater_tc_s."""
 
     def __init__(self, cd):
         k, tau, th = cd.get("heat_model_k"), cd.get("heat_model_tau_s"), cd.get("heat_model_theta_s")
@@ -42,21 +49,51 @@ class ThermalModel:
         self.K = float(k) if k is not None else d[0]
         self.tau = float(tau) if tau is not None else d[1]
         self.theta = float(th) if th is not None else d[2]
+        self.curve = config_mod.heat_curve(cd.get("heat_curve"))
+        self.has_curve = len(self.curve) >= 2
+        self.tc = float(cd.get("heater_tc_s", 5.0))
 
-    def gains(self):
-        """SIMC PI: τc = max(θ, 1 s) · Kc = τ ÷ (K (τc + θ)) [%/°C] · Ti = min(τ, 4 (τc + θ)) [s]."""
-        tc = max(self.theta, 1.0)
-        kc = self.tau / (self.K * (tc + self.theta))
-        ti = min(self.tau, 4.0 * (tc + self.theta))
-        return kc, max(1.0, ti)
+    def hold(self, T):
+        """그 온도를 유지하는 출력 %: 표를 온도 → 출력으로 직선 보간. 첫 점 온도 이하 0 · 마지막 점 위는 마지막 구간 기울기로 연장."""
+        c, T = self.curve, float(T)
+        if T <= c[0][1]:
+            return 0.0
+        for (pa, ta), (pb, tb) in zip(c, c[1:]):
+            if T <= tb:
+                return pa + (pb - pa) * (T - ta) / (tb - ta)
+        (pa, ta), (pb, tb) = c[-2], c[-1]
+        return pb + (pb - pa) * (T - tb) / (tb - ta)
+
+    def gain(self, T):
+        """그 온도가 든 구간의 기울기(°C/%) · 밖이면 가장 가까운 구간 · GAIN_MIN 미만이면 GAIN_MIN. 표가 없으면 K."""
+        if not self.has_curve:
+            return self.K
+        c, T = self.curve, float(T)
+        seg = (c[0], c[1]) if T <= c[0][1] else (c[-2], c[-1])
+        for a, b in zip(c, c[1:]):
+            if a[1] <= T <= b[1]:
+                seg = (a, b)
+                break
+        (pa, ta), (pb, tb) = seg
+        return max(GAIN_MIN, (tb - ta) / (pb - pa))
+
+    def gains(self, K=None):
+        """SIMC PI: τc = max(θ, heater_tc_s) · Kc = τ ÷ (K (τc + θ)) [%/°C] · Ti = max(1, min(τ, 4 (τc + θ))) [s]. K 를 주면 그 이득으로."""
+        k = self.K if K is None else float(K)
+        tc = max(self.theta, self.tc)
+        kc = self.tau / (k * (tc + self.theta))
+        ti = max(1.0, min(self.tau, 4.0 * (tc + self.theta)))
+        return kc, ti
 
     def text(self):
         kc, ti = self.gains()
-        return "K %.3f °C/%% · τ %.1f s · θ %.1f s · Kc %.2f %%/°C · Ti %.0f s%s" % (self.K, self.tau, self.theta, kc, ti, "" if self.measured else " · 기본값")
+        return "K %.3f °C/%% · τ %.1f s · θ %.1f s · Kc %.2f %%/°C · Ti %.0f s%s%s" % (
+            self.K, self.tau, self.theta, kc, ti, "" if self.measured else " · 기본값", " · 표 %d점" % len(self.curve) if self.has_curve else "")
 
 
 class PowerControl:
-    """열선 출력 % = 앞먹임 + Kc (e + ∫e dt ÷ Ti), 0 ~ u_max 로 자른다. 출력이 한계에 걸린 채 오차가 그쪽으로 커지면 적분하지 않는다(포화 방지)."""
+    """열선 출력 % = 앞먹임 + Kc (e + ∫e dt ÷ Ti), 0 ~ u_max 로 자른다. 출력이 한계에 걸린 채 오차가 그쪽으로 커지면 적분하지 않는다(포화 방지).
+    출력별 온도 표가 있으면 앞먹임 = hold(목표) + τ × 기울기 ÷ gain(목표) · Kc 는 회차마다 gains(K=gain(목표))(T_amb 는 쓰지 않는다)."""
 
     def __init__(self, cd, T_amb):
         self.m = ThermalModel(cd)
@@ -69,11 +106,15 @@ class PowerControl:
 
     def ff(self, sp, slope_c_s):
         """앞먹임: 목표 온도를 유지하는 출력 + 목표선 기울기만큼의 출력."""
+        if self.m.has_curve:
+            return self.m.hold(sp) + self.m.tau * float(slope_c_s) / self.m.gain(sp)
         return ((float(sp) - self.T_amb) + self.m.tau * float(slope_c_s)) / self.m.K
 
     def out(self, T, sp, slope_c_s, now):
         dt = 0.0 if self.t is None else max(0.0, now - self.t)
         self.t = now
+        if self.m.has_curve:
+            self.kc, self.ti = self.m.gains(K=self.m.gain(sp))
         e = float(sp) - float(T)
         ff = self.ff(sp, slope_c_s)
         raw = ff + self.kc * (e + self.I / self.ti)
@@ -88,7 +129,8 @@ class PowerControl:
 class LineControl:
     """목표선 + 열선 출력(가열 또는 냉각 한 단계). sign = +1 가열(상한 end_c) · −1 냉각(하한 end_c).
     목표선은 경과 시간이 아니라 회차마다 앞으로 간다: 걸러진 온도가 lead 넘게 뒤처진 채 hold 초 이상이면 그 회차는 기다린다.
-    step() 이 목표를 정하고 출력 % 를 계산해 heater.power 로 보낸다(0.1 % 단위 · 0.05 넘게 바뀔 때만 - 거절은 Rejected 그대로 올라간다)."""
+    step() 이 목표를 정하고 출력 % 를 계산해 heater.power 로 보낸다(0.1 % 단위 · 0.05 넘게 바뀔 때만 - 거절은 Rejected 그대로 올라간다).
+    PI 는 target() 이 구한 걸러진 온도(self.Tf)로 계산한다(없으면 순간 온도). 목표 도달 판정 등은 부르는 쪽이 순간 온도로 한다."""
 
     def __init__(self, heater, cd, T_from, end_c, sign, now, rate_c_min, T_amb=None, on_change=None):
         self.h = heater
@@ -104,6 +146,7 @@ class LineControl:
         self.waits = 0                                             # 기다린 회차 수(기록용)
         self.slope = 0.0                                           # 이번 회차 목표선 기울기(°C/s - 앞먹임)
         self._buf = deque()
+        self.Tf = None                                             # 마지막 걸러진 온도(heater_lead_filter_s 평균 - PI 가 쓴다)
         self._behind_t = None
         self.pc = PowerControl(cd, float(T_from) if T_amb is None else T_amb)
         self.pct = None                                            # 마지막으로 보낸 출력 %
@@ -125,6 +168,7 @@ class LineControl:
         dt = max(0.0, now - self.t)
         self.t = now
         Tf = self.filtered(T, now)
+        self.Tf = Tf
         if self._held and self.h.boot_hold <= 0:                   # 스테이션 켜기 유지가 끝났다: 목표선을 지금 온도에서 다시 시작(앞서 가 있으면) · 적분 0
             self._held = False
             self.sp = self._clamp(max(self.sp, float(T)) if self.sign > 0 else min(self.sp, float(T)))
@@ -157,7 +201,8 @@ class LineControl:
                 self.h.power(pct)
                 self.pct = pct
             return False
-        pct = round(self.pc.out(T, sp, self.slope, now), 1)        # 0.1 % 단위(V14)
+        Tc = self.Tf if self.Tf is not None else T                 # 걸러진 온도로 PI(칸마다 다른 흔들림에 출력이 출렁이지 않게)
+        pct = round(self.pc.out(Tc, sp, self.slope, now), 1)       # 0.1 % 단위(V14)
         if self.pct is not None and abs(pct - self.pct) <= 0.05 and abs(float(self.h.pct) - pct) <= 0.05:     # 실제 출력과도 같을 때만 건너뛴다 - [정지] '!' 가 0 으로 만들었으면 다시 보낸다
             return False
         self.h.power(pct)
@@ -190,7 +235,7 @@ class Stall:
 # 열 모델 맞추기 · 최대 속도 표 · 속도 주의
 # ----------------------------------------------------------------------
 def fit_fopdt(rows, du_pct, T0=None):
-    """[히트건 맞추기]의 출력 계단 기록 rows = [(경과 s, 온도)] (출력을 du_pct 만큼 바꾼 뒤 유지한 구간) → (K °C/%, τ s, θ s, 맞춤 오차 °C) 또는 None.
+    """[히트건 맞추기]의 출력 표 한 단 기록 rows = [(경과 s, 온도)] (출력을 du_pct 만큼 바꾼 뒤 유지한 구간) → (K °C/%, τ s, θ s, 맞춤 오차 °C) 또는 None.
     T(t) = T0 + K du (1 − exp(−(t − θ)/τ)) (t > θ). du 가 음수(내린 계단)면 ys 와 du 의 부호를 같이 뒤집어 같은 식으로 맞춘다.
     T0 = 기준 온도(계단 직전 평균 - 없으면 첫 점). θ · τ 는 격자에서 고르고 K 는 그때마다 최소제곱으로 바로 푼다."""
     if len(rows) < 8 or not du_pct:

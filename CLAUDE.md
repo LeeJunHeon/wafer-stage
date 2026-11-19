@@ -79,7 +79,7 @@ firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아
   미설정이면 주의 "초점 미설정 · 초기 설정 3 에서 초점 찾기". 카메라 열림 로그에 초점 요청 · 읽은 값을 붙인다. cap 은 읽기 스레드와 초점 바꾸기가 `_cap_lock` 으로 번갈아 쓴다.
 - **모르는 값은 지어내지 않는다.** settings 기본값으로 두고 "실장비 확인 필요"(`verify`)로 표시한다. 지금 표시된 것:
   `plate_size_mm`(154) · `pin_long_axis`("y") · `slow_speed_pps` ·
-  `heater_start_gap_s`(1 s) · `heater_fan_after_s`(30 s) · 열 모델(`heat_model_k` · `heat_model_tau_s` · `heat_model_theta_s` - [반응 재기] 로 저장) ·
+  `heater_start_gap_s`(1 s) · `heater_fan_after_s`(30 s) · 열 모델(`heat_model_k` · `heat_model_tau_s` · `heat_model_theta_s` - [히트건 맞추기] 로 저장) ·
   `heater_lead_c` 3 °C · `run_heat_hold_s` 0.
 
 ## 3. 스테이지 드라이버 규칙 (펌웨어 때문에)
@@ -286,14 +286,17 @@ firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아
   - **`ramp`(기본 · 가열 속도 제어)**: 송풍을 켜 둔 채 **열선 출력 %**(펌웨어 V12 hp)로 목표선(가열 시작 온도에서 가열 속도로 오름, 상한 가열 끝 온도)을 따른다.
     배경: 켜기/끄기(최소 2 s) 제어는 한 번 켤 때마다 3~4 s 만에 +10~40 °C 튀고 40~70 s 걸려 내려와 톱니가 됐다(R10 을 SSR 로 바꿔 빠른 켜고 끄기가 된다).
     제어기 하나(`heater.PowerControl` - 가열 · 냉각 공통): 목표선 기준 PI + 앞먹임 + 적분 포화 방지 + 0 ~ `heater_max_pct`.
-    계수는 손으로 맞추지 않는다 - 열 모델(1차 + 지연 `ThermalModel`: K °C/% · τ · θ)에서 SIMC(τc = θ · Kc = τ ÷ (K (τc + θ)) · Ti = min(τ, 4 (τc + θ))).
-    앞먹임 = (목표 − 시작 주위 온도) ÷ K + τ × 목표선 기울기 ÷ K → 목표 온도 · 속도를 바꿔도 같은 값으로 동작. 모델이 없으면 `DEFAULT_MODEL`(보수적) + 주의 "열 모델 없음 · [반응 재기] 필요".
+    계수는 손으로 맞추지 않는다 - 열 모델(1차 + 지연 `ThermalModel`: K °C/% · τ · θ)에서 SIMC(τc = max(θ, `heater_tc_s`) · Kc = τ ÷ (K (τc + θ)) · Ti = max(1, min(τ, 4 (τc + θ)))).
+    열선 줄(SSR + 스테이션)은 명령한 % 를 그대로 통과시키지 않는다(같은 6 % 에서 칸 10 · 50 · 100 ms 가 64 · 42 · 45 °C) → **출력별 온도 표**(`heat_curve` "출력%:온도" · 장비 값 · [히트건 맞추기] 가 저장)가 있으면
+    앞먹임 = `hold(목표)`(표를 온도 → 출력으로 보간 · 첫 점 아래 0 · 마지막 점 위는 마지막 구간 기울기로 연장) + τ × 기울기 ÷ `gain(목표)`(그 구간 °C/% · 최소 0.2) · Kc 는 회차마다 `gains(K=gain(목표))`.
+    표가 없으면 앞먹임 = (목표 − 시작 주위 온도) ÷ K + τ × 목표선 기울기 ÷ K. PI 는 걸러진 온도(`LineControl.Tf` - heater_lead_filter_s 평균)로 계산한다.
+    열 모델 · 표가 없으면 `DEFAULT_MODEL`(보수적) + 주의 "열 모델 없음 · 온도 시험 [히트건 맞추기] 필요"(`run.heat_notices`).
     출력은 1 % 넘게 바뀔 때만 보낸다. 가열 끝 온도에 닿으면 `run_heat_hold_s` 동안 같은 제어로 유지한 뒤 끝.
   - **`full`**: 최대 출력(`heater_max_pct`)으로 가열 끝 온도까지.
   - **가열 장치 = MECHANIC 957DW 핫에어 리워크 스테이션**(자체 폐루프 온도 제어 · 온도 손잡이 100~450 °C · 바람 손잡이 1~8). R1(송풍 릴레이)이 스테이션을 켜고
     R10(Omron G3PE 제로크로스 SSR)이 열선 줄을 끊는다. 스테이션은 켜진 직후 몇 초 동안 열선을 점검하고 그 사이 열선이 끊기면 **H-E**(열선 오류)로 멈춘다.
     → **스테이션 켠 뒤 100 % 유지**(`heater_boot_hold_s` 5 s · 장비 값): `heater_on` 이 송풍을 새로 켰을 때만 그 뒤 이 시간 동안 열선 100 %(송풍이 이미 켜져 있던 켜기는 유지 없음).
-    유지 중의 출력 % 요청(수동 [적용] · 온도 시험 · 반응 재기 · 측정)은 마지막 값(`_boot_pending`)을 기억했다가 끝나는 순간 적용(`Controller._boot_done` - `check_heater` 가 부른다).
+    유지 중의 출력 % 요청(수동 [적용] · 온도 시험 · 측정)은 마지막 값(`_boot_pending`)을 기억했다가 끝나는 순간 적용(`Controller._boot_done` - `check_heater` 가 부른다).
     화면 "스테이션 켜는 중 · n초 뒤 출력 적용"(`state.heater.boot_left` · `core.js bootText`). 끄기 · 차단 온도 · 온도 못 읽음 · 비상정지 · 통신 끊김은 유지와 상관없이 바로 끈다
     (열선이나 송풍이 꺼지면 유지도 끝 - `_heater_sync`). 제어기는 유지 동안 적분하지 않고(`LineControl.decide`), 끝나면 목표선을 지금 온도에서 다시 시작한다(앞서 가 있으면 · 적분 0).
     열선 출력 주기 기본 5000 ms(`heater_pwm_period_ms` · 장비 값 · 1 s · 5 s 주기 모두 켜기 직후 끊으면 H-E 였고 100 % 5 s 유지 뒤 30 %(5 s 주기)는 정상).
@@ -343,20 +346,32 @@ firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아
   (`Controller.feed_temperature` 가 부른다 · 0.2 s 보다 가까운 줄은 건너뜀 · 시각 · 경과 · 온도 · 열선 출력 · 출력 방식 · 송풍 · 열선 · 켜기 유지 · 쿨러 · 하는 일).
   쓰기 실패는 로그 한 번 · 그 파일만 멈춤. 온도 감시 스레드는 히트건이 켜져 있거나 기록이 열려 있으면 `temp_test_interval_s` 간격으로 읽는다.
 - 목적: 샘플 · 저항계 · 모터 없이 히트건 · 쿨러의 온도 거동만 잰다(도달 시간 · 최대 가열 속도 · 넘침 · 냉각 시간 → 히트건 · 가열 제어 값 정하기).
-- **시험 셋**(`temptest_start(mode)` · 펌웨어 V14 필요): [시작](test - 아래 순서) · **[히트건 맞추기]**(tune - `_run_tune`: 예비 냉각 → 몰아 켜기 5 s 로 히트건 켜기 →
-  출력 `temp_step_pct`(켜기 유지 뒤) → 안정 40 s → `TUNE_METHODS`(몰아 켜기 5000 · 1000 ms · 고르게 100 · 10 ms)를 60 s 씩 비교(앞 20 s 빼고 평균 · 출렁임 = 직선 추세를 뺀 나머지의 최고 − 최저 ·
-  15 s 뒤부터 5 s 이동 평균이 최고보다 10 °C 넘게 떨어지면 "H-E 의심" 으로 중단 · 저장 안 함) → 출렁임이 가장 작은 방식(0.05 °C 안이면 더 잘게) → 안정 20 s →
-  계단 temp_step_pct → 10 % → temp_step_pct(각 `temp_step_s`) → `heater.fit_fopdt(rows, du, T0)` 둘 → 끝까지 가면 고른 방식 · 열 모델(둘의 평균 · 오차는 큰 쪽)을 설정에 저장
-  (K 가 30 % 넘게 다르면 메모) · summary.txt 는 조건 + 맞추기 표만. 어떤 끝이든 히트건을 끈 뒤 설정의 출력 방식으로 되돌린다) ·
+- **시험 셋**(`temptest_start(mode)` · 펌웨어 V14 필요): [시작](test - 아래 순서) · **[히트건 맞추기]**(tune - `_run_tune`):
+  1. 쿨러 → `_station_on`(아래 순서와 같음).
+  2. 기준 온도(`_tune_base` · 단계 예비 냉각): 출력 0 % · 송풍으로 시작 온도 이하 → 최근 20 s 내려간 폭 < 0.5 °C(도달 뒤 최대 120 s) → 마지막 5 s 평균. 정체면 중단.
+  3. 비교(단계 비교 · `temp_tune_slots` 가 있을 때): 칸마다 `c.heater_method("spread", ms)`(설정은 그대로) → `_tune_fit`: 첫 후보 `temp_tune_start_pct` · 다음은 앞 후보의 맞춘 값.
+     읽을 때마다 비교 온도(`temp_tune_c`) + `TUNE_HOT_C` 넘으면 × 0.6 · `TUNE_ADJ_S`(20 s)마다 최근 10 s 평균이 ± 3 °C 면 끝, 아니면 × min(2, max(0.5, r^0.8))
+     (r = (목표 − 기준) ÷ max(평균 − 기준, 1)) · 30 % 이상인데 기준 + 3 °C 미만이면 중단 "가열 안 됨 · 스테이션 화면 확인(H-E 의심)" · 120 s 넘으면 "맞춤 덜 됨".
+     → 출력 고정 60 s 측정: 평균 · 흔들림(직선 추세를 뺀 나머지의 표준편차) · 폭 · 한 칸 최대 변화.
+  4. 고르기: 맞춤 덜 됨이 아니고 평균이 비교 온도 ± 6 °C 인 후보 중 흔들림이 가장 작은 것(없으면 전체 중 · 메모). 후보가 없으면 지금 출력 방식으로 맞춤만.
+  5. 출력별 온도 표(단계 계단 · `_tune_curve`): 단 = `temp_step_s` · 정지 온도 = 뒤쪽 1/3 평균. p(표에만) → p × `TUNE_UP` → p × `TUNE_DOWN` → 0 %.
+     위로는 정지 온도 ≥ 가열 끝 + 5 °C · 유지 중 차단 온도 − 8 °C(그 단은 표에서 뺌) · 최대 출력에서 그만. 단을 바꿀 때마다 `fit_fopdt(그 단, 출력 차이, T0 = 앞 단 정지 온도)`.
+     표 = (0, 기준) + (출력, 정지 온도) 출력 순 · 앞 점보다 0.5 °C 이상 높지 않은 점은 뺌(메모).
+  6. 열 모델: τ · θ = 계단 중앙값 · K = 표의 이웃 기울기 최댓값. 7. 저장(끝까지 갔을 때 · `_results`): 표 3점 이상이면 `heater_out_mode` spread · `heater_slot_ms` ·
+     `heat_curve` · heat_model_*(후보 없이 돌았으면 출력 방식은 그대로) · 모자라면 고른 칸만. 펌웨어에도 보낸다. 가열 끝 온도 도달로 끝내지 않는다.
+  어떤 끝이든 히트건을 끈 뒤 설정의 출력 방식으로 되돌린다. summary.txt 는 조건 + 맞추기(기준 · 비교 온도 · 후보 표 · 표 · 계단 · 저장)만 ·
   **[최대 속도 재기]**(max - 출력 최대로 가열 끝 온도까지 → 출력 0 %(쿨러 · 송풍)로 냉각 끝 온도까지 → 5 °C 구간마다 최대 가열 · 냉각 속도(4 s 창 기울기) →
-  calib `speed_max` · 화면 · 로그). 폴더 이름 뒤에 "_반응" · "_최대속도".
+  calib `speed_max` · 화면 · 로그). 폴더 이름 뒤에 "_맞추기" · "_최대속도".
 - 창 배치: 왼쪽 = 진행 한 줄 + 그래프(크게 · 역전 자리 작은 삼각형 · 아래 띠 = 열선 출력 %) · 오른쪽 = 가열 · 냉각 결과 · 열 모델 · 최대 속도 표 · 도달 표(값이 있는 줄만) · 예상 · 조건(접어 둠).
 - 조건은 자동 측정과 같은 설정(`run_start_c` · `run_heater_off_c` · `run_cool_end_c` · `run_heat_mode` · `run_point_step_c` · `cool_rate_separate` · heater_lead_* ·
   `heater_max_pct` · heat_model_* · `run_heat_hold_s` · `run_fan_during_cool` · `run_stall_s` · `run_stall_c` · `run_phase_limit_s`) +
-  `temp_test_coolers`(쿨러 릴레이 안 · 빈 목록 가능) · `temp_test_interval_s`(≥ 온도 읽기 시간 · < 온도 못 읽음 허용 × 사용 비율) · `temp_test_mark_c` · `temp_test_precool`
-  (`config.temptest_problems` · 시작 때 `heat_problems` 도). 창에서 가열 방식 · 속도를 바로, 나머지는 [조건] 으로 고친다(같은 설정 값).
-- 순서: 쿨러 켬 → 예비 냉각(시작 온도까지 · 정체면 가열하지 않고 "중단 · 시작 온도 미도달 · 현재 xx.x °C") → 히트건 켜기(Controller 히트건 함수 · 측정 주체 규칙) →
-  full · ramp(자동 측정과 같은 `LineControl` · 목표선 기다림) · 유지 → 냉각(`run_cool_mode` ramp = 같은 LineControl · free = 자연 냉각, 송풍은 `run_fan_during_cool`) →
+  `temp_test_coolers`(쿨러 릴레이 안 · 빈 목록 가능) · `temp_test_interval_s`(≥ 온도 읽기 시간 · < 온도 못 읽음 허용 × 사용 비율) · `temp_test_mark_c` · `temp_test_precool` ·
+  맞추기 `temp_tune_c` · `temp_tune_start_pct` · `temp_tune_slots`(10~1000 · 10 의 배수 · 중복 없이 · 10개 이하 - `config.tune_slot_problems`) · `temp_step_s`
+  (`config.temptest_problems` · 시작 때 `heat_problems` 도 - 표 `heat_curve` 는 2~12점 · 첫 점 0 % · 출력 · 온도 모두 증가 - `config.curve_problems`). 창에서 가열 방식 · 속도를 바로, 나머지는 [조건] 으로 고친다(같은 설정 값).
+- 순서(test · max): 쿨러 켬 → **스테이션 켜기**(`_station_on` · 단계 예비 냉각 · "스테이션 켜는 중": 히트건 켜기(Controller 히트건 함수 · 측정 주체 규칙) → 바로 출력 0 % 요청
+  (켠 뒤 100 % 유지가 끝나면 적용 - 유지 때문에 85~104 °C 까지 튄다) → 유지 끝까지 기록만) → 예비 냉각(송풍 · 출력 0 % 로 시작 온도까지 · `temp_test_precool` 끄면 건너뜀 ·
+  정체면 가열하지 않고 "중단 · 시작 온도 미도달 · 현재 xx.x °C") → 가열 시작(`_heat_begin` - 그 순간 온도 = T0 · ev t_heat · 히트건은 이미 켜짐) →
+  full(출력 `heater_max_pct`) · ramp(자동 측정과 같은 `LineControl` · 목표선 기다림 · T0 에서 시작) · 유지 → 냉각(`run_cool_mode` ramp = 같은 LineControl · free = 자연 냉각, 송풍은 `run_fan_during_cool`) →
   냉각 끝 온도 또는 정체("냉각 끝 온도 미도달") → 히트건 끄는 순서 · 쿨러 끔. 냉각 중 안전 규칙이 열선을 끄면 중단(온도 시험 규칙).
   쿨러는 시험 내내 켜 둔다. 가열 무반응 판정은 쓰지 않는다(샘플 판정) - 열선 연속 최대 시간 · 한 단계 시간 한도가 묶는다.
 - [정지] · 비상정지 · 안전 차단 · 온도 못 읽음(3번) · 온도계 오류 · 통신 끊김 · 한 단계 한도: 같은 정리 후 결과 "정지" · "비상정지" · "중단 · 이유", 기록 · 요약 저장.

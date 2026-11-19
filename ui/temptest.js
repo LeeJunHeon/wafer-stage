@@ -1,7 +1,7 @@
 /* temptest.js - 온도 시험 창(수동 제어 탭 릴레이 시험 칸의 [온도 시험]). 샘플 · 저항계 · 모터 없이 히트건 · 쿨러의 온도 거동만 잰다.
    배치: 왼쪽 = 진행 한 줄 + 그래프(크게 - 가로 시간 s · 세로 온도 °C · 온도 실선 · 목표선 점선 · 역전 자리 작은 표시 · 아래 띠 = 열선 출력 %).
          오른쪽 = 결과(가열 · 냉각 점 수 · 속도 · 점 간격 · 역전 · 목표선 차이 · 열 모델 · 최대 속도 표 · 도달 표는 값이 있는 줄만) + 조건(접어 둠).
-   시험 셋: [시작](온도 시험) · [히트건 맞추기](출력 방식 비교 · 계단으로 열 모델 K · τ · θ) · [최대 속도 재기](5 °C 구간별 최대 가열 · 냉각 속도). 펌웨어 V14 필요.
+   시험 셋: [시작](온도 시험) · [히트건 맞추기](후보 칸을 같은 온도에서 비교 · 출력별 온도 표 · 열 모델) · [최대 속도 재기](5 °C 구간별 최대 가열 · 냉각 속도). 펌웨어 V14 필요.
    창을 닫아도 시험은 서버에서 계속된다. 다시 열면 이어서 보인다(점은 /api/temptest/points 로 새 점만 받는다). */
 "use strict";
 
@@ -14,7 +14,8 @@ const TT_KEYS = [
   ["heater_lead_hold_s", "기다림 지속 시간", "s"], ["heater_max_pct", "열선 최대 출력", "%"], ["run_fan_during_cool", "냉각 중 송풍", "bool"],
   ["run_stall_s", "냉각 정체 시간", "s"], ["run_stall_c", "냉각 정체 기준", "°C"], ["run_phase_limit_s", "한 단계 시간 한도", "s"], ["temp_test_coolers", "쿨러", "ints"],
   ["temp_test_precool", "예비 냉각", "bool"], ["temp_test_interval_s", "읽기 간격", "s"], ["temp_test_mark_c", "도달 표 간격", "°C"],
-  ["temp_step_pct", "맞추기 출력", "%"], ["temp_step_s", "맞추기 계단 유지", "s"], ["reversal_c", "역전 기준", "°C"],
+  ["temp_tune_c", "맞추기 비교 온도", "°C"], ["temp_tune_start_pct", "맞추기 시작 출력", "%"], ["temp_tune_slots", "맞추기 후보 칸", "str"],
+  ["temp_step_s", "맞추기 계단 유지", "s"], ["heater_tc_s", "제어 응답 시간", "s"], ["heat_curve", "출력별 온도 표", "str"], ["reversal_c", "역전 기준", "°C"],
 ];
 
 function ttActive() { return !!(S && S.temptest && S.temptest.active); }
@@ -88,7 +89,7 @@ function ttBuildCond() {
   tt.condSig = JSON.stringify([tt.edit, TT_KEYS.map(([k]) => c[k])]);
   tt.condBtn.textContent = tt.edit ? "취소" : "조건 고치기";
   if (!tt.edit) {
-    const show = (k, kind) => kind === "bool" ? (c[k] ? "켬" : "끔") : kind === "ints" ? ttCoolers(c[k]) : c[k] + " " + kind;
+    const show = (k, kind) => kind === "bool" ? (c[k] ? "켬" : "끔") : kind === "ints" ? ttCoolers(c[k]) : kind === "str" ? (c[k] || "없음") : c[k] + " " + kind;
     setKids(tt.condView, ...TT_KEYS.flatMap(([k, label, kind]) => [small(label), h("span", { text: show(k, kind) })]));
     return;
   }
@@ -97,16 +98,18 @@ function ttBuildCond() {
     let el;
     if (kind === "bool") el = h("input", { type: "checkbox", checked: !!c[k] });
     else if (kind === "ints") el = h("input", { type: "text", class: "mono", value: JSON.stringify(c[k] || []) });
+    else if (kind === "str") el = h("input", { type: "text", class: "mono", value: c[k] || "" });
     else el = h("input", { type: "number", step: "any", value: c[k] });
     inputs[k] = [el, kind];
-    return [small(label), kind === "bool" || kind === "ints" ? el : h("span", { class: "row" }, el, small(kind))];
+    return [small(label), kind === "bool" || kind === "ints" || kind === "str" ? el : h("span", { class: "row" }, el, small(kind))];
   });
   const save = async () => {
     const patch = {};
     for (const [k, [el, kind]] of Object.entries(inputs)) {
       if (kind === "bool") patch[k] = el.checked;
       else if (kind === "ints") { try { patch[k] = JSON.parse(el.value); } catch (e) { toast("쿨러 형식 오류 · 예 [2, 3, 4]"); return; } }
-      else { const v = parseFloat(el.value); if (!isFinite(v)) { toast(TT_KEYS.find((x) => x[0] === k)[1] + " · 숫자 필요"); return; } patch[k] = ["heater_max_pct", "temp_step_pct"].includes(k) ? Math.round(v) : v; }
+      else if (kind === "str") patch[k] = el.value.trim();
+      else { const v = parseFloat(el.value); if (!isFinite(v)) { toast(TT_KEYS.find((x) => x[0] === k)[1] + " · 숫자 필요"); return; } patch[k] = k === "heater_max_pct" ? Math.round(v) : v; }
     }
     if (await putSettings(patch)) { tt.edit = false; ttBuildCond(); toast("조건 저장 완료"); }
   };
@@ -165,16 +168,22 @@ function renderTempTest() {
     cl ? h("div", { class: "small", text: "냉각 " + ttFmt(cl.from_c, 1) + " → " + ttFmt(cl.to_c, 1, " °C") + " · " + ttFmt(cl.s, 0, " s") + (cl.reached ? "" : " · 냉각 끝 온도 미도달") }) : null,
     s.pre ? h("div", { class: "small", text: "예비 냉각 " + (s.pre.stalled ? "정체 " : "도달 ") + ttFmt(s.pre.T, 1, " °C") + " · " + ttFmt(s.pre.s, 0, " s") }) : null]);
   setKids(tt.model, h("div", { class: t.model_measured ? "small" : "small st-warn", text: t.model_measured ? t.model_text : "히트건 맞추기 필요 · " + (t.model_text || "") }));
-  /* 맞추기 결과: 방식 · 평균 · 출렁임 · 판정(고른 줄 굵게) · 계단 · 저장 */
+  /* 맞추기 결과: 기준 · 비교 온도 · 후보 표(고른 줄 굵게 · 맞춤 덜 됨) · 출력별 온도 표 · 계단 · 저장 */
   const tn = t.tune || (s.tune);
   if (tn) {
-    const segRows = (tn.segs || []).map((x) => h("tr", { class: x.name === tn.pick ? "sel" : "" }, h("td", { text: x.name }), h("td", { class: "num", text: ttFmt(x.mean_c, 1) }),
-      h("td", { class: "num", text: ttFmt(x.ripple_c, 2) }), h("td", { text: x.he ? "H-E 의심" : x.name === tn.pick ? "선택" : "" })));
-    setKids(tt.tune, h("table", { class: "tb tt-marks tt-tune" }, h("thead", {}, h("tr", {}, h("th", { text: "방식" }), h("th", { class: "num", text: "평균 °C" }), h("th", { class: "num", text: "출렁임 °C" }), h("th", { text: "판정" }))),
-      h("tbody", {}, ...segRows)),
-      ...(tn.steps || []).map((st) => h("div", { class: "small", text: "계단 " + st.from + " → " + st.to + " % · K " + ttFmt(st.K, 4) + " · τ " + ttFmt(st.tau, 1) + " s · θ " + ttFmt(st.theta, 1) + " s · 오차 " + ttFmt(st.err, 2) + " °C" })),
-      h("div", { class: tn.saved ? "small" : "small st-warn", text: tn.saved ? "저장 완료 · " + (tn.pick || "") + (tn.model ? " · 열 모델" : "") : act ? "진행 중" : "저장 안 함" }));
-  } else setKids(tt.tune, small("[히트건 맞추기] 필요 · 출력 방식 · 열 모델을 정함"));
+    const cands = tn.cands || [];
+    const candRows = cands.map((x) => h("tr", { class: x.name === tn.pick ? "sel" : "" }, h("td", { text: x.name }), h("td", { class: "num", text: ttFmt(x.pct, 1) }),
+      h("td", { class: "num", text: ttFmt(x.mean_c, 1) }), h("td", { class: "num", text: ttFmt(x.sd_c, 2) }),
+      h("td", { class: x.note ? "st-warn" : "", text: x.name === tn.pick ? "선택" : (x.note || "") })));
+    const curve = tn.curve || [];
+    setKids(tt.tune, h("div", { class: "small", text: "기준 " + ttFmt(tn.base_c, 1, " °C") + " · 비교 " + ttFmt(tn.target_c, 0, " °C") + (tn.p != null ? " · 맞춘 출력 " + ttFmt(tn.p, 1, " %") : "") }),
+      cands.length ? h("table", { class: "tb tt-marks tt-tune" }, h("thead", {}, h("tr", {}, h("th", { text: "방식" }), h("th", { class: "num", text: "출력 %" }), h("th", { class: "num", text: "평균 °C" }),
+        h("th", { class: "num", text: "흔들림 °C" }), h("th", { text: "판정" }))), h("tbody", {}, ...candRows)) : null,
+      curve.length > 1 ? h("table", { class: "tb tt-marks" }, h("thead", {}, h("tr", {}, h("th", { class: "num", text: "출력 %" }), h("th", { class: "num", text: "온도 °C" }))),
+        h("tbody", {}, ...curve.map((r) => h("tr", {}, h("td", { class: "num", text: ttFmt(r[0], 1) }), h("td", { class: "num", text: ttFmt(r[1], 1) }))))) : null,
+      ...(tn.steps || []).map((st) => h("div", { class: "small", text: "계단 " + st.from + " → " + st.to + " % · K " + ttFmt(st.K, 3) + " · τ " + ttFmt(st.tau, 1) + " s · θ " + ttFmt(st.theta, 1) + " s · 오차 " + ttFmt(st.err, 2) + " °C" })),
+      h("div", { class: tn.saved ? "small" : "small st-warn", text: tn.saved ? "저장 완료 · " + (tn.saved_text || "") : act ? "진행 중" : "저장 안 함" }));
+  } else setKids(tt.tune, small("[히트건 맞추기] 필요 · 칸 · 출력별 온도 표를 정함"));
   const rows = (s.speed || t.speed_max || []);
   setKids(tt.speed, rows.length ? h("table", { class: "tb tt-marks" }, h("thead", {}, h("tr", {}, h("th", { text: "구간" }), h("th", { class: "num", text: "가열" }), h("th", { class: "num", text: "냉각 °C/분" }))),
     h("tbody", {}, ...rows.map((r) => h("tr", {}, h("td", { text: r[0] + "~" + (r[0] + 5) + " °C" }), h("td", { class: "num", text: ttFmt(r[1], 1) }), h("td", { class: "num", text: ttFmt(r[2], 1) })))))
