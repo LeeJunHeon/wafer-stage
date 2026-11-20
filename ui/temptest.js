@@ -2,7 +2,8 @@
    배치: 왼쪽 = 진행 한 줄 + 그래프(크게 - 가로 시간 s · 세로 온도 °C · 온도 실선 · 목표선 점선 · 역전 자리 작은 표시 · 아래 띠 = 열선 출력 %).
          오른쪽 = 결과(가열 · 냉각 점 수 · 속도 · 점 간격 · 역전 · 목표선 차이 · 열 모델 · 최대 속도 표 · 도달 표는 값이 있는 줄만) + 조건(접어 둠).
    시험 셋: [시작](온도 시험) · [히트건 맞추기](후보 칸을 같은 온도에서 비교 · 출력별 온도 표 · 열 모델) · [최대 속도 재기](5 °C 구간별 최대 가열 · 냉각 속도) ·
-   [박자 시험](열선 박자 전원 맞춤 · 어긋남 · 무작위를 같은 출력으로 비교 - 흔들림 · 가장 센 주기). 펌웨어 V16 필요.
+   [박자 시험](열선 박자 전원 맞춤 · 어긋남 · 무작위를 같은 출력으로 비교 - 흔들림 · 가장 센 주기) ·
+   [환경 맞추기](환경을 바꾼 뒤 한 번 - 출력 훑기 → 출력별 온도 표 · 열 모델 저장 → 새 표로 가열 · 냉각 확인 시험). 펌웨어 V16 필요.
    창을 닫아도 시험은 서버에서 계속된다. 다시 열면 이어서 보인다(점은 /api/temptest/points 로 새 점만 받는다). */
 "use strict";
 
@@ -16,7 +17,8 @@ const TT_KEYS = [
   ["run_stall_s", "냉각 정체 시간", "s"], ["run_stall_c", "냉각 정체 기준", "°C"], ["run_phase_limit_s", "한 단계 시간 한도", "s"], ["temp_test_coolers", "쿨러", "ints"],
   ["temp_test_precool", "예비 냉각", "bool"], ["temp_test_interval_s", "읽기 간격", "s"], ["temp_test_mark_c", "도달 표 간격", "°C"],
   ["temp_tune_c", "맞추기 비교 온도", "°C"], ["temp_tune_start_pct", "맞추기 시작 출력", "%"], ["temp_tune_slots", "맞추기 후보 칸", "str"],
-  ["temp_step_s", "맞추기 계단 유지", "s"], ["temp_beat_pct", "박자 시험 출력", "%"], ["temp_beat_s", "박자 시험 유지", "s"], ["heater_tc_s", "제어 응답 시간", "s"], ["heat_curve", "출력별 온도 표", "str"], ["reversal_c", "역전 기준", "°C"],
+  ["temp_step_s", "맞추기 계단 유지", "s"], ["temp_beat_pct", "박자 시험 출력", "%"], ["temp_beat_s", "박자 시험 유지", "s"],
+  ["temp_sweep_s", "훑기 올림 시간", "s"], ["temp_sweep_hold_s", "훑기 꼭대기 유지", "s"], ["heater_tc_s", "제어 응답 시간", "s"], ["heat_curve", "출력별 온도 표", "str"], ["reversal_c", "역전 기준", "°C"],
 ];
 
 function ttActive() { return !!(S && S.temptest && S.temptest.active); }
@@ -58,6 +60,7 @@ function openTempTest() {
   tt.heat = h("div", { class: "tt-sec" });
   tt.model = h("div", { class: "tt-sec" });
   tt.tune = h("div", { class: "tt-sec" });
+  tt.env = h("div", { class: "tt-sec" });
   tt.beat = h("div", { class: "tt-sec" });
   tt.speed = h("div", { class: "tt-sec" });
   tt.marks = h("div", {});
@@ -72,6 +75,7 @@ function openTempTest() {
       "냉각 방식", tt.cmode, "냉각 속도 따로", h("span", { class: "row" }, tt.csep, tt.crate, small("°C/분"))),
     h("div", { class: "row" }, h("span", { class: "sp" }), tt.condBtn), tt.condView);
   const side = h("div", { class: "tt-side" },
+    h("div", { class: "tt-sec" }, h("h4", { text: "환경 맞추기" }), tt.env),
     h("div", { class: "tt-sec" }, h("h4", { text: "가열 · 냉각" }), tt.curve), tt.heat,
     h("div", { class: "tt-sec" }, h("h4", { text: "히트건 맞추기" }), tt.tune),
     h("div", { class: "tt-sec" }, h("h4", { text: "박자 시험" }), tt.beat),
@@ -80,6 +84,7 @@ function openTempTest() {
     h("div", { class: "tt-sec" }, h("h4", { text: "도달 표" }), tt.marks), tt.expect, tt.cond);
   const main = h("div", { class: "tt-main" }, tt.prog, tt.why, tt.box);
   tt.startBtn = btn("시작", () => api("temptest_start", { mode: "test" }), "on");
+  tt.envBtn = btn("환경 맞추기", () => api("temptest_start", { mode: "env" }));
   tt.stepBtn = btn("히트건 맞추기", () => api("temptest_start", { mode: "tune" }));
   tt.beatBtn = btn("박자 시험", () => api("temptest_start", { mode: "beat" }));
   tt.maxBtn = btn("최대 속도 재기", () => api("temptest_start", { mode: "max" }));
@@ -88,7 +93,7 @@ function openTempTest() {
   tt.edit = false;
   tt.open = true;
   openDialog("온도 시험", h("div", { class: "tt2" }, main, side),
-    [tt.folderBtn, h("span", { class: "sp" }), tt.stepBtn, tt.beatBtn, tt.maxBtn, tt.startBtn, tt.stopBtn, btn("닫기", () => { tt.open = false; closeDialog(); })],
+    [tt.folderBtn, h("span", { class: "sp" }), tt.envBtn, tt.stepBtn, tt.beatBtn, tt.maxBtn, tt.startBtn, tt.stopBtn, btn("닫기", () => { tt.open = false; closeDialog(); })],
     { cls: "tt-box", render: renderTempTest });
   tt.condSig = "";
   ttPoll();
@@ -119,7 +124,10 @@ function ttBuildCond() {
     const patch = {};
     for (const [k, [el, kind]] of Object.entries(inputs)) {
       if (kind === "bool") patch[k] = el.checked;
-      else if (kind === "ints") { try { patch[k] = JSON.parse(el.value); } catch (e) { toast("쿨러 형식 오류 · 예 [2, 3, 4]"); return; } }
+      else if (kind === "ints") {                                           // 칸을 비우면 [] (쿨러 없이)
+        const sv = el.value.trim();
+        try { patch[k] = sv === "" ? [] : JSON.parse(sv); } catch (e) { toast("쿨러 형식 오류 · 예 [2, 3, 4]"); return; }
+      }
       else if (kind === "str") patch[k] = el.value.trim();
       else { const v = parseFloat(el.value); if (!isFinite(v)) { toast(TT_KEYS.find((x) => x[0] === k)[1] + " · 숫자 필요"); return; } patch[k] = k === "heater_max_pct" ? Math.round(v) : v; }
     }
@@ -164,7 +172,7 @@ function renderTempTest() {
   if (sig !== tt.condSig && !(tt.edit && tt.condView.contains(document.activeElement))) ttBuildCond();
   /* 진행 */
   const why = ttWhy();
-  for (const b of [tt.startBtn, tt.stepBtn, tt.beatBtn, tt.maxBtn]) b.disabled = act || !!why;
+  for (const b of [tt.startBtn, tt.envBtn, tt.stepBtn, tt.beatBtn, tt.maxBtn]) b.disabled = act || !!why;
   tt.stopBtn.disabled = !act;
   tt.folderBtn.disabled = !t.folder;
   setWhy(tt.why, act ? "" : why);
@@ -202,6 +210,22 @@ function renderTempTest() {
       ...(tn.steps || []).map((st) => h("div", { class: "small", text: "계단 " + st.from + " → " + st.to + " % · K " + ttFmt(st.K, 3) + " · τ " + ttFmt(st.tau, 1) + " s · θ " + ttFmt(st.theta, 1) + " s · 오차 " + ttFmt(st.err, 2) + " °C" })),
       h("div", { class: tn.saved ? "small" : "small st-warn", text: tn.saved ? "저장 완료 · " + (tn.saved_text || "") : act ? "진행 중" : "저장 안 함" }));
   } else setKids(tt.tune, small("[히트건 맞추기] 필요 · 칸 · 출력별 온도 표를 정함"));
+  /* 환경 맞추기 결과: 기준 · 천장 · 여유 · 열 모델 · 출력별 온도 표 · 출력만 올릴 때 · 내릴 때 · 저장 상태 */
+  const sw = t.sweep || s.sweep;
+  if (sw) {
+    const shape = (x, name) => !x || x.dev_mean == null ? h("div", { class: "small", text: name + " · —" })
+      : h("div", { class: "small", text: name + " · 직선 차이 " + ttFmt(x.dev_mean, 1) + " / " + ttFmt(x.dev_max, 1, " °C") +
+          " · 흔들림 ±" + ttFmt(x.rip_sd, 2, " °C") + (x.rip_period_s == null ? "" : "(주기 " + ttFmt(x.rip_period_s, 1) + " s)") + " · 역전 " + x.rev_n + "회" });
+    const margin = sw.ceil_c == null ? null : sw.ceil_c - Number(c.run_heater_off_c);
+    const curve = sw.curve || [];
+    setKids(tt.env, h("div", { class: "small", text: "기준 " + ttFmt(sw.base_c, 1, " °C") + " · 천장 " + ttFmt(sw.ceil_c, 1, " °C") +
+        " · 여유 " + (margin == null ? "—" : (margin >= 0 ? "+" : "") + margin.toFixed(1) + " °C") }),
+      h("div", { class: "small", text: "τ " + ttFmt(sw.tau, 1, " s") + " · θ " + ttFmt(sw.theta, 1, " s") + " · 맞춤 오차 " + ttFmt(sw.rms, 2, " °C") }),
+      curve.length > 1 ? h("table", { class: "tb tt-marks" }, h("thead", {}, h("tr", {}, h("th", { class: "num", text: "출력 %" }), h("th", { class: "num", text: "온도 °C" }))),
+        h("tbody", {}, ...curve.map((r) => h("tr", {}, h("td", { class: "num", text: ttFmt(r[0], 1) }), h("td", { class: "num", text: ttFmt(r[1], 1) }))))) : null,
+      shape(sw.up, "출력만 올릴 때"), shape(sw.down, "출력만 내릴 때"),
+      h("div", { class: sw.saved ? "small" : "small st-warn", text: sw.saved ? "저장 완료 · " + (sw.saved_text || "") : act ? "진행 중" : "저장 안 함" + (sw.saved_text ? " · " + sw.saved_text : "") }));
+  } else setKids(tt.env, small("[환경 맞추기] · 환경을 바꾼 뒤 한 번"));
   /* 박자 시험 결과: 박자마다 평균 · 흔들림 · 폭 · 가장 센 주기(뒤쪽 2/3 · 직선 추세 뺌) */
   const bt = t.beat || s.beat;
   if (bt) {

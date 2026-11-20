@@ -309,6 +309,7 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
     **배율 q**(실시간 맞춤): 장비 기록에서 같은 출력 · 같은 방식인데 히트건이 내는 열이 스스로 1.8~2.3 배 바뀌었다(10~17 분에 한 번쯤 · 15 초 안에) - 고정된 표로는 시작부터 2 배 어긋날 수 있다.
     표가 있으면 Kc = q × `gains(K=gain(목표))` · 앞먹임(배율 전)이 `FF_ADAPT`(8 %) 이상이면 J 를 `Q_MOVE_S`(10 s) 시정수로 q 에 옮긴다(그 순간 출력은 그대로 · `Q_MIN`~`Q_MAX` 0.3~3.5).
     배운 q 는 `RelayHeater.q`(= `Controller.heat_q` · 프로그램을 켜면 1)에 두어 다음 단계 · 다음 샘플 · 다음 작업이 이어받는다. 스테이션 켜기 유지 중 요청은 q × 앞먹임.
+    출력별 온도 표를 새로 저장하면(`TempTest._save_heat` - [히트건 맞추기] · [환경 맞추기]) q = 1.0(배운 배율은 예전 표 기준이라 뜻이 없다).
     **PI 는 오차의 흔들림 한 주기 평균**: 온도에 ± 1 °C · 7~10 s 흔들림이 늘 있어 3 s 평균 온도로 한 PI 는 흔들림을 오히려 키웠다 → (목표 − 온도)의 `heater_pi_filter_s`(제어 평균 창 8 s) 평균으로 계산한다
     (온도가 아니라 오차를 평균해 목표선이 움직여도 뒤처지지 않는다).
     **온도 급변**(`LineControl._jump_check`): 걸러진 (온도 − 목표)(`heater_lead_filter_s` 평균)가 `heater_jump_c`(4 °C) 넘게 벗어났는데 출력에 여유가 있었으면(더 줄이거나 올릴 수 있었다)
@@ -409,13 +410,29 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
   (`c.heater_timing` · 설정은 그대로) · 박자마다 `temp_beat_pct`(20 %)로 `temp_beat_s`(60 s) 유지 · 기록(단계 "박자" · temp.csv 출력 방식 칸에 박자 이름 - `method_text(beat=True)`) ·
   진행 "박자 1/3 · 전원 맞춤" → 출력 0 % → 정리(`_cleanup` - 설정의 출력 방식 · 박자로 되돌림 + 시작 전 박자 확인 · 끄는 순서 · 정지 · 비상정지 · 차단 · 오류도 같다).
   분석 `beat_eval`: 뒤쪽 2/3 · 직선 추세 뺌 → 평균 · 흔들림(표준편차) · 폭 · 가장 센 주기(2~30 s · 0.2 s 간격 · cos · sin 최소제곱 진폭 · 본 구간 길이 이하만) · 진폭.
-  summary.txt [박자 시험](조건 한 줄 + 박자별 한 줄) · 창 표 · 로그 한 줄. 설정은 저장하지 않는다. 안전 규칙은 맞추기와 같다(`_hold_for`).
-  폴더 이름 뒤에 "_맞추기" · "_최대속도" · "_박자".
-- 창 배치: 왼쪽 = 진행 한 줄 + 그래프(크게 · 역전 자리 작은 삼각형 · 아래 띠 = 열선 출력 %) · 오른쪽 = 가열 · 냉각 결과 · 열 모델 · 최대 속도 표 · 도달 표(값이 있는 줄만) · 예상 · 조건(접어 둠).
+  summary.txt [박자 시험](조건 한 줄 + 박자별 한 줄) · 창 표 · 로그 한 줄. 설정은 저장하지 않는다. 안전 규칙은 맞추기와 같다(`_hold_for`) ·
+  **[환경 맞추기]**(env - `_run_env` · 스테이션 다이얼 · 쿨러 같은 환경을 바꾼 뒤 한 번):
+  1. 쿨러 → `_station_on` → 기준 온도(`_flat_wait` · 단계 예비 냉각 · 출력 0 % · `_tune_base` 와 같은 판정이되 시작 온도 도달은 요구하지 않음 · 최대 `ENV_BASE_MAX_S` 300 s → 그때 값).
+  2. 출력 훑기(`_sweep` · 단계 훑기 · 목표 없음 · 지금 출력 방식 · 칸 · 박자 그대로 · 온도를 보고 고치지 않음): 올림(`heater_max_pct` × 경과 ÷ `temp_sweep_s` · 0.1 % 단위) →
+     꼭대기 `temp_sweep_hold_s`(천장 = 뒤쪽 절반 평균) → 같은 %/s 로 내림 → 0 % `ENV_ZERO_S`(20 s). 올림 · 꼭대기 중 차단 온도 − `TUNE_CUT_MARGIN_C` 이상이면 그 자리에서 내림
+     (그때 출력 = 최고 · 천장 = 그때까지 최고 · 메모 "차단 온도 근처 · …"). 루프는 `_hold_for` 와 같은 안전 확인. 출력만 올릴 때 · 내릴 때 직선성(`sweep_shape` - 직선 차이 평균 · 최대 ·
+     `curve_stats` 의 흔들림 · 주기 · 역전).
+  3. 맞춤 · 저장(`_env_fit` · 훑기 시작 `ENV_PRE_S` 10 s 전 ~ 0 % 유지 끝 · 기록된 출력 % · 온도): `heater.fit_sweep`(τ dT/dt = Tss(u(t − θ)) − T · Tss = 마디 11개 직선 연결 ·
+     θ 0~5 s(0.5) × τ 2~60 s(1) 격자 · 마디 온도는 조합마다 최소제곱 · 되풀이는 τ 를 한 번에 배열로) → 표 = 0 % 맞춘 c_0 + `_curve_pts` 규칙 · K = 이웃 기울기 최댓값 · err = rms →
+     `_save_heat`(맞추기와 같은 길 - 표 3점 이상 · 열 모델은 범위 안일 때만 · `c._remember` · heat_model 경보 지움 · 배율 1.0 · 출력 방식 · 칸은 그대로) · `self.cond` 도 새 값.
+     못 맞추거나 표 3점 미만이면 "중단 · 훑기 계산 실패 · 이유". 메모 "훑기 · 기준 … · 천장 … · τ … · 표 n점 저장"(index.csv 메모 열).
+  4. 천장 < 가열 끝 + `ENV_CEIL_MIN_C`(1 °C)면 확인 시험 없이 "중단 · 천장 … · 스테이션 설정 온도 올리기"(표는 저장됨) · < + `ENV_CEIL_WARN_C`(5 °C)면 메모.
+  5. 확인 시험: 예비 냉각(`_flat_wait(stop_c = 시작 온도)` - 닿거나 더 안 내려가면 거기서 시작 · 못 닿으면 메모 · ev pre) → `_heat_cool`([시작] 의 가열 ~ 냉각을 뺀 함수 · 같이 씀).
+  결과 `self.sweep`(method · sweep_s · hold_s · top_pct · base_c · ceil_c · tau · theta · rms · curve · up · down · saved · saved_text) → `res["sweep"]` · view `sweep` ·
+  summary.txt 조건 뒤 [환경 맞추기] 뒤에 확인 시험 절들. 그래프 제목 "environment fit". 설정 `temp_sweep_s`(120 s) · `temp_sweep_hold_s`(20 s) ·
+  검사(`temptest_problems` · `config.sweep_full_s`): 2 × 올림 시간 × (1 − 연속 판정 ÷ 최대 출력)(음수면 0) + 꼭대기 ≥ 열선 연속 최대 시간이면 거절.
+  폴더 이름 뒤에 "_맞추기" · "_최대속도" · "_박자" · "_환경".
+- 창 배치: 왼쪽 = 진행 한 줄 + 그래프(크게 · 역전 자리 작은 삼각형 · 아래 띠 = 열선 출력 %) · 오른쪽 = 환경 맞추기 · 가열 · 냉각 결과 · 열 모델 · 최대 속도 표 · 도달 표(값이 있는 줄만) · 예상 · 조건(처음부터 펼침).
+  [조건 고치기] 의 쿨러 칸을 비우면 [](쿨러 없이).
 - 조건은 자동 측정과 같은 설정(`run_start_c` · `run_heater_off_c` · `run_cool_end_c` · `run_heat_mode` · `run_point_step_c` · `cool_rate_separate` · heater_lead_* ·
   `heater_max_pct` · heat_model_* · `run_heat_hold_s` · `run_fan_during_cool` · `run_stall_s` · `run_stall_c` · `run_phase_limit_s`) +
   `temp_test_coolers`(쿨러 릴레이 안 · 빈 목록 가능) · `temp_test_interval_s`(≥ 온도 읽기 시간 · < 온도 못 읽음 허용 × 사용 비율) · `temp_test_mark_c` · `temp_test_precool` ·
-  박자 시험 `temp_beat_pct` · `temp_beat_s` · 맞추기 `temp_tune_c` · `temp_tune_start_pct` · `temp_tune_slots`(기본 "17,33,50,100,300" · 10~1000 · 중복 없이 · 10개 이하 - `config.tune_slot_problems` · 펌웨어가 전원 주기의 정수배로 맞춤) · `temp_step_s`
+  박자 시험 `temp_beat_pct` · `temp_beat_s` · 환경 맞추기 `temp_sweep_s` · `temp_sweep_hold_s` · 맞추기 `temp_tune_c` · `temp_tune_start_pct` · `temp_tune_slots`(기본 "17,33,50,100,300" · 10~1000 · 중복 없이 · 10개 이하 - `config.tune_slot_problems` · 펌웨어가 전원 주기의 정수배로 맞춤) · `temp_step_s`
   (`config.temptest_problems` · 시작 때 `heat_problems` 도 - 표 `heat_curve` 는 2~12점 · 첫 점 0 % · 출력 · 온도 모두 증가 - `config.curve_problems`). 창에서 가열 방식 · 속도를 바로, 나머지는 [조건] 으로 고친다(같은 설정 값).
 - 순서(test · max): 쿨러 켬 → **스테이션 켜기**(`_station_on` · 단계 예비 냉각 · "스테이션 켜는 중": 히트건 켜기(Controller 히트건 함수 · 측정 주체 규칙) → 바로 출력 0 % 요청
   (켠 뒤 100 % 유지가 끝나면 적용 - 유지 때문에 85~104 °C 까지 튄다) → 유지 끝까지 기록만) → 예비 냉각(송풍 · 출력 0 % 로 시작 온도까지 · `temp_test_precool` 끄면 건너뜀 ·
@@ -428,7 +445,7 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
   시험 시작은 자동 측정 · 접촉 탐색 중 · 릴레이(히트건 · 쿨러 · 송풍 늦게 끄기)가 켜져 있으면 거절. 측정 시작과는 `runner._lock` 으로 엇갈리지 않는다.
 - 저장: `<데이터 폴더>/temp_test/YYYYMMDD_HHMMSS/` temp.csv(UTF-8 BOM · 시각 · 경과 · 단계 · 온도 · 목표 · 열선 · 송풍 · 쿨러) · summary.txt(조건 + 결과) ·
   graph.png(서버가 OpenCV 로 그림 - 글자는 영문). summary.txt 조건에 "속도 정하는 방법 · …" 한 줄 · [점 · 속도 · 역전] 뒤에 [흔들림](가열 · 냉각 한 줄씩).
-  **결과 목록** `<데이터 폴더>/temp_test/index.csv`(`temptest.write_index` · `INDEX_HEADER` 순서 · utf-8-sig · CRLF): 시험이 끝날 때마다(어떤 끝이든 · 네 시험 모두) 한 줄 -
+  **결과 목록** `<데이터 폴더>/temp_test/index.csv`(`temptest.write_index` · `INDEX_HEADER` 순서 · utf-8-sig · CRLF): 시험이 끝날 때마다(어떤 끝이든 · 다섯 시험 모두) 한 줄 -
   조건(온도 · 속도 정하는 방법 · 설정 속도 · 읽기 간격 · 시작 때 출력 방식 · 열 모델) + 가열 · 냉각 결과(걸린 시간 = 가열 목표 도달 · 냉각 끝까지 · curve_stats · 넘침 · 흔들림) + 메모.
   없으면 머리글부터 · 머리글이 다르면 예전 파일을 index_<YYYYMMDD_HHMMSS>.csv 로 옮기고 새로 · 쓰기 실패는 로그만.
   로그: 시작 · 끝 · 요약 한 줄. 화면: `state.temptest` + `GET /api/temptest/points`.

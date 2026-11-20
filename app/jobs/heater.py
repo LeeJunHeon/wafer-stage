@@ -30,6 +30,8 @@
 import math
 from collections import deque
 
+import numpy as np
+
 from app import config as config_mod
 from app.safety import BY_RUN
 
@@ -373,6 +375,57 @@ def fit_fopdt(rows, du_pct, T0=None):
         return None
     sse, A, tau, th = best
     return A / u_pct, tau, th, math.sqrt(sse / len(ys))         # K = A ÷ |du|(부호를 같이 뒤집었으므로 K 는 양수)
+
+
+SWEEP_NODES = 11                                    # [환경 맞추기] 정지 곡선의 마디 수(0 ~ top 을 10 등분)
+SWEEP_MIN_N, SWEEP_MIN_TOP = 60, 5.0                # 점이 이보다 적거나 최고 출력이 이보다 낮으면 맞추지 않는다
+SWEEP_THETAS = tuple(x * 0.5 for x in range(0, 11))           # θ 0 ~ 5 s · 0.5 간격
+SWEEP_TAUS = tuple(float(x) for x in range(2, 61))            # τ 2 ~ 60 s · 1 간격
+
+
+def fit_sweep(t, u, T, top):
+    """[환경 맞추기] 출력 훑기 기록 → 열 모델 + 정지 곡선. t(경과 s) · u(그때 출력 %) · T(온도)는 같은 길이(기록 순서) · top = 훑기의 최고 출력 %.
+    모델: τ dT/dt = Tss(u(t − θ)) − T · Tss = 마디 u_k = k × top ÷ 10(k = 0..10)의 온도 c_k 를 직선으로 이은 것.
+    θ · τ 는 격자(SWEEP_THETAS × SWEEP_TAUS)에서 고르고 c_k 는 조합마다 최소제곱으로 바로 푼다:
+    Φ[i][k] = 마디 k 의 모자 함수 값(u(t_i − θ) - 직선 보간 · 첫 점 앞은 첫 값 · 0 ~ top 으로 자름) ·
+    F[0] = Φ[0] · a_i = exp(−Δt_i ÷ τ) · F[i] = a_i F[i−1] + (1 − a_i)(Φ[i] + Φ[i−1]) ÷ 2 · T ≈ F c.
+    반환 {"tau", "theta", "rms", "pts": [(출력 %, 정지 온도 °C) × 11]} 또는 None(점 SWEEP_MIN_N 미만 · top SWEEP_MIN_TOP 미만).
+    점마다의 되풀이는 τ 를 모두 한 번에(배열) 계산한다 - θ 11개 × 점 수 번만 돈다."""
+    t = np.asarray(t, float)
+    u = np.asarray(u, float)
+    T = np.asarray(T, float)
+    top = float(top)
+    n = len(t)
+    if n < SWEEP_MIN_N or len(u) != n or len(T) != n or top < SWEEP_MIN_TOP:
+        return None
+    nk = SWEEP_NODES
+    du = top / (nk - 1)
+    taus = np.array(SWEEP_TAUS)
+    dt = np.diff(t)
+    A = np.exp(-np.maximum(dt, 0.0)[:, None] / taus[None, :])          # (n − 1, τ 수)
+    rows = np.arange(n)
+    best = None
+    for th in SWEEP_THETAS:
+        x = np.clip(np.interp(t - th, t, u), 0.0, top) / du               # np.interp 는 첫 점 앞을 첫 값으로 둔다
+        k = np.minimum(np.floor(x).astype(int), nk - 2)
+        fr = x - k
+        phi = np.zeros((n, nk))
+        phi[rows, k] = 1.0 - fr
+        phi[rows, k + 1] += fr
+        B = (phi[1:] + phi[:-1]) * 0.5                                    # (n − 1, 마디)
+        F = np.empty((n, len(taus), nk))
+        F[0] = phi[0][None, :]
+        for i in range(1, n):
+            a = A[i - 1][:, None]
+            F[i] = a * F[i - 1] + (1.0 - a) * B[i - 1][None, :]
+        for j, tau in enumerate(taus):
+            M = F[:, j, :]
+            c, *_ = np.linalg.lstsq(M, T, rcond=None)
+            rms = float(np.sqrt(np.mean((T - M @ c) ** 2)))
+            if best is None or rms < best[0]:
+                best = (rms, float(tau), float(th), c)
+    rms, tau, th, c = best
+    return {"tau": tau, "theta": th, "rms": rms, "pts": [(round(i * du, 3), float(c[i])) for i in range(nk)]}
 
 
 def _slopes(seq, win=SPEED_WIN_S):

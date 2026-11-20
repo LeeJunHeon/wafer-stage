@@ -255,6 +255,10 @@ ITEMS = (
               desc="[박자 시험] 박자마다 유지하는 열선 출력"),
          Item("temp_beat_s", 60.0, "float", "박자 시험 유지", "s", 20, 300,
               desc="[박자 시험] 박자 하나를 유지하며 기록하는 시간\n뒤쪽 2/3 로 흔들림 · 주기를 잼"),
+         Item("temp_sweep_s", 120.0, "float", "훑기 올림 시간", "s", 30, 600,
+              desc="[환경 맞추기] 가 출력을 0 % 에서 최대 출력까지 일정하게 올리는 시간 · 내릴 때도 같은 속도"),
+         Item("temp_sweep_hold_s", 20.0, "float", "훑기 꼭대기 유지", "s", 5, 120,
+              desc="[환경 맞추기] 가 최대 출력에서 머무는 시간 · 그 뒤쪽 절반 평균이 천장 온도"),
          Item("temp_test_precool", True, "bool", "온도 시험 예비 냉각",
               desc="가열 전에 쿨러로 시작 온도까지 냉각\n끄면 쿨러만 켜고 바로 가열"))
     + _g("판 · 핀",
@@ -735,7 +739,17 @@ def temptest_problems(v: dict) -> list:
     limit = float(v["temp_stale_s"]) * float(v["stale_use_ratio"])
     if not iv < limit:
         out.append("온도 시험 읽기 간격 %g초 · %.2f초 미만 필요" % (iv, limit))
+    full_s = sweep_full_s(v)
+    if full_s >= float(v["heater_max_on_s"]):
+        out.append("훑기 중 연속 판정 출력 이상 %.0f초 · 열선 연속 최대 %g초 미만 필요" % (full_s, v["heater_max_on_s"]))
     return out
+
+
+def sweep_full_s(v: dict) -> float:
+    """[환경 맞추기] 훑기에서 출력이 연속 판정 출력(heater_full_pct) 이상인 시간 = 올림 · 내림 두 번 × 올림 시간 × (1 − 연속 판정 ÷ 최대 출력)(음수면 0) + 꼭대기 유지
+    (안전 감시의 열선 연속 최대 시간은 이 출력 이상만 센다 - Safety.full_on_t)."""
+    frac = max(0.0, 1.0 - float(v["heater_full_pct"]) / float(v["heater_max_pct"]))
+    return 2.0 * float(v["temp_sweep_s"]) * frac + float(v["temp_sweep_hold_s"])
 
 
 RATE_MIN, RATE_MAX = 0.1, 600.0                     # 속도 정하는 방법 "걸리는 시간" 으로 나온 속도(°C/분)가 들어야 할 범위
