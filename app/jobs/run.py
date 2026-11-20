@@ -56,6 +56,7 @@ COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "
              "run_heat_mode", "run_point_step_c", "cool_rate_separate", "run_heat_hold_s",
              "run_fan_during_cool", "heater_start_gap_s", "heater_fan_after_s", "run_cool_mode", "run_cool_rate_c_min", "heater_lead_c",
              "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct", "heater_pwm_period_ms", "heater_timing",
+             "run_rate_by", "run_heat_time_s", "run_cool_time_s",
              "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "heat_curve", "heater_tc_s", "heater_pi_filter_s", "heater_jump_c", "heater_turn_s", "reversal_c")
 CONTROL_HEADER = ("회차", "단계", "경과(s)", "온도(°C)", "저항(Ω)", "목표 온도(°C)", "열선 출력(%)", "송풍")     # <이름>_<전압>V_control.csv 의 첫 줄
 
@@ -993,7 +994,9 @@ class Runner:
                             "가열 전이 온도(°C)", "냉각 전이 온도(°C)", "차이(°C)", "파일", "가열 점 간격(°C)", "냉각 점 간격(°C)",
                             "가열 점 수", "냉각 점 수", "가열 속도(°C/분)", "냉각 속도(°C/분)", "가열 점 간격 흔들림(°C)", "냉각 점 간격 흔들림(°C)",
                             "가열 역전(회)", "냉각 역전(회)", "가열 역전 최대(°C)", "냉각 역전 최대(°C)", "가열 목표선 차이 평균(°C)", "냉각 목표선 차이 평균(°C)",
-                            "가열 목표선 차이 최대(°C)", "냉각 목표선 차이 최대(°C)"])
+                            "가열 목표선 차이 최대(°C)", "냉각 목표선 차이 최대(°C)",
+                            "가열 흔들림(°C)", "냉각 흔들림(°C)", "가열 흔들림 폭(°C)", "냉각 흔들림 폭(°C)",
+                            "가열 흔들림 주기(s)", "냉각 흔들림 주기(s)", "가열 흔들림 진폭(°C)", "냉각 흔들림 진폭(°C)"])
                 for n, i in enumerate(self.order):
                     it = self.items[i]
                     s = it.get("sum") or {}
@@ -1003,7 +1006,8 @@ class Runner:
                                 "" if not (it["t0"] and it["t1"]) else "%.0f" % (it["t1"] - it["t0"]), e(s.get("t_max")), e(s.get("r_start")), e(s.get("r_peak")),
                                 e(s.get("ratio")), e(s.get("t_heat")), e(s.get("t_cool")), e(s.get("hyst")), " ".join(it["files"]),
                                 e(((s.get("spacing") or {}).get("heat") or {}).get("dc")), e(((s.get("spacing") or {}).get("cool") or {}).get("dc"))]
-                               + [e(((s.get("curve") or {}).get(ph) or {}).get(k)) for k in ("n", "rate_c_min", "step_sd", "rev_n", "rev_max", "sp_err_mean", "sp_err_max")
+                               + [e(((s.get("curve") or {}).get(ph) or {}).get(k)) for k in ("n", "rate_c_min", "step_sd", "rev_n", "rev_max", "sp_err_mean", "sp_err_max",
+                                                                                            "rip_sd", "rip_pp", "rip_period_s", "rip_amp")
                                   for ph in ("heat", "cool")])
         except OSError as e:
             self.c.logs.app("summary.csv 저장 실패 · %s" % e, "error")

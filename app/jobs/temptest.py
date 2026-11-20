@@ -10,7 +10,8 @@ temp_beat_s 씩 유지 · 박자마다 뒤쪽 2/3 의 평균 · 흔들림 · 폭
 펌웨어 V16 필요(열선 출력 0.1 % · 출력 방식 · 전원 주기 단위 칸 · 박자 hpj).
 배경(박자): 타이머1 틱이 전원 60 Hz 반주기와 거의 같아 켜는 순간의 전원 파형 위치가 약 10 초 주기로 천천히 밀리고 그 주기로 열이 덩어리져 들어오는 것으로 보였다.
 배경: 열선 줄(SSR + 스테이션)은 명령한 % 를 그대로 통과시키지 않는다(같은 6 % 에서 칸 10 · 50 · 100 ms 가 64 · 42 · 45 °C) - 그래서 값마다 잰다.
-가열 · 냉각 속도 = 목표 점 간격 ÷ temp_test_interval_s × 60(config.heat_rate_c_min).
+가열 · 냉각 속도 = 목표 점 간격 ÷ temp_test_interval_s × 60 · 속도 정하는 방법이 걸리는 시간이면 온도 차 ÷ 가열 · 냉각 시간(config.heat_rate_c_min).
+끝날 때마다(어떤 끝이든 · 네 시험 모두) temp_test/index.csv 에 한 줄을 덧붙인다(write_index).
 
 목적: "몇 °C 까지 몇 초에 도달하는지" · 최대 가열 속도 · 넘침(열선을 끈 뒤 더 오르는 정도) · 냉각 시간을 보고 히트건 · 가열 제어 값을 정한다.
 조건은 자동 측정과 같은 설정(run_start_c · run_heater_off_c · run_cool_end_c · run_heat_mode · run_point_step_c · cool_rate_separate ·
@@ -32,6 +33,7 @@ heater_lead_* · heater_max_pct · heat_model_* · run_heat_hold_s · run_fan_du
 저장: <데이터 폴더>/temp_test/YYYYMMDD_HHMMSS/ temp.csv(UTF-8 BOM) · summary.txt · graph.png. 점 데이터는 state 에 넣지 않는다(points()).
 """
 
+import csv
 import math
 import os
 import threading
@@ -61,7 +63,8 @@ COND_KEYS = ("run_start_c", "run_heater_off_c", "run_cool_end_c", "run_heat_mode
              "heater_max_c", "heater_max_on_s", "temp_stale_s", "heater_start_gap_s", "heater_fan_after_s", "heater_fan_relay", "heater_element_relay",
              "run_cool_mode", "run_cool_rate_c_min", "heater_lead_c", "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct",
              "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "reversal_c",
-             "heater_out_mode", "heater_pwm_period_ms", "heater_slot_ms", "heater_timing", "temp_beat_pct", "temp_beat_s")
+             "heater_out_mode", "heater_pwm_period_ms", "heater_slot_ms", "heater_timing", "temp_beat_pct", "temp_beat_s",
+             "run_rate_by", "run_heat_time_s", "run_cool_time_s")
 MODES = {"test": "온도 시험", "tune": "히트건 맞추기", "max": "최대 속도 재기", "beat": "박자 시험"}
 # [박자 시험]: 박자 순서(펌웨어 hpj) · 박자마다 유지 구간의 뒤쪽 (1 − BEAT_SKIP) 만 본다 · 가장 센 주기는 BEAT_P_MIN ~ BEAT_P_MAX 를 BEAT_P_STEP 간격으로 훑는다
 BEATS = (0, 1, 2)
@@ -109,21 +112,9 @@ def beat_eval(rows, secs):
     r = v - (v.mean() + b * tc)
     out.update(mean_c=round(float(v.mean()), 3), sd_c=round(float(np.sqrt(np.mean(r * r))), 3), pp_c=round(float(r.max() - r.min()), 3))
     span = float(t[-1] - t[0])
-    best = None
-    k = 0
-    while True:
-        P = BEAT_P_MIN + k * BEAT_P_STEP
-        if P > min(BEAT_P_MAX, span) + 1e-9:
-            break
-        k += 1
-        wv = 2.0 * math.pi / P
-        X = np.column_stack([np.cos(wv * t), np.sin(wv * t)])
-        ab = np.linalg.lstsq(X, r, rcond=None)[0]
-        amp = float(math.hypot(ab[0], ab[1]))
-        if best is None or amp > best[1]:
-            best = (P, amp)
-    if best is not None:
-        out.update(period_s=round(best[0], 1), amp_c=round(best[1], 3))
+    P, amp = analysis.period_scan(t, r, BEAT_P_MIN, min(BEAT_P_MAX, span), BEAT_P_STEP)
+    if P is not None:
+        out.update(period_s=round(P, 1), amp_c=round(amp, 3))
     return out
 IV = "temp_test_interval_s"
 T_MISS_N = 3                                      # 온도를 이만큼 연속으로 못 읽으면 중단(열전대 끊김) - 자동 측정과 같다
@@ -277,8 +268,11 @@ def summary_lines(cd, res, result, started, notes):
     L = ["온도 시험 · %s" % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started)), "결과 · %s" % result, ""]
     L.append("[조건]")
     L.append("가열 방식 · %s" % mode_text(cd))
+    by_time = cd.get("run_rate_by") == "time"
+    L.append("속도 정하는 방법 · 걸리는 시간 · 가열 %g s · 냉각 %g s" % (cd["run_heat_time_s"], cd["run_cool_time_s"]) if by_time else "속도 정하는 방법 · 점 간격")
     L.append("시작 온도 %g °C · 가열 끝 온도 %g °C · 냉각 끝 온도 %g °C" % (cd["run_start_c"], cd["run_heater_off_c"], cd["run_cool_end_c"]))
-    L.append("목표 점 간격 %g °C · 읽기 간격 %g s · 열선 최대 출력 %d %% · 유지 %g s" % (cd["run_point_step_c"], cd["temp_test_interval_s"], cd["heater_max_pct"], cd["run_heat_hold_s"]))
+    L.append(("목표 점 간격 %s °C · 읽기 간격 %g s · 열선 최대 출력 %d %% · 유지 %g s") % (
+        ("%.3f" if by_time else "%g") % config_mod.point_step_c(cd, IV), cd["temp_test_interval_s"], cd["heater_max_pct"], cd["run_heat_hold_s"]))
     L.append("목표선 기다림 폭 %g °C · 평균 창 %g s · 지속 %g s" % (cd["heater_lead_c"], cd["heater_lead_filter_s"], cd["heater_lead_hold_s"]))
     L.append("열 모델 · %s" % heater_mod.ThermalModel(cd).text())
     L.append("제어 평균 창 %g s · 온도 급변 기준 %g °C · 방향 전환 %g s" % (cd.get("heater_pi_filter_s", 8.0), cd.get("heater_jump_c", 4.0),
@@ -344,6 +338,11 @@ def summary_lines(cd, res, result, started, notes):
         L.append("%s · 점 %d개 · 평균 %s °C/분 · 점 간격 %s ± %s °C · 역전 %d회 · 최대 %s °C · 목표선 차이 평균 %s · 최대 %s °C" % (
             name, cs["n"], _f(cs["rate_c_min"], "%.2f"), _f(cs["step_mean"], "%.3f"), _f(cs["step_sd"], "%.3f"), cs["rev_n"], _f(cs["rev_max"], "%.2f"),
             _f(cs["sp_err_mean"], "%.2f"), _f(cs["sp_err_max"], "%.2f")))
+    L += ["", "[흔들림] (%g s 창의 직선 추세를 뺀 나머지 · 주기 %g~%g s)" % (analysis.RIPPLE_WIN_S, analysis.RIPPLE_P_MIN, analysis.RIPPLE_P_MAX)]
+    for key, name in (("heat", "가열"), ("cool", "냉각")):
+        cs = (res.get("curve") or {}).get(key) or {}
+        L.append("%s · 흔들림 %s °C · 폭 %s °C · 가장 센 주기 %s s · 진폭 %s °C" % (
+            name, _f(cs.get("rip_sd"), "%.2f"), _f(cs.get("rip_pp"), "%.2f"), _f(cs.get("rip_period_s"), "%.1f"), _f(cs.get("rip_amp"), "%.2f")))
     if res.get("speed"):
         L += ["", "[최대 속도] 구간 · 가열 · 냉각 °C/분"]
         for lo, hv, cv in res["speed"]:
@@ -351,6 +350,58 @@ def summary_lines(cd, res, result, started, notes):
     if notes:
         L += ["", "[메모]"] + list(notes)
     return L
+
+
+# ----------------------------------------------------------------------
+# 결과 목록(temp_test/index.csv) - 시험이 끝날 때마다 한 줄(어떤 끝이든 · 네 시험 모두)
+# ----------------------------------------------------------------------
+INDEX_HEADER = ("시작 시각", "폴더 이름", "종류", "결과", "시작 온도(°C)", "가열 끝 온도(°C)", "냉각 끝 온도(°C)", "속도 정하는 방법",
+                "가열 설정 속도(°C/분)", "냉각 설정 속도(°C/분)", "읽기 간격(s)", "출력 방식", "열 모델",
+                "가열 걸린 시간(s)", "가열 실제 속도(°C/분)", "가열 점 수", "가열 점 간격 흔들림(°C)", "가열 역전(회)", "가열 역전 최대(°C)",
+                "가열 목표선 차이 평균(°C)", "가열 목표선 차이 최대(°C)", "넘침(°C)", "가열 흔들림(°C)", "가열 흔들림 폭(°C)", "가열 흔들림 주기(s)", "가열 흔들림 진폭(°C)",
+                "냉각 걸린 시간(s)", "냉각 실제 속도(°C/분)", "냉각 점 수", "냉각 점 간격 흔들림(°C)", "냉각 역전(회)", "냉각 역전 최대(°C)",
+                "냉각 목표선 차이 평균(°C)", "냉각 목표선 차이 최대(°C)", "냉각 흔들림(°C)", "냉각 흔들림 폭(°C)", "냉각 흔들림 주기(s)", "냉각 흔들림 진폭(°C)", "메모")
+RATE_BY_NAMES = {"step": "점 간격", "time": "걸리는 시간"}
+
+
+def index_row(cd, res, mode, result, started, folder_name, method, model_text, notes):
+    """index.csv 한 줄(INDEX_HEADER 순서 · 값이 없으면 빈칸)."""
+    e = lambda v: "" if v is None else "%.6g" % v                  # noqa: E731
+    res = res or {}
+    h, cl, cv = res.get("heat") or {}, res.get("cool") or {}, res.get("curve") or {}
+    ch, cc = cv.get("heat") or {}, cv.get("cool") or {}
+    by = cd.get("run_rate_by", "step")
+    row = [time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started)), folder_name, MODES.get(mode, mode), result,
+           e(cd.get("run_start_c")), e(cd.get("run_heater_off_c")), e(cd.get("run_cool_end_c")), RATE_BY_NAMES.get(by, by),
+           e(round(config_mod.heat_rate_c_min(cd, IV), 3)), e(round(config_mod.cool_rate_c_min(cd, IV), 3)), e(cd.get(IV)), method, model_text,
+           e(h.get("reach_s"))]
+    row += [e(ch.get(k)) for k in ("rate_c_min", "n", "step_sd", "rev_n", "rev_max", "sp_err_mean", "sp_err_max")]
+    row += [e(h.get("over_c"))] + [e(ch.get(k)) for k in ("rip_sd", "rip_pp", "rip_period_s", "rip_amp")]
+    row += [e(cl.get("s"))] + [e(cc.get(k)) for k in ("rate_c_min", "n", "step_sd", "rev_n", "rev_max", "sp_err_mean", "sp_err_max",
+                                                      "rip_sd", "rip_pp", "rip_period_s", "rip_amp")]
+    row.append(" / ".join(notes or []))
+    return row
+
+
+def write_index(base, row):
+    """base/index.csv 에 한 줄 덧붙인다(utf-8-sig · CRLF). 없으면 머리글부터 · 머리글이 지금 것과 다르면 index_<YYYYMMDD_HHMMSS>.csv 로 옮기고 새로.
+    반환 = 옮긴 파일 이름(없으면 ""). 실패는 OSError(부르는 쪽이 로그만 남긴다)."""
+    p = base / "index.csv"
+    moved = ""
+    if p.exists():
+        with open(p, "r", encoding="utf-8-sig", newline="") as f:
+            first = next(csv.reader(f), None)
+        if first is not None and tuple(first) != INDEX_HEADER:
+            q = base / ("index_%s.csv" % time.strftime("%Y%m%d_%H%M%S"))
+            os.replace(p, q)
+            moved = q.name
+    new = not p.exists() or p.stat().st_size == 0
+    with open(p, "a", encoding="utf-8-sig" if new else "utf-8", newline="") as f:
+        w = csv.writer(f, lineterminator="\r\n")
+        if new:
+            w.writerow(INDEX_HEADER)
+        w.writerow(row)
+    return moved
 
 
 # ----------------------------------------------------------------------
@@ -465,6 +516,7 @@ class TempTest:
         self.jumps = []                             # 온도 급변 [{"phase": 가열 | 냉각, "t": 시험 시작부터 s, "sp": 목표 온도 정수, "j": LineControl.jumps 의 항목(이어지는 동안 d 갱신)}]
         self._jctl, self._jn = None, 0              # 급변을 본 제어기 · 그중 이미 본 개수
         self.started = None                         # 시작 시각(epoch) - 화면이 새 시험인지 안다
+        self.method0 = ""                           # 시작 때 출력 방식(stage.method_text - index.csv)
         self.t0 = None                              # 시작 시각(clock)
         self.coolers = []
         self.last_T = None
@@ -526,6 +578,7 @@ class TempTest:
                 self.model, self.speed, self.tune, self.beat, self.step_text = None, None, None, None, ""
                 if c.stage.heat_capable:
                     c.heater_method_restore()                       # 설정의 출력 방식으로 시작(맞추기는 안에서 바꾼다)
+                self.method0 = c.stage.method_text()
                 self.coolers = [int(n) for n in self.cond["temp_test_coolers"]]
                 self._stop = self._estop = False
                 self.t0 = c.clock()
@@ -636,6 +689,18 @@ class TempTest:
         except (imgio.ImageIOError, cv2.error) as e:
             self.c.logs.app("온도 시험 graph.png 저장 실패 · %s" % e, "error")
 
+    def _write_index(self, res):
+        """temp_test/index.csv 에 이 시험 한 줄. 실패하면 로그만(시험 결과 · 다른 파일에는 영향 없음)."""
+        c = self.c
+        try:
+            row = index_row(self.cond, res, self.mode, self.result, self.started, self.folder.name, self.method0,
+                            heater_mod.ThermalModel(self.cond).text(), self.notes)
+            moved = write_index(self.folder.parent, row)
+            if moved:
+                c.logs.app("온도 시험 index.csv 머리글 바뀜 · 예전 파일 %s 로 옮김" % moved)
+        except (OSError, csv.Error, ValueError, KeyError, TypeError) as e:
+            c.logs.app("온도 시험 index.csv 쓰기 실패 · %s: %s" % (type(e).__name__, e), "warn")
+
     def _summary(self):
         res = summarize(self.pts, self.elog, self.ev, self.cond) if self.cond else None
         if res is not None:
@@ -670,6 +735,7 @@ class TempTest:
                 c.logs.app("%s 결과 계산 실패 · %s: %s" % (MODES[self.mode], type(e).__name__, e), "error")
             res = self._summary()
             self._finish_files(res)
+            self._write_index(res)
             h = res.get("heat") or {}
             cl = res.get("cool") or {}
             cv = res.get("curve") or {}

@@ -6,7 +6,12 @@
 
 import math
 
+import numpy as np
+
 SMOOTH_N = 5
+RIPPLE_WIN_S = 30.0                 # 흔들림 기준선: 점마다 앞뒤 이 시간의 절반 안 점들로 맞춘 직선
+RIPPLE_MIN_N, RIPPLE_MIN_S = 10, 20.0   # 이보다 점이 적거나 구간이 짧으면 흔들림을 내지 않는다
+RIPPLE_P_MIN, RIPPLE_P_MAX = 2.0, 30.0  # 가장 센 주기를 훑는 범위(아래는 읽기 간격 중앙값 × 3 이상 · 위는 구간 길이 이하)
 
 
 def _smooth(v, n=SMOOTH_N):
@@ -73,13 +78,78 @@ def analyze(points):
     return out
 
 
+def period_scan(t, r, p_min, p_max, step=0.2):
+    """가장 센 주기: p_min 부터 step 간격으로 p_max 까지 주기마다 r ≈ a cos(2πt/P) + b sin(2πt/P) 의 최소제곱 진폭 √(a² + b²) 을 구해
+    가장 큰 것 → (주기 s, 진폭 °C). 훑을 주기가 없거나 점이 2개 미만이면 (None, None). [박자 시험] · 흔들림(ripple)이 같이 쓴다."""
+    t = np.asarray(t, float)
+    r = np.asarray(r, float)
+    if len(t) < 2:
+        return None, None
+    best = None
+    k = 0
+    while True:
+        P = p_min + k * step
+        if P > p_max + 1e-9:
+            break
+        k += 1
+        wv = 2.0 * math.pi / P
+        X = np.column_stack([np.cos(wv * t), np.sin(wv * t)])
+        ab = np.linalg.lstsq(X, r, rcond=None)[0]
+        amp = float(math.hypot(ab[0], ab[1]))
+        if best is None or amp > best[1]:
+            best = (P, amp)
+    return best if best is not None else (None, None)
+
+
+def ripple(rows, win_s=RIPPLE_WIN_S):
+    """한 단계의 온도 흔들림: rows = [(경과 s, 온도)] (기록 순서). 기준선 = 점마다 앞뒤 win_s ÷ 2 안 점들로 맞춘 직선의 그 점 값
+    (끝에서는 있는 쪽 점만 · 창 안 점이 3개 미만이면 그 점은 뺀다). 나머지 = 온도 − 기준선 →
+    {"sd" 평균 제곱근, "pp" 최고 − 최저, "period_s" · "amp" 가장 센 주기 · 진폭(period_scan - max(2 s, 읽기 간격 중앙값 × 3) ~ min(30 s, 구간 길이))}.
+    점이 RIPPLE_MIN_N 개 미만이거나 구간이 RIPPLE_MIN_S 미만이면 네 값 모두 None."""
+    out = {"sd": None, "pp": None, "period_s": None, "amp": None}
+    if len(rows) < RIPPLE_MIN_N:
+        return out
+    t = np.array([float(a[0]) for a in rows])
+    v = np.array([float(a[1]) for a in rows])
+    span = float(t[-1] - t[0])
+    if span < RIPPLE_MIN_S:
+        return out
+    tz = t - t[0]                                                   # 합이 커지지 않게 첫 점 기준
+    half = win_s / 2.0
+    lo = np.searchsorted(tz, tz - half, side="left")
+    hi = np.searchsorted(tz, tz + half, side="right")
+    cs = lambda x: np.concatenate([[0.0], np.cumsum(x)])           # noqa: E731
+    S1, St, Sv, Stt, Stv = cs(np.ones_like(tz)), cs(tz), cs(v), cs(tz * tz), cs(tz * v)
+    n = S1[hi] - S1[lo]
+    st, sv, stt, stv = St[hi] - St[lo], Sv[hi] - Sv[lo], Stt[hi] - Stt[lo], Stv[hi] - Stv[lo]
+    keep = n >= 3
+    den = n * stt - st * st
+    with np.errstate(divide="ignore", invalid="ignore"):
+        b = np.where(np.abs(den) > 1e-12, (n * stv - st * sv) / den, 0.0)
+        a = (sv - b * st) / n
+    r = (v - (a + b * tz))[keep]
+    tk = t[keep]
+    if len(r) == 0:
+        return out
+    out["sd"] = float(np.sqrt(np.mean(r * r)))
+    out["pp"] = float(r.max() - r.min())
+    dts = np.diff(t)
+    dt_med = float(np.median(dts)) if len(dts) else 0.0
+    out["period_s"], out["amp"] = period_scan(tk, r, max(RIPPLE_P_MIN, dt_med * 3.0), min(RIPPLE_P_MAX, span))
+    return out
+
+
 def curve_stats(rows, lo, hi, sign, reversal_c):
     """가열(sign +1) 또는 냉각(sign −1) 한 단계의 결과: rows = [(경과 s, 온도, 목표 | None)] (기록 순서).
     점 수 = lo ≤ 온도 ≤ hi 인 점(시작~끝 온도 구간) · 실제 평균 속도(°C/분 - 그 구간 첫 점 → 끝 점) · 점 간격 평균 · 흔들림(표준편차) ·
-    역전(가열 중 내려감 · 냉각 중 올라감이 reversal_c 넘는 일)의 횟수 · 최대 폭 · 자리(그 점의 경과 · 온도) · 목표선과의 차이(평균 · 최대 - 절댓값)."""
+    역전(가열 중 내려감 · 냉각 중 올라감이 reversal_c 넘는 일)의 횟수 · 최대 폭 · 자리(그 점의 경과 · 온도) · 목표선과의 차이(평균 · 최대 - 절댓값) ·
+    흔들림(ripple - 같은 구간의 점 · rip_sd · rip_pp · rip_period_s · rip_amp)."""
     pts = [r for r in rows if lo - 1e-9 <= r[1] <= hi + 1e-9]
     out = {"n": len(pts), "rate_c_min": None, "step_mean": None, "step_sd": None, "rev_n": 0, "rev_max": 0.0, "rev_at": [],
            "sp_err_mean": None, "sp_err_max": None}
+    rp = ripple([(r[0], r[1]) for r in pts])
+    r3 = lambda x, d=3: None if x is None else round(x, d)         # noqa: E731
+    out.update(rip_sd=r3(rp["sd"]), rip_pp=r3(rp["pp"]), rip_period_s=r3(rp["period_s"], 1), rip_amp=r3(rp["amp"]))
     if len(pts) >= 2:
         dt = pts[-1][0] - pts[0][0]
         if dt > 0:

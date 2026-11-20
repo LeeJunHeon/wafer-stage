@@ -296,6 +296,8 @@ function openRunCond() {
     run_cooler_mode: h("select", {}, ...[["zone", "샘플 아래 구역"], ["all", "전체"], ["none", "사용 안 함"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_cooler_mode === v }))),
     run_cooler_during_heat: chk("run_cooler_during_heat"),
     run_heat_mode: h("select", {}, ...[["ramp", "가열 속도 제어"], ["full", "계속 가열"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_heat_mode === v }))),
+    run_rate_by: h("select", {}, ...[["step", "점 간격"], ["time", "걸리는 시간"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_rate_by === v }))),
+    run_heat_time_s: num("run_heat_time_s", "1"), run_cool_time_s: num("run_cool_time_s", "1"),
     run_point_step_c: num("run_point_step_c", "0.01"), run_fan_during_cool: chk("run_fan_during_cool"), cool_rate_separate: chk("cool_rate_separate"),
     run_cool_mode: h("select", {}, ...[["ramp", "냉각 속도 제어"], ["free", "자연 냉각"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_cool_mode === v }))),
     run_cool_rate_c_min: num("run_cool_rate_c_min", "0.1"), heater_lead_c: num("heater_lead_c", "0.5"),
@@ -313,7 +315,13 @@ function openRunCond() {
   /* 예상 시간: 고치는 값으로 바로 다시 계산(샘플 수 × 반복) */
   const expect = h("div", { class: "small" });
   const nUse = (S.samples || []).filter((x) => x.use).length || 1;
-  const upd = () => { const pt = condPatch(); expect.textContent = expectText(Object.assign({}, c, pt), nUse * (pt.run_repeat || 1)); };
+  /* 속도 정하는 방법: 걸리는 시간이면 가열 · 냉각 시간만 · 점 간격이면 목표 점 간격 · 냉각 속도 따로 · 냉각 속도만 쓴다(안 쓰는 칸은 잠금) */
+  const lockRate = () => {
+    const t = f.run_rate_by.value === "time";
+    f.run_heat_time_s.disabled = !t; f.run_cool_time_s.disabled = !t;
+    f.run_point_step_c.disabled = t; f.cool_rate_separate.disabled = t; f.run_cool_rate_c_min.disabled = t;
+  };
+  const upd = () => { lockRate(); const pt = condPatch(); expect.textContent = expectText(Object.assign({}, c, pt), nUse * (pt.run_repeat || 1)); };
   Object.values(f).forEach((e) => { e.addEventListener("input", upd); e.addEventListener("change", upd); });
   upd();
   const left = h("div", { class: "form" },
@@ -321,7 +329,8 @@ function openRunCond() {
     h("h4", { text: "온도" }), "시작 온도 (°C)", f.run_start_c, "가열 끝 온도 (°C)", f.run_heater_off_c,
     "냉각 끝 온도 (°C)", f.run_cool_end_c, "반복 (회)", f.run_repeat, "측정 간격 (s)", f.run_interval_s);
   const right = h("div", { class: "form" },
-    h("h4", { text: "가열 · 냉각" }), "가열 방식", f.run_heat_mode, "목표 점 간격 (°C)", f.run_point_step_c,
+    h("h4", { text: "가열 · 냉각" }), "속도 정하는 방법", f.run_rate_by, "가열 시간 (s)", f.run_heat_time_s, "냉각 시간 (s)", f.run_cool_time_s,
+    "가열 방식", f.run_heat_mode, "목표 점 간격 (°C)", f.run_point_step_c,
     "냉각 방식", f.run_cool_mode, "냉각 속도 따로", f.cool_rate_separate, "냉각 속도 (°C/분)", f.run_cool_rate_c_min, "목표선 기다림 폭 (°C)", f.heater_lead_c, "냉각 중 송풍", f.run_fan_during_cool,
     h("div", { style: "grid-column: 1 / -1" }, expect),
     h("h4", { text: "쿨러" }), "쿨러", f.run_cooler_mode, "가열 중 쿨러 켬", f.run_cooler_during_heat,

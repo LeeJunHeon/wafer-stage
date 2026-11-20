@@ -291,7 +291,13 @@ function curveText(cv, k) {
   const x = cv && cv[k];
   if (!x || !x.n) return "";
   return (k === "heat" ? "가열" : "냉각") + " " + x.n + "점 · " + (x.rate_c_min == null ? "—" : x.rate_c_min.toFixed(1)) + " °C/분 · 간격 ±" +
-    (x.step_sd == null ? "—" : x.step_sd.toFixed(3)) + " · 역전 " + x.rev_n + "회" + (x.sp_err_mean == null ? "" : " · 목표선 차이 " + x.sp_err_mean.toFixed(2) + " °C");
+    (x.step_sd == null ? "—" : x.step_sd.toFixed(3)) + " · 역전 " + x.rev_n + "회" + (x.sp_err_mean == null ? "" : " · 목표선 차이 " + x.sp_err_mean.toFixed(2) + " °C") +
+    rippleText(x);
+}
+/* 흔들림 꼬리(서버 analysis.ripple → curve_stats rip_*): " · 흔들림 ±1.23 °C(주기 23.4 s)" · 값이 없으면 "" */
+function rippleText(x) {
+  if (!x || x.rip_sd == null) return "";
+  return " · 흔들림 ±" + x.rip_sd.toFixed(2) + " °C" + (x.rip_period_s == null ? "" : "(주기 " + x.rip_period_s.toFixed(1) + " s)");
 }
 /* 점 간격 한 줄: {heat:{n, dc}, cool:{n, dc}} → "가열 점 120개 · 평균 0.15 °C 마다 1점 · 냉각 …" (서버 analysis.spacing 이 계산한 값) */
 function spacingText(sp, which) {
@@ -299,16 +305,26 @@ function spacingText(sp, which) {
   const one = (k, name) => { const x = sp[k]; return x && x.n ? name + " 점 " + x.n + "개 · 평균 " + (x.dc == null ? "—" : x.dc.toFixed(2)) + " °C 마다 1점" : ""; };
   return (which ? [one(which, which === "heat" ? "가열" : "냉각")] : [one("heat", "가열"), one("cool", "냉각")]).filter(Boolean).join(" / ");
 }
-/* 가열 · 냉각 속도(°C/분) = 목표 점 간격 ÷ 읽기 간격 × 60(서버 config.heat_rate_c_min · cool_rate_c_min 과 같은 식). iv = 읽기 간격 키 */
-function heatRate(c, iv) { return Number(c.run_point_step_c) / Number(c[iv || "run_interval_s"]) * 60; }
-function coolRate(c, iv) { return c.cool_rate_separate ? Number(c.run_cool_rate_c_min) : heatRate(c, iv); }
+/* 가열 · 냉각 속도(°C/분 - 서버 config.heat_rate_c_min · cool_rate_c_min 과 같은 식). iv = 읽기 간격 키.
+   속도 정하는 방법 점 간격 = 목표 점 간격 ÷ 읽기 간격 × 60 · 걸리는 시간 = 온도 차 ÷ 가열 · 냉각 시간 × 60(냉각 속도 따로는 안 씀) */
+function byTime(c) { return c.run_rate_by === "time"; }
+function heatRate(c, iv) {
+  if (byTime(c)) return (Number(c.run_heater_off_c) - Number(c.run_start_c)) / Math.max(1e-6, Number(c.run_heat_time_s)) * 60;
+  return Number(c.run_point_step_c) / Number(c[iv || "run_interval_s"]) * 60;
+}
+function coolRate(c, iv) {
+  if (byTime(c)) return (Number(c.run_heater_off_c) - Number(c.run_cool_end_c)) / Math.max(1e-6, Number(c.run_cool_time_s)) * 60;
+  return c.cool_rate_separate ? Number(c.run_cool_rate_c_min) : heatRate(c, iv);
+}
+/* 보여 줄 목표 점 간격(°C - 서버 config.point_step_c): 점 간격이면 그대로 · 걸리는 시간이면 가열 속도 × 읽기 간격 ÷ 60 */
+function pointStep(c, iv) { return byTime(c) ? heatRate(c, iv) * Number(c[iv || "run_interval_s"]) / 60 : Number(c.run_point_step_c); }
 /* 예상 한 줄(측정 조건 창 · 온도 시험 창): 점 수(가열 · 냉각) · 속도 · 시간. times = 샘플 수 × 반복(자동 측정) · iv = 읽기 간격 키 */
 function expectText(c, times, iv) {
   iv = iv || "run_interval_s";
   const hr = heatRate(c, iv), cr = coolRate(c, iv), dt = Number(c[iv]);
   const hs = Math.max(0, c.run_heater_off_c - c.run_start_c), cs = Math.max(0, c.run_heater_off_c - c.run_cool_end_c);
-  const heat = c.run_heat_mode === "ramp" ? hs / hr * 60 + Number(c.run_heat_hold_s || 0) : null;
-  const cool = c.run_cool_mode === "ramp" ? cs / cr * 60 : null;
+  const heat = c.run_heat_mode === "ramp" ? (byTime(c) ? Number(c.run_heat_time_s) : hs / hr * 60) + Number(c.run_heat_hold_s || 0) : null;   // 서버 config.heat_time_s
+  const cool = c.run_cool_mode === "ramp" ? (byTime(c) ? Number(c.run_cool_time_s) : cs / cr * 60) : null;                                     // 서버 config.cool_time_s
   if (![heat, cool, hr, cr].every((v) => v == null || isFinite(v))) return "예상 시간 · 값 확인 필요";
   const one = heat != null && cool != null ? heat + cool : null;
   const pts = (span, rate) => Math.round(span / (rate * dt / 60));

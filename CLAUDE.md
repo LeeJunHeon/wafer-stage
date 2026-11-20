@@ -66,7 +66,7 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
   **열선 출력(V14 ~ V16 공통)**: 0.1 % 단위(`hp 30.5` · hpPm 0~1000) · 출력 방식 `hpm 0` 몰아 켜기(주기 `hpp` 앞쪽에 몰아 켬 - V13 과 같음) /
   `hpm 1` 고르게(칸 `hps` 10~1000 ms 가 시작될 때마다 누적에 pm 을 더해 1000 이상이면 그 칸을 켬 - 시그마-델타) · 보고 "HP P=30.5 T= M= S= F= E=" · rs 끝 " HP=30.5".
   0 초과끼리 바꾸면 몰아 켜기는 주기 위치 유지 · 고르게는 누적 유지(다음 칸부터 새 값). 프로그램: `stage.heat_out` · `Controller.heater_method`(설정은 그대로 펌웨어에만 - 맞추기) ·
-  `heater_method_restore`(설정값 - 측정 · 온도 시험 시작 · 맞추기 끝 · 설정 저장). 설정 `heater_out_mode`(window | spread) · `heater_pwm_period_ms` · `heater_slot_ms`.
+  `heater_method_restore`(설정값 - 측정 · 온도 시험 시작 · 맞추기 끝 · 설정 저장). 설정 `heater_out_mode`(window | spread · 기본 spread) · `heater_pwm_period_ms` · `heater_slot_ms`(기본 300 - 지금까지 가장 좋았던 조합).
   (V13: V12 와 같은 명령 · V13 은 출력 % 를 바꿀 때 0 → 끔 · 0 에서 켜기 → 새 주기 · 0 초과끼리 → 주기 위치 유지 · 새 비율로 지금 판정 · 100 → 켬.
   V12 는 hp 마다 주기를 0 부터 다시 시작하고 열선을 바로 켜서, 0.5 s 마다 % 를 보내는 램프 제어에서 5 s 주기가 끝나기 전에 계속 다시 시작돼 열선이 사실상 계속 켜졌다): `hp <0~100>`(0 보다 크면 송풍이 켜져 있어야 함 - 아니면 거부) · `hp`(보고 "HP P= T= F= E=") · `hpp <200~5000 ms>`(주기 · 기본 1000) ·
   `hcfg <송풍> <열선>`(프로그램이 연결 때 · 릴레이 역할을 바꿀 때 `Stage.heat_config`). 타이머1 인터럽트(10 ms)가 주기마다 주기 × % 동안만 열선 SSR 을 켠다(블로킹 이동 중에도).
@@ -332,6 +332,11 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
   - **속도 = 점 수 기준**: 가열 · 냉각 속도 = `run_point_step_c`(목표 점 간격 0.27 °C - LabVIEW 데이터) ÷ 읽기 간격(측정 `run_interval_s` · 온도 시험 `temp_test_interval_s`) × 60
     (`config.heat_rate_c_min` · `cool_rate_c_min`). `cool_rate_separate` 를 켜면 냉각만 `run_cool_rate_c_min`. `run_interval_s` 는 한 점의 주기 -
     읽기 시간 예상(`config.read_time_s` = 온도 읽기 + 저항 읽기)보다 짧으면 거절(기본 0.9 s = 기본 설정의 예상). 시작 전 화면에 예상 점 수 · 속도 · 시간(`config.expect` · `core.js expectText`).
+  - **속도 정하는 방법**(`run_rate_by` step | time · 기본 step - step 의 동작 · 숫자는 예전 그대로): time = 가열 (가열 끝 − 시작) ÷ `run_heat_time_s` × 60 ·
+    냉각 (가열 끝 − 냉각 끝) ÷ `run_cool_time_s` × 60(읽기 간격 · 냉각 속도 따로 · 냉각 속도는 안 씀). 속도는 `config.heat_rate_c_min` · `cool_rate_c_min` 한 곳(화면 `core.js heatRate` · `coolRate` 같은 식) ·
+    예상 시간 `heat_time_s` · `cool_time_s` 는 time 이면 그 시간 그대로. 보여 줄 점 간격은 `config.point_step_c`(time = 속도 × 읽기 간격 ÷ 60 · 화면 `pointStep`).
+    검사(`heat_problems` - ramp 일 때): time 의 속도가 0.1 ~ 600 °C/분 밖이면 "가열 시간 n초 · 속도 n °C/분 · 0.1 ~ 600 °C/분 범위 필요" · 한 단계 시간 한도 검사는 그대로.
+    화면: 측정 [조건] · 온도 시험 창 "조건"(처음부터 펼침 · 세 온도 · 속도 정하는 방법 · 가열 · 냉각 시간을 바로 고침) - time 이면 가열 · 냉각 시간만, step 이면 점 간격 · 냉각 속도 따로 · 냉각 속도만(나머지 잠금).
   - **최대 속도 주의**: 측정 · 온도 시험 시작 때 설정 속도가 최대 속도 표(calib `speed_max`)의 그 구간 최대보다 빠르면 주의 `speed_max`(어느 구간 · 얼마 - 막지 않는다 · `heater.speed_warnings`).
 - 냉각: 가열 끝 → 열선 끔. 냉각 방식 `run_cool_mode`:
   - **`ramp`(기본 · 냉각 속도 제어)**: 가열이 끝난 순간 온도에서 냉각 속도로 내려가는 목표선(하한 냉각 끝 온도). 송풍 · 쿨러는 켜 둔 채
@@ -349,8 +354,11 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
   급변의 목표 온도는 기록할 때 `int(round(sp))` 한 번만(메모 · summary · run.json 이 같은 정수).
 - 끈 뒤 더 오르는 구간도 기록한다. 화면 오른쪽(가열 · 냉각 중) 한 줄 "목표 52.3 °C · 열선 켜짐" · 기다리면 "목표 대기 …"(`state.run.heat` - 출력 % `pct` 포함).
 - **결과 요약**(`analysis.curve_stats` - 측정 · 온도 시험 공통): 가열 · 냉각 점 수(가열 = 시작 ~ 가열 끝 · 냉각 = 냉각 끝 ~ 가열 끝 온도 구간) · 실제 평균 속도 ·
-  점 간격 평균 · 흔들림(표준편차) · 역전(가열 중 내려감 · 냉각 중 올라감이 `reversal_c` 0.3 °C 넘는 일 - 횟수 · 최대 폭 · 자리) · 목표선과의 차이(평균 · 최대).
-  측정: run.json `sum.curve` · summary.csv · 측정 화면 행(`curve`). control.csv 의 열선 열은 출력 %. element_log = [경과, 출력 %, 회차].
+  점 간격 평균 · 흔들림(표준편차) · 역전(가열 중 내려감 · 냉각 중 올라감이 `reversal_c` 0.3 °C 넘는 일 - 횟수 · 최대 폭 · 자리) · 목표선과의 차이(평균 · 최대) ·
+  **온도 흔들림**(`analysis.ripple` - 같은 구간 점 · rip_sd · rip_pp · rip_period_s · rip_amp): 기준선 = 점마다 앞뒤 15 s(30 s 창) 점들로 맞춘 직선(창 안 3점 미만이면 그 점 뺌) ·
+  나머지의 평균 제곱근 · 폭 · 가장 센 주기 · 진폭(`analysis.period_scan` - max(2 s, 읽기 간격 중앙값 × 3) ~ min(30 s, 구간 길이) · 0.2 s 간격 cos · sin 최소제곱 · [박자 시험] 도 같이 씀) ·
+  점 10개 미만 · 구간 20 s 미만이면 없음. 화면 `core.js curveText` · `rippleText` " · 흔들림 ±1.23 °C(주기 23.4 s)".
+  측정: run.json `sum.curve` · summary.csv(끝에 흔들림 · 폭 · 주기 · 진폭 가열 · 냉각 열) · 측정 화면 행(`curve`). control.csv 의 열선 열은 출력 %. element_log = [경과, 출력 %, 회차].
   기준(LabVIEW 11/17 샘플 5-1~5-3): 25~85 °C 가열 약 204점 · 냉각 약 226점 · 점 간격 약 0.27 °C(±0.06) · 역전 없음 · 한 회 5분 27초 이하.
 - **점 간격**(`analysis.spacing` 하나): 가열 · 냉각 각각 "점 n개 · 평균 x.xx °C 마다 1점" = (최고 − 최저) ÷ (점 수 − 1). 측정 화면(행 `spacing`) ·
   run.json 샘플 `sum.spacing` · summary.csv · 측정 결과 탭(점 간격 칸) · 온도 시험(창 · summary.txt). 점 간격(°C) ≈ 속도(°C/분) × 한 점 시간(s) ÷ 60.
@@ -419,7 +427,11 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
 - 서로 막기: 시험 중 `TEMPTEST_BLOCKED`(자동 측정 · 접촉 탐색 · 쿨러 [켜 보기] · 히트건 버튼 · 개별 릴레이) · 설정 변경 거절. [전체 끄기] 는 시험을 정지하고 끈다.
   시험 시작은 자동 측정 · 접촉 탐색 중 · 릴레이(히트건 · 쿨러 · 송풍 늦게 끄기)가 켜져 있으면 거절. 측정 시작과는 `runner._lock` 으로 엇갈리지 않는다.
 - 저장: `<데이터 폴더>/temp_test/YYYYMMDD_HHMMSS/` temp.csv(UTF-8 BOM · 시각 · 경과 · 단계 · 온도 · 목표 · 열선 · 송풍 · 쿨러) · summary.txt(조건 + 결과) ·
-  graph.png(서버가 OpenCV 로 그림 - 글자는 영문). 로그: 시작 · 끝 · 요약 한 줄. 화면: `state.temptest` + `GET /api/temptest/points`.
+  graph.png(서버가 OpenCV 로 그림 - 글자는 영문). summary.txt 조건에 "속도 정하는 방법 · …" 한 줄 · [점 · 속도 · 역전] 뒤에 [흔들림](가열 · 냉각 한 줄씩).
+  **결과 목록** `<데이터 폴더>/temp_test/index.csv`(`temptest.write_index` · `INDEX_HEADER` 순서 · utf-8-sig · CRLF): 시험이 끝날 때마다(어떤 끝이든 · 네 시험 모두) 한 줄 -
+  조건(온도 · 속도 정하는 방법 · 설정 속도 · 읽기 간격 · 시작 때 출력 방식 · 열 모델) + 가열 · 냉각 결과(걸린 시간 = 가열 목표 도달 · 냉각 끝까지 · curve_stats · 넘침 · 흔들림) + 메모.
+  없으면 머리글부터 · 머리글이 다르면 예전 파일을 index_<YYYYMMDD_HHMMSS>.csv 로 옮기고 새로 · 쓰기 실패는 로그만.
+  로그: 시작 · 끝 · 요약 한 줄. 화면: `state.temptest` + `GET /api/temptest/points`.
 - 창(`openDialog` 의 `cls` · `render`)이 떠 있어도 위 띠(비상정지)는 창 위에서 눌린다(메뉴만 잠김). 창을 닫아도 시험은 계속된다.
 
 ## 7. 저장 형식 (app/jobs/files.py — LabVIEW 와 같게, v2 함수 그대로)

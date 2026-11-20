@@ -175,6 +175,12 @@ ITEMS = (
     + _g("가열 제어",                                                                      # 열선 출력 %(펌웨어 V12 hp): 목표선 기준 PI + 앞먹임(heater.PowerControl) · 계수는 열 모델에서 자동
          Item("run_heat_mode", "ramp", "choice", "가열 방식", choices=(("ramp", "가열 속도 제어"), ("full", "계속 가열")),
               desc="가열 속도 제어는 목표선을 따라 열선 출력 % 조절\n계속 가열은 가열 끝 온도까지 최대 출력"),
+         Item("run_rate_by", "step", "choice", "속도 정하는 방법", choices=(("step", "점 간격"), ("time", "걸리는 시간")),
+              desc="점 간격 = 목표 점 간격 ÷ 읽기 간격으로 속도를 정함\n걸리는 시간 = 가열 시간 · 냉각 시간으로 속도를 정함(읽기 간격과 무관)"),
+         Item("run_heat_time_s", 102.0, "float", "가열 시간", "s", 5, 36000,
+              desc="시작 온도에서 가열 끝 온도까지 걸리는 시간\n속도 정하는 방법이 걸리는 시간일 때만 사용"),
+         Item("run_cool_time_s", 102.0, "float", "냉각 시간", "s", 5, 36000,
+              desc="가열 끝 온도에서 냉각 끝 온도까지 걸리는 시간\n속도 정하는 방법이 걸리는 시간일 때만 사용"),
          Item("run_point_step_c", 0.27, "float", "목표 점 간격", "°C", 0.02, 5,
               desc="한 점마다 오를 · 내릴 온도 · 가열 · 냉각 속도 = 점 간격 ÷ 읽기 간격 × 60\n기존 LabVIEW 데이터 약 0.27 °C"),
          Item("cool_rate_separate", False, "bool", "냉각 속도 따로",
@@ -195,11 +201,11 @@ ITEMS = (
               desc="제어기가 쓰는 열선 출력 상한\n넘침이 크면 낮춤"),
          Item("heater_full_pct", 90, "int", "연속 판정 출력", "%", 1, 100,
               desc="열선 연속 최대 시간은 출력이 이 값 이상으로 이어진 시간\n출력 % 로 오래 조절하는 동안은 세지 않음"),
-         Item("heater_out_mode", "window", "choice", "열선 출력 방식", choices=(("window", "몰아 켜기"), ("spread", "고르게 나눠 켜기")),
+         Item("heater_out_mode", "spread", "choice", "열선 출력 방식", choices=(("window", "몰아 켜기"), ("spread", "고르게 나눠 켜기")),
               desc="고르게 = 칸마다 나눠 켜서 출렁임이 작음 · 몰아 켜기 = 주기 앞쪽에 몰아 켬\n[히트건 맞추기] 가 정함 · 펌웨어 V16"),
          Item("heater_pwm_period_ms", 5000, "int", "몰아 켜기 주기", "ms", 200, 5000,
               desc="몰아 켜기의 한 주기 · 주기 앞쪽 (주기 × %) 동안만 켬\n5 s 주기는 30 % 에서 ±3 °C 출렁였다"),
-         Item("heater_slot_ms", 17, "int", "고르게 켜기 칸", "ms", 10, 1000,
+         Item("heater_slot_ms", 300, "int", "고르게 켜기 칸", "ms", 10, 1000,
               desc="고르게 나눠 켜기의 칸 길이\n펌웨어가 전원 한 주기(16.7 ms)의 정수배로 맞춤 · 17 · 33 · 50 · 100 · 300 …"),
          Item("heater_timing", "sync", "choice", "열선 박자", choices=(("sync", "전원 맞춤"), ("detune", "어긋남"), ("random", "무작위")),
               desc="열선을 켜고 끄는 틱의 박자 · 펌웨어 V16\n전원 맞춤 = 전원 반주기 · 어긋남 = 1.6 % 길게 · 무작위 = 0.5~1.5 배\n[박자 시험] 으로 비교"),
@@ -576,6 +582,15 @@ def heat_problems(v: dict) -> list:
     if not float(v["run_start_c"]) < float(v["run_heater_off_c"]):
         out.append("시작 온도 %g °C · 가열 끝 온도 %g °C 미만 필요" % (v["run_start_c"], v["run_heater_off_c"]))
     # ---- 가열 제어: 예상 가열 시간이 한 단계 시간 한도 안 · 최소 켜짐 < 연속 최대 · 허용 폭 > 0 ----
+    if v.get("run_rate_by") == "time":                              # 걸리는 시간으로 정한 속도가 쓸 수 있는 범위인가(시작 < 가열 끝 · 냉각 끝 < 가열 끝 은 위에서 본다)
+        if v["run_heat_mode"] == "ramp" and float(v["run_start_c"]) < float(v["run_heater_off_c"]):
+            hr = heat_rate_c_min(v)
+            if not RATE_MIN <= hr <= RATE_MAX:
+                out.append("가열 시간 %g초 · 속도 %.1f °C/분 · %g ~ %g °C/분 범위 필요" % (v["run_heat_time_s"], hr, RATE_MIN, RATE_MAX))
+        if v["run_cool_mode"] == "ramp" and float(v["run_cool_end_c"]) < float(v["run_heater_off_c"]):
+            cr = cool_rate_c_min(v)
+            if not RATE_MIN <= cr <= RATE_MAX:
+                out.append("냉각 시간 %g초 · 속도 %.1f °C/분 · %g ~ %g °C/분 범위 필요" % (v["run_cool_time_s"], cr, RATE_MIN, RATE_MAX))
     if v["run_heat_mode"] == "ramp":
         heat_s = heat_time_s(v)
         if not heat_s < float(v["run_phase_limit_s"]):
@@ -723,14 +738,30 @@ def temptest_problems(v: dict) -> list:
     return out
 
 
+RATE_MIN, RATE_MAX = 0.1, 600.0                     # 속도 정하는 방법 "걸리는 시간" 으로 나온 속도(°C/분)가 들어야 할 범위
+
+
 def heat_rate_c_min(v: dict, interval_key="run_interval_s") -> float:
-    """가열 속도(°C/분) = 목표 점 간격 ÷ 읽기 간격 × 60(측정 run_interval_s · 온도 시험 temp_test_interval_s)."""
+    """가열 속도(°C/분). 속도 정하는 방법(run_rate_by) "step" = 목표 점 간격 ÷ 읽기 간격 × 60(측정 run_interval_s · 온도 시험 temp_test_interval_s) ·
+    "time" = (가열 끝 온도 − 시작 온도) ÷ 가열 시간 × 60(읽기 간격과 무관). 속도는 모두 이 함수와 cool_rate_c_min 에서만 정한다."""
+    if v.get("run_rate_by") == "time":
+        return (float(v["run_heater_off_c"]) - float(v["run_start_c"])) / max(1e-6, float(v["run_heat_time_s"])) * 60.0
     return float(v["run_point_step_c"]) / max(1e-6, float(v[interval_key])) * 60.0
 
 
 def cool_rate_c_min(v: dict, interval_key="run_interval_s") -> float:
-    """냉각 속도(°C/분): "냉각 속도 따로" 면 run_cool_rate_c_min · 아니면 가열과 같은 점 간격."""
+    """냉각 속도(°C/분): "time" = (가열 끝 온도 − 냉각 끝 온도) ÷ 냉각 시간 × 60(냉각 속도 따로 · 냉각 속도는 쓰지 않는다) ·
+    "step" 이면 "냉각 속도 따로" 는 run_cool_rate_c_min · 아니면 가열과 같은 점 간격."""
+    if v.get("run_rate_by") == "time":
+        return (float(v["run_heater_off_c"]) - float(v["run_cool_end_c"])) / max(1e-6, float(v["run_cool_time_s"])) * 60.0
     return float(v["run_cool_rate_c_min"]) if v["cool_rate_separate"] else heat_rate_c_min(v, interval_key)
+
+
+def point_step_c(v: dict, interval_key="run_interval_s") -> float:
+    """보여 줄 목표 점 간격(°C): "step" 이면 run_point_step_c 그대로 · "time" 이면 가열 속도 × 읽기 간격 ÷ 60."""
+    if v.get("run_rate_by") == "time":
+        return heat_rate_c_min(v, interval_key) * float(v[interval_key]) / 60.0
+    return float(v["run_point_step_c"])
 
 
 def read_time_s(v: dict) -> float:
@@ -747,17 +778,21 @@ def expect(v: dict, interval_key="run_interval_s") -> dict:
     cs = max(0.0, float(v["run_heater_off_c"]) - float(v["run_cool_end_c"]))
     return {"heat_rate": round(hr, 2), "cool_rate": round(cr, 2), "interval": iv,
             "heat_n": int(round(hs / max(1e-6, hr * iv / 60.0))), "cool_n": int(round(cs / max(1e-6, cr * iv / 60.0))),
-            "heat_s": round(hs / hr * 60.0 + float(v["run_heat_hold_s"]), 1), "cool_s": round(cs / cr * 60.0, 1)}
+            "heat_s": round(heat_time_s(v, interval_key), 1), "cool_s": round(cool_time_s(v, interval_key), 1)}
 
 
 def heat_time_s(v: dict, interval_key="run_interval_s") -> float:
-    """가열 속도 제어의 예상 가열 시간(초) = (가열 끝 온도 − 시작 온도) ÷ 가열 속도 + 유지 시간."""
+    """가열 속도 제어의 예상 가열 시간(초) = (가열 끝 온도 − 시작 온도) ÷ 가열 속도 + 유지 시간("time" 이면 가열 시간 + 유지 시간 - 같은 값)."""
+    if v.get("run_rate_by") == "time":
+        return float(v["run_heat_time_s"]) + float(v["run_heat_hold_s"])
     span = max(0.0, float(v["run_heater_off_c"]) - float(v["run_start_c"]))
     return span / heat_rate_c_min(v, interval_key) * 60.0 + float(v["run_heat_hold_s"])
 
 
 def cool_time_s(v: dict, interval_key="run_interval_s") -> float:
-    """냉각 속도 제어의 예상 냉각 시간(초) = (가열 끝 온도 − 냉각 끝 온도) ÷ 냉각 속도."""
+    """냉각 속도 제어의 예상 냉각 시간(초) = (가열 끝 온도 − 냉각 끝 온도) ÷ 냉각 속도("time" 이면 냉각 시간 - 같은 값)."""
+    if v.get("run_rate_by") == "time":
+        return float(v["run_cool_time_s"])
     span = max(0.0, float(v["run_heater_off_c"]) - float(v["run_cool_end_c"]))
     return span / cool_rate_c_min(v, interval_key) * 60.0
 

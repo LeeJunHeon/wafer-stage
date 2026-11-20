@@ -8,9 +8,9 @@
 
 const tt = { open: false, id: null, pts: [], busy: false, edit: false };
 const TT_COLORS = { T: "#1F2329", sp: "#2A78D6", el: "#C03A7D", grid: "#ECEEF0", axis: "#C4CAD1", lead: "#9AA1A9", ink2: "#5B636D", rev: "#C8231F" };
-/* [조건] 으로 고치는 값(자동 측정과 같은 설정 + 온도 시험 설정). 가열 방식 · 점 간격 · 냉각 방식은 위에서 바로 바꾼다 */
+/* [조건] 으로 고치는 값(자동 측정과 같은 설정 + 온도 시험 설정). 세 온도 · 속도 정하는 방법 · 가열 · 냉각 시간 · 가열 방식 · 점 간격 · 냉각 방식은
+   위에서 바로 바꾼다(같은 값을 두 곳에서 고치지 않게 여기에는 넣지 않는다) */
 const TT_KEYS = [
-  ["run_start_c", "시작 온도", "°C"], ["run_heater_off_c", "가열 끝 온도", "°C"], ["run_cool_end_c", "냉각 끝 온도", "°C"],
   ["run_heat_hold_s", "가열 끝 유지 시간", "s"], ["heater_lead_c", "목표선 기다림 폭", "°C"], ["heater_lead_filter_s", "기다림 평균 창", "s"],
   ["heater_lead_hold_s", "기다림 지속 시간", "s"], ["heater_max_pct", "열선 최대 출력", "%"], ["run_fan_during_cool", "냉각 중 송풍", "bool"],
   ["run_stall_s", "냉각 정체 시간", "s"], ["run_stall_c", "냉각 정체 기준", "°C"], ["run_phase_limit_s", "한 단계 시간 한도", "s"], ["temp_test_coolers", "쿨러", "ints"],
@@ -39,7 +39,12 @@ function ttCoolers(list) { return list && list.length ? list.map((n) => "R" + n)
 function openTempTest() {
   tt.mode = h("select", { onchange: () => putSettings({ run_heat_mode: tt.mode.value }) },
     h("option", { value: "ramp", text: "가열 속도 제어" }), h("option", { value: "full", text: "계속 가열" }));
-  tt.step = h("input", { type: "number", step: "0.01", class: "num", onchange: () => { const v = parseFloat(tt.step.value); if (isFinite(v)) putSettings({ run_point_step_c: v }); } });
+  const numIn = (key, step) => h("input", { type: "number", step, class: "num", onchange: (e) => { const v = parseFloat(e.target.value); if (isFinite(v)) putSettings({ [key]: v }); } });
+  tt.start = numIn("run_start_c", "1"); tt.off = numIn("run_heater_off_c", "1"); tt.end = numIn("run_cool_end_c", "1");
+  tt.rateBy = h("select", { onchange: () => putSettings({ run_rate_by: tt.rateBy.value }) },
+    h("option", { value: "step", text: "점 간격" }), h("option", { value: "time", text: "걸리는 시간" }));
+  tt.htime = numIn("run_heat_time_s", "1"); tt.ctime = numIn("run_cool_time_s", "1");
+  tt.step = numIn("run_point_step_c", "0.01");
   tt.cmode = h("select", { onchange: () => putSettings({ run_cool_mode: tt.cmode.value }) },
     h("option", { value: "ramp", text: "냉각 속도 제어" }), h("option", { value: "free", text: "자연 냉각" }));
   tt.csep = h("input", { type: "checkbox", onchange: () => putSettings({ cool_rate_separate: tt.csep.checked }) });
@@ -59,8 +64,11 @@ function openTempTest() {
   tt.canvas = h("canvas", {});
   tt.box = h("div", { class: "tt-graph" }, tt.canvas);
   new ResizeObserver(ttDraw).observe(tt.box);
-  tt.cond = h("details", { class: "tt-sec" }, h("summary", { text: "조건" }),
-    h("div", { class: "tt-cond" }, "가열 방식", tt.mode, "목표 점 간격", h("span", { class: "row" }, tt.step, small("°C")),
+  tt.cond = h("details", { class: "tt-sec", open: true }, h("summary", { text: "조건" }),
+    h("div", { class: "tt-cond" }, "시작 온도", h("span", { class: "row" }, tt.start, small("°C")), "가열 끝 온도", h("span", { class: "row" }, tt.off, small("°C")),
+      "냉각 끝 온도", h("span", { class: "row" }, tt.end, small("°C")), "속도 정하는 방법", tt.rateBy,
+      "가열 시간", h("span", { class: "row" }, tt.htime, small("s")), "냉각 시간", h("span", { class: "row" }, tt.ctime, small("s")),
+      "가열 방식", tt.mode, "목표 점 간격", h("span", { class: "row" }, tt.step, small("°C")),
       "냉각 방식", tt.cmode, "냉각 속도 따로", h("span", { class: "row" }, tt.csep, tt.crate, small("°C/분"))),
     h("div", { class: "row" }, h("span", { class: "sp" }), tt.condBtn), tt.condView);
   const side = h("div", { class: "tt-side" },
@@ -124,7 +132,7 @@ function ttCurveRows(cv) {
   const one = (k, name) => {
     const x = cv && cv[k];
     if (!x || !x.n) return h("div", { text: name + " · —" });
-    return h("div", {}, h("b", { text: name + " 점 " + x.n + "개" }), " · " + ttFmt(x.rate_c_min, 2, " °C/분"),
+    return h("div", {}, h("b", { text: name + " 점 " + x.n + "개" }), " · " + ttFmt(x.rate_c_min, 2, " °C/분") + rippleText(x),
       h("div", { class: "small", text: "점 간격 " + ttFmt(x.step_mean, 3) + " ± " + ttFmt(x.step_sd, 3) + " °C · 역전 " + x.rev_n + "회" + (x.rev_n ? " · 최대 " + ttFmt(x.rev_max, 2, " °C") : "") }),
       x.sp_err_mean != null ? h("div", { class: "small", text: "목표선 차이 평균 " + ttFmt(x.sp_err_mean, 2) + " · 최대 " + ttFmt(x.sp_err_max, 2, " °C") }) : null);
   };
@@ -137,13 +145,19 @@ function renderTempTest() {
   if (t.id !== tt.id) { tt.id = t.id; tt.pts = []; ttDraw(); setTimeout(ttPoll, 0); }       // 새 시험
   /* 조건 */
   if (document.activeElement !== tt.mode) tt.mode.value = c.run_heat_mode;
-  if (document.activeElement !== tt.step) tt.step.value = c.run_point_step_c;
+  const tm = c.run_rate_by === "time";
+  for (const [el, k] of [[tt.start, "run_start_c"], [tt.off, "run_heater_off_c"], [tt.end, "run_cool_end_c"], [tt.htime, "run_heat_time_s"], [tt.ctime, "run_cool_time_s"]])
+    if (document.activeElement !== el) el.value = c[k];
+  if (document.activeElement !== tt.rateBy) tt.rateBy.value = c.run_rate_by || "step";
+  if (document.activeElement !== tt.step) tt.step.value = tm ? pointStep(c, "temp_test_interval_s").toFixed(3) : c.run_point_step_c;   // 걸리는 시간이면 계산한 점 간격(잠금)
   if (document.activeElement !== tt.cmode) tt.cmode.value = c.run_cool_mode;
   tt.csep.checked = !!c.cool_rate_separate;
   if (document.activeElement !== tt.crate) tt.crate.value = c.run_cool_rate_c_min;
   const lock = act || running();
-  tt.mode.disabled = lock; tt.step.disabled = lock || c.run_heat_mode !== "ramp"; tt.condBtn.disabled = lock;
-  tt.cmode.disabled = lock; tt.csep.disabled = lock; tt.crate.disabled = lock || c.run_cool_mode !== "ramp" || !c.cool_rate_separate;
+  for (const el of [tt.start, tt.off, tt.end, tt.rateBy]) el.disabled = lock;
+  tt.htime.disabled = lock || !tm; tt.ctime.disabled = lock || !tm;                // 잠금 규칙은 측정 조건 창과 같다
+  tt.mode.disabled = lock; tt.step.disabled = lock || tm || c.run_heat_mode !== "ramp"; tt.condBtn.disabled = lock;
+  tt.cmode.disabled = lock; tt.csep.disabled = lock || tm; tt.crate.disabled = lock || tm || c.run_cool_mode !== "ramp" || !c.cool_rate_separate;
   tt.expect.textContent = expectText(c, 1, "temp_test_interval_s");
   if (lock && tt.edit) tt.edit = false;
   const sig = JSON.stringify([tt.edit, TT_KEYS.map(([k]) => c[k])]);
