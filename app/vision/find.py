@@ -5,7 +5,9 @@
 - 빈 판 사진과 비교가 잘 안 되면(v2 의 정렬 잔차 기준) 막지 않고 사진 한 장으로 찾는 방식으로 넘어간다. 빈 판 사진이 없어도 같다.
 - 배치(layout): "free"(기본 · 샘플을 자유롭게 놓는다 - 격자 예측 없음) · "grid"(rows × cols 격자 - 빈 자리를 예측). 검출기의 튜닝 값(fixed_detect.DEFAULTS)은 그대로다.
   예전에는 검출기 기본(layout auto · 3 × 5 · emit_predicted)이 실제로 없는 자리에 "미확인" 샘플을 만들고 판 밖에도 냈다.
-- 격자 예측으로만 만든 약한 후보(source = predicted)는 "확인 필요"(weak)로 표시한다(부르는 쪽이 기본으로 빼 둔다).
+- 격자 예측으로만 만든 약한 후보(source = predicted)와 약한 샘플 다시 찾기로 찾은 것(source = local)은 "확인 필요"(weak)로 표시한다(부르는 쪽이 기본으로 빼 둔다).
+- 약한 샘플 다시 찾기(faint - 빈 판 비교의 약한 칩 재탐색)는 부르는 쪽이 켤 때만(설정 detect_faint · 기본 끔 - 잡음 수준 얼룩이 샘플로 나왔다).
+- 빈 판 정렬이 되면 반환 "shift" = 빈 판 사진 대비 사진 밀림(판 mm · 회전 °) - 기록 · 알림용(좌표는 고치지 않는다).
 - 판 사각형 밖(가운데가 0 ~ 한 변 밖)의 샘플은 어떤 배치에서도 내지 않는다.
 - 출력(샘플마다, 판 mm): 가운데 · 윤곽 · 가로 세로 · 넓이 · 약함 여부. 순서는 사진에서 윗줄부터 왼쪽 → 오른쪽.
 """
@@ -25,19 +27,23 @@ def _quiet(*_a, **_k):
     pass
 
 
-def layout_params(layout="free", rows=3, cols=5):
-    """검출기에 넘길 배치 값(튜닝 값은 DEFAULTS 그대로 · 배치만 덮는다)."""
+def layout_params(layout="free", rows=3, cols=5, faint=False):
+    """검출기에 넘길 배치 값(튜닝 값은 DEFAULTS 그대로 · 배치와 약한 칩 재탐색 켜기만 덮는다)."""
     if layout == "grid":
-        return {"fixed": {"layout": "grid", "grid_rows": int(rows), "grid_cols": int(cols), "emit_predicted": True}}
-    return {"fixed": {"layout": "free", "emit_predicted": False}}
+        p = {"fixed": {"layout": "grid", "grid_rows": int(rows), "grid_cols": int(cols), "emit_predicted": True}}
+    else:
+        p = {"fixed": {"layout": "free", "emit_predicted": False}}
+    p["fixed"]["ref_faint_on"] = bool(faint)
+    return p
 
 
-def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None, layout="free", rows=3, cols=5):
+def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None, layout="free", rows=3, cols=5, faint=False):
     """cur · empty = 보정한 판 사진(BGR, 같은 크기, 새겨진 사각형 바깥을 margin_mm 만큼 더 담은 것). empty 는 None 이어도 된다.
-    반환 {"samples": [...], "notes": [주의 문구], "path": "빈 판 비교" | "사진 한 장", "ms": 걸린 시간}. 샘플 좌표는 판 mm(사각형 꼭짓점 A = 0, 0)."""
+    반환 {"samples": [...], "notes": [주의 문구], "path": "빈 판 비교" | "사진 한 장", "ms": 걸린 시간,
+    "shift": 빈 판 사진 대비 밀림 {"dx", "dy", "mm"(판 mm), "rot"(°)} | None(정렬 안 됨)}. 샘플 좌표는 판 mm(사각형 꼭짓점 A = 0, 0)."""
     t0 = time.perf_counter()
     lg = log or _quiet
-    params = layout_params(layout, rows, cols)
+    params = layout_params(layout, rows, cols, faint)
     mm_px = 1.0 / float(ppmm)
     H, W = cur.shape[:2]
     m = int(round(float(margin_mm) * ppmm))
@@ -46,6 +52,7 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None, layout="free", rows=
     area = [[m, m], [W - m, m], [W - m, H - m], [m, H - m]]
     notes = []
     res = None
+    shift = None
     path = "사진 한 장"
     if empty is not None and empty.shape == cur.shape:
         bright = None
@@ -59,6 +66,8 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None, layout="free", rows=
             res = refdiff.detect_crop(cur, ref_w, valid, mm_px, params, area, lg)
             path = "빈 판 비교"
             lg("빈 판 사진 정렬 · 이동 %.1f, %.1f px · 잔차 %.2f" % (a["dx"], a["dy"], a["resid"]))
+            shift = {"dx": round(float(a["dx"]) * mm_px, 2), "dy": round(float(a["dy"]) * mm_px, 2),
+                     "mm": round(float(np.hypot(a["dx"], a["dy"])) * mm_px, 2), "rot": round(float(a["theta_deg"]), 2)}
         else:
             why = "밝기 차이 %s %% · 잔차 %s · 이동 %s px" % ("—" if bright is None else "%.0f" % bright, "%.2f" % a["resid"] if a.get("resid") is not None else "—",
                                                      "%.0f" % float(np.hypot(a.get("dx") or 0.0, a.get("dy") or 0.0)) if "dx" in a else "—")
@@ -83,14 +92,14 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None, layout="free", rows=
             "plate": [round(float(sm["x_px"]) * mm_px - margin_mm, 2), round(float(sm["y_px"]) * mm_px - margin_mm, 2)],
             "outline": [[round(float(x) * mm_px - margin_mm, 2), round(float(y) * mm_px - margin_mm, 2)] for x, y in poly],
             "w": float(sm["w_mm"]), "h": float(sm["h_mm"]), "area": float(sm["area_mm2"]),
-            "source": sm["source"], "weak": sm["source"] == "predicted",
+            "source": sm["source"], "weak": sm["source"] in ("predicted", "local"),
         })
     out = order_rows(out, L)
     if outside:
         lg("판 밖 후보 %d개 제외" % outside)
     if any(s["weak"] for s in out):
         notes.append("미확인 샘플 %d개 · 확인 필요" % sum(1 for s in out if s["weak"]))
-    return {"samples": out, "notes": notes, "path": path, "ms": round((time.perf_counter() - t0) * 1000.0)}
+    return {"samples": out, "notes": notes, "path": path, "ms": round((time.perf_counter() - t0) * 1000.0), "shift": shift}
 
 
 def match_light(ref, cur, valid):

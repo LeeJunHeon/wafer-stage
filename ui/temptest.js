@@ -1,7 +1,7 @@
 /* temptest.js - 온도 시험 창(수동 제어 탭 릴레이 시험 칸의 [온도 시험]). 샘플 · 저항계 · 모터 없이 히트건 · 쿨러의 온도 거동만 잰다.
    배치: 왼쪽 = 진행 한 줄 + 그래프(크게 - 가로 시간 s · 세로 온도 °C · 온도 실선 · 목표선 점선 · 역전 자리 작은 표시 · 아래 띠 = 열선 출력 %).
          오른쪽 = 결과(가열 · 냉각 점 수 · 속도 · 점 간격 · 역전 · 목표선 차이 · 열 모델 · 최대 속도 표 · 도달 표는 값이 있는 줄만) + 조건(접어 둠).
-   시험 셋: [시작](온도 시험) · [히트건 맞추기](후보 칸을 같은 온도에서 비교 · 출력별 온도 표 · 열 모델) · [최대 속도 재기](5 °C 구간별 최대 가열 · 냉각 속도). 펌웨어 V14 필요.
+   시험 셋: [시작](온도 시험) · [히트건 맞추기](후보 칸을 같은 온도에서 비교 · 출력별 온도 표 · 열 모델) · [최대 속도 재기](5 °C 구간별 최대 가열 · 냉각 속도). 펌웨어 V15 필요.
    창을 닫아도 시험은 서버에서 계속된다. 다시 열면 이어서 보인다(점은 /api/temptest/points 로 새 점만 받는다). */
 "use strict";
 
@@ -24,7 +24,7 @@ function ttWhy() {
   if (ttActive()) return "";
   if (running()) return "자동 측정 중 사용 불가";
   if (!devOk("stage")) return NEED.stage;
-  if (!(S.heater || {}).heat_fw) return "펌웨어 V14 필요 · firmware/stage_v14 업로드";
+  if (!(S.heater || {}).heat_fw) return "펌웨어 V15 필요 · firmware/stage_v15 업로드";
   if (!devOk("k2110")) return NEED.k2110;
   if (S.estop_locked) return "비상정지 해제 필요";
   const ht = S.heater || {};

@@ -56,7 +56,7 @@ COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "
              "run_heat_mode", "run_point_step_c", "cool_rate_separate", "run_heat_hold_s",
              "run_fan_during_cool", "heater_start_gap_s", "heater_fan_after_s", "run_cool_mode", "run_cool_rate_c_min", "heater_lead_c",
              "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct", "heater_pwm_period_ms",
-             "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "heat_curve", "heater_tc_s", "heater_pi_filter_s", "heater_jump_c", "reversal_c")
+             "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "heat_curve", "heater_tc_s", "heater_pi_filter_s", "heater_jump_c", "heater_turn_s", "reversal_c")
 CONTROL_HEADER = ("회차", "단계", "경과(s)", "온도(°C)", "저항(Ω)", "목표 온도(°C)", "열선 출력(%)", "송풍")     # <이름>_<전압>V_control.csv 의 첫 줄
 
 
@@ -414,7 +414,7 @@ class Runner:
             self._close_files(it)
             it["sum"] = analysis.analyze(self._first_cycle(it))
             it["sum"]["curve"] = curve_summary(it.pop("_tl", []), cd_of(self.cond, c.cfg.values))
-            it["sum"]["jumps"] = [{"phase": ph, "sp": round(j["sp"], 1), "d": round(j["d"], 1)} for ph, j in it.pop("_jumps", [])]     # 온도 급변(d = 끝난 뒤의 최대 폭)
+            it["sum"]["jumps"] = [{"phase": ph, "sp": spi, "d": round(j["d"], 1)} for ph, spi, j in it.pop("_jumps", [])]     # 온도 급변(d = 끝난 뒤의 최대 폭)
             self._save_json()
             self.publish()
         if abort is not None:
@@ -512,8 +512,10 @@ class Runner:
             now = c.clock()
             ctl = None
             if ramp_cool:                                           # 냉각 속도 제어: 가열이 끝난 순간 온도에서 냉각 속도로 내려가는 목표선(송풍은 켜 둔 채 · 같은 출력 % 제어)
+                s0 = (config_mod.heat_rate_c_min(cd) / 60.0 if cd.get("run_heat_mode", "full") == "ramp" and float(cd.get("run_heat_hold_s", 0.0)) <= 0
+                      else 0.0)                                     # 방향 전환: 바로 앞 가열 목표선의 기울기에서
                 ctl = LineControl(self.heater, cd, self._last_T if self._last_T is not None else off_c, end_c, -1, now,
-                                  config_mod.cool_rate_c_min(cd), T_amb=self._T_amb, on_change=lambda t, pct: self._elog(it, t, pct))
+                                  config_mod.cool_rate_c_min(cd), T_amb=self._T_amb, on_change=lambda t, pct: self._elog(it, t, pct), slope0=s0)
             _T, stalled = self._loop(it, g, phase=1, with_r=True, done=lambda t, now: t < end_c, stall=True, peak=peak,
                                      frac=lambda t: _frac_down(peak["t"] if peak["t"] is not None else t, end_c)(t), what="냉각", ctl=ctl)
             self.heat = None
@@ -773,12 +775,13 @@ class Runner:
     def _note_jumps(self, it, ctl, phase):
         """제어기에 새로 생긴 온도 급변: 샘플 메모(같은 글은 한 번) · 로그 · 요약용으로 모음(it["_jumps"]). 측정은 멈추지 않는다."""
         seen = it.setdefault("_jumps", [])
-        known = {id(j) for _ph, j in seen}
+        known = {id(j) for _ph, _spi, j in seen}
         for j in ctl.jumps:
             if id(j) in known:
                 continue
-            seen.append((phase, j))
-            txt = "온도 급변 · %s %.0f °C" % (phase, j["sp"])
+            spi = int(round(j["sp"]))                               # 목표 온도 정수는 여기서 한 번만(메모 · run.json 이 같은 수)
+            seen.append((phase, spi, j))
+            txt = "온도 급변 · %s %d °C" % (phase, spi)
             if txt not in it["notes"]:
                 it["notes"].append(txt)
             self.c.logs.app("샘플 %s · 온도 급변 · %s %.1f °C · 목표선에서 %+.1f °C" % (it["name"], phase, j["sp"], j["d"]), "warn")

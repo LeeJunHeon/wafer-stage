@@ -926,13 +926,13 @@ class Controller:
             self._heater_sync()
 
     def heater_pct(self) -> float:
-        """지금 열선 출력 %(V14 가 알려 준 값 · 0.1 % 단위). 모르면(V11 ~ V13) 열선 켜짐 = 100 · 꺼짐 = 0."""
+        """지금 열선 출력 %(V15 가 알려 준 값 · 0.1 % 단위). 모르면(V11 ~ V14) 열선 켜짐 = 100 · 꺼짐 = 0."""
         p = self.stage.heat_pct if self.stage.heat_capable else None
         if p is not None:
             return round(float(p), 1)
         return 100.0 if self._element_on() else 0.0
 
-    # ---- 열선 출력 방식(V14 hpm · hpp · hps) ----
+    # ---- 열선 출력 방식(V15 hpm · hpp · hps) ----
     def _out_cfg(self):
         """설정의 출력 방식 · 몰아 켜기 주기 · 고르게 칸."""
         c = self.cfg
@@ -968,7 +968,7 @@ class Controller:
         0 보다 크게 하려면 송풍이 켜져 있어야 한다(인터락 - 송풍이 꺼져 있으면 [켜기] 로 열선 → 송풍 순서부터). 열선이 꺼져 있다 켜지면 켜기 판정(차단 온도 · 온도 읽기)을 본다.
         상한 heater_max_pct. 펌웨어도 송풍이 꺼져 있으면 거부한다."""
         self._need_heat_fw()
-        pct = max(0.0, min(float(self.cfg["heater_max_pct"]), round(float(pct), 1)))        # 0.1 % 단위(V14)
+        pct = max(0.0, min(float(self.cfg["heater_max_pct"]), round(float(pct), 1)))        # 0.1 % 단위(V15)
         fan = self._roles()[0]
         with self._heater_lock:
             if pct > 0:
@@ -1705,7 +1705,7 @@ class Controller:
             self.logs.app("릴레이 역할 변경 · %s" % " · ".join("%s %s → %s" % (config_mod.BY_KEY[k].label, old[k], new[k]) for k in roles_changed))
             if self.stage.connected:
                 try:
-                    if self.stage.heat_capable:                     # 펌웨어 V13 의 송풍 · 열선 번호(hp 의 송풍 검사 · 열선 출력 핀)도 새 번호로
+                    if self.stage.heat_capable:                     # 펌웨어 V15 의 송풍 · 열선 번호(hp 의 송풍 검사 · 열선 출력 핀)도 새 번호로
                         fan, el = self._roles()[:2]
                         self.stage.heat_config(fan, el, *self._out_cfg())
                     self.stage.read_relays()                        # rs 를 다시 읽어 안전 감시가 새 번호의 릴레이를 기준으로 보게 한다
@@ -1718,6 +1718,7 @@ class Controller:
                 self.logs.app("열선 출력 방식 · %s" % self.stage.method_text())
             except Rejected as e:
                 self.logs.app("열선 출력 방식 보내기 실패 · %s" % e, "warn")
+        self.temptest.publish()                                     # 온도 시험 창의 열 모델 · 예상 줄도 새 설정으로(시험을 시작해야 바뀌던 일)
         return {}
 
     def _remember(self, **kw):

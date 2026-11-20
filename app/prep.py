@@ -930,7 +930,8 @@ class Prep:
         emp = self.empty_rect()
         c = self.cfg
         res = find_mod.find_samples(cur, emp, geo.RECT_PPMM, geo.RECT_MARGIN_MM, log=lambda t: self.c.logs.app("샘플 찾기 · " + t, "detail"),
-                                    layout=c["sample_layout"], rows=c["sample_grid_rows"], cols=c["sample_grid_cols"])
+                                    layout=c["sample_layout"], rows=c["sample_grid_rows"], cols=c["sample_grid_cols"], faint=c["detect_faint"])
+        self._note_shift(res.get("shift"))
         if emp is None and not self.calib.d.get("empty"):
             res["notes"].append("빈 판 사진 없음 · 사진 한 장으로 검출")
         # 빈 판 사진이 있다고 적혀 있는데 못 읽었으면 empty_frame 이 주의 "빈 판 사진 읽기 실패 · 초기 설정 4 재촬영 필요" 를 이미 띄웠다(같은 일을 두 번 알리지 않는다)
@@ -941,7 +942,8 @@ class Prep:
                                  "source": s["source"], "weak": s["weak"], "small": False, "xy": None, "use": True})
         self._refresh_samples(reset_use=True)
         self.c.runner.reset()                                        # 새 사진 · 새 샘플: 지난 측정 진행 표시는 비운다(파일은 그대로)
-        self.find_info = {"t": self.photo["t"], "n": len(self.samples), "notes": res["notes"], "path": res["path"], "ms": int((time.monotonic() - t0) * 1000)}
+        self.find_info = {"t": self.photo["t"], "n": len(self.samples), "notes": res["notes"], "path": res["path"], "ms": int((time.monotonic() - t0) * 1000),
+                          "shift": res.get("shift")}
         if res["notes"]:
             self.c.state.alarm("find", " · ".join(res["notes"]), NOTICE, dismiss=True)
         else:
@@ -950,6 +952,17 @@ class Prep:
         self.publish()
         self.c.gate_inputs_changed()
         return {"n": len(self.samples), "used": sum(1 for s in self.samples if s["use"]), "notes": res["notes"]}
+
+    def _note_shift(self, sh):
+        """빈 판 사진 대비 사진 밀림: 찾을 때마다 로그 한 줄 · 기준(view_shift_warn_mm)을 넘으면 알림(아니면 지움). 좌표는 고치지 않는다."""
+        lim = float(self.cfg["view_shift_warn_mm"])
+        if sh is not None:
+            self.c.logs.app("사진 밀림 · 빈 판 사진 대비 X %+.2f · Y %+.2f mm · %.2f mm · 회전 %+.2f°" % (sh["dx"], sh["dy"], sh["mm"], sh["rot"]))
+        if sh is not None and lim > 0 and sh["mm"] > lim:
+            self.c.state.alarm("view_shift", "사진 %.1f mm 밀림 · 샘플 좌표 어긋날 수 있음 · 카메라 · 판 확인" % sh["mm"], NOTICE, dismiss=True)
+            self.c.logs.app("사진 %.2f mm 밀림 · 기준 %g mm 초과 · 카메라 · 판 확인" % (sh["mm"], lim), "warn")
+        else:
+            self.c.state.clear_alarm("view_shift")
 
     def _view_order(self, samples):
         """샘플 순서: 문 기준 화면에서 왼쪽 위(또는 왼쪽 아래 - 문 쪽)부터 줄마다 왼쪽 → 오른쪽."""

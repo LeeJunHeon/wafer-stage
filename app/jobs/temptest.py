@@ -4,7 +4,7 @@
 tune = [히트건 맞추기](_run_tune - 후보 칸(temp_tune_slots)마다 같은 비교 온도(temp_tune_c)에 출력을 맞춘 뒤 흔들림을 재서 가장 작은 칸을 고르고,
 고른 칸으로 출력별 온도 표(단마다 정지 온도)와 계단마다 heater.fit_fopdt 로 열 모델 τ · θ 를 잰다 - 고른 칸 · 표 · 열 모델을 설정에 저장) ·
 max = [최대 속도 재기](출력 최대로 가열 끝 온도까지 → 0 % 로 냉각 끝 온도까지, 5 °C 구간마다 최대 가열 · 냉각 속도를 calib speed_max 에 저장 -
-heater.speed_table). 펌웨어 V14 필요(열선 출력 0.1 % · 출력 방식).
+heater.speed_table). 펌웨어 V15 필요(열선 출력 0.1 % · 출력 방식 · 전원 주기 단위 칸).
 배경: 열선 줄(SSR + 스테이션)은 명령한 % 를 그대로 통과시키지 않는다(같은 6 % 에서 칸 10 · 50 · 100 ms 가 64 · 42 · 45 °C) - 그래서 값마다 잰다.
 가열 · 냉각 속도 = 목표 점 간격 ÷ temp_test_interval_s × 60(config.heat_rate_c_min).
 
@@ -53,7 +53,7 @@ CSV_HEADER = ("시각", "경과(s)", "단계", "온도(°C)", "목표(°C)", "�
 COND_KEYS = ("run_start_c", "run_heater_off_c", "run_cool_end_c", "run_heat_mode", "run_point_step_c", "cool_rate_separate",
              "run_heat_hold_s", "run_fan_during_cool", "run_stall_s", "run_stall_c", "run_phase_limit_s",
              "temp_test_coolers", "temp_test_interval_s", "temp_test_mark_c", "temp_test_precool", "temp_step_s",
-             "temp_tune_c", "temp_tune_start_pct", "temp_tune_slots", "heat_curve", "heater_tc_s", "heater_pi_filter_s", "heater_jump_c",
+             "temp_tune_c", "temp_tune_start_pct", "temp_tune_slots", "heat_curve", "heater_tc_s", "heater_pi_filter_s", "heater_jump_c", "heater_turn_s",
              "heater_max_c", "heater_max_on_s", "temp_stale_s", "heater_start_gap_s", "heater_fan_after_s", "heater_fan_relay", "heater_element_relay",
              "run_cool_mode", "run_cool_rate_c_min", "heater_lead_c", "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct",
              "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "reversal_c")
@@ -225,7 +225,8 @@ def summary_lines(cd, res, result, started, notes):
     L.append("목표 점 간격 %g °C · 읽기 간격 %g s · 열선 최대 출력 %d %% · 유지 %g s" % (cd["run_point_step_c"], cd["temp_test_interval_s"], cd["heater_max_pct"], cd["run_heat_hold_s"]))
     L.append("목표선 기다림 폭 %g °C · 평균 창 %g s · 지속 %g s" % (cd["heater_lead_c"], cd["heater_lead_filter_s"], cd["heater_lead_hold_s"]))
     L.append("열 모델 · %s" % heater_mod.ThermalModel(cd).text())
-    L.append("제어 평균 창 %g s · 온도 급변 기준 %g °C" % (cd.get("heater_pi_filter_s", 8.0), cd.get("heater_jump_c", 4.0)))
+    L.append("제어 평균 창 %g s · 온도 급변 기준 %g °C · 방향 전환 %g s" % (cd.get("heater_pi_filter_s", 8.0), cd.get("heater_jump_c", 4.0),
+                                                                     cd.get("heater_turn_s", 15.0)))
     L.append("냉각 중 송풍 %s · 예비 냉각 %s · 쿨러 %s" % ("켬" if cd["run_fan_during_cool"] else "끔", "켬" if cd["temp_test_precool"] else "끔",
                                                   " · ".join("R%d" % n for n in cd["temp_test_coolers"]) or "없음"))
     L.append("냉각 정체 %g s · %g °C · 한 단계 한도 %g s · 읽기 간격 %g s" % (cd["run_stall_s"], cd["run_stall_c"], cd["run_phase_limit_s"], cd["temp_test_interval_s"]))
@@ -272,7 +273,7 @@ def summary_lines(cd, res, result, started, notes):
     if res.get("jumps"):
         L += ["", "[온도 급변]"]
         for x in res["jumps"]:
-            L.append("%s %.0f °C · 목표선에서 최대 %+.1f °C · 경과 %s s" % (x["phase"], x["sp"], x["d"], _f(x["t"], "%.0f")))
+            L.append("%s %d °C · 목표선에서 최대 %+.1f °C · 경과 %s s" % (x["phase"], x["sp"], x["d"], _f(x["t"], "%.0f")))
     L += ["", "[점 · 속도 · 역전] (가열 = 시작 ~ 가열 끝 온도 · 냉각 = 냉각 끝 ~ 가열 끝 온도)"]
     for key, name in (("heat", "가열"), ("cool", "냉각")):
         cs = (res.get("curve") or {}).get(key)
@@ -399,7 +400,7 @@ class TempTest:
         self.phase = None
         self.result = ""
         self.notes = []
-        self.jumps = []                             # 온도 급변 [{"phase": 가열 | 냉각, "t": 시험 시작부터 s, "j": LineControl.jumps 의 항목(이어지는 동안 d 갱신)}]
+        self.jumps = []                             # 온도 급변 [{"phase": 가열 | 냉각, "t": 시험 시작부터 s, "sp": 목표 온도 정수, "j": LineControl.jumps 의 항목(이어지는 동안 d 갱신)}]
         self._jctl, self._jn = None, 0              # 급변을 본 제어기 · 그중 이미 본 개수
         self.started = None                         # 시작 시각(epoch) - 화면이 새 시험인지 안다
         self.t0 = None                              # 시작 시각(clock)
@@ -578,7 +579,7 @@ class TempTest:
             res["model"] = self.model
             res["speed"] = self.speed
             res["tune"] = self.tune if self.mode == "tune" else None
-            res["jumps"] = [{"phase": x["phase"], "t": x["t"], "sp": round(x["j"]["sp"], 1), "d": round(x["j"]["d"], 1)} for x in self.jumps]
+            res["jumps"] = [{"phase": x["phase"], "t": x["t"], "sp": x["sp"], "d": round(x["j"]["d"], 1)} for x in self.jumps]
         return res
 
     # ---- 시험 스레드 ----
@@ -759,8 +760,9 @@ class TempTest:
         ctl = None
         if cd["run_cool_mode"] == "ramp":                           # 냉각 속도 제어: 가열이 끝난 순간 온도에서 냉각 속도로 내려가는 목표선(같은 출력 % 제어)
             self.ev["q_cool0"] = round(self.heater.q, 3)
+            s0 = config_mod.heat_rate_c_min(cd, IV) / 60.0 if cd["run_heat_mode"] == "ramp" and float(cd["run_heat_hold_s"]) <= 0 else 0.0   # 방향 전환: 바로 앞 가열 목표선의 기울기에서
             ctl = LineControl(self.heater, cd, self.last_T if self.last_T is not None else off_c, end_c, -1, now, config_mod.cool_rate_c_min(cd, IV),
-                              T_amb=T0, on_change=self._elog)
+                              T_amb=T0, on_change=self._elog, slope0=s0)
         elif not cd["run_fan_during_cool"]:
             self.heater.off()                                       # 송풍은 열선 끈 뒤 heater_fan_after_s 에 꺼진다
         self.phase = COOL
@@ -1212,8 +1214,9 @@ class TempTest:
         if ctl is not self._jctl:
             self._jctl, self._jn = ctl, 0
         for j in ctl.jumps[self._jn:]:
-            self.jumps.append({"phase": phase, "t": round(j["t"] - self.t0, 1), "j": j})
-            txt = "온도 급변 · %s %.0f °C" % (phase, j["sp"])
+            spi = int(round(j["sp"]))                               # 목표 온도 정수는 여기서 한 번만(메모 · 요약이 같은 수)
+            self.jumps.append({"phase": phase, "t": round(j["t"] - self.t0, 1), "sp": spi, "j": j})
+            txt = "온도 급변 · %s %d °C" % (phase, spi)
             if txt not in self.notes:
                 self.notes.append(txt)
             self.c.logs.app("온도 시험 · 온도 급변 · %s %.1f °C · 목표선에서 %+.1f °C" % (phase, j["sp"], j["d"]), "warn")

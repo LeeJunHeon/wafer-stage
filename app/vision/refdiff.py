@@ -344,8 +344,11 @@ def detect_crop(crop, ref_crop, valid, mm_px, params, area_poly=None, log=print)
     mask = (d > float(cfg["ref_seed"])).astype(np.uint8) * 255
     cands, big = _components(mask, d, exp_area, cfg, Lw_real)
     good, n_edge = drop_near_edge([c for c in cands if c["ok"]], vs, cfg, Lw_real)
-    soft = cv2.GaussianBlur(d, (0, 0), 2.0)
-    faint, _n2 = drop_near_edge(faint_chips(soft, d, exp_area, [(c["cx"], c["cy"], c["area"]) for c in good], cfg, Lw_real), vs, cfg, Lw_real)
+    if cfg.get("ref_faint_on", True):                               # 약한 칩 재탐색(끄면 잡음 수준 얼룩을 올리지 않는다 - 차이 세기 2.6 얼룩이 샘플로 나온 일)
+        soft = cv2.GaussianBlur(d, (0, 0), 2.0)
+        faint, _n2 = drop_near_edge(faint_chips(soft, d, exp_area, [(c["cx"], c["cy"], c["area"]) for c in good], cfg, Lw_real), vs, cfg, Lw_real)
+    else:
+        faint = []
     drop = {f["grow"] for f in faint if f.get("grow") is not None}
     if drop:
         good = [c for i, c in enumerate(good) if i not in drop]

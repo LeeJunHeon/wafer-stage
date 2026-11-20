@@ -28,7 +28,7 @@ app/results.py          측정 결과 탭: 저장된 기록 읽기 · 그림 저
 ui/                     화면(빌드 없는 HTML · CSS · JS): core.js · jog.js · graph.js · prep.js · manual.js(수동 제어 탭) · temptest.js(온도 시험 창) · measure.js · results.js · settings.js · app.js
 tests/                  pytest 빠른 시험(전체 2 분 안) · conftest.py(시험용 장비 · 시계 꽂기 · 초기 설정 값 넣기)
 tests/fakes/            시험용 장비(시험만 쓴다): world.py(세계 하나 · 배선) · fake_v11.py(V12 · V11 보드 - 기본 V12) · fake_visa.py(+ 열 모델) · fake_camera.py · fake_heatgun.py(인터락 · 출력 %)
-firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아 켜기 / 고르게). firmware/stage_v11/ ~ stage_v13/ 은 예전 것 그대로 둔다(고치지 않는다)
+firmware/stage_v15/     펌웨어 V15(지금 쓰는 것 - 출력 0.1 % · 몰아 켜기 / 고르게 · 틱 = 전원 반주기 · 칸 = 전원 주기의 정수배). firmware/stage_v11/ ~ stage_v14/ 는 예전 것 그대로 둔다(고치지 않는다)
 ```
 - 데이터 폴더 기본값 `..\data_v3`. 경로는 pathlib. 측정 PC 는 Windows 11 + Python 3.12.
 - 로그 세 가지(프로그램 app · 시리얼 serial · VISA visa)는 설정과 상관없이 항상 저장한다(끄는 설정을 만들지 않는다).
@@ -40,7 +40,7 @@ firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아
     `camera_focus_value` 240(초점 고정 켬) · 릴레이 배선(송풍 1 · 열선 10 · 쿨러 [2,3,4]). 설명에 "장비 값 · 배선 · 설치가 바뀌면 코드 기본값도 변경". 배선 · 설치를 바꾸면 코드를 고친다.
   - **PC 값**(`config.PC_KEYS` - 포트 · 장비 주소 · 자동 연결 · 사용 안 할 포트 · 카메라 번호 · 데이터 · NAS 폴더 · 촬영 위치 · 접촉 높이)은 settings.json 에 남는다. 전체 설정에 "PC 값" 표시.
   - **기본값 이력**(`config.DEFAULT_HISTORY` - 키 → 예전 기본값들): 저장된 값이 예전 기본값과 같으면 "바꾼 적 없음" 으로 보고 지운다(새 기본값을 따른다 · `Config.load` 가 한 번 ·
-    로그 "설정 이행 · …" 한 줄씩 · 바로 저장). 없어진 키는 `REMOVED_KEYS`. **기본값을 바꾸거나 키를 없앨 때 여기에 더한다**. 지금: meter_volt 1.0 · camera_focus_value −1 · cooler_grid 줄마다 배치.
+    로그 "설정 이행 · …" 한 줄씩 · 바로 저장). 없어진 키는 `REMOVED_KEYS`. **기본값을 바꾸거나 키를 없앨 때 여기에 더한다**. 지금: meter_volt 1.0 · camera_focus_value −1 · cooler_grid 줄마다 배치 · heater_slot_ms 10 · temp_tune_slots "20,30,70,100,150,200,300" 등.
   - **내보내기 · 가져오기**(전체 설정 위): [설정 내보내기] = 바꾼 값만 json(창 실행이면 저장 위치 선택 · 아니면 `<데이터 폴더>/settings_export/`) ·
     [가져오기] = 파일 선택 → `settings_import_preview`(바뀔 항목 · 무시한 키 · 값 오류 · 조합 검사 문제) 창 → [적용] = `settings_import_apply`(다시 검사 → `update_settings` 한 번).
     "PC 값 제외" 기본 켬. 오류 · 문제가 있으면 [적용] 이 꺼진다.
@@ -52,8 +52,12 @@ firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아
   imgio 는 파이썬이 바이트를 읽고 쓰고(유니코드 경로) OpenCV 는 메모리에서만 해석 · 변환한다. 쓰기는 임시 파일 → `os.replace`(원자적). 못 읽으면 None 이 아니라 `ImageIOError`.
 
 ## 2. 하드웨어 값 (확정)
-- 아두이노 Mega + 펌웨어 V14(V11 ~ V13 도 연결은 된다), 115200, 줄끝 `\n`. 포트는 settings `stage_port`(측정 PC 는 COM5).
-  **펌웨어 V14 열선 출력**: 0.1 % 단위(`hp 30.5` · hpPm 0~1000) · 출력 방식 `hpm 0` 몰아 켜기(주기 `hpp` 앞쪽에 몰아 켬 - V13 과 같음) /
+- 아두이노 Mega + 펌웨어 V15(V11 ~ V14 도 연결은 된다), 115200, 줄끝 `\n`. 포트는 settings `stage_port`(측정 PC 는 COM5).
+  **펌웨어 V15**(V14 + 아래 셋): 타이머1 틱 = 전원 반주기(`MAINS_HZ` 60 → 8.33 ms) · 고르게 칸 = 전원 주기의 정수배(`hps` ms → (ms × 60 + 500) ÷ 1000 주기 · 1~60 ·
+  보고 S = 실제 칸 ms - 17 · 33 · 50 · 100 · 300, 보낸 값과 달라도(20 → 17) 오류 아님 · 화면 · 기록은 돌려준 값) · 0 에서 켤 때 첫 칸을 억지로 켜지 않음(hpm 도) ·
+  누적을 지우지 않음(시작 500). 까닭: 10 ms 틱은 반주기 8.33 ms 와 어긋나 제로크로스 SSR 이 반주기 1 · 2 개를 통과시켜 짧은 칸이 출렁였고, V14 는 hp 0.1 마다 300 ms 칸을 통째로 켜
+  냉각 끝에서 3~5 °C 씩 튀었다. 0.1 % 파싱 · M · S · hpm · hps 처리는 V14 · V15 둘 다(`stage.HP_FWS`) · `heat_capable` 은 V15 만.
+  **열선 출력(V14 · V15 공통)**: 0.1 % 단위(`hp 30.5` · hpPm 0~1000) · 출력 방식 `hpm 0` 몰아 켜기(주기 `hpp` 앞쪽에 몰아 켬 - V13 과 같음) /
   `hpm 1` 고르게(칸 `hps` 10~1000 ms 가 시작될 때마다 누적에 pm 을 더해 1000 이상이면 그 칸을 켬 - 시그마-델타) · 보고 "HP P=30.5 T= M= S= F= E=" · rs 끝 " HP=30.5".
   0 초과끼리 바꾸면 몰아 켜기는 주기 위치 유지 · 고르게는 누적 유지(다음 칸부터 새 값). 프로그램: `stage.heat_out` · `Controller.heater_method`(설정은 그대로 펌웨어에만 - 맞추기) ·
   `heater_method_restore`(설정값 - 측정 · 온도 시험 시작 · 맞추기 끝 · 설정 저장). 설정 `heater_out_mode`(window | spread) · `heater_pwm_period_ms` · `heater_slot_ms`.
@@ -61,7 +65,7 @@ firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아
   V12 는 hp 마다 주기를 0 부터 다시 시작하고 열선을 바로 켜서, 0.5 s 마다 % 를 보내는 램프 제어에서 5 s 주기가 끝나기 전에 계속 다시 시작돼 열선이 사실상 계속 켜졌다): `hp <0~100>`(0 보다 크면 송풍이 켜져 있어야 함 - 아니면 거부) · `hp`(보고 "HP P= T= F= E=") · `hpp <200~5000 ms>`(주기 · 기본 1000) ·
   `hcfg <송풍> <열선>`(프로그램이 연결 때 · 릴레이 역할을 바꿀 때 `Stage.heat_config`). 타이머1 인터럽트(10 ms)가 주기마다 주기 × % 동안만 열선 SSR 을 켠다(블로킹 이동 중에도).
   송풍이 꺼지면(r · r all 0 · 통신 감시) 출력 0 · '!' 비상정지 · 열선 r 명령도 출력 0(또는 r 열선 1 = 100 %). rs 줄 끝 " HP=n". EEPROM 형식은 V11 과 같다.
-  V11 · V12 면 이동 · 쿨러는 되고 열선 출력이 필요한 일(측정 · 온도 시험 · 수동 열선 출력)은 "펌웨어 V14 필요 · firmware/stage_v14 업로드"(`stage.FW_NEED` · `heat_capable` = V14) · 연결 때 주의 `fw_heat`.
+  V11 · V12 면 이동 · 쿨러는 되고 열선 출력이 필요한 일(측정 · 온도 시험 · 수동 열선 출력)은 "펌웨어 V15 필요 · firmware/stage_v15 업로드"(`stage.FW_NEED` · `heat_capable` = V15) · 연결 때 주의 `fw_heat`.
   **포트를 자동으로 찾거나 여러 개 열지 않는다**(열면 보드가 재시작하고 COM4 는 다른 장비다). 사람이 고른 하나만 열고, 프로그램이 도는 동안 유지한다.
   여는 것은 [연결] 과 시작 때의 설정값 자동 연결뿐이다. 장비 목록을 읽을 때도 포트 · 측정 장비는 열지 않는다(5번 "장비 목록").
   **사용 안 할 포트**(settings `blocked_ports`, 기본 `["COM4"]` - LabVIEW 용 Uno): 선택 상자에는 "COM4 · … (사용 안 함)" 으로 보이지만 고를 수 없고,
@@ -86,7 +90,7 @@ firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아
 - 시리얼은 일꾼 스레드 하나. 명령은 한 번에 하나, 응답을 받은 뒤 다음 명령. 예외는 `!`(줄 서지 않고 `Stage.bang()` 이 바로 쓴다).
 - **이동 중에는 `!` 말고 어떤 줄도 안 나간다**(펌웨어는 이동 중 줄을 처리하지 않고 수신 버퍼가 64 바이트다).
 - 이동 완료 = `" | X="` · `이미 그 위치` · `[거부]` · `[!] 중단`. 시간 한도 = 계산 시간 × 1.5 + 2 s. 넘으면 `!` → 입력 비움 → `st` 로 맞춤.
-- 연결: 배너로 V14 ~ V11 확인(아니면 거절) → `wd 2000` → (V14 면 `hcfg` · `hpm` · `hpp` · `hps`) → `st` · `rs`. 쉬는 동안 0.5 초마다 `st`. 배너가 다시 보이면 보드 재시작(비상정지처럼 처리).
+- 연결: 배너로 V15 ~ V11 확인(아니면 거절) → `wd 2000` → (V14 · V15 면 `hcfg` · `hpm` · `hpp` · `hps`) → `st` · `rs`. 쉬는 동안 0.5 초마다 `st`. 배너가 다시 보이면 보드 재시작(비상정지처럼 처리).
 - 원점: 지금 자리 `zx zy zz z` 또는 끝단 밀기 `fz x|y|z`, 끝나면 `save`. 로그 한 줄 "원점 등록 · 축 · 방식 · 등록 뒤 X · Y · Z mm". 조그 `jx/jy/jz`(원점 없어도 됨), 절대 이동 `gx/gy/gz`(원점 필요).
 - **위치 기억**(펌웨어 V11): 위치는 RAM 에만 있고 EEPROM 에는 "save 이후 움직였는가" 만 적는다(첫 이동 때 ok=0 · save 때 ok=1). 포트를 열면 보드가 재시작하고
   ok=0 이면 "save 하지 않고 꺼짐 → 위치 불신" 으로 세 축 원점이 없어진다. 그래서 **위치 저장**(`Controller.save_position` = `save` → `st` 로 DIRTY=0 확인)을
@@ -238,11 +242,16 @@ firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아
   판 기준 방향과 같은 부호(판 꼭짓점 사진 픽셀 + 꼭짓점 스테이지 좌표로 스테이지 X+ · Y+ 가 사진에서 어느 쪽인지 - 좌표 보정이 없으면 건너뜀).
   하나라도 어긋나면 저장하지 않는다(기억한 마커 없음 → 위치 확인 안 함) · 이유 한 줄 + 로그(세 자리 픽셀 · X 쪽 · Y 쪽 px/mm · 각 · 크기 비 · 판 배율 대비).
   **마커만으로 좌표를 맞추지 않는 이유**: 마커는 헤드 윗면에 있어 판보다 높다. 비스듬한 카메라에서는 높이가 다르면 같은 X · Y 도 사진의 다른 자리에 보인다(시차).
-- **샘플 찾기**: `fixed_detect.py` · `refdiff.py` 는 실제 사진으로 맞춘 v2 값이라 **바꾸지 않는다**. 보정 사진(바깥 6 mm 여백 포함, 사각형 안만 찾음)을 빈 판 사진과 비교하고, 안 맞거나 없으면 사진 한 장으로 찾는다(막지 않고 주의 한 줄).
+- **샘플 찾기**: `fixed_detect.py` · `refdiff.py` 는 실제 사진으로 맞춘 v2 값이라 **바꾸지 않는다**(켜고 끄는 길 `ref_faint_on` 만 더했다). 보정 사진(바깥 6 mm 여백 포함, 사각형 안만 찾음)을 빈 판 사진과 비교하고, 안 맞거나 없으면 사진 한 장으로 찾는다(막지 않고 주의 한 줄).
   **샘플 배치**(`sample_layout`): 자유(기본 - 예측 샘플을 만들지 않는다) / 격자(`sample_grid_rows` × `sample_grid_cols` - 빈 자리를 "미확인" 으로 예측).
   검출기의 튜닝 값(fixed_detect.DEFAULTS)은 그대로 두고 배치만 덮는다(`find.layout_params`). 예전 기본(layout auto · 3 × 5 · emit_predicted)이 없는 자리에 "미확인" 을 만들고 판 밖에도 냈다.
   어떤 배치에서도 판 사각형 밖(가운데가 0 ~ 한 변 밖) 샘플은 내지 않는다. 측정 탭 샘플 줄에 크기(긴 변 × 짧은 변 mm).
   격자로만 짐작한 후보는 "미확인", 핀(10 × 2 mm + 여유 0.3)이 안 들어가면 "핀보다 작음" - 둘 다 기본으로 제외한다.
+  **약한 샘플 다시 찾기**(`detect_faint` · 기본 끔): 빈 판 비교의 약한 칩 재탐색(`refdiff.faint_chips`)을 켠다(`find.layout_params(faint=)` → `ref_faint_on`).
+  끈 까닭: 차이 세기 2.6 얼룩(진짜 샘플 14)이 없는 샘플로 나왔다. 찾은 것(source local)과 예측(predicted)은 weak = 확인 필요(기본 제외). 임계 · 비율 값은 그대로.
+  **사진 밀림 기록**: 빈 판 정렬이 되면 `find_samples` 의 "shift"(판 mm dx · dy · mm · 회전 °) → `Prep._note_shift` 가 찾을 때마다 로그 "사진 밀림 · 빈 판 사진 대비 X … · Y … mm · … mm · 회전 …°" ·
+  `view_shift_warn_mm`(1 mm · 0 = 끔) 넘으면 알림 `view_shift`(주의 · 닫기 가능) "사진 2.6 mm 밀림 · 샘플 좌표 어긋날 수 있음 · 카메라 · 판 확인" + warn 로그 · 아니면 지움 ·
+  `find_info.shift`. 좌표는 고치지 않는다(빈 판 사진과 2 분 뒤 사진이 2.5 mm 밀린 일 - 예전엔 detail 로그 한 줄뿐).
   **이동 뒤 사진은 화면이 멈춘 뒤에**(`Prep.settled` 한 함수 - 마커 등록 · 위치 확인 · 촬영 · 빈 판 · 재촬영 · 초점 찾기): `cam_settle_wait_s`(1 s) 기다림 →
   연속 새 프레임 두 장(가로 320 회색)의 평균 차이 ≤ `cam_still_diff` 가 될 때까지 → `cam_still_timeout_s`(8 s) 안에 안 멈추면 거절 "카메라 화면 안정 안 됨".
   초점 찾기는 초점 값을 바꾼 뒤에도 같은 방법(focus_settle_s 기다림 + 화면 멈춤). 까닭: 4080×3060 MJPG(DSHOW) 프레임이 실제보다 늦어 `fresh_frame` 이 두 장만 버리면
@@ -328,6 +337,10 @@ firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아
 - **목표선 기다림**(`heater_lead_c`, 가열 · 냉각 모두 - `heater.LineControl`): **걸러진 온도**(`heater_lead_filter_s` 평균)가 목표선보다 이만큼 넘게 뒤처진 채
   `heater_lead_hold_s` 넘게 이어지면(가열 - 아래 · 냉각 - 위) 목표선이 그 자리에서 기다리고(순간값으로 판단해 냉각 때 켠 열선의 튐에 목표선이 섰던 일 - 냉각이 11 °C/분에 그쳤다),
   다시 따라오면 그 지점부터 같은 속도로 이어 간다(목표선은 회차마다 앞으로 간다 - 경과 시간의 식이 아니다). 자동 측정과 온도 시험이 같은 LineControl · Stall 을 쓴다.
+- **방향 전환**(`heater_turn_s` 15 s · 0 = 바로): 단계 시작 때 목표선 기울기를 `slope0` 에서 설정 속도로 이 시간에 걸쳐 고르게 바꾼다(목표선이 간 시간만 셈 · 기다리는 동안은 안 줄어듦 ·
+  앞먹임도 같이 천천히). 가열은 slope0 = 0, 냉각은 바로 앞이 ramp 가열이고 `run_heat_hold_s` 0 이면 가열 속도 ÷ 60(냉각 목표선이 처음 몇 초 조금 올랐다 내려온다 - 32.4 °C/분 · 15 s 면 약 2 °C).
+  까닭: 43 → 25 % 로 한 번에 내려 6 초에 10 °C 떨어지고 되튀었고 그 출렁임이 온도 급변으로 잡혀 배율이 0.89 → 0.60 으로 깎였다. 급변 판정은 `JUMP_SKIP_S` + 전환 시간 동안 건너뛴다.
+  급변의 목표 온도는 기록할 때 `int(round(sp))` 한 번만(메모 · summary · run.json 이 같은 정수).
 - 끈 뒤 더 오르는 구간도 기록한다. 화면 오른쪽(가열 · 냉각 중) 한 줄 "목표 52.3 °C · 열선 켜짐" · 기다리면 "목표 대기 …"(`state.run.heat` - 출력 % `pct` 포함).
 - **결과 요약**(`analysis.curve_stats` - 측정 · 온도 시험 공통): 가열 · 냉각 점 수(가열 = 시작 ~ 가열 끝 · 냉각 = 냉각 끝 ~ 가열 끝 온도 구간) · 실제 평균 속도 ·
   점 간격 평균 · 흔들림(표준편차) · 역전(가열 중 내려감 · 냉각 중 올라감이 `reversal_c` 0.3 °C 넘는 일 - 횟수 · 최대 폭 · 자리) · 목표선과의 차이(평균 · 최대).
@@ -358,7 +371,7 @@ firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아
   (`Controller.feed_temperature` 가 부른다 · 0.2 s 보다 가까운 줄은 건너뜀 · 시각 · 경과 · 온도 · 열선 출력 · 출력 방식 · 송풍 · 열선 · 켜기 유지 · 쿨러 · 하는 일).
   쓰기 실패는 로그 한 번 · 그 파일만 멈춤. 온도 감시 스레드는 히트건이 켜져 있거나 기록이 열려 있으면 `temp_test_interval_s` 간격으로 읽는다.
 - 목적: 샘플 · 저항계 · 모터 없이 히트건 · 쿨러의 온도 거동만 잰다(도달 시간 · 최대 가열 속도 · 넘침 · 냉각 시간 → 히트건 · 가열 제어 값 정하기).
-- **시험 셋**(`temptest_start(mode)` · 펌웨어 V14 필요): [시작](test - 아래 순서) · **[히트건 맞추기]**(tune - `_run_tune`):
+- **시험 셋**(`temptest_start(mode)` · 펌웨어 V15 필요): [시작](test - 아래 순서) · **[히트건 맞추기]**(tune - `_run_tune`):
   1. 쿨러 → `_station_on`(아래 순서와 같음).
   2. 기준 온도(`_tune_base` · 단계 예비 냉각): 출력 0 % · 송풍으로 시작 온도 이하 → 최근 20 s 내려간 폭 < 0.5 °C(도달 뒤 최대 120 s) → 마지막 5 s 평균. 정체면 중단.
   3. 비교(단계 비교 · `temp_tune_slots` 가 있을 때): 칸마다 `c.heater_method("spread", ms)`(설정은 그대로) → `_tune_fit`: 첫 후보 `temp_tune_start_pct` · 다음은 앞 후보의 맞춘 값.
@@ -382,7 +395,7 @@ firmware/stage_v14/     펌웨어 V14(지금 쓰는 것 - 출력 0.1 % · 몰아
 - 조건은 자동 측정과 같은 설정(`run_start_c` · `run_heater_off_c` · `run_cool_end_c` · `run_heat_mode` · `run_point_step_c` · `cool_rate_separate` · heater_lead_* ·
   `heater_max_pct` · heat_model_* · `run_heat_hold_s` · `run_fan_during_cool` · `run_stall_s` · `run_stall_c` · `run_phase_limit_s`) +
   `temp_test_coolers`(쿨러 릴레이 안 · 빈 목록 가능) · `temp_test_interval_s`(≥ 온도 읽기 시간 · < 온도 못 읽음 허용 × 사용 비율) · `temp_test_mark_c` · `temp_test_precool` ·
-  맞추기 `temp_tune_c` · `temp_tune_start_pct` · `temp_tune_slots`(10~1000 · 10 의 배수 · 중복 없이 · 10개 이하 - `config.tune_slot_problems`) · `temp_step_s`
+  맞추기 `temp_tune_c` · `temp_tune_start_pct` · `temp_tune_slots`(기본 "17,33,50,100,300" · 10~1000 · 중복 없이 · 10개 이하 - `config.tune_slot_problems` · 펌웨어가 전원 주기의 정수배로 맞춤) · `temp_step_s`
   (`config.temptest_problems` · 시작 때 `heat_problems` 도 - 표 `heat_curve` 는 2~12점 · 첫 점 0 % · 출력 · 온도 모두 증가 - `config.curve_problems`). 창에서 가열 방식 · 속도를 바로, 나머지는 [조건] 으로 고친다(같은 설정 값).
 - 순서(test · max): 쿨러 켬 → **스테이션 켜기**(`_station_on` · 단계 예비 냉각 · "스테이션 켜는 중": 히트건 켜기(Controller 히트건 함수 · 측정 주체 규칙) → 바로 출력 0 % 요청
   (켠 뒤 100 % 유지가 끝나면 적용 - 유지 때문에 85~104 °C 까지 튄다) → 유지 끝까지 기록만) → 예비 냉각(송풍 · 출력 0 % 로 시작 온도까지 · `temp_test_precool` 끄면 건너뜀 ·

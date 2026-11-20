@@ -46,6 +46,7 @@ DEFAULTS = {
     # 빈 판 기준 차이 검출(core/refdiff.py)
     "ref_seed": 5.0,                # 차이 d 이진화 임계
     "ref_faint": 2.5,               # 약한 칩 재탐색(σ2 로 흐린 d) 임계
+    "ref_faint_on": True,           # 약한 칩 재탐색을 하나(프로그램은 설정 detect_faint 로 덮는다 - 기본 끔)
     "ref_open": 5,
     "ref_close": 9,
     "ref_area_ratio": [0.35, 3.5],

@@ -4,7 +4,7 @@
 - 가열 하드웨어가 바뀌면 여기만 고친다. 켜고 끄는 순서(열선 → 송풍 · 열선 끔 → 송풍은 뒤에)와 안전 규칙은 Controller 의 히트건 함수
 (heater_on · heater_power · heater_element · heater_off)가 한 곳에서 지킨다. 여기서는 "측정" 주체로 부르기만 한다.
 
-열선 출력 %(펌웨어 V14 hp - 0.1 % 단위 · 몰아 켜기 / 고르게 나눠 켜기):
+열선 출력 %(펌웨어 V15 hp - 0.1 % 단위 · 몰아 켜기 / 고르게 나눠 켜기 · 칸 = 전원 주기의 정수배):
   열선 줄(SSR + 스테이션)은 명령한 % 를 그대로 통과시키지 않는다 - 같은 % 라도 고르게 켜기 칸에 따라 들어가는 열이 2~3배 다르고 출력과 온도가 직선이 아니다.
   그래서 출력 % 를 계산하는 제어기 하나(PowerControl - 배율 × 앞먹임 + PI + 적분 포화 방지 + 0 ~ heater_max_pct 제한)를 가열 · 냉각이 같이 쓰고
   (냉각은 목표선이 내려갈 뿐), 앞먹임과 이득은 실제로 잰 출력별 온도 표(heat_curve - [히트건 맞추기]가 고른 칸으로 잰 정지 온도)에서 읽는다:
@@ -19,6 +19,8 @@
     같은 쪽으로 JUMP_AGAIN_S 뒤에도 안 나아지면 한 단 더 · 절반 아래로 JUMP_CALM_S 이어지면 끝 · 단계 시작 JUMP_SKIP_S 는 보지 않는다. 급변은 LineControl.jumps 에 남는다
     (온도 시험 · 측정이 "온도 급변" 메모 · 로그로 보인다 - 멈추지 않는다).
 목표선(LineControl): 가열 = 시작 온도 + 속도 × 경과(상한 가열 끝 온도) · 냉각 = 가열 끝 순간 온도 − 속도 × 경과(하한 냉각 끝 온도).
+  방향 전환(heater_turn_s): 단계를 시작할 때 목표선 기울기를 직전 기울기(slope0 - 가열 직후 냉각이면 가열 속도 · 아니면 0)에서 이 시간에 걸쳐 바꾼다
+  (출력을 한 번에 43 → 25 % 로 내려 6 초에 10 °C 떨어지고 되튀었고, 그 출렁임이 온도 급변으로 잡혀 배율이 깎였다). 급변은 전환 시간까지 더 건너뛴다.
   기다림(heater_lead_c): 순간값이 아니라 걸러진 온도(heater_lead_filter_s 평균)가 lead 넘게 뒤처진 채 heater_lead_hold_s 이상 이어질 때만 목표선을 세운다
   (냉각을 늦추려 켠 열선이 순간 온도를 목표선 위로 튀게 해 목표선이 섰던 일 - 냉각이 11 °C/분에 그쳤다).
 속도(점 수 기준): 가열 · 냉각 속도 = 목표 점 간격 ÷ 읽기 간격 × 60(config.heat_rate_c_min · cool_rate_c_min).
@@ -162,7 +164,7 @@ class LineControl:
     목표선이 움직여도 평균 때문에 뒤처지지 않는다). 온도 급변(_jump_check)은 heater_lead_filter_s 평균으로 본다.
     배운 배율은 heater.q 에 두어 다음 단계 · 다음 샘플이 이어받는다. 목표 도달 판정 등은 부르는 쪽이 순간 온도로 한다."""
 
-    def __init__(self, heater, cd, T_from, end_c, sign, now, rate_c_min, T_amb=None, on_change=None):
+    def __init__(self, heater, cd, T_from, end_c, sign, now, rate_c_min, T_amb=None, on_change=None, slope0=0.0):
         self.h = heater
         self.sign = 1 if sign > 0 else -1
         self.rate = float(rate_c_min)
@@ -194,6 +196,9 @@ class LineControl:
         self.pct = None                                            # 마지막으로 보낸 출력 %
         self._held = False                                         # 스테이션 켠 뒤 100 % 유지 중이었다(끝나면 지금 온도에서 다시 시작)
         self.on_change = on_change                                 # on_change(now, pct) - 출력을 바꿀 때(기록)
+        self.turn = max(0.0, float(cd.get("heater_turn_s", 15.0)))     # 방향 전환 시간
+        self.slope0 = float(slope0 or 0.0)                            # 이 단계 직전의 목표선 기울기(°C/s) - 가열 직후 냉각이면 +, 멈춘 데서 시작하면 0
+        self._turn_left = self.turn                                   # 남은 전환 시간(목표선이 간 시간만 센다)
 
     def _clamp(self, v):
         return min(self.end, v) if self.sign > 0 else max(self.end, v)
@@ -226,9 +231,16 @@ class LineControl:
         if self.waiting:
             self.waits += 1
             self.slope = 0.0
-        else:
-            self.sp = self._clamp(self.sp + self.sign * self.rate * dt / 60.0)
-            self.slope = 0.0 if self.sp == self.end else self.sign * self.rate / 60.0     # 끝 온도에 닿으면 앞먹임은 유지 출력만
+        else:                                                      # 기다리는 동안은 전환 시간이 줄지 않는다
+            s1 = self.sign * self.rate / 60.0
+            if self._turn_left > 0 and self.turn > 0:              # 기울기를 slope0 → s1 로 고르게 바꾼다(이번 회차는 가운데 값)
+                mid = max(0.0, self._turn_left - dt / 2.0) / self.turn
+                sl = s1 + (self.slope0 - s1) * mid
+                self._turn_left = max(0.0, self._turn_left - dt)
+            else:
+                sl = s1
+            self.sp = self._clamp(self.sp + sl * dt)
+            self.slope = 0.0 if self.sp == self.end else sl        # 끝 온도에 닿으면 앞먹임은 유지 출력만
         return self.sp
 
     def decide(self, T, sp, now):
@@ -248,7 +260,7 @@ class LineControl:
         self.dev = self._mean(self._dbuf, now, -err, self.win)
         self._jump_check(T, sp, now)
         e_use = -self.dev if self._jump is not None else e_p       # 급변 중에는 짧은 평균(빨리 따라가야 한다) · 평소에는 흔들림 한 주기 평균
-        pct = round(self.pc.out(float(sp) - e_use, sp, self.slope, now), 1)     # 0.1 % 단위(V14)
+        pct = round(self.pc.out(float(sp) - e_use, sp, self.slope, now), 1)     # 0.1 % 단위(V15)
         if hasattr(self.h, "q"):
             try:
                 self.h.q = self.pc.q                               # 다음 단계 · 다음 샘플이 이 배율에서 시작한다
@@ -274,7 +286,7 @@ class LineControl:
         배율을 바로 한 단 바꾸고 적분 보정을 지운다. 같은 쪽으로 JUMP_AGAIN_S 뒤에도 나아지지 않았으면(1 °C 도 안 줄었으면) 한 단 더.
         반대쪽으로 넘어간 것은 PI 에 맡긴다(같은 급변 안에서 배율을 되돌리지 않는다). 벗어난 폭이 절반 아래로 JUMP_CALM_S 이어지면 끝."""
         d = self.dev
-        if now - self.t_start < JUMP_SKIP_S:
+        if now - self.t_start < JUMP_SKIP_S + self.turn:          # 방향 전환 직후의 출렁임은 급변이 아니다
             return
         last = 0.0 if self.pct is None else float(self.pct)
         room = (d > 0 and last > 0.05) or (d < 0 and last < self.pc.umax - 0.05)
