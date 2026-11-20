@@ -4,7 +4,7 @@
 - 가열 하드웨어가 바뀌면 여기만 고친다. 켜고 끄는 순서(열선 → 송풍 · 열선 끔 → 송풍은 뒤에)와 안전 규칙은 Controller 의 히트건 함수
 (heater_on · heater_power · heater_element · heater_off)가 한 곳에서 지킨다. 여기서는 "측정" 주체로 부르기만 한다.
 
-열선 출력 %(펌웨어 V15 hp - 0.1 % 단위 · 몰아 켜기 / 고르게 나눠 켜기 · 칸 = 전원 주기의 정수배):
+열선 출력 %(펌웨어 V16 hp - 0.1 % 단위 · 몰아 켜기 / 고르게 나눠 켜기 · 칸 = 전원 주기의 정수배):
   열선 줄(SSR + 스테이션)은 명령한 % 를 그대로 통과시키지 않는다 - 같은 % 라도 고르게 켜기 칸에 따라 들어가는 열이 2~3배 다르고 출력과 온도가 직선이 아니다.
   그래서 출력 % 를 계산하는 제어기 하나(PowerControl - 배율 × 앞먹임 + PI + 적분 포화 방지 + 0 ~ heater_max_pct 제한)를 가열 · 냉각이 같이 쓰고
   (냉각은 목표선이 내려갈 뿐), 앞먹임과 이득은 실제로 잰 출력별 온도 표(heat_curve - [히트건 맞추기]가 고른 칸으로 잰 정지 온도)에서 읽는다:
@@ -260,7 +260,7 @@ class LineControl:
         self.dev = self._mean(self._dbuf, now, -err, self.win)
         self._jump_check(T, sp, now)
         e_use = -self.dev if self._jump is not None else e_p       # 급변 중에는 짧은 평균(빨리 따라가야 한다) · 평소에는 흔들림 한 주기 평균
-        pct = round(self.pc.out(float(sp) - e_use, sp, self.slope, now), 1)     # 0.1 % 단위(V15)
+        pct = round(self.pc.out(float(sp) - e_use, sp, self.slope, now), 1)     # 0.1 % 단위(V16)
         if hasattr(self.h, "q"):
             try:
                 self.h.q = self.pc.q                               # 다음 단계 · 다음 샘플이 이 배율에서 시작한다

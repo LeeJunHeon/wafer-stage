@@ -196,11 +196,13 @@ ITEMS = (
          Item("heater_full_pct", 90, "int", "연속 판정 출력", "%", 1, 100,
               desc="열선 연속 최대 시간은 출력이 이 값 이상으로 이어진 시간\n출력 % 로 오래 조절하는 동안은 세지 않음"),
          Item("heater_out_mode", "window", "choice", "열선 출력 방식", choices=(("window", "몰아 켜기"), ("spread", "고르게 나눠 켜기")),
-              desc="고르게 = 칸마다 나눠 켜서 출렁임이 작음 · 몰아 켜기 = 주기 앞쪽에 몰아 켬\n[히트건 맞추기] 가 정함 · 펌웨어 V15"),
+              desc="고르게 = 칸마다 나눠 켜서 출렁임이 작음 · 몰아 켜기 = 주기 앞쪽에 몰아 켬\n[히트건 맞추기] 가 정함 · 펌웨어 V16"),
          Item("heater_pwm_period_ms", 5000, "int", "몰아 켜기 주기", "ms", 200, 5000,
               desc="몰아 켜기의 한 주기 · 주기 앞쪽 (주기 × %) 동안만 켬\n5 s 주기는 30 % 에서 ±3 °C 출렁였다"),
          Item("heater_slot_ms", 17, "int", "고르게 켜기 칸", "ms", 10, 1000,
               desc="고르게 나눠 켜기의 칸 길이\n펌웨어가 전원 한 주기(16.7 ms)의 정수배로 맞춤 · 17 · 33 · 50 · 100 · 300 …"),
+         Item("heater_timing", "sync", "choice", "열선 박자", choices=(("sync", "전원 맞춤"), ("detune", "어긋남"), ("random", "무작위")),
+              desc="열선을 켜고 끄는 틱의 박자 · 펌웨어 V16\n전원 맞춤 = 전원 반주기 · 어긋남 = 1.6 % 길게 · 무작위 = 0.5~1.5 배\n[박자 시험] 으로 비교"),
          Item("heater_boot_hold_s", 5.0, "float", "스테이션 켠 뒤 100 % 유지", "s", 0, 60,
               desc="송풍(스테이션)을 새로 켠 뒤 이 시간 동안 열선 100 % · 그동안 끊으면 H-E\n그 사이 출력 % 요청은 끝날 때 적용"),
          Item("heat_model_k", None, "optfloat", "열 모델 이득", "°C/%", 0.01, 20, verify=True,
@@ -243,6 +245,10 @@ ITEMS = (
               desc="고르게 켜기 칸(ms) 목록 · 쉼표로 구분\n비우면 비교 없이 현재 출력 방식으로 표만 잼"),
          Item("temp_step_s", 90.0, "float", "맞추기 계단 유지", "s", 20, 1800,
               desc="출력별 온도 표의 한 단을 유지하는 시간\n온도가 거의 멈출 만큼 길게"),
+         Item("temp_beat_pct", 20.0, "float", "박자 시험 출력", "%", 1, 60,
+              desc="[박자 시험] 박자마다 유지하는 열선 출력"),
+         Item("temp_beat_s", 60.0, "float", "박자 시험 유지", "s", 20, 300,
+              desc="[박자 시험] 박자 하나를 유지하며 기록하는 시간\n뒤쪽 2/3 로 흔들림 · 주기를 잼"),
          Item("temp_test_precool", True, "bool", "온도 시험 예비 냉각",
               desc="가열 전에 쿨러로 시작 온도까지 냉각\n끄면 쿨러만 켜고 바로 가열"))
     + _g("판 · 핀",
@@ -395,7 +401,7 @@ PC_KEYS = frozenset({"stage_port", "k2110_addr", "k2450_addr", "data_dir", "auto
 # 장비 값: 장비(한 대)에 딸린 값 - 코드 기본값이 그 장비의 값이다(배선 · 설치가 바뀌면 코드 기본값도 바꾼다). 전체 설정에 "장비 값" 표시
 DEVICE_KEYS = frozenset({"cooler_grid", "machine_front_side", "machine_right_side", "view_rot", "view_flip", "camera_focus_value",
                          "heater_fan_relay", "heater_element_relay", "cooler_relays", "heat_model_k", "heat_model_tau_s", "heat_model_theta_s",
-                         "heater_pwm_period_ms", "heater_boot_hold_s", "heater_out_mode", "heater_slot_ms", "heat_curve"})
+                         "heater_pwm_period_ms", "heater_boot_hold_s", "heater_out_mode", "heater_slot_ms", "heater_timing", "heat_curve"})
 
 # 기본값 이력(키 → 예전 기본값들): 저장된 값이 예전 기본값과 같으면 "바꾼 적 없음" 으로 보고 지운다(새 기본값을 따른다 - Config.load 한 번 · 로그 한 줄씩).
 # 기본값을 바꿀 때 예전 값을 여기에 더한다. 없어진 키는 REMOVED_KEYS 에(읽을 때 버리고 로그).
@@ -642,7 +648,7 @@ def curve_problems(v: dict) -> list:
 
 
 def tune_slot_problems(v: dict) -> list:
-    """맞추기 후보 칸: 10~1000 · 중복 없이 · 10개 이하(펌웨어 V15 가 전원 주기의 정수배로 맞춘다)."""
+    """맞추기 후보 칸: 10~1000 · 중복 없이 · 10개 이하(펌웨어 V15 · V16 이 전원 주기의 정수배로 맞춘다)."""
     try:
         ms = _parse_slots(v.get("temp_tune_slots"))
     except ValueError:

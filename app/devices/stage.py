@@ -1,9 +1,10 @@
-"""stage.py - 아두이노 Mega + 펌웨어 V15(또는 V11 ~ V14) 드라이버.
+"""stage.py - 아두이노 Mega + 펌웨어 V16(또는 V11 ~ V15) 드라이버.
+V16 = V15 + 열선 박자 hpj <0 전원 맞춤 | 1 어긋남 | 2 무작위>(타이머1 틱 길이) · 보고 HP 줄 끝 J=.
 V15 = V14 + 타이머 틱 = 전원 반주기 · 고르게 칸 = 전원 주기의 정수배(hps 20 → S=17 - 돌려준 S 를 그대로 쓴다) · 0 에서 켤 때 첫 칸을 억지로 켜지 않음 · 누적을 지우지 않음.
 V14 = V13 + 출력 0.1 % 단위(hp 30.5) · 출력 방식 hpm <0 몰아 켜기 | 1 고르게> · hps <고르게 칸 ms> · 보고 "HP P=30.5 T= M= S= F= E=".
 V12 = V11 + 열선 출력 %(hp <0~100> · hpp <주기 ms> · hcfg <송풍> <열선> · rs 줄 끝 HP=). V13 = V12 + 출력 % 를 바꿀 때 주기를 다시 시작하지 않음
 (V12 는 hp 마다 주기를 0 부터 다시 시작해 0.5 s 마다 % 를 보내면 열선이 사실상 계속 켜졌다). V11 · V12 도 연결은 한다(이동 · 쿨러) -
-열선 출력 제어가 필요한 일(측정 · 온도 시험 · 수동 열선 출력)은 Controller 가 FW_NEED 로 거절한다(heat_capable = V15 - V11 ~ V14 는 연결만).
+열선 출력 제어가 필요한 일(측정 · 온도 시험 · 수동 열선 출력)은 Controller 가 FW_NEED 로 거절한다(heat_capable = V16 - V11 ~ V15 는 연결만).
 
 규칙(펌웨어 때문에 지킨다)
 - 시리얼은 일꾼 스레드 하나가 맡는다. 명령은 한 번에 하나씩 보내고, 응답이 끝난 뒤 다음 명령을 보낸다.
@@ -169,11 +170,14 @@ def is_move_done(ln):
     return " | X=" in ln or "이미 그 위치" in ln
 
 
-FIRMWARES = ("V11", "V12", "V13", "V14", "V15")
-HEAT_FW = "V15"                                    # 열선 출력을 쓰는 펌웨어(0.1 % 단위 · 몰아 켜기 / 고르게 · 전원 주기 단위 칸)
-HP_FWS = ("V14", "V15")                            # 0.1 % 단위 · hpm · hps 를 아는 펌웨어(연결 때 hcfg · hpm · hpp · hps 를 보낸다)
-FW_NEED = "펌웨어 V15 필요 · firmware/stage_v15 업로드"
+FIRMWARES = ("V11", "V12", "V13", "V14", "V15", "V16")
+HEAT_FW = "V16"                                    # 열선 출력을 쓰는 펌웨어(0.1 % 단위 · 몰아 켜기 / 고르게 · 전원 주기 단위 칸 · 박자)
+HP_FWS = ("V14", "V15", "V16")                     # 0.1 % 단위 · hpm · hps 를 아는 펌웨어(연결 때 hcfg · hpm · hpp · hps 를 보낸다)
+J_FWS = ("V16",)                                   # 열선 박자 hpj 를 아는 펌웨어
+FW_NEED = "펌웨어 V16 필요 · firmware/stage_v16 업로드"
 OUT_MODES = {"window": 0, "spread": 1}             # 설정 heater_out_mode → 펌웨어 hpm
+TIMINGS = {"sync": 0, "detune": 1, "random": 2}    # 설정 heater_timing → 펌웨어 hpj
+TIMING_NAMES = {0: "전원 맞춤", 1: "어긋남", 2: "무작위"}
 
 
 def is_hp(ln):
@@ -181,11 +185,12 @@ def is_hp(ln):
 
 
 def parse_hp(line):
-    """'HP P=30.5 T=1000 M=1 S=10 F=1 E=10' → {"pct"(float), "period", "mode"(0 | 1 | None), "slot"(None), "fan", "el"}. V12 · V13 은 M · S 가 없다."""
+    """'HP P=30.5 T=1000 M=1 S=10 F=1 E=10 J=0' → {"pct"(float), "period", "mode"(0 | 1 | None), "slot"(None), "fan", "el", "beat"(None)}.
+    V12 · V13 은 M · S 가 없고 V14 · V15 는 J 가 없다."""
     d = _kv(line)
     try:
         return {"pct": float(d["P"]), "period": int(d["T"]), "mode": int(d["M"]) if "M" in d else None, "slot": int(d["S"]) if "S" in d else None,
-                "fan": int(d["F"]), "el": int(d["E"])}
+                "fan": int(d["F"]), "el": int(d["E"]), "beat": int(d["J"]) if "J" in d else None}
     except (KeyError, ValueError):
         raise StageError("열선 출력 응답 읽기 실패: %s" % line.strip()[:60])
 
@@ -229,6 +234,7 @@ class Stage:
         self.heat_pct = None                                        # 열선 출력 %(V12 · V13 - rs 의 HP= · hp 응답) · 모르면 None
         self.heat_el = None                                         # 펌웨어가 알려 준 열선 릴레이 번호(hp 응답 E=)
         self.heat_mode = self.heat_period = self.heat_slot = None   # 펌웨어가 알려 준 출력 방식(0 몰아 켜기 · 1 고르게) · 몰아 켜기 주기 · 고르게 칸(ms)
+        self.heat_j = None                                          # 펌웨어가 알려 준 열선 박자(V16 J= · 0 전원 맞춤 · 1 어긋남 · 2 무작위) · 모르면 None
         self.speed = FW_DEFAULT_SPEED
         self._q = queue.PriorityQueue()
         self._seq = 0
@@ -244,12 +250,13 @@ class Stage:
     # ---- 연결 ----
     @property
     def heat_capable(self):
-        """열선 출력 % 를 쓸 수 있는 펌웨어(V15)."""
+        """열선 출력 % 를 쓸 수 있는 펌웨어(V16)."""
         return self.connected and self.firmware == HEAT_FW
 
     def connect(self, port_name: str, speed=FW_DEFAULT_SPEED, wd_ms: int = 2000, banner_wait_s: float = 6.0, heater=None):
-        """포트를 열고(보드가 재시작한다) 배너로 V11 ~ V15 를 확인한 뒤 wd · 속도 · st · rs 를 읽는다. 그 밖이면 연결을 거절한다.
-        heater = (송풍 릴레이, 열선 릴레이, 방식 window | spread, 몰아 켜기 주기 ms, 고르게 칸 ms) - V14 · V15 면 hcfg · hpm · hpp · hps 로 알려 준다."""
+        """포트를 열고(보드가 재시작한다) 배너로 V11 ~ V16 을 확인한 뒤 wd · 속도 · st · rs 를 읽는다. 그 밖이면 연결을 거절한다.
+        heater = (송풍 릴레이, 열선 릴레이, 방식 window | spread, 몰아 켜기 주기 ms, 고르게 칸 ms, 박자 sync | detune | random) -
+        V14 ~ V16 이면 hcfg · hpm · hpp · hps(V16 은 hpj 도)로 알려 준다."""
         if self.connected:
             raise StageError("이미 연결됨")
         try:
@@ -281,12 +288,13 @@ class Stage:
             raise
         if fw is None:
             self._close_port()
-            raise StageError("펌웨어 V11 ~ V15 확인 실패")
+            raise StageError("펌웨어 V11 ~ V16 확인 실패")
         if fw not in FIRMWARES:
             self._close_port()
-            raise StageError("펌웨어 %s · V15 필요" % fw)
+            raise StageError("펌웨어 %s · V16 필요" % fw)
         self.heat_pct = None
         self.heat_el = None
+        self.heat_j = None
         self.firmware = fw
         self.port_name = port_name
         self.connected = True
@@ -518,7 +526,7 @@ class Stage:
                 hp = _kv(ln).get("HP")
                 if hp is not None:
                     try:
-                        self.heat_pct = float(hp)                   # V14 · V15 는 소수 한 자리("30.5")
+                        self.heat_pct = float(hp)                   # V14 ~ V16 은 소수 한 자리("30.5")
                     except ValueError:
                         pass
                 self.on_status()
@@ -527,6 +535,8 @@ class Stage:
                 self.heat_pct, self.heat_el, self.heat_period = h["pct"], h["el"], h["period"]
                 if h["mode"] is not None:
                     self.heat_mode, self.heat_slot = h["mode"], h["slot"]
+                if h["beat"] is not None:
+                    self.heat_j = h["beat"]
                 if 1 <= h["el"] <= 10 and self.relays[h["el"] - 1] is not None:
                     self.relays[h["el"] - 1] = h["pct"] > 0            # 열선 릴레이의 논리 상태 = 출력이 0 보다 큰가(펌웨어 rs 와 같다)
                 self.on_status()
@@ -660,28 +670,42 @@ class Stage:
             raise StageRejected(state["no"].replace("[거부]", "").strip())
 
     def heat(self, pct, gen, prio=5):
-        """열선 출력 %(V14 · V15 hp - 0.1 % 단위). 0 보다 크면 펌웨어가 송풍이 켜져 있는지 본다(아니면 StageRejected)."""
+        """열선 출력 %(V14 ~ V16 hp - 0.1 % 단위). 0 보다 크면 펌웨어가 송풍이 켜져 있는지 본다(아니면 StageRejected)."""
         self._hp_call("hp %.1f" % max(0.0, min(100.0, round(float(pct), 1))), gen, prio)
 
-    def heat_out(self, mode, period_ms, slot_ms, gen=None, prio=0):
-        """출력 방식(hpm - window 0 · spread 1) · 몰아 켜기 주기(hpp) · 고르게 칸(hps)."""
+    def heat_out(self, mode, period_ms, slot_ms, timing=None, gen=None, prio=0):
+        """출력 방식(hpm - window 0 · spread 1) · 몰아 켜기 주기(hpp) · 고르게 칸(hps) · 박자(hpj - V16 이고 timing 이 있을 때)."""
         self._hp_call("hpm %d" % OUT_MODES[mode], gen, prio=prio)
         self._hp_call("hpp %d" % int(period_ms), gen, prio=prio)
         self._hp_call("hps %d" % int(slot_ms), gen, prio=prio)
+        if timing is not None and self.firmware in J_FWS:
+            self.heat_timing(timing, gen, prio=prio)
 
-    def heat_config(self, fan, el, mode, period_ms, slot_ms, gen=None):
-        """송풍 · 열선 릴레이 번호(hcfg)와 출력 방식 · 주기 · 칸(heat_out)을 알려 준다(V14 · V15 · 연결 때 · 릴레이 역할을 바꿨을 때).
-        V15 는 hps 를 전원 주기 정수배로 맞춰 다른 값(20 → 17)을 돌려줄 수 있다 - 오류가 아니다(method_text 는 돌려준 값)."""
+    def heat_timing(self, j, gen=None, prio=0):
+        """열선 박자(V16 hpj): j = 0 · 1 · 2 또는 sync · detune · random. 응답의 J 가 보낸 값과 다르면 StageError. 지금 값은 heat_j."""
+        n = TIMINGS[j] if isinstance(j, str) else int(j)
+        self._hp_call("hpj %d" % n, gen, prio=prio)
+        if self.heat_j != n:
+            raise StageError("열선 박자 확인 실패 · 보냄 %d · 응답 %s" % (n, self.heat_j))
+
+    def heat_config(self, fan, el, mode, period_ms, slot_ms, timing=None, gen=None):
+        """송풍 · 열선 릴레이 번호(hcfg)와 출력 방식 · 주기 · 칸 · 박자(heat_out)를 알려 준다(V14 ~ V16 · 연결 때 · 릴레이 역할을 바꿨을 때).
+        V15 · V16 은 hps 를 전원 주기 정수배로 맞춰 다른 값(20 → 17)을 돌려줄 수 있다 - 오류가 아니다(method_text 는 돌려준 값)."""
         self._hp_call("hcfg %d %d" % (int(fan), int(el)), gen, prio=0)
-        self.heat_out(mode, period_ms, slot_ms, gen)
+        self.heat_out(mode, period_ms, slot_ms, timing, gen=gen)
 
-    def method_text(self):
-        """펌웨어가 알려 준 출력 방식 한 줄: "고르게 10 ms" · "몰아 켜기 5000 ms"(모르면 "")."""
+    def method_text(self, beat=False):
+        """펌웨어가 알려 준 출력 방식 한 줄: "고르게 10 ms" · "몰아 켜기 5000 ms"(모르면 "").
+        박자가 0 이 아니면 끝에 " · 어긋남" · " · 무작위"(beat=True 면 0 도 " · 전원 맞춤" - [박자 시험] 기록)."""
         if self.heat_mode == 1 and self.heat_slot:
-            return "고르게 %d ms" % self.heat_slot
-        if self.heat_mode == 0 and self.heat_period:
-            return "몰아 켜기 %d ms" % self.heat_period
-        return ""
+            s = "고르게 %d ms" % self.heat_slot
+        elif self.heat_mode == 0 and self.heat_period:
+            s = "몰아 켜기 %d ms" % self.heat_period
+        else:
+            return ""
+        if self.heat_j in TIMING_NAMES and (self.heat_j or beat):
+            s += " · " + TIMING_NAMES[self.heat_j]
+        return s
 
     def raw(self, line, gen):
         """직접 명령: 보내고 0.8 초 동안 들어오는 줄을 모아 돌려준다(이동 · 릴레이 켜기는 control 이 걸러 준다)."""

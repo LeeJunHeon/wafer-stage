@@ -1,7 +1,8 @@
 /* temptest.js - 온도 시험 창(수동 제어 탭 릴레이 시험 칸의 [온도 시험]). 샘플 · 저항계 · 모터 없이 히트건 · 쿨러의 온도 거동만 잰다.
    배치: 왼쪽 = 진행 한 줄 + 그래프(크게 - 가로 시간 s · 세로 온도 °C · 온도 실선 · 목표선 점선 · 역전 자리 작은 표시 · 아래 띠 = 열선 출력 %).
          오른쪽 = 결과(가열 · 냉각 점 수 · 속도 · 점 간격 · 역전 · 목표선 차이 · 열 모델 · 최대 속도 표 · 도달 표는 값이 있는 줄만) + 조건(접어 둠).
-   시험 셋: [시작](온도 시험) · [히트건 맞추기](후보 칸을 같은 온도에서 비교 · 출력별 온도 표 · 열 모델) · [최대 속도 재기](5 °C 구간별 최대 가열 · 냉각 속도). 펌웨어 V15 필요.
+   시험 셋: [시작](온도 시험) · [히트건 맞추기](후보 칸을 같은 온도에서 비교 · 출력별 온도 표 · 열 모델) · [최대 속도 재기](5 °C 구간별 최대 가열 · 냉각 속도) ·
+   [박자 시험](열선 박자 전원 맞춤 · 어긋남 · 무작위를 같은 출력으로 비교 - 흔들림 · 가장 센 주기). 펌웨어 V16 필요.
    창을 닫아도 시험은 서버에서 계속된다. 다시 열면 이어서 보인다(점은 /api/temptest/points 로 새 점만 받는다). */
 "use strict";
 
@@ -15,7 +16,7 @@ const TT_KEYS = [
   ["run_stall_s", "냉각 정체 시간", "s"], ["run_stall_c", "냉각 정체 기준", "°C"], ["run_phase_limit_s", "한 단계 시간 한도", "s"], ["temp_test_coolers", "쿨러", "ints"],
   ["temp_test_precool", "예비 냉각", "bool"], ["temp_test_interval_s", "읽기 간격", "s"], ["temp_test_mark_c", "도달 표 간격", "°C"],
   ["temp_tune_c", "맞추기 비교 온도", "°C"], ["temp_tune_start_pct", "맞추기 시작 출력", "%"], ["temp_tune_slots", "맞추기 후보 칸", "str"],
-  ["temp_step_s", "맞추기 계단 유지", "s"], ["heater_tc_s", "제어 응답 시간", "s"], ["heat_curve", "출력별 온도 표", "str"], ["reversal_c", "역전 기준", "°C"],
+  ["temp_step_s", "맞추기 계단 유지", "s"], ["temp_beat_pct", "박자 시험 출력", "%"], ["temp_beat_s", "박자 시험 유지", "s"], ["heater_tc_s", "제어 응답 시간", "s"], ["heat_curve", "출력별 온도 표", "str"], ["reversal_c", "역전 기준", "°C"],
 ];
 
 function ttActive() { return !!(S && S.temptest && S.temptest.active); }
@@ -24,7 +25,7 @@ function ttWhy() {
   if (ttActive()) return "";
   if (running()) return "자동 측정 중 사용 불가";
   if (!devOk("stage")) return NEED.stage;
-  if (!(S.heater || {}).heat_fw) return "펌웨어 V15 필요 · firmware/stage_v15 업로드";
+  if (!(S.heater || {}).heat_fw) return "펌웨어 V16 필요 · firmware/stage_v16 업로드";
   if (!devOk("k2110")) return NEED.k2110;
   if (S.estop_locked) return "비상정지 해제 필요";
   const ht = S.heater || {};
@@ -52,6 +53,7 @@ function openTempTest() {
   tt.heat = h("div", { class: "tt-sec" });
   tt.model = h("div", { class: "tt-sec" });
   tt.tune = h("div", { class: "tt-sec" });
+  tt.beat = h("div", { class: "tt-sec" });
   tt.speed = h("div", { class: "tt-sec" });
   tt.marks = h("div", {});
   tt.canvas = h("canvas", {});
@@ -64,19 +66,21 @@ function openTempTest() {
   const side = h("div", { class: "tt-side" },
     h("div", { class: "tt-sec" }, h("h4", { text: "가열 · 냉각" }), tt.curve), tt.heat,
     h("div", { class: "tt-sec" }, h("h4", { text: "히트건 맞추기" }), tt.tune),
+    h("div", { class: "tt-sec" }, h("h4", { text: "박자 시험" }), tt.beat),
     h("div", { class: "tt-sec" }, h("h4", { text: "열 모델" }), tt.model),
     h("div", { class: "tt-sec" }, h("h4", { text: "최대 속도" }), tt.speed),
     h("div", { class: "tt-sec" }, h("h4", { text: "도달 표" }), tt.marks), tt.expect, tt.cond);
   const main = h("div", { class: "tt-main" }, tt.prog, tt.why, tt.box);
   tt.startBtn = btn("시작", () => api("temptest_start", { mode: "test" }), "on");
   tt.stepBtn = btn("히트건 맞추기", () => api("temptest_start", { mode: "tune" }));
+  tt.beatBtn = btn("박자 시험", () => api("temptest_start", { mode: "beat" }));
   tt.maxBtn = btn("최대 속도 재기", () => api("temptest_start", { mode: "max" }));
   tt.stopBtn = btn("정지", () => api("temptest_stop"));
   tt.folderBtn = btn("폴더 열기", () => api("temptest_open_folder"));
   tt.edit = false;
   tt.open = true;
   openDialog("온도 시험", h("div", { class: "tt2" }, main, side),
-    [tt.folderBtn, h("span", { class: "sp" }), tt.stepBtn, tt.maxBtn, tt.startBtn, tt.stopBtn, btn("닫기", () => { tt.open = false; closeDialog(); })],
+    [tt.folderBtn, h("span", { class: "sp" }), tt.stepBtn, tt.beatBtn, tt.maxBtn, tt.startBtn, tt.stopBtn, btn("닫기", () => { tt.open = false; closeDialog(); })],
     { cls: "tt-box", render: renderTempTest });
   tt.condSig = "";
   ttPoll();
@@ -146,7 +150,7 @@ function renderTempTest() {
   if (sig !== tt.condSig && !(tt.edit && tt.condView.contains(document.activeElement))) ttBuildCond();
   /* 진행 */
   const why = ttWhy();
-  for (const b of [tt.startBtn, tt.stepBtn, tt.maxBtn]) b.disabled = act || !!why;
+  for (const b of [tt.startBtn, tt.stepBtn, tt.beatBtn, tt.maxBtn]) b.disabled = act || !!why;
   tt.stopBtn.disabled = !act;
   tt.folderBtn.disabled = !t.folder;
   setWhy(tt.why, act ? "" : why);
@@ -184,6 +188,16 @@ function renderTempTest() {
       ...(tn.steps || []).map((st) => h("div", { class: "small", text: "계단 " + st.from + " → " + st.to + " % · K " + ttFmt(st.K, 3) + " · τ " + ttFmt(st.tau, 1) + " s · θ " + ttFmt(st.theta, 1) + " s · 오차 " + ttFmt(st.err, 2) + " °C" })),
       h("div", { class: tn.saved ? "small" : "small st-warn", text: tn.saved ? "저장 완료 · " + (tn.saved_text || "") : act ? "진행 중" : "저장 안 함" }));
   } else setKids(tt.tune, small("[히트건 맞추기] 필요 · 칸 · 출력별 온도 표를 정함"));
+  /* 박자 시험 결과: 박자마다 평균 · 흔들림 · 폭 · 가장 센 주기(뒤쪽 2/3 · 직선 추세 뺌) */
+  const bt = t.beat || s.beat;
+  if (bt) {
+    setKids(tt.beat, h("div", { class: "small", text: (bt.method || "출력 방식 모름") + " · 출력 " + ttFmt(bt.pct, 1, " %") + " · 박자마다 " + ttFmt(bt.secs, 0, " s") }),
+      (bt.rows || []).length ? h("table", { class: "tb tt-marks tt-tune" }, h("thead", {}, h("tr", {}, h("th", { text: "박자" }), h("th", { class: "num", text: "평균 °C" }),
+        h("th", { class: "num", text: "흔들림 °C" }), h("th", { class: "num", text: "폭 °C" }), h("th", { class: "num", text: "주기 s" }))),
+        h("tbody", {}, ...bt.rows.map((r) => h("tr", {}, h("td", { text: r.name }), h("td", { class: "num", text: ttFmt(r.mean_c, 1) }),
+          h("td", { class: "num", text: ttFmt(r.sd_c, 2) }), h("td", { class: "num", text: ttFmt(r.pp_c, 2) }),
+          h("td", { class: "num", text: r.period_s == null ? "—" : ttFmt(r.period_s, 1) + " (" + ttFmt(r.amp_c, 2) + ")" }))))) : null);
+  } else setKids(tt.beat, small("[박자 시험] 필요 · 박자별 흔들림 비교"));
   const rows = (s.speed || t.speed_max || []);
   setKids(tt.speed, rows.length ? h("table", { class: "tb tt-marks" }, h("thead", {}, h("tr", {}, h("th", { text: "구간" }), h("th", { class: "num", text: "가열" }), h("th", { class: "num", text: "냉각 °C/분" }))),
     h("tbody", {}, ...rows.map((r) => h("tr", {}, h("td", { text: r[0] + "~" + (r[0] + 5) + " °C" }), h("td", { class: "num", text: ttFmt(r[1], 1) }), h("td", { class: "num", text: ttFmt(r[2], 1) })))))

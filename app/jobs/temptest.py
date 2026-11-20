@@ -4,7 +4,11 @@
 tune = [히트건 맞추기](_run_tune - 후보 칸(temp_tune_slots)마다 같은 비교 온도(temp_tune_c)에 출력을 맞춘 뒤 흔들림을 재서 가장 작은 칸을 고르고,
 고른 칸으로 출력별 온도 표(단마다 정지 온도)와 계단마다 heater.fit_fopdt 로 열 모델 τ · θ 를 잰다 - 고른 칸 · 표 · 열 모델을 설정에 저장) ·
 max = [최대 속도 재기](출력 최대로 가열 끝 온도까지 → 0 % 로 냉각 끝 온도까지, 5 °C 구간마다 최대 가열 · 냉각 속도를 calib speed_max 에 저장 -
-heater.speed_table). 펌웨어 V15 필요(열선 출력 0.1 % · 출력 방식 · 전원 주기 단위 칸).
+heater.speed_table) ·
+beat = [박자 시험](_run_beat - 스테이션 켜기 뒤 지금 출력 방식 · 칸 그대로 열선 박자만 전원 맞춤 → 어긋남 → 무작위로 바꿔 가며 temp_beat_pct 로
+temp_beat_s 씩 유지 · 박자마다 뒤쪽 2/3 의 평균 · 흔들림 · 폭 · 가장 센 주기 - 설정은 저장하지 않는다).
+펌웨어 V16 필요(열선 출력 0.1 % · 출력 방식 · 전원 주기 단위 칸 · 박자 hpj).
+배경(박자): 타이머1 틱이 전원 60 Hz 반주기와 거의 같아 켜는 순간의 전원 파형 위치가 약 10 초 주기로 천천히 밀리고 그 주기로 열이 덩어리져 들어오는 것으로 보였다.
 배경: 열선 줄(SSR + 스테이션)은 명령한 % 를 그대로 통과시키지 않는다(같은 6 % 에서 칸 10 · 50 · 100 ms 가 64 · 42 · 45 °C) - 그래서 값마다 잰다.
 가열 · 냉각 속도 = 목표 점 간격 ÷ temp_test_interval_s × 60(config.heat_rate_c_min).
 
@@ -40,14 +44,14 @@ from app import config as config_mod
 from app import imgio
 from app.devices import meters
 from app.jobs import analysis
-from app.devices.stage import FW_NEED
+from app.devices.stage import FW_NEED, TIMINGS, TIMING_NAMES
 from app.jobs import heater as heater_mod
 from app.jobs.heater import LineControl, RelayHeater, Stall
 from app.safety import Rejected
 from app.state import ALARM, NOTICE
 
-PRECOOL, HEAT, HOLD, COOL, SETTLE, COMPARE, STEP = 0, 1, 2, 3, 4, 5, 6
-PHASES = ("예비 냉각", "가열", "유지", "냉각", "안정", "비교", "계단")      # 안정 · 비교 · 계단 = [히트건 맞추기](가열 · 냉각 요약은 이 단계 점을 쓰지 않는다)
+PRECOOL, HEAT, HOLD, COOL, SETTLE, COMPARE, STEP, BEAT = 0, 1, 2, 3, 4, 5, 6, 7
+PHASES = ("예비 냉각", "가열", "유지", "냉각", "안정", "비교", "계단", "박자")      # 안정 · 비교 · 계단 = [히트건 맞추기] · 박자 = [박자 시험](가열 · 냉각 요약은 이 단계 점을 쓰지 않는다)
 DONE, STOPPED, ESTOPPED, ABORTED = "완료", "정지", "비상정지", "중단"
 CSV_HEADER = ("시각", "경과(s)", "단계", "온도(°C)", "목표(°C)", "열선 출력(%)", "출력 방식", "송풍", "쿨러")
 COND_KEYS = ("run_start_c", "run_heater_off_c", "run_cool_end_c", "run_heat_mode", "run_point_step_c", "cool_rate_separate",
@@ -56,8 +60,13 @@ COND_KEYS = ("run_start_c", "run_heater_off_c", "run_cool_end_c", "run_heat_mode
              "temp_tune_c", "temp_tune_start_pct", "temp_tune_slots", "heat_curve", "heater_tc_s", "heater_pi_filter_s", "heater_jump_c", "heater_turn_s",
              "heater_max_c", "heater_max_on_s", "temp_stale_s", "heater_start_gap_s", "heater_fan_after_s", "heater_fan_relay", "heater_element_relay",
              "run_cool_mode", "run_cool_rate_c_min", "heater_lead_c", "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct",
-             "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "reversal_c")
-MODES = {"test": "온도 시험", "tune": "히트건 맞추기", "max": "최대 속도 재기"}
+             "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "reversal_c",
+             "heater_out_mode", "heater_pwm_period_ms", "heater_slot_ms", "heater_timing", "temp_beat_pct", "temp_beat_s")
+MODES = {"test": "온도 시험", "tune": "히트건 맞추기", "max": "최대 속도 재기", "beat": "박자 시험"}
+# [박자 시험]: 박자 순서(펌웨어 hpj) · 박자마다 유지 구간의 뒤쪽 (1 − BEAT_SKIP) 만 본다 · 가장 센 주기는 BEAT_P_MIN ~ BEAT_P_MAX 를 BEAT_P_STEP 간격으로 훑는다
+BEATS = (0, 1, 2)
+BEAT_SKIP = 1.0 / 3.0
+BEAT_P_MIN, BEAT_P_MAX, BEAT_P_STEP = 2.0, 30.0, 0.2
 # [히트건 맞추기]
 #   맞춤: TUNE_ADJ_S 마다 최근 TUNE_AVG_S 평균을 보고 비교 온도 ± TUNE_TOL_C 면 끝 · TUNE_FIND_S 넘으면 "맞춤 덜 됨" ·
 #         아니면 아래 · 위 기록이 다 있으면 그 사이를 온도로 보간(20 ~ 80 %) · 없으면 (비교 − 기준) ÷ (지금 − 기준) 의 0.8 제곱을 곱함(0.5 ~ 2 배)
@@ -78,8 +87,44 @@ TUNE_CURVE_STEP_C = 0.5                             # 표의 점은 앞 점보�
 LOOSE = "맞춤 덜 됨"
 
 
-def method_name(mode, ms):
-    return ("고르게 %d ms" if mode == "spread" else "몰아 켜기 %d ms") % int(ms)
+def method_name(mode, ms, beat=0):
+    """출력 방식 이름(stage.method_text 와 같은 모양) - 박자가 0 이 아니면 끝에 " · 어긋남" · " · 무작위"."""
+    s = ("고르게 %d ms" if mode == "spread" else "몰아 켜기 %d ms") % int(ms)
+    return s + (" · " + TIMING_NAMES[beat] if beat else "")
+
+
+def beat_eval(rows, secs):
+    """[박자 시험] 박자 하나의 기록 [(구간 경과 s, 온도)] → 뒤쪽 2/3 에서 직선 추세를 뺀 뒤 평균 · 흔들림(표준편차) · 폭(최고 − 최저) ·
+    가장 센 주기(BEAT_P_MIN ~ BEAT_P_MAX 를 BEAT_P_STEP 간격 - 주기마다 cos · sin 최소제곱 진폭이 가장 큰 것)와 그 진폭.
+    주기는 본 구간 길이 이하만 훑는다(그보다 긴 주기는 한 바퀴도 안 보여 진폭이 부풀려진다)."""
+    out = {"mean_c": None, "sd_c": None, "pp_c": None, "period_s": None, "amp_c": None}
+    w = [(t, v) for t, v in rows if t >= secs * BEAT_SKIP]
+    if len(w) < 6:
+        return out
+    t = np.array([a for a, _ in w], float)
+    v = np.array([b for _, b in w], float)
+    tc = t - t.mean()
+    den = float(np.sum(tc * tc))
+    b = float(np.sum(tc * (v - v.mean())) / den) if den > 0 else 0.0
+    r = v - (v.mean() + b * tc)
+    out.update(mean_c=round(float(v.mean()), 3), sd_c=round(float(np.sqrt(np.mean(r * r))), 3), pp_c=round(float(r.max() - r.min()), 3))
+    span = float(t[-1] - t[0])
+    best = None
+    k = 0
+    while True:
+        P = BEAT_P_MIN + k * BEAT_P_STEP
+        if P > min(BEAT_P_MAX, span) + 1e-9:
+            break
+        k += 1
+        wv = 2.0 * math.pi / P
+        X = np.column_stack([np.cos(wv * t), np.sin(wv * t)])
+        ab = np.linalg.lstsq(X, r, rcond=None)[0]
+        amp = float(math.hypot(ab[0], ab[1]))
+        if best is None or amp > best[1]:
+            best = (P, amp)
+    if best is not None:
+        out.update(period_s=round(best[0], 1), amp_c=round(best[1], 3))
+    return out
 IV = "temp_test_interval_s"
 T_MISS_N = 3                                      # 온도를 이만큼 연속으로 못 읽으면 중단(열전대 끊김) - 자동 측정과 같다
 MAX_POINTS = 200000
@@ -216,8 +261,19 @@ def tune_lines(tn):
     return L
 
 
+def beat_lines(bt):
+    """[박자 시험] 결과 줄: 조건 한 줄 + 박자마다 한 줄."""
+    L = ["", "[박자 시험]", "%s · 출력 %s %% · 박자마다 %g s · 뒤쪽 2/3 · 직선 추세 뺌 · 주기 %g~%g s" % (
+        bt.get("method") or "출력 방식 모름", _f(bt.get("pct")), bt.get("secs") or 0, BEAT_P_MIN, BEAT_P_MAX)]
+    L.append("박자 · 평균 °C · 흔들림 °C · 폭 °C · 주기 s · 진폭 °C")
+    for r in bt.get("rows") or []:
+        L.append("%s · %s · %s · %s · %s · %s" % (r["name"], _f(r["mean_c"], "%.2f"), _f(r["sd_c"], "%.3f"), _f(r["pp_c"], "%.2f"),
+                                              _f(r["period_s"], "%.1f"), _f(r["amp_c"], "%.3f")))
+    return L
+
+
 def summary_lines(cd, res, result, started, notes):
-    """summary.txt 의 줄(조건 + 결과). [히트건 맞추기] 는 조건 뒤에 맞추기 결과만."""
+    """summary.txt 의 줄(조건 + 결과). [히트건 맞추기] · [박자 시험] 은 조건 뒤에 그 결과만."""
     L = ["온도 시험 · %s" % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started)), "결과 · %s" % result, ""]
     L.append("[조건]")
     L.append("가열 방식 · %s" % mode_text(cd))
@@ -235,6 +291,11 @@ def summary_lines(cd, res, result, started, notes):
         L.append("맞추기 비교 온도 %g °C · 시작 출력 %g %% · 후보 칸 %s · 단 유지 %g s · 제어 응답 시간 %g s" % (
             cd["temp_tune_c"], cd["temp_tune_start_pct"], cd["temp_tune_slots"] or "없음", cd["temp_step_s"], cd["heater_tc_s"]))
         L += tune_lines(res["tune"])
+        if notes:
+            L += ["", "[메모]"] + list(notes)
+        return L
+    if res.get("beat") is not None:
+        L += beat_lines(res["beat"])
         if notes:
             L += ["", "[메모]"] + list(notes)
         return L
@@ -390,7 +451,8 @@ class TempTest:
         self._stop = self._estop = False
         self.feeding = False                        # 시험이 온도를 읽어 안전 감시에 넘기는 중(감시 스레드가 따로 읽지 않는다)
         self.cond = {}
-        self.mode = "test"                          # test · tune(히트건 맞추기) · max(최대 속도 재기)
+        self.mode = "test"                          # test · tune(히트건 맞추기) · max(최대 속도 재기) · beat(박자 시험)
+        self.beat = None                            # [박자 시험] 결과 {"pct", "secs", "method", "j0"(시작 전 박자), "rows": [{"j", "name", "mean_c", "sd_c", "pp_c", "period_s", "amp_c"}]}
         self.tune = None                            # [히트건 맞추기] 결과 {"base_c", "target_c", "cands", "pick", "p", "curve", "steps", "model", "saved"}
         self.step_text = ""                         # 지금 하는 일 한 줄("스테이션 켜는 중" · "비교 3/7 · 고르게 70 ms · 맞춤 6.2 %")
         self.folder = None
@@ -440,7 +502,7 @@ class TempTest:
         return ""
 
     def start(self, mode="test"):
-        """mode: test(온도 시험) · tune([히트건 맞추기]) · max([최대 속도 재기])."""
+        """mode: test(온도 시험) · tune([히트건 맞추기]) · max([최대 속도 재기]) · beat([박자 시험])."""
         c = self.c
         if mode not in MODES:
             raise Rejected("시험 종류 오류")
@@ -461,7 +523,7 @@ class TempTest:
                 self.pts, self.elog, self.ev, self.notes = [], [], {}, []
                 self.jumps, self._jctl, self._jn = [], None, 0
                 self.phase, self.result, self.last_T, self.sp, self._miss = PRECOOL, "", None, None, 0
-                self.model, self.speed, self.tune, self.step_text = None, None, None, ""
+                self.model, self.speed, self.tune, self.beat, self.step_text = None, None, None, None, ""
                 if c.stage.heat_capable:
                     c.heater_method_restore()                       # 설정의 출력 방식으로 시작(맞추기는 안에서 바꾼다)
                 self.coolers = [int(n) for n in self.cond["temp_test_coolers"]]
@@ -510,7 +572,7 @@ class TempTest:
     # ---- 파일 ----
     def _open_folder(self):
         base = self.c.cfg.data_path() / "temp_test"
-        name = time.strftime("%Y%m%d_%H%M%S", time.localtime(self.started)) + {"test": "", "tune": "_맞추기", "max": "_최대속도"}[self.mode]
+        name = time.strftime("%Y%m%d_%H%M%S", time.localtime(self.started)) + {"test": "", "tune": "_맞추기", "max": "_최대속도", "beat": "_박자"}[self.mode]
         try:
             base.mkdir(parents=True, exist_ok=True)
             for i in range(100):
@@ -538,7 +600,8 @@ class TempTest:
         ph = self.phase
         lt = time.localtime()
         row = "%s.%d,%.2f,%s,%.3f,%s,%.1f,%s,%d,%s\r\n" % (time.strftime("%H:%M:%S", lt), int((time.time() % 1) * 10), t, PHASES[ph], T,
-                                                           "" if sp is None else "%.3f" % sp, pct, c.stage.method_text(), fan, " ".join("R%d" % n for n in on))
+                                                           "" if sp is None else "%.3f" % sp, pct, c.stage.method_text(beat=ph == BEAT), fan,
+                                                           " ".join("R%d" % n for n in on))
         try:
             self._f.write(row)
             self._f.flush()
@@ -564,7 +627,7 @@ class TempTest:
             self.c.logs.app("온도 시험 summary.txt 저장 실패 · %s" % e, "error")
         try:
             kind = {"test": "ramp %.1f C/min" % config_mod.heat_rate_c_min(self.cond, IV) if self.cond["run_heat_mode"] == "ramp" else "full",
-                    "tune": "heater tune", "max": "max speed"}[self.mode]
+                    "tune": "heater tune", "max": "max speed", "beat": "beat test"}[self.mode]
             title = "temperature test %s | %s | target %g C" % (time.strftime("%Y-%m-%d %H:%M", time.localtime(self.started)), kind,
                                                             float(self.cond["run_heater_off_c"]))
             cv = res.get("curve") or {}
@@ -579,6 +642,7 @@ class TempTest:
             res["model"] = self.model
             res["speed"] = self.speed
             res["tune"] = self.tune if self.mode == "tune" else None
+            res["beat"] = self.beat if self.mode == "beat" else None
             res["jumps"] = [{"phase": x["phase"], "t": x["t"], "sp": x["sp"], "d": round(x["j"]["d"], 1)} for x in self.jumps]
         return res
 
@@ -589,7 +653,7 @@ class TempTest:
         c.logs.app("%s 시작 · %s · %g → %g → %g °C · %s" % (MODES[self.mode], mode_text(cd), cd["run_start_c"], cd["run_heater_off_c"], cd["run_cool_end_c"], self.folder))
         kind, text = "done", ""
         try:
-            {"test": self._run, "tune": self._run_tune, "max": self._run_max}[self.mode](g)
+            {"test": self._run, "tune": self._run_tune, "max": self._run_max, "beat": self._run_beat}[self.mode](g)
         except _End as e:
             kind, text = e.kind, e.text
         except Exception as e:                                      # noqa: BLE001 - 예상 못 한 오류도 정리 · 저장을 거친다
@@ -659,6 +723,10 @@ class TempTest:
             c.logs.app("히트건 맞추기 · 저장 %s · 기준 %s °C · 비교 %g °C · 표 %s · 열 모델 %s" % (
                 tn.get("saved_text") or "안 함", _f(tn["base_c"]), tn["target_c"], config_mod.curve_text(tn["curve"]) or "없음",
                 heater_mod.ThermalModel(c.cfg.values).text()))
+        if self.mode == "beat" and self.beat and self.beat["rows"]:      # 박자 시험은 저장하지 않는다 - 끝까지 못 가도 잰 박자는 로그에
+            c.logs.app("박자 시험 · %s · %s %% · %s" % (self.beat.get("method") or "-", _f(self.beat["pct"]), " / ".join(
+                "%s 흔들림 %s · 주기 %s s · 진폭 %s" % (r["name"], _f(r["sd_c"], "%.3f"), _f(r["period_s"], "%.1f"), _f(r["amp_c"], "%.3f"))
+                for r in self.beat["rows"])))
         if self.mode == "max" and kind == "done":
             heat = [(p[0], p[1]) for p in self.pts if p[5] == HEAT]
             cool = [(p[0], p[1]) for p in self.pts if p[5] == COOL]
@@ -774,6 +842,40 @@ class TempTest:
             self._elog(c.clock(), 0)
         if stalled:
             self.notes.append("냉각 끝 온도 미도달")
+
+    # ---- [박자 시험] ----
+    def _run_beat(self, g):
+        """[박자 시험]: 쿨러 → 스테이션 켜기(켠 뒤 100 % 유지 포함 · 예비 냉각 · 기준 온도 대기 없음) → 지금 설정의 출력 방식 · 칸 그대로
+        박자만 0 → 1 → 2 로 바꿔 가며 박자마다 temp_beat_pct 로 temp_beat_s 유지 · 기록(단계 "박자") → 출력 0 %.
+        박자 되돌리기 · 끄는 순서는 정리(_cleanup)가 한다(정지 · 비상정지 · 차단 · 오류도 같다). 안전 규칙은 맞추기와 같다(_hold_for). 설정은 저장하지 않는다."""
+        c, cd = self.c, self.cond
+        pct = min(float(cd["temp_beat_pct"]), float(cd["heater_max_pct"]))
+        secs = float(cd["temp_beat_s"])
+        self.beat = {"pct": pct, "secs": secs, "method": "", "j0": c.stage.heat_j, "rows": []}
+        self._coolers_on(g)
+        self.feeding = True
+        trips0 = self._station_on(g)
+        self.phase = BEAT
+        for i, j in enumerate(BEATS):
+            name = TIMING_NAMES[j]
+            self._timing(g, j)
+            if i == 0:
+                self.beat["method"] = c.stage.method_text()          # 박자 0 - 출력 방식 · 칸만
+                self._power(g, pct)
+            row = {"j": j, "name": name, "mean_c": None, "sd_c": None, "pp_c": None, "period_s": None, "amp_c": None}
+            self.beat["rows"].append(row)
+            self.step_text = "박자 %d/%d · %s" % (i + 1, len(BEATS), name)
+            row.update(beat_eval(self._hold_for(g, trips0, secs=secs), secs))
+        self._power(g, 0)
+        self.step_text = ""
+
+    def _timing(self, g, j):
+        """펌웨어 박자만 바꾼다(설정은 그대로 - 끝에 _cleanup 이 되돌린다)."""
+        try:
+            self.c.heater_timing(j)
+        except Rejected as e:
+            self._check(g)
+            raise _End("abort", "열선 박자 바꾸기 실패 · %s" % e)
 
     # ---- [히트건 맞추기] ----
     def _method(self, g, mode, ms):
@@ -963,7 +1065,7 @@ class TempTest:
         pct = float(cd["temp_tune_start_pct"])
         if slots:
             for i, ms in enumerate(slots):
-                name = method_name("spread", ms)
+                name = method_name("spread", ms, TIMINGS[cd["heater_timing"]])
                 self._method(g, "spread", ms)
                 cand = {"ms": ms, "name": name, "pct": None, "mean_c": None, "sd_c": None, "pp_c": None, "jump_c": None, "note": ""}
                 self.tune["cands"].append(cand)
@@ -1234,7 +1336,10 @@ class TempTest:
             c.logs.app("온도 시험 뒤 히트건 끄기 실패 · %s" % e, "error")
         if c.stage.connected and c.stage.heat_capable:
             try:
-                c.heater_method_restore()                           # 맞추기가 바꾼 출력 방식을 설정값으로 되돌린다
+                c.heater_method_restore()                           # 맞추기 · 박자 시험이 바꾼 출력 방식 · 박자를 설정값으로 되돌린다
+                j0 = (self.beat or {}).get("j0") if self.mode == "beat" else None
+                if j0 is not None and c.stage.heat_j != j0:
+                    c.heater_timing(j0)                             # 박자 시험: 시작 전 박자로(시작 때 설정값을 보냈으므로 보통 같다)
             except Rejected as e:
                 c.logs.app("온도 시험 뒤 출력 방식 되돌리기 실패 · %s" % e, "warn")
         if self.ev.get("t_heat") is not None and self.ev.get("t_heat_end") is None:
@@ -1268,6 +1373,7 @@ class TempTest:
                 "model_text": heater_mod.ThermalModel(cfg).text(), "model_measured": heater_mod.ThermalModel(cfg).measured,
                 "speed_max": sp_max.get("rows"), "speed_t": sp_max.get("t"),
                 "step_text": self.step_text if self._busy else "", "tune": self.tune if self.mode == "tune" else None,
+                "beat": self.beat if self.mode == "beat" else None,
                 "q": round(self.heater.q, 2) if self._busy else None}
 
     def publish(self):

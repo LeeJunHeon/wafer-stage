@@ -114,7 +114,7 @@ def alarm_codes(ctrl):
     return [a["code"] for a in ctrl.state.snapshot()["alarms"]]
 
 
-def build_ctrl(cfg, clock=None, scale=0.05, time_scale=1.0, board=None, keep_board=False, firmware="V15"):
+def build_ctrl(cfg, clock=None, scale=0.05, time_scale=1.0, board=None, keep_board=False, firmware="V16"):
     """가짜 장비를 꽂은 Controller. scale = 가짜 스테이지의 이동 시간 배율(작을수록 빠름) · time_scale = 열 모델 · 측정 · 안전 시계의 배율.
     board = 이 시험용 보드를 연다(다시 열면 재시작 - FakeV11.reopen: EEPROM 표시로 위치 · 원점을 정한다). 종료 뒤 다시 실행을 볼 때 앞 Controller 의 보드를 준다.
     keep_board = [연결 끊기] 뒤 다시 [연결] 해도 같은 보드를 다시 연다(기본은 열 때마다 새 보드)."""
@@ -128,7 +128,7 @@ def build_ctrl(cfg, clock=None, scale=0.05, time_scale=1.0, board=None, keep_boa
     fw = lambda: box["fw"]                                          # noqa: E731
     gun = FakeHeatGun(world.fan_relay, world.element_relay, clock=clock or base)     # 배선은 세계가 정한다(설정을 바꿔도 전선은 그대로)
     lab = fake_visa.Lab(clock=base, sleep=sleep, world=world,
-                        heater_fn=gun.power,                    # 열선 출력 %(V15) 의 시간 평균 전력
+                        heater_fn=gun.power,                    # 열선 출력 %(V16) 의 시간 평균 전력
                         cooler_fn=lambda: bool(fw() and any(fw().relay[n - 1] for n in world.cooler_relays)),
                         relays_fn=lambda: [i + 1 for i, r in enumerate(fw().relay) if r] if fw() else [],
                         pos_fn=lambda: (fw().true_xy() + (fw().real["z"] / PPMM,)) if fw() else None)
@@ -178,7 +178,7 @@ def make_ctrl(tmp_path, monkeypatch):
     made = []
     monkeypatch.setattr(control_mod, "serial_ports", lambda: [("COM5", "Arduino Mega 2560 (COM5)")])     # 포트 목록: 실제 포트를 훑지 않는다
 
-    def make(clock=None, scale=0.05, connect=True, meters=True, camera=False, time_scale=1.0, board=None, keep_board=False, firmware="V15", **cfg_over):
+    def make(clock=None, scale=0.05, connect=True, meters=True, camera=False, time_scale=1.0, board=None, keep_board=False, firmware="V16", **cfg_over):
         cfg = Config(tmp_path / "settings.json").load()
         # 이동 뒤 사진 대기: 시험용 카메라는 요청한 순간의 장면을 그리므로(늦게 오는 프레임이 없다) 기다리지 않는다 - 화면 멈춤 확인은 그대로 한다
         cfg.update({"data_dir": str(tmp_path / "data"), "camera_width": 320, "camera_height": 240, "cam_settle_wait_s": 0.0,
