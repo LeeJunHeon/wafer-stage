@@ -313,8 +313,10 @@ ITEMS = (
          Item("marker_probe_mm", 10.0, "float", "마커 기억 이동 거리", "mm", 1, 50,
               desc="헤드 마커 등록 때 헤드를 움직여 보는 거리\n보통 변경 안 함"),
          # 헤드 마커 등록 검사(prep.marker_learn): 하나라도 어긋나면 저장하지 않는다
-         Item("marker_pair_mm", 0.5, "float", "마커 두 장 허용", "mm", 0.01, 10,
-              desc="같은 위치 두 장의 마커 위치 차이 허용 · 판 배율로 px 환산\n넘으면 한 번 더 촬영 · 그래도 넘으면 실패"),
+         Item("marker_pair_mm", 0.5, "float", "마커 연속 읽기 허용", "mm", 0.01, 10,
+              desc="연속으로 읽은 마커 3장이 모두 서로 이 안이면 가라앉음 · 판 배율로 px 환산\n그 3장의 가운데 값을 쓴다"),
+         Item("marker_settle_s", 3.0, "float", "마커 가라앉음 한도", "s", 0.5, 20,
+              desc="헤드 마커 위치가 가라앉기를 기다리는 한도\n넘으면 등록 · 위치 확인 실패"),
          Item("marker_return_mm", 0.5, "float", "마커 복귀 허용", "mm", 0.01, 10,
               desc="마커 등록 끝에 촬영 위치로 돌아와 본 마커와 처음 위치의 차이 한도 · 판 배율로 px 환산"),
          Item("marker_angle_tol_deg", 15.0, "float", "마커 직각 허용", "°", 1, 45,

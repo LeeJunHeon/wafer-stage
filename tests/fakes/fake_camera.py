@@ -171,6 +171,9 @@ class FakeCapture:
         self._poly(img, body, (44, 46, 50), wd.head_h)                                       # 헤드 윗면(샘플을 가린다)
         m = wd.marker_mm * 0.5 * (self._mk.shape[0] / 200.0)                                 # 흰 여백까지의 반 변(mm)
         cx, cy = hx + wd.marker_off[0], hy + wd.marker_off[1]
+        if wd.marker_shake is not None:                                                     # 시험: 헤드가 흔들리는 장면
+            sx, sy = wd.marker_shake()
+            cx, cy = cx + sx, cy + sy
         quad = wd.project([(cx - m, cy + m), (cx + m, cy + m), (cx + m, cy - m), (cx - m, cy - m)], self._bw, self._bh, wd.head_h)   # 사진에서 왼쪽 위부터 시계 방향
         n = self._mk.shape[0]
         bx0, by0 = np.floor(quad.min(axis=0)).astype(int) - 1

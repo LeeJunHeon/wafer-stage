@@ -182,7 +182,9 @@ def make_ctrl(tmp_path, monkeypatch):
         cfg = Config(tmp_path / "settings.json").load()
         # 이동 뒤 사진 대기: 시험용 카메라는 요청한 순간의 장면을 그리므로(늦게 오는 프레임이 없다) 기다리지 않는다 - 화면 멈춤 확인은 그대로 한다
         cfg.update({"data_dir": str(tmp_path / "data"), "camera_width": 320, "camera_height": 240, "cam_settle_wait_s": 0.0,
-                    "heater_boot_hold_s": 0.0, **cfg_over})                 # 시험용 히트건은 켜기 직후 열선 점검(H-E)이 없다 - 유지를 보는 시험은 값을 직접 준다
+                    "heater_boot_hold_s": 0.0,
+                    "marker_settle_s": 1.0,                            # 마커가 안 보이는 자리는 한도까지 기다린다(실제 시간) - 시험 시간을 줄인다 · 판정은 그대로
+                    **cfg_over})                 # 시험용 히트건은 켜기 직후 열선 점검(H-E)이 없다 - 유지를 보는 시험은 값을 직접 준다
         cfg.update(real_time_windows(time_scale, set(cfg_over)))       # 배율 때문에 실제 시간 창이 수십 ms 로 줄지 않게
         ctrl = build_ctrl(cfg, clock=clock, scale=scale, time_scale=time_scale, board=board, keep_board=keep_board, firmware=firmware)
         made.append(ctrl)

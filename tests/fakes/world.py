@@ -56,6 +56,7 @@ class World:
         self.head_h = 60.0                        # 헤드 윗면(마커) 높이(mm, 판 평면 위)
         self.marker_mm = 40.0
         self.marker_off = (0.0, 32.0)             # 핀 가운데 → 마커 가운데(스테이지 mm)
+        self.marker_shake = None                  # 시험: 프레임마다 마커를 더 옮길 양을 돌려주는 함수(() → (dx, dy) mm) · None 이면 안 흔들림
         self.head_rect = (-36.0, -26.0, 36.0, 66.0)   # 헤드 윗면 사각형(핀 가운데 기준 x0 · y0 · x1 · y1)
         # 실제 배선: 히트건 송풍 R1 · 열선 R10 · 쿨러 3묶음 R2 · R3 · R4(릴레이 하나에 쿨러 3개). 그 밖은 미배정
         self.fan_relay, self.element_relay, self.cooler_relays = 1, 10, [2, 3, 4]

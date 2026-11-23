@@ -22,6 +22,7 @@ from app.safety import Rejected
 from app.state import ALARM, NOTICE
 from app.vision import find as find_mod
 
+MARKER_N = 3                                       # 헤드 마커: 가장 최근 이만큼의 위치가 모두 서로 marker_pair_mm 안이면 가라앉음 → 그 가운데 값
 SNAP_MM = 8.0                                      # 판 사진을 누른 자리가 샘플 가운데에서 이 안이면 그 샘플의 핀 놓을 자리(pin)로 붙는다
 AT_TOL_MM = 0.2                                    # "그 자리에 있다"고 보는 차이
 LOWER_TOL_MM = 0.05                                # 샘플로 이동한 뒤 내리기 전: st 로 다시 읽은 X · Y 가 목표와 이 안이어야 내린다
@@ -179,12 +180,14 @@ class Prep:
         return frame
 
     def _position_check(self, frame):
-        """촬영 위치에서 찍은 사진: 헤드 마커가 기억한 자리와 얼마나 다른지(mm). 2 mm 넘으면 주의, 10 mm 넘으면 경보 + 측정 시작 막음."""
+        """촬영 위치에서 찍은 사진: 헤드 마커가 기억한 자리와 얼마나 다른지(mm). 2 mm 넘으면 주의, 10 mm 넘으면 경보 + 측정 시작 막음.
+        기억한 마커가 있으면 마커 위치는 등록과 같은 방법(_marker_pair - 가라앉을 때까지 읽고 3장의 가운데 값)으로 읽는다. 끝까지 흔들리면 Rejected(촬영 실패)."""
         st = self.c.state
-        m = geo.find_marker(frame)
-        self.marker_seen = m is not None
         if not self.calib.d.get("marker"):
+            self.marker_seen = geo.find_marker(frame) is not None
             return
+        m = self._marker_pair()
+        self.marker_seen = m is not None
         if m is None:
             self.pos_off_mm = None
             st.alarm("pos_check", "마커 미검출 · 헤드 위치 확인 실패", NOTICE)
@@ -731,22 +734,45 @@ class Prep:
         return {"n": 0, "removed": n}
 
     def _marker_pair(self):
-        """지금 자리에서 새 프레임 두 장의 마커 위치. 두 장이 marker_pair_mm(판 배율로 px) 안에서 맞으면 평균. 안 맞으면 한 번 더 찍는다.
-        두 번 다 마커가 안 보이면 None(그 자리에서 안 보임). 보이는데 두 번 다 안 맞으면 Rejected(카메라 · 헤드가 흔들린다)."""
+        """지금 자리의 헤드 마커 위치 - 가라앉을 때까지 읽는다(마커 등록의 각 자리 · 촬영 위치의 위치 확인).
+        새 프레임마다 마커를 읽어 가장 최근 MARKER_N(3)장(이어서 보인 것)이 모두 서로 marker_pair_mm(판 배율로 px) 안이면 그 3장의 좌표별 중앙값.
+        marker_settle_s 를 넘으면: 한 번도 안 보였으면 None(그 자리에서 안 보임) · 보였는데 안 가라앉았으면 Rejected(마지막 3장의 벌어진 크기).
+        까닭: 화면 멈춤 확인(폭 320 px 전체 밝기 차이)은 마커 0.85 mm(원본 약 16 px = 줄인 사진 약 1.3 px) 흔들림을 못 잡고, 예전 두 장 비교는 한 번만 더 보고 실패했다
+        (11-18 · 11-23 - 한 번 더 누르면 통과)."""
         tol = self._mm_px(self.cfg["marker_pair_mm"])
-        diff = None
-        for _try in range(2):
-            m1 = geo.find_marker(self._fresh()[0])
-            m2 = geo.find_marker(self._fresh()[0])
-            if m1 is None or m2 is None:
-                continue
-            d = float(np.hypot(m1[0] - m2[0], m1[1] - m2[1]))
-            if d <= tol:
-                return ((m1[0] + m2[0]) / 2.0, (m1[1] + m2[1]) / 2.0)
-            diff = d
-        if diff is None:
+        limit = float(self.cfg["marker_settle_s"])
+        k = self.plate_ppmm() or geo.RECT_PPMM
+
+        def spread(pts):
+            return max(float(np.hypot(a[0] - b[0], a[1] - b[1])) for i, a in enumerate(pts) for b in pts[i + 1:])
+
+        t0 = time.monotonic()
+        last, n, seen = [], 0, False
+        while True:
+            m = geo.find_marker(self._fresh()[0])
+            n += 1
+            if m is None:
+                last = []                                               # 이어서 보인 장만 센다(안 보인 장 = 흔들린 장면일 수 있다)
+            else:
+                seen = True
+                last = (last + [(float(m[0]), float(m[1]))])[-MARKER_N:]
+                if len(last) == MARKER_N:
+                    sp = spread(last)
+                    if sp <= tol:
+                        med = (float(np.median([p[0] for p in last])), float(np.median([p[1] for p in last])))
+                        self.c.logs.app("마커 가라앉음 · %.2f s · %d장 · 벌어짐 %.2f mm" % (time.monotonic() - t0, n, sp / k), "detail")
+                        return med
+            if time.monotonic() - t0 > limit:
+                break
+        if not seen:
+            self.c.logs.app("마커 미검출 · %.1f s · %d장" % (time.monotonic() - t0, n), "detail")
             return None
-        raise Rejected("마커 위치 흔들림 · 두 장 %.2f mm 차이" % (diff / (self.plate_ppmm() or geo.RECT_PPMM)))
+        if len(last) >= 2:
+            why = "마커 위치 흔들림 · %d장 %.2f mm 차이 · %.1f s 대기" % (len(last), spread(last) / k, limit)
+        else:
+            why = "마커 위치 흔들림 · 마커 끊김 · %.1f s 대기" % limit
+        self.c.logs.app("%s · %d장" % (why, n), "warn")
+        raise Rejected(why)
 
     def _mm_px(self, mm):
         """마커 허용(mm) → 사진 px(판 배율 = 판 꼭짓점 픽셀 ÷ 판 한 변). 판 영역이 없으면 보정 사진 배율(RECT_PPMM)."""
@@ -809,7 +835,7 @@ class Prep:
 
     def marker_learn(self):
         """촬영 위치에서 헤드 마커 가운데 픽셀을 기억하고, X · Y 로 조금 옮겨 보며 "mm 당 픽셀" 2×2 행렬을 잰다.
-        자리마다 새 프레임 두 장(marker_pair_mm 안 · 아니면 한 번 더) · 끝에 촬영 위치로 돌아와 처음 자리와 marker_return_mm 안(mm 는 판 배율로 px) ·
+        자리마다 마커가 가라앉을 때까지 읽어 3장의 가운데 값(_marker_pair · marker_pair_mm · marker_settle_s) · 끝에 촬영 위치로 돌아와 처음 자리와 marker_return_mm 안(mm 는 판 배율로 px) ·
         행렬 검사(marker_problems). 하나라도 어긋나면 저장하지 않는다(기억한 마커 없음 → 위치 확인 안 함) - 이유 한 줄 + 로그."""
         head = self.cfg["photo_head_xy"]
         if head is None:
@@ -826,7 +852,7 @@ class Prep:
 
         def see(x, y):
             self.c.goto(x, y)
-            self.settled("이동")                                     # 화면이 멈춘 뒤 두 장(프레임이 늦게 와 이동 중 장면이 섞이지 않게)
+            self.settled("이동")                                     # 화면이 멈춘 뒤 마커가 가라앉을 때까지(프레임이 늦게 와 이동 중 장면이 섞이지 않게)
             return self._marker_pair()
 
         try:
