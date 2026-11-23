@@ -8,7 +8,7 @@ const rs = { list: [], rec: null, id: null, picks: [], pts: {} };
 function buildResults() {
   rs.listEl = h("div", { class: "reclist fill" });
   rs.samples = h("div", { class: "picklist" });
-  const left = h("div", { class: "panel fill", id: "rs-left" }, h("div", { class: "row" }, h("h3", { text: "측정 기록" }), h("span", { class: "sp" }), btn("새로고침", loadResults, "sm")),
+  const left = h("div", { class: "panel fill", id: "rs-left" }, h("div", { class: "row" }, h("h3", { text: "측정 기록" }), h("span", { class: "sp" }), tk(btn("새로고침", loadResults, "sm"), "results.refresh")),
     rs.listEl, h("h4", { class: "h4", text: "샘플 (3개까지)" }), rs.samples);
   rs.graph = rtGraph();
   rs.tbody = h("tbody", {});
@@ -112,7 +112,7 @@ function renderRecord() {
     return;
   }
   setKids(rs.samples, ...rec.samples.map((s) => {
-    const c = h("input", { type: "checkbox", checked: rs.picks.includes(s.id), disabled: !s.n, onchange: () => togglePick(s.id) }), col = pickColor(s.id);
+    const c = tk(h("input", { type: "checkbox", checked: rs.picks.includes(s.id), disabled: !s.n, onchange: () => togglePick(s.id) }), "rs.pick"), col = pickColor(s.id);
     return h("label", { class: "chk" }, c, h("span", {}, col ? swatch(col) : null, s.name + (s.status !== "완료" ? " · " + s.status : "") + (s.cycles > 1 ? " · " + s.cycles + "회" : "")));
   }));
   const e2 = (v) => (v == null ? "—" : fmtOhm2(v)), t1 = (v) => (v == null ? "—" : v.toFixed(1) + " °C");
@@ -123,7 +123,7 @@ function renderRecord() {
       h("td", { class: "num", text: t1(a.t_heat) }), h("td", { class: "num", text: t1(a.t_cool) }), h("td", { class: "num", text: t1(a.hyst) }), spacingCell(a.spacing));
   }));
   setKids(rs.files, h("div", { class: "small path", text: rec.folder }), h("div", { class: "flist" }, ...rec.files.map((f) => h("div", { text: f }))),
-    h("div", { class: "row" }, btn("폴더 열기", () => api("result_open_folder", { id: rec.id }))));
+    h("div", { class: "row" }, tk(btn("폴더 열기", () => api("result_open_folder", { id: rec.id })), "rs.folder")));
   const nas = rec.nas;
   setKids(rs.nas, ...(!nas || !nas.dir ? [small("PC 에만 저장")] : [
     h("div", { class: "small path", text: nas.dir }),

@@ -26,18 +26,18 @@ function buildManual() {
   man.retake = busyGate("재촬영", () => apiMove("samples_find"), "sm");             // 자동 측정 탭의 재촬영과 같다(사진 + 샘플 검출)
   man.bigView = btn("크게 보기", () => openPlateBig(false), "sm");
   man.fixPart = h("span", { class: "row hidden" }, man.photoInfo, man.retake.b, man.bigView, man.retake.w);
-  man.viewRaw = h("input", { type: "radio", name: "view", checked: true, onchange: () => setView("raw") });
-  man.viewFix = h("input", { type: "radio", name: "view", onchange: () => setView("fix") });
-  man.clickGo = h("input", { type: "checkbox", onchange: () => {          // 켜면 "판 사진" 보기로 바꾼다(실시간 보기에서도 켤 수 있다)
+  man.viewRaw = tk(h("input", { type: "radio", name: "view", checked: true, onchange: () => setView("raw") }), "man.viewRaw");
+  man.viewFix = tk(h("input", { type: "radio", name: "view", onchange: () => setView("fix") }), "man.viewFix");
+  man.clickGo = tk(h("input", { type: "checkbox", onchange: () => {          // 켜면 "판 사진" 보기로 바꾼다(실시간 보기에서도 켤 수 있다)
     if (man.clickGo.checked && man.view !== "fix") { man.viewFix.checked = true; setView("fix"); }
-  } });
+  } }), "man.clickGo");
   man.addHere = btn("보정 점 추가", () => openPlateBig(true), "sm");          // [크게 보기] 창을 "보정 점 추가" 상태로
   /* 샘플 줄: 순서 = S.samples 중 xy 가 있는 것(표 순서) · 지금 선택 = last_click.sample */
   man.sPrev = btn("◀ 이전", () => sampleStep(-1), "sm");
   man.sNext = btn("다음 ▶", () => sampleStep(1), "sm");
-  man.sSel = h("select", { onchange: () => { const id = man.sSel.value; if (id) sampleGo(id); } });
+  man.sSel = tk(h("select", { onchange: () => { const id = man.sSel.value; if (id) sampleGo(id); } }), "man.sSel");
   man.sSig = "";
-  man.lowerChk = h("input", { type: "checkbox", onchange: () => { if (man.lowerChk.checked) { man.lowerChk.checked = false; askLower(); } } });
+  man.lowerChk = tk(h("input", { type: "checkbox", onchange: () => { if (man.lowerChk.checked) { man.lowerChk.checked = false; askLower(); } } }), "man.lower");
   man.tourBtn = btn("자동 순회", () => (touring() ? api("tour_stop") : apiMove("tour_start")), "sm");
   man.sWhy = h("span", { class: "why nowrap" });
   man.tourLine = h("div", { class: "small" });
@@ -60,7 +60,7 @@ function buildManual() {
   /* ---- 왼쪽: 이동(조그 · 촬영 위치 · 좌표 이동을 옆으로 놓아 높이를 줄인다 - 카메라가 그만큼 커진다) ---- */
   man.jog = jogPart();
   const goInput = (ph) => h("input", { type: "number", class: "num", step: "any", placeholder: ph });
-  man.gx = goInput("X"); man.gy = goInput("Y"); man.gz = goInput("Z");
+  man.gx = tk(goInput("X"), "man.gx"); man.gy = tk(goInput("Y"), "man.gy"); man.gz = tk(goInput("Z"), "man.gz");
   man.head = btn("촬영 위치로 이동", () => { const p = S.cfg.photo_head_xy; if (p) api("goto", { x: p[0], y: p[1] }); });
   man.headNote = h("span", { class: "why" });
   man.here = btn("지금 위치", () => fillHere());                                  // 좌표 이동 칸에 현재 X · Y · Z
@@ -87,9 +87,9 @@ function buildManual() {
   man.ohm = h("div", { class: "big", text: "—" });
   man.cond = h("div", { class: "small" });
   man.mon = btn("연속 측정", () => api("monitor", { on: !S.monitor }));
-  man.readT = btn("1회 측정", () => api("read_temp"));
-  man.readR = btn("1회 측정", () => api("read_resistance"));
-  man.condBtn = btn("조건", openCond);
+  man.readT = tk(btn("1회 측정", () => api("read_temp")), "man.readT");
+  man.readR = tk(btn("1회 측정", () => api("read_resistance")), "man.readR");
+  man.condBtn = tk(btn("조건", openCond), "man.cond");
   man.measWhy = h("div", { class: "why hidden" });
   man.contact = busyGate("접촉 탐색", () => apiMove("contact_find"));
   man.contactLine = h("div", { class: "small" });
@@ -99,12 +99,12 @@ function buildManual() {
     h("div", { class: "row" }, man.cond, h("span", { class: "sp" }), man.contact.b, man.condBtn), man.contactLine, man.measWhy);
 
   /* ---- 오른쪽: 릴레이 시험(히트건 줄 · 쿨러 줄). 송풍 · 열선 · 미배정 릴레이는 개별 버튼으로 두지 않는다 ---- */
-  man.hOn = btn("켜기", () => api("heater_on"));
+  man.hOn = tk(btn("켜기", () => api("heater_on")), "heater.on");
   man.hEl = btn("열선 끄기", () => api("heater_element", { on: !(S.heater && S.heater.element) }));
   man.hOff = btn("끄기", () => api("heater_off"));
   man.hNow = btn("즉시 끄기", () => api("heater_off_now"));                    // 열선 · 송풍 바로 끔(확인 창 없음)
-  man.hPct = h("input", { type: "number", class: "num", min: "0", max: "100", step: "0.1", value: "30" });          // 0.1 % 단위(V18)
-  man.hPctGo = btn("적용", () => { const v = parseFloat(man.hPct.value); if (!isFinite(v)) { toast("출력 % 숫자 필요"); return; } api("heater_power", { pct: Math.round(v * 10) / 10 }); });
+  man.hPct = tk(h("input", { type: "number", class: "num", min: "0", max: "100", step: "0.1", value: "30" }), "heater.pctIn");          // 0.1 % 단위(V18)
+  man.hPctGo = tk(btn("적용", () => { const v = parseFloat(man.hPct.value); if (!isFinite(v)) { toast("출력 % 숫자 필요"); return; } api("heater_power", { pct: Math.round(v * 10) / 10 }); }), "heater.pct");
   man.hPctNow = h("span", { class: "small nowrap" });
   man.hState = h("span", { class: "small nowrap" });
   man.hSync = h("div", { class: "small" });                                  // 전원 맞춤 한 줄(core.js syncText)
@@ -124,11 +124,11 @@ function buildManual() {
     man.relWhy);
 
   /* ---- 오른쪽 맨 아래: 직접 명령(작게 - 결과는 최근 몇 줄만 보이는 상자, 넘치면 그 안에서만 스크롤) ---- */
-  man.target = h("select", { onchange: () => { man.quick(); } }, h("option", { value: "k2450", text: "저항계 K2450" }), h("option", { value: "k2110", text: "온도계 K2110" }), h("option", { value: "stage", text: "스테이지" }));
+  man.target = tk(h("select", { onchange: () => { man.quick(); } }, h("option", { value: "k2450", text: "저항계 K2450" }), h("option", { value: "k2110", text: "온도계 K2110" }), h("option", { value: "stage", text: "스테이지" })), "man.target");
   man.quickBox = h("span", { class: "quick" });
-  man.line = h("input", { type: "text", class: "grow mono", spellcheck: "false", placeholder: "한 줄 입력", onkeydown: (e) => { if (e.key === "Enter") sendRaw(); } });
+  man.line = tk(h("input", { type: "text", class: "grow mono", spellcheck: "false", placeholder: "한 줄 입력", onkeydown: (e) => { if (e.key === "Enter") sendRaw(); } }), "man.line");
   man.log = h("div", { id: "cmd-log" });
-  man.quick = () => setKids(man.quickBox, ...QUICK[man.target.value].map((q) => btn(q, () => { man.line.value = q; sendRaw(); })));
+  man.quick = () => setKids(man.quickBox, ...QUICK[man.target.value].map((q) => tk(btn(q, () => { man.line.value = q; sendRaw(); }), "man.quick")));
   man.quick();
   const cmd = h("div", { class: "panel", id: "man-cmd" },
     h("div", { class: "row" }, h("h3", { text: "직접 명령" }), small("읽기 · 조회만 가능"), h("span", { class: "sp" }), man.target),
@@ -167,7 +167,7 @@ async function askLower() {
   const p = await api("move_plan", { name: "sample_lower" });
   if (!p.ok || !p.result) return;
   openDialog(p.result.title, planBody(p.result),
-    [noEnter(btn("취소", closeDialog)), noEnter(btn("켜기", () => { closeDialog(); if (!man.lowerChk.disabled) man.lowerChk.checked = true; }, "on"))]);
+    [noEnter(btn("취소", closeDialog)), noEnter(tk(btn("켜기", () => { closeDialog(); if (!man.lowerChk.disabled) man.lowerChk.checked = true; }, "on"), "man.lowerOk"))]);
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 }
 /* 자동 순회: 버튼([자동 순회] / [순회 정지]) · 진행 한 줄 · 끝난 뒤 결과 목록(이름 · 저항 또는 "기록 없음"). 반환 = 시작할 수 없는 까닭 */
@@ -258,7 +258,7 @@ function openPlateBig(addMode) {
       else plateClick(p[0] / z.W, p[1] / z.H);
       return false;
     } });
-  const go = h("input", { type: "checkbox", checked: man.clickGo.checked, onchange: () => { man.clickGo.checked = go.checked; } });
+  const go = tk(h("input", { type: "checkbox", checked: man.clickGo.checked, onchange: () => { man.clickGo.checked = go.checked; } }), "man.clickGo");
   const why = h("div", { class: "why" });
   const toAdd = btn("보정 점 추가", () => { st.add = true; st.pick = null; render(); });
   const nLine = h("div", { class: "small" });
@@ -283,7 +283,7 @@ function openPlateBig(addMode) {
       }
     } finally { st.busy = false; render(); }
   }, "on");
-  const cancel = btn("취소", () => { st.add = false; st.pick = null; render(); });
+  const cancel = tk(btn("취소", () => { st.add = false; st.pick = null; render(); }), "big.cancel");
   const adding = h("div", { class: "col hidden" }, h("h4", { text: "보정 점 추가" }), small("핀이 실제로 있는 자리를 사진에서 누름"), small("십자 · 사각형 = 계산 위치"),
     dist, h("div", { class: "row" }, addBtn, cancel));
   const side = h("div", { class: "col" }, normal, adding);
@@ -335,6 +335,7 @@ function openCond() {
   const volt = h("input", { type: "number", step: "0.01", value: c.meter_volt }), four = h("input", { type: "checkbox", checked: !!c.meter_four_wire }),
     avg = h("input", { type: "number", step: "1", value: c.meter_avg_count }), nplc = h("input", { type: "number", step: "0.01", value: c.meter_nplc }),
     ilim = h("input", { type: "number", step: "any", value: c.meter_ilim_a });
+  tk(volt, "cfg:meter_volt"); tk(four, "cfg:meter_four_wire"); tk(avg, "cfg:meter_avg_count"); tk(nplc, "cfg:meter_nplc"); tk(ilim, "cfg:meter_ilim_a");
   const save = async () => {
     const ok = await putSettings({ meter_volt: parseFloat(volt.value), meter_four_wire: four.checked, meter_avg_count: parseInt(avg.value, 10), meter_nplc: parseFloat(nplc.value), meter_ilim_a: parseFloat(ilim.value) });
     if (ok) closeDialog();
@@ -405,7 +406,7 @@ function renderManual() {
   if (sig !== man.coolSig) {
     man.coolSig = sig;
     man.cells = {};
-    setKids(man.coolBox, ...cool.map((n) => { const b = btn("R" + n, () => api(S.relays[n - 1] ? "relay_off" : "relay_on", { n })); man.cells[n] = b; return b; }));
+    setKids(man.coolBox, ...cool.map((n) => { const b = tk(btn("R" + n, () => api(S.relays[n - 1] ? "relay_off" : "relay_on", { n })), "relay.cool"); man.cells[n] = b; return b; }));
   }
   for (const [n, b] of Object.entries(man.cells || {})) {
     const on = !!S.relays[n - 1];

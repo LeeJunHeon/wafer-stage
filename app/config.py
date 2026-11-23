@@ -36,6 +36,7 @@ class Item:
     choices: tuple = ()             # kind = choice 일 때 고를 수 있는 값 ((값, 이름), …)
     desc: str = ""                  # 설명(뜻 · 언제 바꾸는지) 1~2줄. 화면의 말풍선에 보인다. 단위 · 기본값 · 범위는 hint() 가 덧붙인다
     folder: bool = False            # 폴더 경로(화면에 [찾아보기] 버튼을 붙인다)
+    common: bool = False            # 전체 설정 "자주 쓰는 설정"(측정하는 사람이 측정마다 바꿀 수 있는 것 - 장비를 맞출 때 한 번 정하는 값은 넣지 않는다)
 
 
 # 스테이지의 네 쪽(장비 앞쪽 · 오른쪽 설정): 먼 쪽 = 좌표가 큰 쪽 · 모터 쪽 = 0 쪽
@@ -56,7 +57,7 @@ ITEMS = (
        Item("k2450_addr", "GPIB0::18::INSTR", "str", "저항계 주소",
             desc="저항계 K2450 의 VISA 주소\n초기 설정 1 에서 선택 · 연결되면 자동 저장"),
        Item("data_dir", "../data_v3", "str", "데이터 폴더", folder=True,
-            desc="측정 기록 · 로그 · 초기 설정 값을 저장하는 폴더\n상대 경로는 프로그램 폴더 기준 · 변경 후 재시작 필요"),
+            common=True, desc="측정 기록 · 로그 · 초기 설정 값을 저장하는 폴더\n상대 경로는 프로그램 폴더 기준 · 변경 후 재시작 필요"),
        Item("auto_connect", True, "bool", "시작 시 자동 연결",                          # 저장된 포트 · 주소 하나씩만 연다(찾아다니지 않는다)
             desc="시작할 때 저장된 포트 · 주소로 연결\n장비 없이 화면만 볼 때 끔"),
        Item("blocked_ports", ["COM4"], "list", "사용 안 할 포트",                       # COM4 = LabVIEW 용 Uno. 열면 그 장비가 재시작한다
@@ -177,23 +178,23 @@ ITEMS = (
               desc="히트건을 끌 때 열선을 끄고 송풍을 더 켜 두는 시간 · 열선 식힘\n열선이 뜨거운 채 멈추면 늘림"))
     + _g("가열 제어",                                                                      # 열선 출력 %(펌웨어 V12 hp): 목표선 기준 PI + 앞먹임(heater.PowerControl) · 계수는 열 모델에서 자동
          Item("run_heat_mode", "ramp", "choice", "가열 방식", choices=(("ramp", "가열 속도 제어"), ("full", "계속 가열")),
-              desc="가열 속도 제어는 목표선을 따라 열선 출력 % 조절\n계속 가열은 가열 끝 온도까지 최대 출력"),
+              common=True, desc="가열 속도 제어는 목표선을 따라 열선 출력 % 조절\n계속 가열은 가열 끝 온도까지 최대 출력"),
          Item("run_rate_by", "step", "choice", "속도 정하는 방법", choices=(("step", "점 간격"), ("time", "걸리는 시간")),
-              desc="점 간격 = 목표 점 간격 ÷ 읽기 간격으로 속도를 정함\n걸리는 시간 = 가열 시간 · 냉각 시간으로 속도를 정함(읽기 간격과 무관)"),
+              common=True, desc="점 간격 = 목표 점 간격 ÷ 읽기 간격으로 속도를 정함\n걸리는 시간 = 가열 시간 · 냉각 시간으로 속도를 정함(읽기 간격과 무관)"),
          Item("run_heat_time_s", 102.0, "float", "가열 시간", "s", 5, 36000,
-              desc="시작 온도에서 가열 끝 온도까지 걸리는 시간\n속도 정하는 방법이 걸리는 시간일 때만 사용"),
+              common=True, desc="시작 온도에서 가열 끝 온도까지 걸리는 시간\n속도 정하는 방법이 걸리는 시간일 때만 사용"),
          Item("run_cool_time_s", 102.0, "float", "냉각 시간", "s", 5, 36000,
-              desc="가열 끝 온도에서 냉각 끝 온도까지 걸리는 시간\n속도 정하는 방법이 걸리는 시간일 때만 사용"),
+              common=True, desc="가열 끝 온도에서 냉각 끝 온도까지 걸리는 시간\n속도 정하는 방법이 걸리는 시간일 때만 사용"),
          Item("run_point_step_c", 0.27, "float", "목표 점 간격", "°C", 0.02, 5,
-              desc="한 점마다 오를 · 내릴 온도 · 가열 · 냉각 속도 = 점 간격 ÷ 읽기 간격 × 60\n기존 LabVIEW 데이터 약 0.27 °C"),
+              common=True, desc="한 점마다 오를 · 내릴 온도 · 가열 · 냉각 속도 = 점 간격 ÷ 읽기 간격 × 60\n기존 LabVIEW 데이터 약 0.27 °C"),
          Item("cool_rate_separate", False, "bool", "냉각 속도 따로",
-              desc="켜면 냉각만 아래 냉각 속도 사용 · 끄면 가열과 같은 점 간격"),
+              common=True, desc="켜면 냉각만 아래 냉각 속도 사용 · 끄면 가열과 같은 점 간격"),
          Item("run_cool_rate_c_min", 3.0, "float", "냉각 속도", "°C/분", 0.1, 60,
-              desc="냉각 속도 따로 켰을 때의 냉각 목표선 기울기"),
+              common=True, desc="냉각 속도 따로 켰을 때의 냉각 목표선 기울기"),
          Item("run_heat_hold_s", 0.0, "float", "가열 끝 유지 시간", "s", 0, 3600, verify=True,
               desc="가열 끝 온도에 닿은 뒤 그 온도로 유지하는 시간 · 가열 속도 제어만\n0 이면 닿는 즉시 냉각"),
          Item("run_cool_mode", "ramp", "choice", "냉각 방식", choices=(("ramp", "냉각 속도 제어"), ("free", "자연 냉각")),
-              desc="냉각 속도 제어는 송풍을 켜 둔 채 열선 출력 % 로 목표선을 따라 내려감\n자연 냉각은 열선을 끄고 그대로 식힘"),
+              common=True, desc="냉각 속도 제어는 송풍을 켜 둔 채 열선 출력 % 로 목표선을 따라 내려감\n자연 냉각은 열선을 끄고 그대로 식힘"),
          Item("heater_lead_c", 3.0, "float", "목표선 기다림 폭", "°C", 0.5, 50, verify=True,
               desc="걸러진 온도가 목표선보다 이만큼 넘게 계속 뒤처지면 목표선이 기다림"),
          Item("heater_lead_filter_s", 3.0, "float", "기다림 평균 창", "s", 0, 60,
@@ -241,12 +242,12 @@ ITEMS = (
          Item("reversal_c", 0.3, "float", "역전 기준", "°C", 0.01, 10,
               desc="가열 중 내려감 · 냉각 중 올라감이 이 값 넘으면 역전 1회로 셈"),
          Item("run_fan_during_cool", True, "bool", "냉각 중 송풍",
-              desc="자연 냉각 동안 송풍을 켜 둠 · 냉각 속도 제어는 항상 켬\n끄면 열선 끈 뒤 송풍 시간이 지나면 끔"))
+              common=True, desc="자연 냉각 동안 송풍을 켜 둠 · 냉각 속도 제어는 항상 켬\n끄면 열선 끈 뒤 송풍 시간이 지나면 끔"))
     + _g("쿨러",
          Item("run_cooler_mode", "zone", "choice", "쿨러", choices=(("zone", "샘플 아래 구역"), ("all", "전체"), ("none", "사용 안 함")),
-              desc="측정 때 켜는 쿨러\n샘플 아래 구역은 초기 설정 7 의 배치 사용"),
+              common=True, desc="측정 때 켜는 쿨러\n샘플 아래 구역은 초기 설정 7 의 배치 사용"),
          Item("run_cooler_during_heat", True, "bool", "가열 중 쿨러 켬",
-              desc="가열 중에도 쿨러를 켠 채로 둠\n끄면 가열하는 동안 쿨러 끔"))
+              common=True, desc="가열 중에도 쿨러를 켠 채로 둠\n끄면 가열하는 동안 쿨러 끔"))
     + _g("온도 시험",                                                                      # 수동 제어 탭 [온도 시험]: 샘플 · 저항계 · 모터 없이 히트건 · 쿨러의 온도 거동만 잰다
          Item("temp_test_coolers", [2, 3, 4], "ints", "온도 시험 쿨러", min=0, max=10,      # 기본 = 쿨러 릴레이 전부
               desc="온도 시험 동안 켜 둘 쿨러 릴레이 목록 · 비우면 [] 쿨러 없이\n쿨러 릴레이 안의 번호만 가능"),
@@ -335,17 +336,17 @@ ITEMS = (
               desc="헤드 마커가 등록 위치와 이만큼 다르면 경보 · 측정 시작 차단\n원점 재설정 또는 좌표 재보정으로 해제"))
     + _g("접촉",                                                                          # 기본은 고정 높이. 전기 탐색(v2 방식)은 접촉 판정 기준이 정해진 뒤에 쓴다
          Item("contact_mode", "fixed", "choice", "접촉 방식", choices=(("fixed", "고정 높이"), ("search", "전기 탐색")),
-              desc="고정 높이는 접촉 높이까지만 하강 · 전기 탐색은 전류를 보며 더 하강\n접촉 판정 기준을 정한 뒤 전기 탐색으로 변경"),
+              common=True, desc="고정 높이는 접촉 높이까지만 하강 · 전기 탐색은 전류를 보며 더 하강\n접촉 판정 기준을 정한 뒤 전기 탐색으로 변경"),
          Item("contact_fixed_read", True, "bool", "접촉 후 저항 기록",
-              desc="고정 높이로 내린 뒤 저항을 한 번 재서 기록 · 판정 없음\n끄면 재지 않음"),
+              common=True, desc="고정 높이로 내린 뒤 저항을 한 번 재서 기록 · 판정 없음\n끄면 재지 않음"),
          Item("tour_dwell_s", 3.0, "float", "순회 머무는 시간", "s", 0, 60,
               desc="[자동 순회] 가 샘플마다 접촉 높이에서 머무는 시간"),
          Item("contact_z_mm", None, "optfloat", "접촉 높이", "mm", 0, 100,
               desc="핀이 샘플에 닿는 Z 높이\n초기 설정 6 에서 저장 · 샘플 두께가 바뀌면 재설정"),
          Item("contact_volt", 0.1, "float", "접촉 확인 전압", "V", 0.01, 5,
-              desc="접촉을 확인할 때 거는 전압\n실장비에서 확인된 값 · 보통 변경 안 함"),
+              common=True, desc="접촉을 확인할 때 거는 전압\n실장비에서 확인된 값 · 보통 변경 안 함"),
          Item("contact_ilim_a", 1e-4, "float", "접촉 확인 전류 한도", "A", 1e-8, 1.0,
-              desc="접촉을 확인할 때 전류 한도 · 금속 판에 닿으면 이 한도에 걸림\n보통 변경 안 함"),
+              common=True, desc="접촉을 확인할 때 전류 한도 · 금속 판에 닿으면 이 한도에 걸림\n보통 변경 안 함"),
          Item("contact_nplc", 0.1, "float", "접촉 확인 NPLC", "", 0.01, 10,
               desc="접촉 확인 한 번의 적분 시간 · 작을수록 빠름\n보통 변경 안 함"),
          Item("contact_step_mm", 0.1, "float", "하강 간격", "mm", 0.00625, 0.5,
@@ -374,27 +375,27 @@ ITEMS = (
               desc="전류가 이 값보다 작으면 미접촉으로 판정\n측정 중 핀 떨어짐 판정에도 사용"))
     + _g("측정 조건",
          Item("meter_volt", 0.1, "float", "측정 전압", "V", 0.01, 20,                 # 기존 LabVIEW Set voltage(파일 이름 _0.10V_)
-              desc="저항을 잴 때 샘플에 거는 전압 · 파일 이름에 들어감\n기존 LabVIEW Set voltage 와 같음 · 기존 데이터와 비교할 때 같은 값 사용"),
+              common=True, desc="저항을 잴 때 샘플에 거는 전압 · 파일 이름에 들어감\n기존 LabVIEW Set voltage 와 같음 · 기존 데이터와 비교할 때 같은 값 사용"),
          Item("meter_four_wire", True, "bool", "4단자",
-              desc="4단자로 측정 · 끄면 2단자"),
+              common=True, desc="4단자로 측정 · 끄면 2단자"),
          Item("meter_avg_count", 10, "int", "평균 횟수", "회", 1, 100,
-              desc="한 번 읽을 때 평균하는 횟수 · 클수록 잡음이 적고 느림"),
+              common=True, desc="한 번 읽을 때 평균하는 횟수 · 클수록 잡음이 적고 느림"),
          Item("meter_nplc", 1.0, "float", "NPLC", "", 0.01, 10,
               desc="적분 시간(전원 주기 수) · 클수록 잡음이 적고 느림"),
          Item("meter_ilim_a", 0.1, "float", "전류 한도", "A", 1e-8, 1.0,
               desc="저항을 잴 때 전류 한도\n저항이 낮은 샘플을 보호할 때 낮춤"),
          Item("run_start_c", 30.0, "float", "시작 온도", "°C", -20, 200,
-              desc="가열 전에 이 온도까지 냉각한 뒤 기록 시작"),
+              common=True, desc="가열 전에 이 온도까지 냉각한 뒤 기록 시작"),
          Item("run_heater_off_c", 85.0, "float", "가열 끝 온도", "°C", 0, 250,
-              desc="이 온도에 닿으면 열선 끔 · 가열 속도 제어의 목표 상한\n히트건 차단 온도보다 낮게 설정"),
+              common=True, desc="이 온도에 닿으면 열선 끔 · 가열 속도 제어의 목표 상한\n히트건 차단 온도보다 낮게 설정"),
          Item("run_cool_end_c", 30.0, "float", "냉각 끝 온도", "°C", -20, 200,
-              desc="이 온도까지 냉각하면 그 샘플 측정 완료"),
+              common=True, desc="이 온도까지 냉각하면 그 샘플 측정 완료"),
          Item("run_repeat", 1, "int", "반복", "회", 1, 20,
-              desc="샘플마다 가열 · 냉각을 반복하는 횟수\n회차마다 파일 하나"),
+              common=True, desc="샘플마다 가열 · 냉각을 반복하는 횟수\n회차마다 파일 하나"),
          Item("run_interval_s", 0.9, "float", "측정 간격", "s", 0.05, 60,               # 기본 = 기본 설정의 읽기 시간 예상(온도 0.3 + 저항 0.6)
-              desc="한 점(온도 · 저항)의 주기 · 읽기 시간 예상보다 짧으면 거절\n가열 · 냉각 속도 = 목표 점 간격 ÷ 이 값 × 60"),
+              common=True, desc="한 점(온도 · 저항)의 주기 · 읽기 시간 예상보다 짧으면 거절\n가열 · 냉각 속도 = 목표 점 간격 ÷ 이 값 × 60"),
          Item("batch_name", "1", "str", "묶음",
-              desc="묶음 이름 · 기록 폴더와 샘플 기본 이름에 사용"))
+              common=True, desc="묶음 이름 · 기록 폴더와 샘플 기본 이름에 사용"))
     + _g("측정 한계",                                                                     # v2 backend/rt.py 에서 쓰던 값
          Item("run_no_rise_s", 45.0, "float", "가열 무반응 시간", "s", 1, 600,
               desc="열선이 켜져 있던 시간이 이만큼 쌓여도 안 오르면 그 샘플 실패\n오른 정도는 가열 무반응 기준으로 판정"),
@@ -423,13 +424,16 @@ ITEMS = (
               desc="온도 한 번 읽는 데 걸리는 시간\n읽기 시간 예상에만 사용 · visa.log 로 확인"))
     + _g("저장",
          Item("nas_dir", "", "str", "NAS 폴더", folder=True,
-              desc="측정 파일(.dat)을 복사할 NAS 폴더\n비우면 PC 에만 저장"),
+              common=True, desc="측정 파일(.dat)을 복사할 NAS 폴더\n비우면 PC 에만 저장"),
          Item("nas_date_folder", True, "bool", "NAS 날짜 폴더",
-              desc="NAS 폴더 아래에 연도 · 날짜 폴더를 만들어 저장\n끄면 NAS 폴더 바로 아래 묶음 폴더에 저장"))
+              common=True, desc="NAS 폴더 아래에 연도 · 날짜 폴더를 만들어 저장\n끄면 NAS 폴더 바로 아래 묶음 폴더에 저장"))
 )
 BY_KEY = {i.key: i for i in ITEMS}
 
 # PC 값: PC 마다 다르다(settings.json 에 남는다 · 설정 가져오기의 "PC 값 제외" 가 건너뛴다). 그 밖은 장비 · 측정 값(코드 기본값 · 바꾼 값만 저장)
+# JSON 글로 고치는 항목 중 그 값을 고치는 초기 설정 단계가 있는 것(전체 설정 요약 줄에 "초기 설정 7 에서 변경")
+STEP_NOTE = {"cooler_grid": "초기 설정 7 에서 변경", "photo_head_xy": "초기 설정 3 에서 변경"}
+
 PC_KEYS = frozenset({"stage_port", "k2110_addr", "k2450_addr", "data_dir", "auto_connect", "blocked_ports", "camera_index",
                      "nas_dir", "nas_date_folder", "photo_head_xy", "contact_z_mm"})
 
@@ -966,4 +970,5 @@ class Config:
         """화면용 설정 표."""
         return [{"key": i.key, "label": i.label, "unit": i.unit, "value": self.values[i.key], "default": i.default, "kind": i.kind, "group": i.group,
                  "verify": i.verify, "min": i.min, "max": i.max, "choices": [list(c) for c in i.choices],
-                 "desc": i.desc, "hint": hint(i), "folder": i.folder, "pc": i.key in PC_KEYS, "device": i.key in DEVICE_KEYS} for i in ITEMS]
+                 "desc": i.desc, "hint": hint(i), "folder": i.folder, "pc": i.key in PC_KEYS, "device": i.key in DEVICE_KEYS,
+                 "common": i.common, "step": STEP_NOTE.get(i.key, "")} for i in ITEMS]

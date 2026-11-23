@@ -198,14 +198,16 @@ function renderQuit() {
 }
 
 
-/* ---------- 말풍선(공용): tip(el, 내용) - 마우스를 올리고 0.3초 뒤에 뜨고, 떠나면 닫힌다. 화면 밖으로 나가지 않는다.
-   내용 = 글, 또는 {title, text, hint}, 또는 그것을 돌려주는 함수. 브라우저 기본 title 은 쓰지 않는다(느리고 작다). ---------- */
-let tipT = null, tipFor = null;
+/* ---------- 말풍선(공용) - 0.3초 뒤에 뜨고, 떠나면 닫힌다. 화면 밖으로 나가지 않는다. 브라우저 기본 title 은 쓰지 않는다(느리고 작다).
+   tip(el, 내용) = 그 요소에 글을 붙인다(내용 = 글 · {title, text, hint} · 그것을 돌려주는 함수). 조작(버튼 · 체크 · 선택 · 숫자 칸)의 글은
+   ui/tips.js 의 표 한 곳에서 찾는다(tipOf - 키 = tk(el, 키) 또는 버튼 글). 마우스 아래 요소를 문서 전체에서 한 번에 본다(요소마다 듣지 않는다 -
+   다시 그려도 그대로) · 꺼진 조작은 pointer-events 가 없어(app.css) 그 위치 아래의 꺼진 조작을 직접 찾아 꺼진 까닭과 같이 띄운다. ---------- */
+let tipT = null, tipFor = null, tipRaf = 0, tipEv = null;
 function hideTip() { clearTimeout(tipT); tipT = null; tipFor = null; $("#tip").classList.add("hidden"); }
-function showTip(el, content) {
-  const c = typeof content === "function" ? content() : content;
-  if (!c) return;
-  const o = typeof c === "string" ? { text: c } : c, t = $("#tip");
+function showTip(el) {
+  const o = typeof tipOf === "function" ? tipOf(el) : null;
+  if (!o || !(o.title || o.text)) return;
+  const t = $("#tip");
   setKids(t, o.title ? h("b", { text: o.title }) : null, o.text || "", o.hint ? h("span", { class: "hint", text: o.hint }) : null);
   t.style.left = "0px"; t.style.top = "0px";
   t.classList.remove("hidden");
@@ -216,12 +218,38 @@ function showTip(el, content) {
   if (y + hh > vh - 8) y = Math.max(8, r.top - hh - 4);      // 아래에 자리가 없으면 위에
   t.style.left = Math.round(x) + "px"; t.style.top = Math.round(y) + "px";
 }
-function tip(el, content) {
-  el.classList.add("tipped");
-  el.addEventListener("mouseenter", () => { clearTimeout(tipT); tipFor = el; tipT = setTimeout(() => { if (tipFor === el && el.isConnected) showTip(el, content); }, 300); });
-  el.addEventListener("mouseleave", () => { if (tipFor === el) hideTip(); });
-  return el;
+function tip(el, content) { el._tip = content; el.classList.add("tipped"); return el; }
+/* 마우스 아래의 말풍선 대상: ① 그 자리의 꺼진 조작(pointer-events 없음 - 이벤트는 감싼 요소가 받는다) ② 요소에서 위로 올라가며 글이 있는 것
+   (label 은 안의 조작) */
+function tipTarget(ev) {
+  const t = ev.target;
+  if (!t || !t.closest || t.closest("#tip")) return null;
+  if (t.querySelectorAll) {
+    for (const d of t.querySelectorAll("button:disabled, input:disabled, select:disabled")) {
+      const r = d.getBoundingClientRect();
+      if (r.width && ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom && hasTip(d)) return d;
+    }
+  }
+  for (let e = t; e && e !== document.body; e = e.parentElement) {
+    if (e.tagName === "LABEL") { const c = e.querySelector("input, select"); if (c && hasTip(c)) return c; }
+    if (hasTip(e)) return e;
+  }
+  return null;
 }
+document.addEventListener("mousemove", (ev) => {
+  tipEv = ev;
+  if (tipRaf) return;
+  tipRaf = requestAnimationFrame(() => {
+    tipRaf = 0;
+    const el = tipEv ? tipTarget(tipEv) : null;
+    if (el === tipFor) return;
+    hideTip();
+    if (!el) return;
+    tipFor = el;
+    tipT = setTimeout(() => { if (tipFor === el && el.isConnected) showTip(el); }, 300);
+  });
+}, true);
+document.addEventListener("mouseout", (ev) => { if (!ev.relatedTarget) hideTip(); });     // 창 밖으로 나감
 document.addEventListener("pointerdown", hideTip, true);
 document.addEventListener("scroll", hideTip, true);
 
@@ -371,16 +399,16 @@ const touring = () => !!(S && S.tour && S.tour.active);            // 자동 순
    ==================================================================== */
 function renderStatus() {
   const s = S, c = s.cfg || {};
-  const dev = (k, label) => h("span", { class: "item" }, h("i", { class: "dot " + dotOf(s.devices[k]) }), label);
+  const dev = (k, label) => h("span", { class: "item", "data-tipk": "st." + k }, h("i", { class: "dot " + dotOf(s.devices[k]) }), label);
   const mv = s.move;
   const pos = s.pos;
   let posEl;
   if (mv) {
     const t = mv.target || {};
     const pend = mv.pending ? " · 다음 " + mv.pending.axis.toUpperCase() + " " + (mv.pending.mm > 0 ? "+" : "") + mv.pending.mm + " mm" : "";
-    posEl = h("span", { class: "item st-warn" }, "이동 중 → X " + f2(t.x) + " Y " + f2(t.y) + " Z " + f2(t.z) + pend);
+    posEl = h("span", { class: "item st-warn", "data-tipk": "st.pos" }, "이동 중 → X " + f2(t.x) + " Y " + f2(t.y) + " Z " + f2(t.z) + pend);
   } else {
-    posEl = h("span", { class: "item" }, "핀 X " + f2(pos.x) + " Y " + f2(pos.y) + " Z " + f2(pos.z) + " mm");
+    posEl = h("span", { class: "item", "data-tipk": "st.pos" }, "핀 X " + f2(pos.x) + " Y " + f2(pos.y) + " Z " + f2(pos.z) + " mm");
   }
   /* 히트건: 꺼짐 / 송풍(바람만 · 열선 끈 뒤 식히는 중) / 가열(열선 켜짐). 쿨러: 켜진 쿨러 릴레이 번호 */
   const ht = s.heater || {}, unknown = s.relays.every((r) => r == null);
@@ -391,9 +419,9 @@ function renderStatus() {
   setKids($("#status"), 
     dev("stage", "스테이지" + port), dev("k2110", "온도계"), dev("k2450", "저항계"), dev("camera", "카메라"),
     posEl,
-    h("span", { class: "item " + (heaterOn ? "st-warn" : "") }, "히트건 " + heaterTxt),
-    h("span", { class: "item" }, "쿨러 " + (unknown ? "—" : cool.length ? "켜짐 " + cool.join("·") : "꺼짐")),
-    h("span", { class: "safety" }, "차단 " + (c.heater_max_c != null ? c.heater_max_c : 110) + " °C · 통신 감시 " + ((c.watchdog_ms || 2000) / 1000) + "초"));
+    h("span", { class: "item " + (heaterOn ? "st-warn" : ""), "data-tipk": "st.heater" }, "히트건 " + heaterTxt),
+    h("span", { class: "item", "data-tipk": "st.cooler" }, "쿨러 " + (unknown ? "—" : cool.length ? "켜짐 " + cool.join("·") : "꺼짐")),
+    h("span", { class: "safety", "data-tipk": "st.safety" }, "차단 " + (c.heater_max_c != null ? c.heater_max_c : 110) + " °C · 통신 감시 " + ((c.watchdog_ms || 2000) / 1000) + "초"));
 }
 let alarmSig = "";
 function renderAlarms() {
@@ -402,7 +430,7 @@ function renderAlarms() {
   if (sig === alarmSig) return;
   alarmSig = sig;
   setKids($("#alarms"), ...list.map((a) => h("div", { class: "alarm " + a.level }, h("span", { class: "grow", text: a.text }),
-    a.dismiss ? btn("지우기", () => api("alarm_clear", { code: a.code }), "sm") : null)));
+    a.dismiss ? tk(btn("지우기", () => api("alarm_clear", { code: a.code }), "sm"), "alarm.clear") : null)));
 }
 
 /* ====================================================================

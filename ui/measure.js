@@ -23,7 +23,7 @@ function buildMeasure() {
   });
   ms.btns = h("div", { class: "row wrap" });
   ms.gate = h("div", { class: "why gate" });
-  ms.batch = h("input", { type: "text", class: "name", spellcheck: "false", onchange: async () => { const r = await api("batch_set", { name: ms.batch.value }); if (!r.ok) ms.batch.value = S.cfg.batch_name; } });
+  ms.batch = tk(h("input", { type: "text", class: "name", spellcheck: "false", onchange: async () => { const r = await api("batch_set", { name: ms.batch.value }); if (!r.ok) ms.batch.value = S.cfg.batch_name; } }), "cfg:batch_name");
   ms.legend = h("div", { class: "small", text: "✓ 완료 · ✕ 실패 · 흐림 = 제외 · 점선 = 미확인" });      // 샘플이 없으면 숨긴다(자리는 그대로)
   ms.info = h("div", { class: "small" });
   ms.tbody = h("tbody", {});
@@ -48,7 +48,7 @@ function buildMeasure() {
   ms.spacing = h("div", { class: "small line1" });                    // 점 간격(가열 · 냉각) - 몇 °C 마다 1점
   ms.temp = h("div", { class: "val" }); ms.ohm = h("div", { class: "val" });
   ms.graph = rtGraph();
-  ms.ovChk = h("input", { type: "checkbox", onchange: () => { ms.overlay = ms.ovChk.checked; renderMeasure(); } });
+  ms.ovChk = tk(h("input", { type: "checkbox", onchange: () => { ms.overlay = ms.ovChk.checked; renderMeasure(); } }), "ms.overlay");
   const right = h("div", { class: "panel fill", id: "ms-right" },
     h("div", { class: "row hd" }, ms.title, ms.sub, ms.follow, h("span", { class: "sp" }), ms.act),
     ms.band, ms.line, ms.spacing,
@@ -147,7 +147,7 @@ function renderTable() {
     setKids(ms.tbody, ...rows.map((r) => {
       let nameEl;
       if (ms.editing === r.id) {
-        const inp = h("input", { type: "text", class: "name", value: r.name, spellcheck: "false" });
+        const inp = tk(h("input", { type: "text", class: "name", value: r.name, spellcheck: "false" }), "ms.rename");
         const done = async (save) => { if (ms.editing !== r.id) return; ms.editing = null; if (save && inp.value !== r.name) await api("sample_rename", { id: r.id, name: inp.value }); ms.tsig = ""; renderTable(); };
         inp.addEventListener("keydown", (e) => { if (e.key === "Enter") done(true); e.stopPropagation(); });
         inp.addEventListener("blur", () => done(true));
@@ -180,7 +180,7 @@ function renderButtons() {
       if (run.state === "done") b.push(btn("결과 보기", () => { if (typeof openResult === "function") openResult(R().record); }, "on"));
       ms.start = busyBtn(run.state === "idle" ? "측정 시작" : "전체 재측정", () => apiMove("run_start"), run.state === "idle" ? "on" : ""); b.push(ms.start);
       ms.find = busyBtn("재촬영", () => apiMove("samples_find")); b.push(ms.find);
-      b.push(btn("조건", openRunCond));
+      b.push(tk(btn("조건", openRunCond), "ms.cond"));
     }
     setKids(ms.btns, ...b);
   }
@@ -303,6 +303,7 @@ function openRunCond() {
     run_cool_rate_c_min: num("run_cool_rate_c_min", "0.1"), heater_lead_c: num("heater_lead_c", "0.5"),
     contact_mode: h("select", {}, ...[["fixed", "고정 높이"], ["search", "전기 탐색"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.contact_mode === v }))),
     nas_dir: h("input", { type: "text", value: c.nas_dir || "", spellcheck: "false" }), nas_date_folder: chk("nas_date_folder") };
+  for (const [k, el] of Object.entries(f)) tk(el, "cfg:" + k);   // 말풍선 = 그 설정의 설명
   const save = async () => {
     const patch = {};
     if (await putSettings(condPatch())) closeDialog();

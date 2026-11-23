@@ -13,12 +13,12 @@
     <div class="brand">VO₂ 자동 측정 프로그램</div>
     <span class="brand-sep"></span>
     <nav id="tabs">
-      <button class="tab on" type="button" data-tab="prep">초기 설정</button>
-      <button class="tab" type="button" data-tab="measure">자동 측정</button>
-      <button class="tab" type="button" data-tab="results">측정 결과</button>
-      <button class="tab" type="button" data-tab="manual">수동 제어</button>
+      <button class="tab on" type="button" data-tab="prep" data-tipk="tab.prep">초기 설정</button>
+      <button class="tab" type="button" data-tab="measure" data-tipk="tab.measure">자동 측정</button>
+      <button class="tab" type="button" data-tab="results" data-tipk="tab.results">측정 결과</button>
+      <button class="tab" type="button" data-tab="manual" data-tipk="tab.manual">수동 제어</button>
     </nav>
-    <button id="estop" type="button">비상정지<small>Esc</small></button>
+    <button id="estop" type="button" data-tipk="estop">비상정지<small>Esc</small></button>
   </header>
   <div id="estop-band" class="hidden">비상정지 중 · 이동 · 릴레이 · 측정 불가</div>
 
@@ -38,6 +38,7 @@
   <div id="tip" class="hidden"></div>
 </div>
 <script src="/ui/core.js"></script>
+<script src="/ui/tips.js"></script>
 <script src="/ui/zoom.js"></script>
 <script src="/ui/jog.js"></script>
 <script src="/ui/graph.js"></script>

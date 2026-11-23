@@ -98,6 +98,19 @@ def test_every_setting_has_a_description_and_hint(make_ctrl):
         rows = {r["key"]: r for r in c.get("/api/settings").json()}
     assert rows["x_max_mm"]["desc"].startswith("X 축") and rows["x_max_mm"]["hint"] == "단위 mm · 기본값 247.6 · 범위 1~400"
     assert rows["auto_connect"]["hint"] == "기본값 켬" and rows["run_cooler_mode"]["hint"] == "기본값 샘플 아래 구역"
+    assert rows["cooler_grid"]["step"] == "초기 설정 7 에서 변경" and rows["x_max_mm"]["step"] == ""
+
+
+def test_common_settings_are_real_items():
+    """전체 설정 "자주 쓰는 설정"(Item.common): 실제 항목이고 설명이 있고, 장비를 맞출 때 한 번 정하는 값(장비 값 · 실장비 확인)은 넣지 않는다."""
+    common = [i for i in config_mod.ITEMS if i.common]
+    assert len(common) >= 10
+    keys = {i.key for i in config_mod.ITEMS}
+    for it in common:
+        assert it.key in keys and config_mod.BY_KEY[it.key] is it and it.desc.strip(), it.key
+        assert it.key not in config_mod.DEVICE_KEYS and not it.verify, "장비 값 · 실장비 확인 항목은 자주 쓰는 설정이 아님: %s" % it.key
+    for k in ("batch_name", "meter_volt", "run_start_c", "run_heater_off_c", "run_cool_end_c", "run_repeat", "run_interval_s", "nas_dir"):
+        assert config_mod.BY_KEY[k].common, k
     assert rows["contact_z_mm"]["hint"] == "단위 mm · 기본값 없음 · 범위 0~100"
     assert [k for k, r in rows.items() if r["folder"]] == ["data_dir", "nas_dir"], "폴더 항목에만 [찾아보기]"
 

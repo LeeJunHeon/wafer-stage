@@ -25,7 +25,7 @@ const prep = { step: 0, pages: [], items: [] };
 /* 버튼 + 못 누르는 이유 한 줄 */
 function gate(text, fn, cls) {
   const b = btn(text, fn, cls), w = h("span", { class: "why" });
-  return { b, w, set(reason) { b.disabled = !!reason; w.textContent = reason || ""; } };
+  return { b, w, set(reason) { b.disabled = !!reason; b._why = reason || ""; w.textContent = reason || ""; } };      // 꺼진 까닭은 말풍선에도
 }
 /* 누르면 끝날 때까지 잠깐 못 누르게(두 번 눌림 방지) */
 function busyBtn(text, fn, cls) {
@@ -82,7 +82,7 @@ function gotoPrep(i) { setTab("prep"); setStep(i); }
    여는 것은 [연결] 과 시작 때의 자동 연결뿐이다. */
 function buildStep1() {
   const rows = DEVS.map((d) => {
-    const sel = h("select", { class: "addr", onchange: () => { sel.dataset.pick = sel.value; } });      // 사람이 고른 값(연결될 때까지 기억)
+    const sel = tk(h("select", { class: "addr", onchange: () => { sel.dataset.pick = sel.value; } }), "prep.addr");      // 사람이 고른 값(연결될 때까지 기억)
     const b = btn("연결", async () => {
       b.disabled = true;
       const on = S.devices[d.key].state === "연결";
@@ -94,7 +94,7 @@ function buildStep1() {
     prep[d.key] = { sel, btn: b, stt, resp, sig: "" };
     return h("div", { class: "devrow" }, h("div", { class: "name", text: d.name }), sel, b, h("div", {}, stt, resp));
   });
-  const auto = h("input", { type: "checkbox", onchange: () => putSettings({ auto_connect: auto.checked }) });
+  const auto = tk(h("input", { type: "checkbox", onchange: () => putSettings({ auto_connect: auto.checked }) }), "cfg:auto_connect");
   prep.auto = auto;
   prep.refresh = btn("새로고침", () => refreshDevices(false));
   prep.listNote = h("div", { class: "why" });
@@ -145,6 +145,7 @@ function buildStep2() {
   const origin = (axis, mode) => () => (mode === "end" ? apiMove : api)("set_origin", { axis, mode });     // 끝단 접촉은 확인 창 먼저
   pg.here = [gate("X 등록", origin("x", "here")), gate("Y 등록", origin("y", "here")), gate("Z 등록", origin("z", "here")), gate("전체 등록", origin("all", "here"))];
   pg.end = [gate("X", origin("x", "end")), gate("Y", origin("y", "end")), gate("Z", origin("z", "end"))];
+  pg.end.forEach((g) => tk(g.b, "origin.end"));
   pg.whyHere = h("div", { class: "why" }); pg.whyEnd = h("div", { class: "why" });
   pg.endDesc = h("div", { class: "small" });                     // 끝단 접촉 원점이 하는 일(거리는 서버가 준 실제 값 - state.hw)
   pg.mem = h("div", { class: "small" });                         // 연결 때 보드가 알려 준 위치 기억(배너의 EEPROM 줄)
@@ -258,6 +259,7 @@ function buildStep3() {
   pg.fminus = busyGate("−", () => api("focus_nudge", { d: -1 }));
   pg.fplus = busyGate("+", () => api("focus_nudge", { d: 1 }));
   pg.fapply = busyGate("적용", async () => { const r = await api("focus_apply"); if (r.ok && r.result.note) toast(r.result.note); });
+  tk(pg.fapply.b, "focus.apply");
   pg.el = h("div", { class: "panel prep-panel photo" }, h("h3", { text: "3 · 카메라 · 판 영역" }),
     photoSplit(pg.pb, h("div", {},
       h("div", { class: "grp" }, h("h4", { text: "촬영 위치" }),
@@ -492,7 +494,7 @@ function buildStep5() {
   pg.extra = h("div", { class: "exlist" });
   /* 지우는 버튼 둘: 확인 창 뒤 실행(Enter · Space 로 눌리지 않게 noEnter). [좌표 보정 초기화] = 꼭짓점 칸 · [보정 점 모두 지우기] = 보정 점 칸 */
   const askErase = (title, text, okText, cmd) => openDialog(title, h("div", { text }),
-    [noEnter(btn("취소", closeDialog)), noEnter(btn(okText, () => { closeDialog(); api(cmd); }, "on"))]);
+    [noEnter(btn("취소", closeDialog)), noEnter(tk(btn(okText, () => { closeDialog(); api(cmd); }, "on"), cmd === "coord_clear" ? "초기화" : "coord.clearExOk"))]);
   pg.clear = btn("좌표 보정 초기화", () => {
     const n = ((P().coords || {}).extra || []).length;
     askErase("좌표 보정 초기화?", "꼭짓점 4개 · 보정 점 " + n + "개 · 헤드 마커 삭제 · 되돌릴 수 없음", "초기화", "coord_clear");
@@ -554,7 +556,7 @@ function buildStep5() {
       pg.exSig = sig;
       setKids(pg.extra, ...(co.extra.length ? co.extra.map((x, i) => h("div", { class: "row" },
         h("span", { class: "grow", text: (i + 1) + ". X " + f1(x.xy[0]) + " Y " + f1(x.xy[1]) + " · 보정 " + (x.err == null ? "—" : x.err.toFixed(2) + " mm") + " · " + fmtWhen(x.t) }),
-        btn("지우기", () => api("coord_remove", { index: i }), "sm"))) : [small("없음")]));
+        tk(btn("지우기", () => api("coord_remove", { index: i }), "sm"), "coord.remove"))) : [small("없음")]));
     }
     pg.clear.disabled = running() || !Object.keys(co.stage).length;
     pg.clearEx.disabled = running() || !(co.extra || []).length;
@@ -640,7 +642,7 @@ function buildStep7() {
   pg.cells = [];
   pg.gridEl = h("div", { class: "cgrid" });
   for (let i = 0; i < 9; i++) {
-    const b = btn("", () => put(i), "ccell");
+    const b = tk(btn("", () => put(i), "ccell"), "cooler.cell");
     pg.cells.push(b); pg.gridEl.append(b);
   }
   pg.relBtns = {};
@@ -650,7 +652,7 @@ function buildStep7() {
   pg.note = h("div", {});
   pg.why = h("div", { class: "why" });
   pg.cellWhy = h("div", { class: "why" });
-  pg.off = btn("전체 끄기", () => api("cooler_only", { n: 0 }));
+  pg.off = tk(btn("전체 끄기", () => api("cooler_only", { n: 0 })), "cooler.off");
   pg.title = h("h4", {});
   pg.side = { top: h("div", { class: "cside top" }), bottom: h("div", { class: "cside bottom" }), left: h("div", { class: "cside left" }), right: h("div", { class: "cside right" }) };
   pg.el = h("div", { class: "panel prep-panel" }, h("h3", { text: "7 · 쿨러 배치" }),
@@ -685,10 +687,10 @@ function buildStep7() {
       pg.relSig = rs;
       pg.relBtns = {};
       setKids(pg.relBox, ...coolers().map((n) => {
-        const b = btn("R" + n, () => api("cooler_only", { n: S.relays[n - 1] ? 0 : n }));
+        const b = tk(btn("R" + n, () => api("cooler_only", { n: S.relays[n - 1] ? 0 : n })), "cooler.try");
         pg.relBtns[n] = b; return b;
       }));
-      pg.pickBtns = [...coolers().map((n) => ({ v: n, b: btn("R" + n, () => choose(n)) })), { v: null, b: btn("비우기", () => choose(null)) }];
+      pg.pickBtns = [...coolers().map((n) => ({ v: n, b: tk(btn("R" + n, () => choose(n)), "cooler.pick") })), { v: null, b: btn("비우기", () => choose(null)) }];
       setKids(pg.pickBox, ...pg.pickBtns.map((x) => x.b));
       if (pg.pick != null && coolers().indexOf(pg.pick) < 0) pg.pick = undefined;
     }

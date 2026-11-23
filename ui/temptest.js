@@ -44,7 +44,7 @@ function ttCoolers(list) { return list && list.length ? list.map((n) => "R" + n)
 function openTempTest() {
   tt.mode = h("select", { onchange: () => putSettings({ run_heat_mode: tt.mode.value }) },
     h("option", { value: "ramp", text: "가열 속도 제어" }), h("option", { value: "full", text: "계속 가열" }));
-  const numIn = (key, step) => h("input", { type: "number", step, class: "num", onchange: (e) => { const v = parseFloat(e.target.value); if (isFinite(v)) putSettings({ [key]: v }); } });
+  const numIn = (key, step) => tk(h("input", { type: "number", step, class: "num", onchange: (e) => { const v = parseFloat(e.target.value); if (isFinite(v)) putSettings({ [key]: v }); } }), "cfg:" + key);
   tt.start = numIn("run_start_c", "1"); tt.off = numIn("run_heater_off_c", "1"); tt.end = numIn("run_cool_end_c", "1");
   tt.rateBy = h("select", { onchange: () => putSettings({ run_rate_by: tt.rateBy.value }) },
     h("option", { value: "step", text: "점 간격" }), h("option", { value: "time", text: "걸리는 시간" }));
@@ -54,6 +54,7 @@ function openTempTest() {
     h("option", { value: "ramp", text: "냉각 속도 제어" }), h("option", { value: "free", text: "자연 냉각" }));
   tt.csep = h("input", { type: "checkbox", onchange: () => putSettings({ cool_rate_separate: tt.csep.checked }) });
   tt.crate = h("input", { type: "number", step: "0.1", class: "num", onchange: () => { const v = parseFloat(tt.crate.value); if (isFinite(v)) putSettings({ run_cool_rate_c_min: v }); } });
+  tk(tt.mode, "cfg:run_heat_mode"); tk(tt.rateBy, "cfg:run_rate_by"); tk(tt.cmode, "cfg:run_cool_mode"); tk(tt.csep, "cfg:cool_rate_separate"); tk(tt.crate, "cfg:run_cool_rate_c_min");
   tt.expect = h("div", { class: "small" });
   tt.condView = h("div", { class: "tt-cond" });
   tt.condBtn = btn("조건 고치기", () => { tt.edit = !tt.edit; ttBuildCond(); });
@@ -98,8 +99,8 @@ function openTempTest() {
   tt.phaseBtn = btn("위상 찾기", () => api("temptest_start", { mode: "phase" }));
   tt.trimBtn = btn("박자 보정", () => api("temptest_start", { mode: "trim" }));
   tt.maxBtn = btn("최대 속도 재기", () => api("temptest_start", { mode: "max" }));
-  tt.stopBtn = btn("정지", () => api("temptest_stop"));
-  tt.folderBtn = btn("폴더 열기", () => api("temptest_open_folder"));
+  tt.stopBtn = tk(btn("정지", () => api("temptest_stop")), "tt.stop");
+  tt.folderBtn = tk(btn("폴더 열기", () => api("temptest_open_folder")), "tt.folder");
   tt.edit = false;
   tt.open = true;
   openDialog("온도 시험", h("div", { class: "tt2" }, main, side),
@@ -128,6 +129,7 @@ function ttBuildCond() {
     else if (kind === "str") el = h("input", { type: "text", class: "mono", value: c[k] || "" });
     else el = h("input", { type: "number", step: "any", value: c[k] });
     inputs[k] = [el, kind];
+    tk(el, "cfg:" + k);
     return [small(label), kind === "bool" || kind === "ints" || kind === "str" ? el : h("span", { class: "row" }, el, small(kind))];
   });
   const save = async () => {
