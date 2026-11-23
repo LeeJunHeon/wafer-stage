@@ -2220,7 +2220,7 @@ COMMANDS = {
     "contact_find": "contact_find", "contact_save": "contact_save", "contact_save_here": "contact_save_here", "contact_lower": "contact_lower",
     # 초기 설정 단계 · 사진 · 좌표 · 샘플(app/prep.py)
     "photo_head_set": "prep.photo_head_set", "marker_check": "prep.marker_check", "photo_take": "prep.photo_take", "plate_set": "prep.plate_set",
-    "empty_take": "prep.empty_take", "coord_set": "prep.coord_set", "coord_goto_d": "prep.coord_goto_d", "coord_clear": "prep.coord_clear",
+    "empty_take": "prep.empty_take", "coord_set": "prep.coord_set", "coord_goto_d": "prep.coord_goto_d", "coord_clear": "prep.coord_clear", "coord_extra_clear": "prep.coord_extra_clear",
     "marker_learn": "prep.marker_learn", "plate_goto": "prep.plate_goto", "coord_add_at": "prep.coord_add_at", "coord_remove": "prep.coord_remove",
     "samples_find": "prep.samples_find", "sample_use": "prep.sample_use", "sample_goto": "prep.sample_goto",
     "tour_start": "tour.start", "tour_stop": "tour.stop",

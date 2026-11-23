@@ -10,6 +10,7 @@
   contact  : 접촉 높이를 저장한 때 · 그때 잰 저항(높이 값은 settings contact_z_mm)
 
 변환(사진 → 판 mm, 사진 → 스테이지 X · Y)은 여기 값에서 그때그때 만든다(따로 저장하지 않는다).
+사진 → 스테이지 = 꼭짓점 4개 바탕(corner_h) + 보정 점 가중 보정(warp · to_stage · from_stage - geometry.warp_shift). 보정 점을 우선한다(찍은 자리는 정확히 그 자리).
 """
 
 import json
@@ -118,6 +119,14 @@ class Calib:
                 del ex[int(index)]
         self.save()
 
+    def clear_extra(self):
+        """보정 점만 모두 지운다(꼭짓점 · 헤드 마커는 그대로). 반환: 지운 수."""
+        with self._lock:
+            n = len(self.d["coords"]["extra"])
+            self.d["coords"]["extra"] = []
+        self.save()
+        return n
+
     def focus_changed(self):
         """초점 값이 바뀌었다: 사진 픽셀로 기억한 값은 배율 · 위치가 달라져 못 쓴다. 빈 판 사진 · 헤드 마커 · 보정 점은 버리고,
         판 꼭짓점은 남기되 "초점 바뀜 · 다시 확정 필요"(plate.stale - plate_set 으로 다시 확정하면 풀린다). 반환: 버린 보정 점 수."""
@@ -178,31 +187,49 @@ class Calib:
             return None
         return geo.photo_to_plate(p["corners"], size_mm)
 
-    def coord_pairs(self):
-        """(사진 픽셀, 스테이지 X · Y) 짝: 꼭짓점 넷(둘 다 있을 때) + 보정 점."""
+    def corner_h(self):
+        """사진 → 스테이지 X · Y 바탕 호모그래피: 꼭짓점 4개만(보정 점은 넣지 않는다 - 보정 점은 warp 로 더한다). 4개가 없으면 None.
+        꼭짓점은 대략의 방향 · 크기만 잡는다(스테이지가 0 아래로 못 가 꼭짓점에 못 미친 채 등록되는 자리가 있다 - 2026-11-23)."""
         p = self.d.get("plate")
         st = self.d["coords"]["stage"]
-        src, dst = [], []
-        if p:
-            for i, n in enumerate(CORNERS):
-                if n in st:
-                    src.append(p["corners"][i])
-                    dst.append(st[n])
-        if len(src) == 4:
-            for e in self.d["coords"]["extra"]:
-                src.append(e["px"])
-                dst.append(e["xy"])
-        return src, dst
-
-    def stage_h(self):
-        """사진 → 스테이지 X · Y. 꼭짓점 4점이 모여야 만든다(보정 점이 있으면 전체 점의 최소제곱)."""
-        src, dst = self.coord_pairs()
-        if len(src) < 4:
+        if not p or any(n not in st for n in CORNERS):
             return None
-        return geo.homography(src, dst)
+        return geo.homography([p["corners"][i] for i in range(4)], [st[n] for n in CORNERS])
+
+    def warp(self, Hc=None):
+        """보정 점의 바탕 자리 q_i = Hc(px_i) · 보정량 r_i = xy_i − q_i: {"pts": [q_i], "res": [r_i]} (보정 점 · 바탕이 없으면 빈 목록)."""
+        Hc = self.corner_h() if Hc is None else Hc
+        ex = self.d["coords"]["extra"]
+        if Hc is None or not ex:
+            return {"pts": [], "res": []}
+        q = geo.apply(Hc, [e["px"] for e in ex])
+        return {"pts": [[float(a), float(b)] for a, b in q],
+                "res": [[float(e["xy"][0]) - float(a), float(e["xy"][1]) - float(b)] for e, (a, b) in zip(ex, q)]}
+
+    def to_stage(self, px):
+        """사진 픽셀 → 스테이지 X · Y: q = Hc(px) · xy = q + c(q)(보정 점 가중 보정 - 보정 점 자리는 정확히 그 xy). 변환이 없으면 None."""
+        Hc = self.corner_h()
+        if Hc is None:
+            return None
+        w = self.warp(Hc)
+        q = geo.apply1(Hc, float(px[0]), float(px[1]))
+        c = geo.warp_shift(q, w["pts"], w["res"])
+        return q[0] + c[0], q[1] + c[1]
+
+    def from_stage(self, xy):
+        """스테이지 X · Y → 사진 픽셀(q = xy − c(q) 되풀이 → Hc⁻¹). 변환이 없으면 None."""
+        Hc = self.corner_h()
+        if Hc is None:
+            return None
+        w = self.warp(Hc)
+        q = geo.warp_inverse(xy, w["pts"], w["res"])
+        try:
+            return geo.apply1(np.linalg.inv(Hc), *q)
+        except np.linalg.LinAlgError:
+            return None
 
     def coords_ready(self):
-        return self.stage_h() is not None
+        return self.corner_h() is not None
 
     def missing_corner(self):
         """꼭짓점 셋이 있고 하나가 없으면 그 이름(저장 기준), 아니면 None."""
@@ -222,36 +249,30 @@ class Calib:
         return [round(float(g[0]), 2), round(float(g[1]), 2)]
 
     def extra_errors(self):
-        """보정 점마다 맞춘 변환과의 차이(mm)."""
-        H = self.stage_h()
-        out = []
-        for e in self.d["coords"]["extra"]:
-            if H is None:
-                out.append(None)
-            else:
-                x, y = geo.apply1(H, *e["px"])
-                out.append(round(float(np.hypot(x - e["xy"][0], y - e["xy"][1])), 2))
-        return out
+        """보정 점마다 보정량 크기 |r_i|(mm) - 꼭짓점 바탕에서 그 점까지 옮긴 거리(변환이 그 점을 정확히 지나므로 남은 오차는 늘 0)."""
+        w = self.warp()
+        if not w["res"]:
+            return [None] * len(self.d["coords"]["extra"])
+        return [round(float(np.hypot(r[0], r[1])), 2) for r in w["res"]]
 
-    def plate_to_stage(self, size_mm):
-        """판 mm → 스테이지 X · Y 호모그래피(사진을 거쳐서). 없으면 None."""
-        Hp, Hs = self.plate_h(size_mm), self.stage_h()
-        if Hp is None or Hs is None:
+    def plate_to_stage(self, p, size_mm):
+        """판 mm 한 점 → 스테이지 X · Y(사진을 거쳐서 · to_stage). 없으면 None."""
+        Hp = self.plate_h(size_mm)
+        if Hp is None:
             return None
         try:
-            return Hs @ np.linalg.inv(Hp)
+            px = geo.apply1(np.linalg.inv(Hp), float(p[0]), float(p[1]))
         except np.linalg.LinAlgError:
             return None
+        return self.to_stage(px)
 
-    def stage_to_plate(self, size_mm):
-        """스테이지 X · Y → 판 mm 호모그래피(화면이 지금 핀 자리를 판 사진 위에 그릴 때 쓴다). 없으면 None."""
-        T = self.plate_to_stage(size_mm)
-        if T is None:
+    def stage_to_plate(self, xy, size_mm):
+        """스테이지 X · Y 한 점 → 판 mm(from_stage → 사진 → 판). 없으면 None."""
+        Hp = self.plate_h(size_mm)
+        if Hp is None:
             return None
-        try:
-            return np.linalg.inv(T)
-        except np.linalg.LinAlgError:
-            return None
+        px = self.from_stage(xy)
+        return None if px is None else geo.apply1(Hp, *px)
 
     def head_offset_mm(self, marker_px):
         """지금 본 헤드 마커 픽셀이 기억한 자리와 얼마나 다른가(mm). 마커 기억이 없으면 None."""

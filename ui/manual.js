@@ -196,10 +196,10 @@ function fillHere(pos) {
   const put = (el, v) => { el.value = v == null ? "" : Number(v).toFixed(2); };
   put(man.gx, p.x); put(man.gy, p.y); put(man.gz, p.z);
 }
-/* 핀 긴 쪽 방향(화면 판 좌표 단위 벡터): 스테이지 긴 쪽 축(pin_long_axis)을 그 자리(스테이지 X · Y)에서 coords.to_view 로 옮긴 방향. 변환이 없으면 null */
+/* 핀 긴 쪽 방향(화면 판 좌표 단위 벡터): 스테이지 긴 쪽 축(pin_long_axis)을 그 자리(스테이지 X · Y)에서 stageToView 로 옮긴 방향. 변환이 없으면 null */
 function pinDir(sx, sy) {
-  const H = ((S.prep || {}).coords || {}).to_view, ax = S.cfg.pin_long_axis === "y";
-  const a = applyH(H, ax ? sx : sx - 1, ax ? sy - 1 : sy), b = applyH(H, ax ? sx : sx + 1, ax ? sy + 1 : sy);
+  const ax = S.cfg.pin_long_axis === "y";
+  const a = stageToView(ax ? sx : sx - 1, ax ? sy - 1 : sy), b = stageToView(ax ? sx : sx + 1, ax ? sy + 1 : sy);
   if (!a || !b) return null;
   const dx = b[0] - a[0], dy = b[1] - a[1], n = Math.hypot(dx, dy);
   return n > 1e-9 ? [dx / n, dy / n] : null;
@@ -211,7 +211,7 @@ function pinRect(c, d) {
 }
 /* 판 사진 덧그림(화면 판 mm 좌표 → 그림 좌표 u 배): 샘플 윤곽 · 이름 · 핀 놓을 자리(가는 사각형) · 누른 위치 · 핀 십자 + 사각형.
    작은 사진(u = 1, viewBox 가 mm) · [크게 보기](u = px/mm)가 같이 쓴다. o.add = 보정 점 추가 상태(선택 위치 원 대신 누른 자리 o.pick = 원 + 점선 핀 사각형).
-   좌표는 서버가 화면 방향(문 기준)으로 준 값(voutline · vplate · vpin · last_click.vplate · coords.to_view)만 쓴다 */
+   좌표는 서버가 화면 방향(문 기준)으로 준 값(voutline · vplate · vpin · last_click.vplate · coords.to_view + warp = stageToView)만 쓴다 */
 function plateOverlayKids(k, u, o) {
   o = o || {};
   const sz = S.cfg.plate_size_mm, kids = [], pr = S.prep || {};
@@ -242,8 +242,7 @@ function plateOverlayKids(k, u, o) {
 }
 /* 지금 핀 자리(화면 판 mm · 좌표 변환) - 없으면 null */
 function pinView() {
-  const pr = S.prep || {};
-  return S.pos && S.pos.x != null && S.pos.y != null ? applyH(pr.coords && pr.coords.to_view, S.pos.x, S.pos.y) : null;
+  return S.pos && S.pos.x != null && S.pos.y != null ? stageToView(S.pos.x, S.pos.y) : null;
 }
 /* [크게 보기]: 판 사진(보정한 사진 - 원본 해상도 그대로)을 확대 · 이동 · 돋보기로 보고, 누른 자리로 클릭 이동(꼭짓점 · 확정 없음).
    옆 칸 두 상태: 보통(클릭 이동 · [보정 점 추가] · 보정 점 n개 · [마지막 지우기]) / 보정 점 추가(누른 자리 = 핀이 실제로 있는 자리 · 스테이지 안 움직임 · [추가] [취소]) */
@@ -279,8 +278,7 @@ function openPlateBig(addMode) {
       const r = await api("coord_add_at", { x: st.pick[0], y: st.pick[1], view: true });
       if (r.ok) {
         const q = r.result;
-        toast((q.replaced ? "보정 점 교체 · " : "보정 점 추가 · ") + q.n + "개 · 계산 위치와 " + q.moved.toFixed(2) + " mm"
-          + (q.left == null ? "" : " → " + (q.replaced ? "교체" : "추가") + " 뒤 " + q.left.toFixed(2) + " mm"));
+        toast((q.replaced ? "보정 점 교체 · " : "보정 점 추가 · ") + q.n + "개 · 계산 위치와 " + q.moved.toFixed(2) + " mm 보정");
         st.add = false; st.pick = null;
       }
     } finally { st.busy = false; render(); }

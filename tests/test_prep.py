@@ -50,10 +50,8 @@ def test_four_corners_make_transform(make_ctrl):
     assert v["coords"]["ready"] and v["coords"]["marker"] is not None
     q = v["coords"]["quality"]
     assert q["max_side_err"] < 0.1 and q["max_angle_err"] < 0.1 and q["warn"] is False
-    T = ctrl.calib.plate_to_stage(w.size_mm)
-    from app import geometry as geo
     for i, s in enumerate(w.samples):                                # 판 위 어느 점이든 스테이지 X · Y 로 0.3 mm 안
-        x, y = geo.apply1(T, s["px"], s["py"])
+        x, y = ctrl.calib.plate_to_stage((s["px"], s["py"]), w.size_mm)
         assert _dist((x, y), w.sample_stage(i)) < 0.3
     steps = ctrl.prep.steps()
     assert steps[2]["done"] and steps[4]["done"] and "4점" in steps[4]["text"]
@@ -98,11 +96,15 @@ def test_correction_point_improves_fit(ready_ctrl):
     r = ctrl.run_command("plate_goto", {"x": s["plate"][0] + 2.0, "y": s["plate"][1] - 1.0})
     assert r["sample"] == s["name"], "샘플 근처를 누르면 그 샘플의 핀 놓을 자리로 붙는다"
     assert ctrl.state.get("pos", "z") == 0.0
-    ctrl.goto(*w.sample_stage(_nearest(w, s["plate"])))              # 사람이 조그로 맞춘 자리(샘플 가운데)
+    true0 = w.sample_stage(_nearest(w, s["plate"]))
+    ctrl.goto(*true0)                                                # 사람이 조그로 맞춘 자리(샘플 가운데)
     r = ctrl.run_command("coord_add_at", {"x": s["plate"][0], "y": s["plate"][1]})     # 사진에서 핀이 있는 자리(샘플 가운데)를 누름
-    assert r["n"] == 1 and r["replaced"] is False
+    assert r["n"] == 1 and r["replaced"] is False and "left" not in r
     ex = ctrl.prep.view()["coords"]["extra"]
-    assert len(ex) == 1 and ex[0]["err"] is not None
+    assert len(ex) == 1 and ex[0]["err"] == pytest.approx(r["moved"], abs=0.02), "보정 점의 err = 보정량(꼭짓점 바탕에서 옮긴 거리)"
+    e0 = ctrl.calib.d["coords"]["extra"][0]
+    assert _dist(ctrl.calib.to_stage(e0["px"]), e0["xy"]) < 0.01, "보정 점 자리(그 사진 픽셀)는 정확히 그 핀 X · Y 를 지난다"
+    assert _dist(e0["xy"], ctrl.prep._xy()) < 0.01
     one = errors()
     assert one[0] < before[0], "보정 점을 더하면 그 샘플 자리가 맞아진다 (%.2f → %.2f mm)" % (before[0], one[0])
     for k in (2, 4, 6, 8):                                           # 쓰면서 조금씩: 점이 늘수록 전체가 맞아 간다(전체 점의 최소제곱)
@@ -132,12 +134,13 @@ def test_sample_xy_comes_from_pin_place(ready_ctrl):
     from app import geometry as geo
     ctrl = ready_ctrl()
     ctrl.run_command("samples_find")
-    T = ctrl.calib.plate_to_stage(ctrl.prep._size_mm())
-    assert T is not None and ctrl.prep.samples
+    S = ctrl.prep._size_mm()
+    assert ctrl.calib.coords_ready() and ctrl.prep.samples
     for s in ctrl.prep.samples:
         assert len(s["pin"]) == 2
-        sx, sy = geo.apply1(T, *s["pin"])
+        sx, sy = ctrl.calib.plate_to_stage(s["pin"], S)
         assert _dist(s["xy"], (sx, sy)) < 0.02, "xy 는 pin 에서 나온다 (%s)" % s["name"]
+    assert geo.WARP_POW == 2.0
     shown = ctrl.state.get("samples")
     assert all("vpin" in q for q in shown)
     s = next(q for q in ctrl.prep.samples if q["xy"] is not None)
@@ -350,27 +353,67 @@ def test_contact_needs_k2450(ready_ctrl):
     assert not [c for c in ctrl.fake_fw.log[n:] if c.startswith("gz ")], "저항계가 없으면 내리지 않는다"
 
 
+def _stage_to_view(ctrl, x, y):
+    """화면(core.js stageToView)과 같은 식: 바탕 자리 q = warp_inverse(xy) → coords.to_view."""
+    from app import geometry as geo
+    co = ctrl.state.get("prep", "coords")
+    H, wp = co["to_view"], co["warp"]
+    q = geo.warp_inverse((x, y), wp["pts"], wp["res"], wp["pow"], wp["iters"])
+    return geo.apply1(H, *q)
+
+
 def test_pin_position_can_be_drawn_on_the_plate_photo(ready_ctrl):
-    """수동 제어 탭 "보정" 보기: 화면은 state.prep.coords.to_plate(스테이지 X · Y → 판 mm)로 지금 핀 자리를 판 사진 위에 그린다.
-    샘플의 스테이지 자리를 이 변환으로 옮기면 그 샘플의 판 자리가 나와야 한다. 좌표를 지우면 변환도 없다."""
+    """수동 제어 탭 판 사진: 화면은 coords.to_view(바탕 자리 → 화면 판 mm) + coords.warp(보정 점)로 지금 핀 자리를 그린다(stageToView).
+    샘플의 스테이지 자리(xy = pin)를 옮기면 그 샘플의 vpin 이 나와야 한다 - 보정 점이 있어도. 좌표를 지우면 변환도 없다."""
     ctrl = ready_ctrl()
     ctrl.run_command("samples_find")
-    H = ctrl.state.get("prep", "coords", "to_plate")
-    assert H is not None and len(H) == 3 and all(len(r) == 3 for r in H)
-
-    def to_plate(x, y):
-        w = H[2][0] * x + H[2][1] * y + H[2][2]
-        return (H[0][0] * x + H[0][1] * y + H[0][2]) / w, (H[1][0] * x + H[1][1] * y + H[1][2]) / w
-
+    co = ctrl.state.get("prep", "coords")
+    assert co["to_view"] is not None and len(co["to_view"]) == 3 and "to_plate" not in co
+    assert co["warp"]["pts"] == [] and co["warp"]["res"] == []
+    shown = {q["name"]: q for q in ctrl.state.get("samples")}
     assert len(ctrl.prep.samples) >= 9
     for s in ctrl.prep.samples:
-        px, py = to_plate(*s["xy"])
-        assert abs(px - s["plate"][0]) < 0.05 and abs(py - s["plate"][1]) < 0.05, (s["plate"], (px, py))
-    # 판 꼭짓점 A 에 댄 자리는 판 (0, 0)
-    a = ctrl.state.get("prep", "coords", "stage")["A"]
-    assert max(abs(v) for v in to_plate(*a)) < 0.5
+        u, v = _stage_to_view(ctrl, *s["xy"])
+        vp = shown[s["name"]]["vpin"]
+        assert abs(u - vp[0]) < 0.05 and abs(v - vp[1]) < 0.05, (vp, (u, v))
+    a = ctrl.state.get("prep", "coords", "stage")["A"]                 # 판 꼭짓점 A 에 댄 자리 = 판 (0, 0)
+    va = ctrl.prep._vplate((0.0, 0.0))
+    assert _dist(_stage_to_view(ctrl, *a), va) < 0.5
+    s = ctrl.prep.samples[0]                                         # 보정 점이 있어도 화면 식이 서버와 같다
+    ctrl.goto(s["xy"][0] + 1.0, s["xy"][1] - 0.5)
+    ctrl.run_command("coord_add_at", {"x": s["pin"][0], "y": s["pin"][1]})
+    shown = {q["name"]: q for q in ctrl.state.get("samples")}
+    for q in ctrl.prep.samples:
+        u, v = _stage_to_view(ctrl, *q["xy"])
+        assert _dist((u, v), shown[q["name"]]["vpin"]) < 0.05
     ctrl.run_command("coord_clear")
-    assert ctrl.state.get("prep", "coords", "to_plate") is None
+    assert ctrl.state.get("prep", "coords", "to_view") is None
+
+
+def test_one_correction_point_shifts_whole_plate(ready_ctrl):
+    """보정 점 1개: 판 전체가 그 보정량 r_1 만큼 평행 이동(꼭짓점 자리도) · 사진 ↔ 스테이지 왕복 0.2 px 안 · [보정 점 모두 지우기] 는 꼭짓점을 남긴다."""
+    ctrl = ready_ctrl()
+    ctrl.run_command("samples_find")
+    s = ctrl.prep.samples[0]
+    cal = ctrl.calib
+    corners_px = cal.d["plate"]["corners"]
+    base = [cal.to_stage(p) for p in corners_px]
+    x, y = s["xy"]
+    ctrl.goto(x + 1.2, y - 0.8)                                      # 핀이 실제로 있는 자리가 계산보다 (1.2, −0.8) 옆
+    r = ctrl.run_command("coord_add_at", {"x": s["pin"][0], "y": s["pin"][1]})
+    assert r["moved"] == pytest.approx(math.hypot(1.2, 0.8), abs=0.05)
+    rr = cal.warp()["res"][0]
+    for b, p in zip(base, corners_px):
+        now = cal.to_stage(p)
+        assert abs(now[0] - b[0] - rr[0]) < 0.01 and abs(now[1] - b[1] - rr[1]) < 0.01, "꼭짓점 자리도 r_1 만큼 옮겨진다"
+    for p in corners_px + [cal.d["coords"]["extra"][0]["px"], [640.0, 480.0]]:
+        back = cal.from_stage(cal.to_stage(p))
+        assert _dist(back, p) < 0.2, "사진 → 스테이지 → 사진 왕복 (%s → %s)" % (p, back)
+    stage = dict(cal.d["coords"]["stage"])
+    ctrl.run_command("coord_extra_clear")
+    assert cal.d["coords"]["extra"] == [] and cal.d["coords"]["stage"] == stage and cal.coords_ready(), "보정 점만 지우고 꼭짓점은 남긴다"
+    for b, p in zip(base, corners_px):
+        assert _dist(cal.to_stage(p), b) < 1e-6, "보정 점이 없으면 꼭짓점 바탕 그대로"
 
 
 def test_region_gives_original_pixels_and_rejects_out_of_range(ready_ctrl):

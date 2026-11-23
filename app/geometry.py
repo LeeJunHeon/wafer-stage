@@ -5,6 +5,9 @@
   판       : mm. 꼭짓점 A = (0, 0), A→B 가 +x, A→D 가 +y (사진에서 왼쪽 위부터 시계 방향으로 A · B · C · D)
   스테이지 : 핀 가운데의 X · Y mm
 변환은 호모그래피(3×3). 점 4개면 정확히, 더 많으면 전체 점의 최소제곱으로 맞춘다.
+사진 → 스테이지는 꼭짓점 4개 호모그래피(바탕) + 보정 점의 보정량을 거리로 가중한 보정(warp_shift · warp_inverse - calib.to_stage · from_stage):
+  q = Hc(px) · xy = q + c(q) · c(q) = Σ w_i r_i ÷ Σ w_i · w_i = 1 ÷ max(|q − q_i|, 1e-6)^WARP_POW (q_i = Hc(보정 점 px) · r_i = 보정 점 xy − q_i).
+  보정 점 자리에서는 정확히 그 xy · 1개면 판 전체가 r_1 만큼 평행 이동 · c 는 r_i 의 가중 평균이라 가장 큰 보정량을 넘지 않는다.
 """
 
 import math
@@ -45,6 +48,34 @@ def apply(H, pts):
 def apply1(H, x, y):
     p = apply(H, [(x, y)])[0]
     return float(p[0]), float(p[1])
+
+
+WARP_POW = 2.0                                     # 보정 점 가중 = 거리^−WARP_POW
+WARP_ITERS = 12                                    # 스테이지 → 바탕 자리 되풀이 횟수
+
+
+def warp_shift(q, pts, res, pow=WARP_POW):
+    """바탕 자리 q(스테이지 mm)의 보정량 c(q) = 보정 점 보정량 res 의 거리 가중 평균(pts = 보정 점 바탕 자리). 보정 점이 없으면 (0, 0)."""
+    if not len(pts):
+        return 0.0, 0.0
+    P = np.asarray(pts, np.float64).reshape(-1, 2)
+    R = np.asarray(res, np.float64).reshape(-1, 2)
+    d = np.hypot(P[:, 0] - float(q[0]), P[:, 1] - float(q[1]))
+    w = 1.0 / np.maximum(d, 1e-6) ** float(pow)
+    c = (w[:, None] * R).sum(axis=0) / w.sum()
+    return float(c[0]), float(c[1])
+
+
+def warp_inverse(xy, pts, res, pow=WARP_POW, iters=WARP_ITERS):
+    """스테이지 xy → 바탕 자리 q(xy = q + c(q) 를 q = xy − c(q) 로 되풀이 · 시작 q = xy)."""
+    x, y = float(xy[0]), float(xy[1])
+    qx, qy = x, y
+    if not len(pts):
+        return qx, qy
+    for _ in range(int(iters)):
+        cx, cy = warp_shift((qx, qy), pts, res, pow)
+        qx, qy = x - cx, y - cy
+    return qx, qy
 
 
 def plate_corners_mm(size_mm):

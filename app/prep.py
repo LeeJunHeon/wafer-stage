@@ -713,12 +713,22 @@ class Prep:
         return self.c.goto(g[0], g[1])
 
     def coord_clear(self):
+        """[좌표 보정 초기화](확인 창 뒤): 꼭짓점 4개 · 보정 점 · 헤드 마커 모두 삭제."""
         self.c._no_run("좌표 보정")
         self.calib.clear_coords()
         self.clear_pos_check()
         self._refresh_samples()
         self.publish()
         return {}
+
+    def coord_extra_clear(self):
+        """[보정 점 모두 지우기](확인 창 뒤): 보정 점만 삭제 - 꼭짓점 · 헤드 마커는 그대로(변환은 꼭짓점 바탕으로 돌아간다)."""
+        self.c._no_run("보정 점 지우기")
+        n = self.calib.clear_extra()
+        self.c.logs.app("보정 점 모두 지움 · %d개" % n)
+        self._refresh_samples()
+        self.publish()
+        return {"n": 0, "removed": n}
 
     def _marker_pair(self):
         """지금 자리에서 새 프레임 두 장의 마커 위치. 두 장이 marker_pair_mm(판 배율로 px) 안에서 맞으면 평균. 안 맞으면 한 번 더 찍는다.
@@ -753,8 +763,8 @@ class Prep:
         return sum(sides) / 4.0 / self._size_mm()
 
     def _plate_dirs(self):
-        """판 기준 방향: 스테이지 X+ · Y+ 로 1 mm 갈 때 사진에서 움직이는 방향(판 꼭짓점 사진 픽셀 + 꼭짓점 스테이지 좌표). 좌표 보정이 없으면 None."""
-        H = self.calib.stage_h()
+        """판 기준 방향: 스테이지 X+ · Y+ 로 1 mm 갈 때 사진에서 움직이는 방향(판 꼭짓점 사진 픽셀 + 꼭짓점 스테이지 좌표 - 방향만 보므로 바탕 corner_h). 좌표 보정이 없으면 None."""
+        H = self.calib.corner_h()
         if H is None:
             return None
         st = self.calib.d["coords"]["stage"]
@@ -916,8 +926,8 @@ class Prep:
         """판 사진을 누른 자리(판 mm - view 면 화면 판 mm)로 간다(핀 맨 위로 올린 뒤). 샘플 가운데 근처(SNAP_MM)를 누르면 그 샘플의 핀 놓을 자리(pin)로 붙는다.
         lower = 샘플에 붙었을 때만 접촉 높이까지 내린다(go_and_lower). 샘플이 아닌 자리는 lower 여도 내리지 않는다."""
         self.c._no_run("클릭 이동")
-        Hp, Hs = self.calib.plate_h(self._size_mm()), self.calib.stage_h()
-        if Hp is None or Hs is None:
+        Hp = self.calib.plate_h(self._size_mm())
+        if Hp is None or not self.calib.coords_ready():
             raise Rejected("초기 설정 3 · 5 필요")
         px, py = self._from_vplate(x, y) if view else (float(x), float(y))
         snapped = None
@@ -930,7 +940,7 @@ class Prep:
             px, py = best[1].get("pin") or best[1]["plate"]
             snapped = best[1]["name"]
         photo_px = self._click_at(Hp, px, py, snapped)
-        sx, sy = geo.apply1(Hs, *photo_px)
+        sx, sy = self.calib.to_stage(photo_px)
         res = self.go_and_lower(sx, sy, bool(lower) and snapped is not None)
         return {"xy": [round(sx, 2), round(sy, 2)], "sample": snapped, "lowered": res is not None,
                 "pos": dict(self.c.state.get("pos"))}                # 화면이 좌표 이동 칸을 채운다
@@ -953,8 +963,8 @@ class Prep:
 
     def coord_add_at(self, x, y, view=False):
         """[보정 점 추가]([크게 보기] 창 "보정 점 추가" 상태): 사진에서 핀이 실제로 있는 자리(판 mm - view 면 화면 판 mm)를 눌러
-        (그 사진 픽셀, 지금 스테이지 X · Y)를 보정 점으로 더하고 변환을 전체 점으로 다시 맞춘다. last_click 은 쓰지도 바꾸지도 않는다.
-        누른 자리를 지금 변환으로 계산한 X · Y 와 핀이 coord_add_max_mm 보다 멀면 거절(잘못 누른 점이 좌표 전체를 틀지 않게).
+        (그 사진 픽셀, 지금 스테이지 X · Y)를 보정 점으로 더한다 - 변환(calib.to_stage)은 보정 점 자리를 정확히 지나고 둘레는 가까운 보정 점을 따라간다.
+        last_click 은 쓰지도 바꾸지도 않는다. 누른 자리를 지금 변환(보정 점까지 반영)으로 계산한 X · Y 와 핀이 coord_add_max_mm 보다 멀면 거절(잘못 누른 점이 둘레를 틀지 않게).
         기존 보정 점 중 판 mm 로 coord_same_mm 안인 것이 있으면 가장 가까운 그 점을 교체한다(같은 자리의 다른 값끼리 평균돼 보정이 덜 되지 않게)."""
         if not self.calib.coords_ready():
             raise Rejected("좌표 보정 필요 (초기 설정 5)")
@@ -962,12 +972,12 @@ class Prep:
         self.c._no_run("보정 점 더하기")
         if self.c.stage.moving:                                         # 핀 X · Y 가 멈춘 위치여야 짝이 맞는다
             raise Rejected("이동 중 · 멈춘 뒤 추가")
-        Hp, Hs = self.calib.plate_h(self._size_mm()), self.calib.stage_h()
-        if Hp is None or Hs is None:
+        Hp = self.calib.plate_h(self._size_mm())
+        if Hp is None:
             raise Rejected("좌표 보정 필요 (초기 설정 5)")
         px, py = self._from_vplate(x, y) if view else (float(x), float(y))
         photo_px = geo.apply1(np.linalg.inv(Hp), px, py)                # _click_at 과 같은 변환(판 mm → 사진 픽셀)
-        ex, ey = geo.apply1(Hs, *photo_px)
+        ex, ey = self.calib.to_stage(photo_px)
         cx, cy = self._xy()
         d = float(np.hypot(cx - ex, cy - ey))
         lim = float(self.cfg["coord_add_max_mm"])
@@ -983,17 +993,13 @@ class Prep:
                 near = (dq, i)
         self.calib.add_extra(photo_px, (cx, cy), replace=None if near is None else near[1])
         n = len(self.calib.d["coords"]["extra"])
-        k = n - 1 if near is None else near[1]                          # 추가 · 교체한 그 점
-        left = self.calib.extra_errors()[k]                             # 변환은 꼭짓점 + 보정 점 전체의 최소제곱 - 그 자리에 남은 차이
-        left = None if left is None else round(float(left), 2)
-        lt = "—" if left is None else "%.2f mm" % left
-        if near is None:
-            self.c.logs.app("보정 점 추가 · 계산 위치와 %.2f mm → 추가 뒤 %s · 핀 X %.3f · Y %.3f" % (d, lt, cx, cy))
+        if near is None:                                                # 추가 · 교체 뒤 그 자리는 정확히 핀 X · Y(보정 점 우선)
+            self.c.logs.app("보정 점 추가 · 계산 위치와 %.2f mm 보정 · 핀 X %.3f · Y %.3f" % (d, cx, cy))
         else:
-            self.c.logs.app("보정 점 교체 · %d번 · 계산 위치와 %.2f mm → 교체 뒤 %s · 핀 X %.3f · Y %.3f" % (k + 1, d, lt, cx, cy))
+            self.c.logs.app("보정 점 교체 · %d번 · 계산 위치와 %.2f mm 보정 · 핀 X %.3f · Y %.3f" % (near[1] + 1, d, cx, cy))
         self._refresh_samples()
         self.publish()
-        return {"n": n, "moved": round(d, 2), "replaced": near is not None, "left": left}
+        return {"n": n, "moved": round(d, 2), "replaced": near is not None}
 
     def coord_remove(self, index):
         self.c._no_run("보정 점 지우기")
@@ -1067,32 +1073,28 @@ class Prep:
         return [p["_s"] for p in find_mod.order_rows(proxy, long_mm)]
 
     def _refresh_samples(self, reset_use=False):
-        """샘플의 핀 놓을 자리(pin · 판 mm) · 스테이지 X · Y(= T(pin)) · "핀보다 작음"을 지금 보정 값으로 다시 계산한다.
-        핀 긴 쪽 방향은 가운데(plate) 기준으로 구한다. 쿨러 구역 판단은 plate(가운데) 그대로."""
-        T = self.calib.plate_to_stage(self._size_mm())
+        """샘플의 핀 놓을 자리(pin · 판 mm) · 스테이지 X · Y(= 판 mm → 사진 → calib.to_stage) · "핀보다 작음"을 지금 보정 값으로 다시 계산한다.
+        핀 긴 쪽 방향은 가운데(plate) 기준으로 구한다(그 자리 둘레 두 점을 calib.stage_to_plate 로 되돌림). 쿨러 구역 판단은 plate(가운데) 그대로."""
+        S = self._size_mm()
+        cal = self.calib
         cfg = self.cfg
         long_axis = 1 if cfg["pin_long_axis"] == "y" else 0
         for s in self.samples:
             cx, cy = s["plate"]
             long_dir = (0.0, 1.0) if long_axis == 1 else (1.0, 0.0)        # 좌표 맞추기 전에는 판 축 = 스테이지 축으로 본다
-            if T is not None:
-                sx, sy = geo.apply1(T, cx, cy)
-                try:
-                    Ti = np.linalg.inv(T)
-                    d = [0.0, 0.0]
-                    d[long_axis] = 5.0
-                    a = geo.apply(Ti, [(sx - d[0], sy - d[1]), (sx + d[0], sy + d[1])])   # 스테이지에서 핀 긴 쪽 방향이 판 좌표에서 어느 쪽인가
-                    long_dir = (float(a[1][0] - a[0][0]), float(a[1][1] - a[0][1]))
-                except np.linalg.LinAlgError:
-                    pass
+            c = cal.plate_to_stage((cx, cy), S)
+            if c is not None:
+                d = [0.0, 0.0]
+                d[long_axis] = 5.0
+                a = cal.stage_to_plate((c[0] - d[0], c[1] - d[1]), S)    # 스테이지에서 핀 긴 쪽 방향이 판 좌표에서 어느 쪽인가
+                b = cal.stage_to_plate((c[0] + d[0], c[1] + d[1]), S)
+                if a is not None and b is not None and (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2 > 1e-12:
+                    long_dir = (float(b[0] - a[0]), float(b[1] - a[1]))
             pl = find_mod.pin_place(s["outline"], (cx, cy), long_dir, float(cfg["pin_long_mm"]), float(cfg["pin_short_mm"]), float(cfg["pin_margin_mm"]))
             s["pin"] = [round(float(pl["at"][0]), 2), round(float(pl["at"][1]), 2)]
             s["small"] = not pl["fits"]
-            if T is not None:
-                sx, sy = geo.apply1(T, *s["pin"])
-                s["xy"] = [round(sx, 2), round(sy, 2)]
-            else:
-                s["xy"] = None
+            xy = cal.plate_to_stage(s["pin"], S)
+            s["xy"] = None if xy is None else [round(xy[0], 2), round(xy[1], 2)]
             if reset_use:
                 s["use"] = not s["weak"] and not s["small"]                # 확인 필요 · 핀보다 작음은 기본으로 빼 둔다(사람이 다시 넣을 수 있다)
 
@@ -1296,10 +1298,16 @@ class Prep:
         if all(n in stage_pts for n in CORNERS):
             quality = geo.quad_quality([stage_pts[n] for n in CORNERS], self._size_mm())
             quality["warn"] = bool(quality["max_side_err"] > float(self.cfg["coord_warn_mm"]) or quality["max_angle_err"] > float(self.cfg["coord_warn_deg"]))
-        errs = self.calib.extra_errors()
-        to_plate = self.calib.stage_to_plate(self._size_mm())
+        errs = self.calib.extra_errors()                                  # 보정 점마다 보정량 |r_i|
         S = self._size_mm()
-        to_view = None if to_plate is None else geo.view_matrix(S, S, *self._vr()) @ np.asarray(to_plate, float)     # 스테이지 X · Y → 화면 판 mm
+        Hc, Hp = self.calib.corner_h(), self.calib.plate_h(S)
+        to_view = None                                                    # 바탕 자리 q(스테이지 mm · 꼭짓점 바탕) → 화면 판 mm - 화면이 warp 로 q 를 구한 뒤 곱한다(core.js stageToView)
+        if Hc is not None and Hp is not None:
+            try:
+                to_view = geo.view_matrix(S, S, *self._vr()) @ np.asarray(Hp, float) @ np.linalg.inv(np.asarray(Hc, float))
+            except np.linalg.LinAlgError:
+                to_view = None
+        w = self.calib.warp(Hc) if Hc is not None else {"pts": [], "res": []}
         miss = self.calib.missing_corner()
         lc = self.last_click
         return {
@@ -1314,9 +1322,9 @@ class Prep:
                        "view_stage": {self.vname(n): xy for n, xy in stage_pts.items()},                # 화면 이름(문 기준) → 스테이지 X · Y
                        "guess_name": None if miss is None else self.vname(miss),
                        "to_view": None if to_view is None else [[float(v) for v in row] for row in to_view],
+                       "warp": {"pts": w["pts"], "res": w["res"], "pow": geo.WARP_POW, "iters": geo.WARP_ITERS},
                        "extra": [dict(e, err=errs[i]) for i, e in enumerate(cal["coords"]["extra"])],
-                       "marker": None if not cal.get("marker") else {"t": cal["marker"]["t"]},
-                       "to_plate": None if to_plate is None else [[float(v) for v in row] for row in to_plate]},   # 스테이지 X · Y → 판 mm (3×3)
+                       "marker": None if not cal.get("marker") else {"t": cal["marker"]["t"]}},
             "last_click": None if lc is None else dict(lc, vplate=self._vplate(lc["plate"])),
             "contact": dict(self.contact),
             "z_floor": self._z_floor_view(),

@@ -342,6 +342,24 @@ function applyH(H, x, y) {
   if (!isFinite(w) || Math.abs(w) < 1e-12) return null;
   return [(H[0][0] * x + H[0][1] * y + H[0][2]) / w, (H[1][0] * x + H[1][1] * y + H[1][2]) / w];
 }
+/* 스테이지 X · Y → 화면 판 mm: 바탕 자리 q 를 q = xy − c(q) 로 되풀이(c = 보정 점 보정량의 거리 가중 평균 - 서버 geometry.warp_shift 와 같은 식) →
+   coords.to_view(바탕 자리 → 화면 판 mm). warp 가 없거나 비면 그대로 to_view. 변환이 없으면 null */
+function warpShift(q, w) {
+  let sx = 0, sy = 0, sw = 0;
+  for (let i = 0; i < w.pts.length; i++) {
+    const d = Math.max(Math.hypot(q[0] - w.pts[i][0], q[1] - w.pts[i][1]), 1e-6), k = 1 / Math.pow(d, w.pow);
+    sx += k * w.res[i][0]; sy += k * w.res[i][1]; sw += k;
+  }
+  return sw > 0 ? [sx / sw, sy / sw] : [0, 0];
+}
+function stageToView(x, y) {
+  const co = (S && S.prep && S.prep.coords) || {}, w = co.warp;
+  let q = [x, y];
+  if (w && w.pts && w.pts.length) {
+    for (let i = 0; i < (w.iters || 12); i++) { const c = warpShift(q, w); q = [x - c[0], y - c[1]]; }
+  }
+  return applyH(co.to_view, q[0], q[1]);
+}
 const DOT = { "연결": "ok", "연결 중": "warn", "오류": "err", "끊김": "off" };
 const dotOf = (d) => DOT[d.state] || "off";
 const devOk = (k) => S && S.devices[k].state === "연결";

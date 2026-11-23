@@ -490,7 +490,17 @@ function buildStep5() {
   pg.marker = h("div", { class: "small" });
   pg.learn = busyGate("마커 재등록", () => apiMove("marker_learn"), "sm");
   pg.extra = h("div", { class: "exlist" });
-  pg.clear = btn("초기화", () => api("coord_clear"), "sm");
+  /* 지우는 버튼 둘: 확인 창 뒤 실행(Enter · Space 로 눌리지 않게 noEnter). [좌표 보정 초기화] = 꼭짓점 칸 · [보정 점 모두 지우기] = 보정 점 칸 */
+  const askErase = (title, text, okText, cmd) => openDialog(title, h("div", { text }),
+    [noEnter(btn("취소", closeDialog)), noEnter(btn(okText, () => { closeDialog(); api(cmd); }, "on"))]);
+  pg.clear = btn("좌표 보정 초기화", () => {
+    const n = ((P().coords || {}).extra || []).length;
+    askErase("좌표 보정 초기화?", "꼭짓점 4개 · 보정 점 " + n + "개 · 헤드 마커 삭제 · 되돌릴 수 없음", "초기화", "coord_clear");
+  }, "sm");
+  pg.clearEx = btn("보정 점 모두 지우기", () => {
+    const n = ((P().coords || {}).extra || []).length;
+    askErase("보정 점 모두 지우기?", "보정 점 " + n + "개 삭제", "지우기", "coord_extra_clear");
+  }, "sm");
   pg.markerNote = h("div", { class: "small" });                 // D 등록 뒤 자동으로 하는 일(이동 거리는 설정 marker_probe_mm)
   pg.el = h("div", { class: "panel prep-panel" }, h("h3", { text: "5 · 좌표 보정" }),
     h("div", { class: "two" },
@@ -498,13 +508,13 @@ function buildStep5() {
       h("div", { class: "grp" }, h("h4", { text: "꼭짓점 등록" }),
         h("div", { class: "row top" }, pg.guide, h("div", { class: "col" }, small("A = 안쪽 왼쪽 · 시계 방향"), pg.pts)),
         h("div", { class: "row wrap" }, ...pg.set.map((g) => g.b)), pg.whySet, pg.markerNote,
-        h("div", { class: "row" }, pg.gotoD.b, pg.gotoD.w))),
+        h("div", { class: "row" }, pg.gotoD.b, pg.gotoD.w), h("div", { class: "row" }, pg.clear))),
     h("div", { class: "three" },
       h("div", { class: "grp" }, h("h4", { text: "정확도" }), pg.q),
       h("div", { class: "grp" }, h("h4", { text: "헤드 마커" }), pg.marker, h("div", { class: "row" }, pg.learn.b, pg.learn.w)),
       h("div", { class: "grp" }, h("h4", { text: "보정 점" }),
         h("div", { class: "small", text: "수동 제어 탭 [보정 점 추가] · 사진에서 핀 위치 누름" }),
-        pg.extra, h("div", { class: "row" }, pg.clear))));
+        pg.extra, h("div", { class: "row" }, pg.clearEx))));
   pg.draw = () => {
     const co = P().coords;
     if (!S) return;
@@ -543,10 +553,11 @@ function buildStep5() {
     if (sig !== pg.exSig) {
       pg.exSig = sig;
       setKids(pg.extra, ...(co.extra.length ? co.extra.map((x, i) => h("div", { class: "row" },
-        h("span", { class: "grow", text: (i + 1) + ". X " + f1(x.xy[0]) + " Y " + f1(x.xy[1]) + " · 오차 " + (x.err == null ? "—" : x.err.toFixed(2) + " mm") + " · " + fmtWhen(x.t) }),
+        h("span", { class: "grow", text: (i + 1) + ". X " + f1(x.xy[0]) + " Y " + f1(x.xy[1]) + " · 보정 " + (x.err == null ? "—" : x.err.toFixed(2) + " mm") + " · " + fmtWhen(x.t) }),
         btn("지우기", () => api("coord_remove", { index: i }), "sm"))) : [small("없음")]));
     }
     pg.clear.disabled = running() || !Object.keys(co.stage).length;
+    pg.clearEx.disabled = running() || !(co.extra || []).length;
     pg.draw();
     pg.jog.update();
   };
