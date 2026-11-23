@@ -99,11 +99,16 @@ class Calib:
             self.d["coords"]["t"] = time.time()
         self.save()
 
-    def add_extra(self, px, xy):
+    def add_extra(self, px, xy, replace=None):
+        """보정 점 더하기 · replace = 교체할 순번(같은 자리의 기존 점 - px · xy · t 를 바꾼다 · 점 수 그대로)."""
         with self._lock:
             ex = self.d["coords"]["extra"]
-            ex.append({"px": [round(float(px[0]), 1), round(float(px[1]), 1)], "xy": [round(float(xy[0]), 3), round(float(xy[1]), 3)], "t": time.time()})
-            del ex[:-MAX_EXTRA]
+            pt = {"px": [round(float(px[0]), 1), round(float(px[1]), 1)], "xy": [round(float(xy[0]), 3), round(float(xy[1]), 3)], "t": time.time()}
+            if replace is not None and 0 <= int(replace) < len(ex):
+                ex[int(replace)] = pt
+            else:
+                ex.append(pt)
+                del ex[:-MAX_EXTRA]
         self.save()
 
     def remove_extra(self, index):

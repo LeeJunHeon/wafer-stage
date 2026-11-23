@@ -22,7 +22,7 @@ from app.safety import Rejected
 from app.state import ALARM, NOTICE
 from app.vision import find as find_mod
 
-SNAP_MM = 8.0                                      # 판 사진을 누른 자리가 샘플 가운데에서 이 안이면 샘플 가운데로 붙는다
+SNAP_MM = 8.0                                      # 판 사진을 누른 자리가 샘플 가운데에서 이 안이면 그 샘플의 핀 놓을 자리(pin)로 붙는다
 AT_TOL_MM = 0.2                                    # "그 자리에 있다"고 보는 차이
 LOWER_TOL_MM = 0.05                                # 샘플로 이동한 뒤 내리기 전: st 로 다시 읽은 X · Y 가 목표와 이 안이어야 내린다
 
@@ -873,7 +873,7 @@ class Prep:
         return {"px": [round(m0[0], 1), round(m0[1], 1)]}
 
     def _click_at(self, Hp, px, py, snapped):
-        """마지막으로 고른 위치(판 mm → 사진 픽셀)를 남긴다 - [보정 점 추가] 가 이 사진 픽셀과 그때의 핀 위치를 짝으로 쓴다."""
+        """마지막으로 고른 위치(판 mm → 사진 픽셀)를 남긴다 - 화면의 선택 위치 원 · 샘플 줄의 지금 선택(보정 점 추가는 쓰지 않는다)."""
         photo_px = geo.apply1(np.linalg.inv(Hp), px, py)
         self.last_click = {"px": [round(photo_px[0], 1), round(photo_px[1], 1)], "plate": [round(px, 2), round(py, 2)], "sample": snapped}
         self.publish()
@@ -913,7 +913,7 @@ class Prep:
         return c.contact_fixed(c.cfg["contact_z_mm"], g, read=read)
 
     def plate_goto(self, x, y, view=False, lower=False):
-        """판 사진을 누른 자리(판 mm - view 면 화면 판 mm)로 간다(핀 맨 위로 올린 뒤). 샘플 근처를 누르면 샘플 가운데로 붙는다.
+        """판 사진을 누른 자리(판 mm - view 면 화면 판 mm)로 간다(핀 맨 위로 올린 뒤). 샘플 가운데 근처(SNAP_MM)를 누르면 그 샘플의 핀 놓을 자리(pin)로 붙는다.
         lower = 샘플에 붙었을 때만 접촉 높이까지 내린다(go_and_lower). 샘플이 아닌 자리는 lower 여도 내리지 않는다."""
         self.c._no_run("클릭 이동")
         Hp, Hs = self.calib.plate_h(self._size_mm()), self.calib.stage_h()
@@ -927,7 +927,7 @@ class Prep:
             if d <= SNAP_MM and (best is None or d < best[0]):
                 best = (d, s)
         if best is not None:
-            px, py = best[1]["plate"]
+            px, py = best[1].get("pin") or best[1]["plate"]
             snapped = best[1]["name"]
         photo_px = self._click_at(Hp, px, py, snapped)
         sx, sy = geo.apply1(Hs, *photo_px)
@@ -936,8 +936,8 @@ class Prep:
                 "pos": dict(self.c.state.get("pos"))}                # 화면이 좌표 이동 칸을 채운다
 
     def sample_goto(self, id, lower=False):
-        """수동 제어 탭 [◀ 이전] [다음 ▶] · 샘플 선택: 그 샘플 가운데(샘플 xy)로 이동 · lower 면 접촉 높이까지(go_and_lower).
-        판 사진을 누른 것과 같이 last_click(사진 픽셀 · 판 mm · 샘플 이름)을 남긴다 - [보정 점 추가] 가 그대로 된다."""
+        """수동 제어 탭 [◀ 이전] [다음 ▶] · 샘플 선택: 그 샘플의 핀 놓을 자리(샘플 xy = T(pin))로 이동 · lower 면 접촉 높이까지(go_and_lower).
+        판 사진을 누른 것과 같이 last_click(핀 놓을 자리의 사진 픽셀 · 판 mm · 샘플 이름)을 남긴다 - 선택 위치 원 · 샘플 줄의 지금 선택."""
         self.c._no_run("샘플로 이동")
         s = next((q for q in self.samples if str(q["id"]) == str(id)), None)
         if s is None:
@@ -946,35 +946,49 @@ class Prep:
             raise Rejected("샘플 좌표 없음 · 초기 설정 5 필요")
         Hp = self.calib.plate_h(self._size_mm())
         if Hp is not None:
-            self._click_at(Hp, float(s["plate"][0]), float(s["plate"][1]), s["name"])
+            pin = s.get("pin") or s["plate"]
+            self._click_at(Hp, float(pin[0]), float(pin[1]), s["name"])
         res = self.go_and_lower(float(s["xy"][0]), float(s["xy"][1]), bool(lower))
         return {"xy": list(s["xy"]), "sample": s["name"], "lowered": res is not None, "pos": dict(self.c.state.get("pos"))}
 
-    def coord_add_here(self):
-        """[보정 점 추가]: (마지막으로 누른 사진 좌표, 지금 스테이지 X · Y)를 보정 점으로 더하고 변환을 전체 점으로 다시 맞춘다.
-        누른 위치를 지금 변환으로 계산한 X · Y 와 핀 위치가 coord_add_max_mm 보다 멀면 거절한다(잘못 찍은 점이 좌표 전체를 틀지 않게)."""
-        if self.last_click is None:
-            raise Rejected("판 사진에서 위치 선택 필요")
+    def coord_add_at(self, x, y, view=False):
+        """[보정 점 추가]([크게 보기] 창 "보정 점 추가" 상태): 사진에서 핀이 실제로 있는 자리(판 mm - view 면 화면 판 mm)를 눌러
+        (그 사진 픽셀, 지금 스테이지 X · Y)를 보정 점으로 더하고 변환을 전체 점으로 다시 맞춘다. last_click 은 쓰지도 바꾸지도 않는다.
+        누른 자리를 지금 변환으로 계산한 X · Y 와 핀이 coord_add_max_mm 보다 멀면 거절(잘못 누른 점이 좌표 전체를 틀지 않게).
+        기존 보정 점 중 판 mm 로 coord_same_mm 안인 것이 있으면 가장 가까운 그 점을 교체한다(같은 자리의 다른 값끼리 평균돼 보정이 덜 되지 않게)."""
         if not self.calib.coords_ready():
             raise Rejected("좌표 보정 필요 (초기 설정 5)")
         self._need_xy()
         self.c._no_run("보정 점 더하기")
-        Hs = self.calib.stage_h()
-        if Hs is None:
+        if self.c.stage.moving:                                         # 핀 X · Y 가 멈춘 위치여야 짝이 맞는다
+            raise Rejected("이동 중 · 멈춘 뒤 추가")
+        Hp, Hs = self.calib.plate_h(self._size_mm()), self.calib.stage_h()
+        if Hp is None or Hs is None:
             raise Rejected("좌표 보정 필요 (초기 설정 5)")
-        ex, ey = geo.apply1(Hs, *self.last_click["px"])
+        px, py = self._from_vplate(x, y) if view else (float(x), float(y))
+        photo_px = geo.apply1(np.linalg.inv(Hp), px, py)                # _click_at 과 같은 변환(판 mm → 사진 픽셀)
+        ex, ey = geo.apply1(Hs, *photo_px)
         cx, cy = self._xy()
         d = float(np.hypot(cx - ex, cy - ey))
         lim = float(self.cfg["coord_add_max_mm"])
         if d > lim:
-            self.c.logs.app("보정 점 거절 · 선택 위치 X %.3f · Y %.3f · 핀 X %.3f · Y %.3f · %.2f mm · 한도 %g mm" % (ex, ey, cx, cy, d, lim), "warn")
-            raise Rejected("선택 위치에서 %.1f mm 떨어짐 · 한도 %g mm · 위치 다시 선택" % (d, lim))
-        self.c.logs.app("보정 점 추가 · 선택 위치와 %.2f mm · 핀 X %.3f · Y %.3f" % (d, cx, cy))
-        self.calib.add_extra(self.last_click["px"], self._xy())
-        self.last_click = None
+            self.c.logs.app("보정 점 거절 · 계산 위치 X %.3f · Y %.3f · 핀 X %.3f · Y %.3f · %.2f mm · 한도 %g mm" % (ex, ey, cx, cy, d, lim), "warn")
+            raise Rejected("누른 위치가 핀에서 %.1f mm · 한도 %g mm · 위치 다시 선택" % (d, lim))
+        same = float(self.cfg["coord_same_mm"])
+        near = None
+        for i, q in enumerate(self.calib.d["coords"]["extra"]):
+            qx, qy = geo.apply1(Hp, *q["px"])
+            dq = float(np.hypot(qx - px, qy - py))
+            if dq <= same and (near is None or dq < near[0]):
+                near = (dq, i)
+        if near is None:
+            self.c.logs.app("보정 점 추가 · 계산 위치와 %.2f mm · 핀 X %.3f · Y %.3f" % (d, cx, cy))
+        else:
+            self.c.logs.app("보정 점 교체 · %d번 · 계산 위치와 %.2f mm · 핀 X %.3f · Y %.3f" % (near[1] + 1, d, cx, cy))
+        self.calib.add_extra(photo_px, (cx, cy), replace=None if near is None else near[1])
         self._refresh_samples()
         self.publish()
-        return {"n": len(self.calib.d["coords"]["extra"])}
+        return {"n": len(self.calib.d["coords"]["extra"]), "moved": round(d, 2), "replaced": near is not None}
 
     def coord_remove(self, index):
         self.c._no_run("보정 점 지우기")
@@ -1009,7 +1023,7 @@ class Prep:
         self.samples = []
         for i, s in enumerate(self._view_order(res["samples"]), 1):      # 번호: 문 기준 화면에서 줄마다 왼쪽 → 오른쪽(시작 구석 sample_number_start)
             self.samples.append({"id": i, "name": "%s-%d" % (batch, i), "plate": s["plate"], "outline": s["outline"], "w": s["w"], "h": s["h"], "area": s["area"],
-                                 "source": s["source"], "weak": s["weak"], "small": False, "xy": None, "use": True})
+                                 "source": s["source"], "weak": s["weak"], "small": False, "pin": list(s["plate"]), "xy": None, "use": True})
         self._refresh_samples(reset_use=True)
         self.c.runner.reset()                                        # 새 사진 · 새 샘플: 지난 측정 진행 표시는 비운다(파일은 그대로)
         self.find_info = {"t": self.photo["t"], "n": len(self.samples), "notes": res["notes"], "path": res["path"], "ms": int((time.monotonic() - t0) * 1000),
@@ -1048,7 +1062,8 @@ class Prep:
         return [p["_s"] for p in find_mod.order_rows(proxy, long_mm)]
 
     def _refresh_samples(self, reset_use=False):
-        """샘플의 스테이지 X · Y 와 "핀보다 작음"을 지금 보정 값으로 다시 계산한다."""
+        """샘플의 핀 놓을 자리(pin · 판 mm) · 스테이지 X · Y(= T(pin)) · "핀보다 작음"을 지금 보정 값으로 다시 계산한다.
+        핀 긴 쪽 방향은 가운데(plate) 기준으로 구한다. 쿨러 구역 판단은 plate(가운데) 그대로."""
         T = self.calib.plate_to_stage(self._size_mm())
         cfg = self.cfg
         long_axis = 1 if cfg["pin_long_axis"] == "y" else 0
@@ -1057,7 +1072,6 @@ class Prep:
             long_dir = (0.0, 1.0) if long_axis == 1 else (1.0, 0.0)        # 좌표 맞추기 전에는 판 축 = 스테이지 축으로 본다
             if T is not None:
                 sx, sy = geo.apply1(T, cx, cy)
-                s["xy"] = [round(sx, 2), round(sy, 2)]
                 try:
                     Ti = np.linalg.inv(T)
                     d = [0.0, 0.0]
@@ -1066,10 +1080,14 @@ class Prep:
                     long_dir = (float(a[1][0] - a[0][0]), float(a[1][1] - a[0][1]))
                 except np.linalg.LinAlgError:
                     pass
+            pl = find_mod.pin_place(s["outline"], (cx, cy), long_dir, float(cfg["pin_long_mm"]), float(cfg["pin_short_mm"]), float(cfg["pin_margin_mm"]))
+            s["pin"] = [round(float(pl["at"][0]), 2), round(float(pl["at"][1]), 2)]
+            s["small"] = not pl["fits"]
+            if T is not None:
+                sx, sy = geo.apply1(T, *s["pin"])
+                s["xy"] = [round(sx, 2), round(sy, 2)]
             else:
                 s["xy"] = None
-            fits = find_mod.pin_fits(s["outline"], (cx, cy), long_dir, float(cfg["pin_long_mm"]), float(cfg["pin_short_mm"]), float(cfg["pin_margin_mm"]))
-            s["small"] = not fits
             if reset_use:
                 s["use"] = not s["weak"] and not s["small"]                # 확인 필요 · 핀보다 작음은 기본으로 빼 둔다(사람이 다시 넣을 수 있다)
 
@@ -1311,7 +1329,8 @@ class Prep:
 
     def publish(self):
         self.c.state.set("prep", self.view())
-        self.c.state.set("samples", [dict(s, vplate=self._vplate(s["plate"]), voutline=[self._vplate(q) for q in s["outline"]]) for s in self.samples])     # v… = 화면(문 기준) 판 mm
+        self.c.state.set("samples", [dict(s, vplate=self._vplate(s["plate"]), vpin=self._vplate(s.get("pin") or s["plate"]),
+                                          voutline=[self._vplate(q) for q in s["outline"]]) for s in self.samples])     # v… = 화면(문 기준) 판 mm
 
 
 def _opposite(side):

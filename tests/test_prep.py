@@ -96,21 +96,19 @@ def test_correction_point_improves_fit(ready_ctrl):
     assert max(before) > 0.5
     s = ctrl.prep.samples[0]
     r = ctrl.run_command("plate_goto", {"x": s["plate"][0] + 2.0, "y": s["plate"][1] - 1.0})
-    assert r["sample"] == s["name"], "샘플 근처를 누르면 샘플 가운데로 붙는다"
+    assert r["sample"] == s["name"], "샘플 근처를 누르면 그 샘플의 핀 놓을 자리로 붙는다"
     assert ctrl.state.get("pos", "z") == 0.0
-    ctrl.goto(*w.sample_stage(_nearest(w, s["plate"])))              # 사람이 조그로 맞춘 자리
-    ctrl.run_command("coord_add_here")
+    ctrl.goto(*w.sample_stage(_nearest(w, s["plate"])))              # 사람이 조그로 맞춘 자리(샘플 가운데)
+    r = ctrl.run_command("coord_add_at", {"x": s["plate"][0], "y": s["plate"][1]})     # 사진에서 핀이 있는 자리(샘플 가운데)를 누름
+    assert r["n"] == 1 and r["replaced"] is False
     ex = ctrl.prep.view()["coords"]["extra"]
     assert len(ex) == 1 and ex[0]["err"] is not None
     one = errors()
     assert one[0] < before[0], "보정 점을 더하면 그 샘플 자리가 맞아진다 (%.2f → %.2f mm)" % (before[0], one[0])
-    with pytest.raises(Rejected):
-        ctrl.run_command("coord_add_here")                           # 누른 자리가 없으면 더하지 않는다
     for k in (2, 4, 6, 8):                                           # 쓰면서 조금씩: 점이 늘수록 전체가 맞아 간다(전체 점의 최소제곱)
         s = ctrl.prep.samples[k]
-        ctrl.run_command("plate_goto", {"x": s["plate"][0], "y": s["plate"][1]})
         ctrl.goto(*w.sample_stage(_nearest(w, s["plate"])))
-        ctrl.run_command("coord_add_here")
+        ctrl.run_command("coord_add_at", {"x": s["plate"][0], "y": s["plate"][1]})
     many = errors()
     assert sum(many) < sum(before) and max(many) < max(before), "%.2f → %.2f mm" % (sum(before) / 9, sum(many) / 9)
     ctrl.run_command("coord_remove", {"index": 0})
@@ -121,12 +119,31 @@ def test_replate_drops_pixel_memory(ready_ctrl):
     ctrl = ready_ctrl()
     ctrl.run_command("samples_find")
     s = ctrl.prep.samples[0]
-    ctrl.run_command("plate_goto", {"x": s["plate"][0], "y": s["plate"][1]})
-    ctrl.run_command("coord_add_here")
+    ctrl.goto(*s["xy"])
+    ctrl.run_command("coord_add_at", {"x": s["pin"][0], "y": s["pin"][1]})
     ctrl.run_command("photo_take")
     r = ctrl.run_command("plate_set", {"corners": [[float(x), float(y)] for x, y in ctrl.world.plate_corners_px(W, H)]})
     assert r["dropped"] == 1 and ctrl.calib.d["marker"] is None, "판 영역을 다시 정하면 사진 픽셀로 기억한 것은 버린다"
     assert ctrl.calib.coords_ready(), "꼭짓점에 핀을 대고 기억한 스테이지 자리는 그대로 쓴다"
+
+
+def test_sample_xy_comes_from_pin_place(ready_ctrl):
+    """샘플 xy = T(pin)(핀 놓을 자리 · 윤곽 안 가장 넉넉한 곳) · 화면 값 vpin · 클릭 이동 · 샘플 이동은 pin 으로 간다."""
+    from app import geometry as geo
+    ctrl = ready_ctrl()
+    ctrl.run_command("samples_find")
+    T = ctrl.calib.plate_to_stage(ctrl.prep._size_mm())
+    assert T is not None and ctrl.prep.samples
+    for s in ctrl.prep.samples:
+        assert len(s["pin"]) == 2
+        sx, sy = geo.apply1(T, *s["pin"])
+        assert _dist(s["xy"], (sx, sy)) < 0.02, "xy 는 pin 에서 나온다 (%s)" % s["name"]
+    shown = ctrl.state.get("samples")
+    assert all("vpin" in q for q in shown)
+    s = next(q for q in ctrl.prep.samples if q["xy"] is not None)
+    ctrl.run_command("plate_goto", {"x": s["plate"][0] + 1.0, "y": s["plate"][1]})
+    assert _dist((ctrl.state.get("pos", "x"), ctrl.state.get("pos", "y")), s["xy"]) < 0.02, "클릭 이동도 핀 놓을 자리로"
+    assert ctrl.prep.last_click["plate"] == s["pin"]
 
 
 # ---------------------------------------------------------------------------

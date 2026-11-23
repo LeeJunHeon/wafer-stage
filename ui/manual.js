@@ -1,10 +1,11 @@
 /* manual.js - 수동 제어 탭: 2열. 왼쪽 = 카메라 · 이동 / 오른쪽 = 수동 측정 · 릴레이 시험 · 직접 명령(맨 아래, 작게).
-   카메라 "실시간" = 실시간 미리보기. "판 사진" = 마지막으로 찍은 판 사진(자동 측정 탭과 같은 사진) + 샘플 윤곽 · 이름 + 지금 핀 자리(십자).
+   카메라 "실시간" = 실시간 미리보기. "판 사진" = 마지막으로 찍은 판 사진(자동 측정 탭과 같은 사진) + 샘플 윤곽 · 이름 · 핀 놓을 자리(사각형) + 지금 핀 자리(십자 · 사각형).
+   [보정 점 추가] = [크게 보기] 창을 "보정 점 추가" 상태로 연다 - 사진에서 핀이 실제로 있는 자리를 누르고 [추가](coord_add_at · 스테이지는 안 움직임).
    실시간 화면을 보정해 보여 주지 않는 까닭: 헤드가 판 위에 있으면 헤드가 판을 가린다.
    장비가 연결되지 않았으면 그 장비가 필요한 버튼을 끄고 이유를 한 줄 보인다(서버도 거절한다 - 화면은 미리 알려 준다).
    히트건 = 송풍 + 열선. [켜기] 는 서버가 열선 → 송풍 순서로 켠다 · [끄기] 는 열선을 끄고 송풍은 heater_fan_after_s 뒤에 끈다.
    [온도 시험] 은 큰 창(ui/temptest.js)을 연다. 온도 시험 중에는 히트건 · 쿨러 버튼 · 접촉 탐색을 끈다([전체 끄기] 는 시험을 정지하고 끈다).
-   판 사진 보기 아래 샘플 줄: [◀ 이전] [샘플 선택] [다음 ▶] = sample_goto(샘플 가운데로 · 핀 맨 위 확인) · "이동 후 내리기"(화면 값 · 시작 때 끔 · 켤 때 확인 창) =
+   판 사진 보기 아래 샘플 줄: [◀ 이전] [샘플 선택] [다음 ▶] = sample_goto(핀 놓을 자리로 · 핀 맨 위 확인) · "이동 후 내리기"(화면 값 · 시작 때 끔 · 켤 때 확인 창) =
    샘플로 간 뒤 접촉 높이까지(판 사진 · [크게 보기] 에서 샘플을 눌러도) · [자동 순회] = 포함 샘플을 차례로 이동 → 접촉 높이 → 머묾(app/jobs/tour.py) · 순회 중 [순회 정지]. */
 "use strict";
 
@@ -23,14 +24,14 @@ function buildManual() {
   const setView = (v) => { man.view = v; man.pb.setNote("미리보기 대기 중"); man.pb.show(""); refreshPreview(); renderManual(); };
   man.photoInfo = h("span", { class: "small" });
   man.retake = busyGate("재촬영", () => apiMove("samples_find"), "sm");             // 자동 측정 탭의 재촬영과 같다(사진 + 샘플 검출)
-  man.bigView = btn("크게 보기", openPlateBig, "sm");
+  man.bigView = btn("크게 보기", () => openPlateBig(false), "sm");
   man.fixPart = h("span", { class: "row hidden" }, man.photoInfo, man.retake.b, man.bigView, man.retake.w);
   man.viewRaw = h("input", { type: "radio", name: "view", checked: true, onchange: () => setView("raw") });
   man.viewFix = h("input", { type: "radio", name: "view", onchange: () => setView("fix") });
   man.clickGo = h("input", { type: "checkbox", onchange: () => {          // 켜면 "판 사진" 보기로 바꾼다(실시간 보기에서도 켤 수 있다)
     if (man.clickGo.checked && man.view !== "fix") { man.viewFix.checked = true; setView("fix"); }
   } });
-  man.addHere = busyGate("보정 점 추가", () => api("coord_add_here"), "sm");
+  man.addHere = btn("보정 점 추가", () => openPlateBig(true), "sm");          // [크게 보기] 창을 "보정 점 추가" 상태로
   /* 샘플 줄: 순서 = S.samples 중 xy 가 있는 것(표 순서) · 지금 선택 = last_click.sample */
   man.sPrev = btn("◀ 이전", () => sampleStep(-1), "sm");
   man.sNext = btn("다음 ▶", () => sampleStep(1), "sm");
@@ -53,7 +54,7 @@ function buildManual() {
     h("div", { class: "row" }, h("h3", { text: "카메라" }), h("span", { class: "sp" }),
       h("label", { class: "chk" }, man.viewRaw, "실시간"), h("label", { class: "chk" }, man.viewFix, "판 사진")),
     man.pb.box,
-    h("div", { class: "row" }, man.fixPart, h("label", { class: "chk" }, man.clickGo, "클릭 이동"), man.addHere.b, man.camNote),
+    h("div", { class: "row" }, man.fixPart, h("label", { class: "chk" }, man.clickGo, "클릭 이동"), man.addHere, man.camNote),
     man.samplePart, man.tourLine, man.tourRows);
 
   /* ---- 왼쪽: 이동(조그 · 촬영 위치 · 좌표 이동을 옆으로 놓아 높이를 줄인다 - 카메라가 그만큼 커진다) ---- */
@@ -137,8 +138,8 @@ function buildManual() {
 }
 /* 판 사진에서 누른 자리(사진의 비율 0~1)로 클릭 이동 - 작은 사진 · [크게 보기] 창이 같은 규칙([클릭 이동] 켬 · 측정 중 아님) */
 async function plateClick(fx, fy) {
-  if (!man.clickGo.checked || man.clickGo.disabled || running()) return;
   if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
+  if (!man.clickGo.checked || man.clickGo.disabled || running()) { if (!man.clickGo.checked) toast("클릭 이동 꺼짐"); return; }
   const sz = S.cfg.plate_size_mm;
   const r = await api("plate_goto", { x: fx * sz, y: fy * sz, view: true, lower: lowerOn() });   // 화면(문 기준) 판 mm - 서버가 저장 좌표로 바꾼다 · 샘플에 붙었을 때만 내린다
   if (r.ok) fillHere(r.result && r.result.pos);                               // 클릭 이동 뒤에도 좌표 이동 칸을 채운다
@@ -195,47 +196,118 @@ function fillHere(pos) {
   const put = (el, v) => { el.value = v == null ? "" : Number(v).toFixed(2); };
   put(man.gx, p.x); put(man.gy, p.y); put(man.gz, p.z);
 }
-/* 판 사진 덧그림(화면 판 mm 좌표 → 그림 좌표 u 배): 샘플 윤곽 · 이름 · 누른 위치 · 핀 십자. 작은 사진(u = 1, viewBox 가 mm) · [크게 보기](u = px/mm)가 같이 쓴다.
-   좌표는 서버가 화면 방향(문 기준)으로 준 값(voutline · vplate · last_click.vplate · coords.to_view)만 쓴다 */
-function plateOverlayKids(k, u) {
+/* 핀 긴 쪽 방향(화면 판 좌표 단위 벡터): 스테이지 긴 쪽 축(pin_long_axis)을 그 자리(스테이지 X · Y)에서 coords.to_view 로 옮긴 방향. 변환이 없으면 null */
+function pinDir(sx, sy) {
+  const H = ((S.prep || {}).coords || {}).to_view, ax = S.cfg.pin_long_axis === "y";
+  const a = applyH(H, ax ? sx : sx - 1, ax ? sy - 1 : sy), b = applyH(H, ax ? sx : sx + 1, ax ? sy + 1 : sy);
+  if (!a || !b) return null;
+  const dx = b[0] - a[0], dy = b[1] - a[1], n = Math.hypot(dx, dy);
+  return n > 1e-9 ? [dx / n, dy / n] : null;
+}
+/* 핀 사각형 꼭짓점(화면 판 mm · 가운데 c · 긴 쪽 pin_long_mm · 짧은 쪽 pin_short_mm) */
+function pinRect(c, d) {
+  const L = S.cfg.pin_long_mm / 2, W = S.cfg.pin_short_mm / 2, v = [-d[1], d[0]];
+  return [[L, W], [L, -W], [-L, -W], [-L, W]].map(([a, b]) => [c[0] + a * d[0] + b * v[0], c[1] + a * d[1] + b * v[1]]);
+}
+/* 판 사진 덧그림(화면 판 mm 좌표 → 그림 좌표 u 배): 샘플 윤곽 · 이름 · 핀 놓을 자리(가는 사각형) · 누른 위치 · 핀 십자 + 사각형.
+   작은 사진(u = 1, viewBox 가 mm) · [크게 보기](u = px/mm)가 같이 쓴다. o.add = 보정 점 추가 상태(선택 위치 원 대신 누른 자리 o.pick = 원 + 점선 핀 사각형).
+   좌표는 서버가 화면 방향(문 기준)으로 준 값(voutline · vplate · vpin · last_click.vplate · coords.to_view)만 쓴다 */
+function plateOverlayKids(k, u, o) {
+  o = o || {};
   const sz = S.cfg.plate_size_mm, kids = [], pr = S.prep || {};
   const halo = (tag, a, wd) => { kids.push(svgEl(tag, Object.assign({}, a, { stroke: "#FFFFFF", "stroke-width": (wd + 2.5) * k, fill: "none" })), svgEl(tag, Object.assign({}, a, { stroke: "#1F2329", "stroke-width": wd * k, fill: "none" }))); };
+  const poly = (pts) => pts.map((p) => p[0] * u + "," + p[1] * u).join(" ");
   const selName = pr.last_click && pr.last_click.sample;           // 선택된 샘플(샘플 줄 · 클릭 이동)은 윤곽을 굵게
   for (const s of S.samples || []) {
-    halo("polygon", { points: s.voutline.map((p) => p[0] * u + "," + p[1] * u).join(" "), "stroke-linejoin": "round" }, s.name === selName ? 3 : 1.5);
+    halo("polygon", { points: poly(s.voutline), "stroke-linejoin": "round" }, s.name === selName ? 3 : 1.5);
+    const d = s.vpin && s.xy ? pinDir(s.xy[0], s.xy[1]) : null;
+    if (d) halo("polygon", { points: poly(pinRect(s.vpin, d)) }, 0.75);
     kids.push(svgEl("text", { x: s.vplate[0] * u, y: Math.min(...s.voutline.map((p) => p[1])) * u - 4 * k, "font-size": 12 * k, "text-anchor": "middle", fill: "#1F2329", stroke: "#FFFFFF", "stroke-width": 3 * k, "paint-order": "stroke", text: s.name }));
   }
   const lc = pr.last_click;
-  if (lc && lc.vplate) halo("circle", { cx: lc.vplate[0] * u, cy: lc.vplate[1] * u, r: 6 * k }, 1.5);
-  const pin = S.pos && S.pos.x != null && S.pos.y != null ? applyH(pr.coords && pr.coords.to_view, S.pos.x, S.pos.y) : null;
+  if (!o.add && lc && lc.vplate) halo("circle", { cx: lc.vplate[0] * u, cy: lc.vplate[1] * u, r: 6 * k }, 1.5);
+  const pos = S.pos && S.pos.x != null && S.pos.y != null ? S.pos : null;
+  const pin = pinView();
+  const pd = pos ? pinDir(pos.x, pos.y) : null;
   if (pin && pin[0] >= 0 && pin[0] <= sz && pin[1] >= 0 && pin[1] <= sz) {
     const x = pin[0] * u, y = pin[1] * u, r = 9 * k;
     halo("path", { d: "M" + (x - r) + " " + y + "H" + (x + r) + "M" + x + " " + (y - r) + "V" + (y + r) }, 1.5);
+    if (pd) halo("polygon", { points: poly(pinRect(pin, pd)) }, 1.5);
+  }
+  if (o.add && o.pick) {
+    halo("circle", { cx: o.pick[0] * u, cy: o.pick[1] * u, r: 6 * k }, 1.5);
+    if (pd) halo("polygon", { points: poly(pinRect(o.pick, pd)), "stroke-dasharray": 4 * k + " " + 3 * k }, 1.5);
   }
   return kids;
 }
-/* [크게 보기]: 판 사진(보정한 사진 - 원본 해상도 그대로)을 확대 · 이동 · 돋보기로 보고, 누른 자리로 클릭 이동(꼭짓점 · 확정 없음) */
-function openPlateBig() {
+/* 지금 핀 자리(화면 판 mm · 좌표 변환) - 없으면 null */
+function pinView() {
+  const pr = S.prep || {};
+  return S.pos && S.pos.x != null && S.pos.y != null ? applyH(pr.coords && pr.coords.to_view, S.pos.x, S.pos.y) : null;
+}
+/* [크게 보기]: 판 사진(보정한 사진 - 원본 해상도 그대로)을 확대 · 이동 · 돋보기로 보고, 누른 자리로 클릭 이동(꼭짓점 · 확정 없음).
+   옆 칸 두 상태: 보통(클릭 이동 · [보정 점 추가] · 보정 점 n개 · [마지막 지우기]) / 보정 점 추가(누른 자리 = 핀이 실제로 있는 자리 · 스테이지 안 움직임 · [추가] [취소]) */
+function openPlateBig(addMode) {
   const ph = (S.prep || {}).photo, pl = (S.prep || {}).plate;
   if (!ph || !ph.rect || !pl) { toast("사진 없음"); return; }
   const url = "/api/img/plate.jpg?v=" + ph.id + "-" + pl.t;          // 화면 방향(문 기준) 판 사진 - 정사각형이라 크기는 그대로
+  const st = { add: !!addMode, pick: null, busy: false };
   const z = zoomView({ src: "plate", empty: "사진 없음",
-    draw: (g, k) => setKids(g, ...plateOverlayKids(k, z.W / S.cfg.plate_size_mm)),
-    onDown: (p) => { plateClick(p[0] / z.W, p[1] / z.H); return false; } });
+    draw: (g, k) => setKids(g, ...plateOverlayKids(k, z.W / S.cfg.plate_size_mm, st)),
+    onDown: (p) => {
+      if (st.add) { const sz = S.cfg.plate_size_mm; st.pick = [p[0] / z.W * sz, p[1] / z.H * sz]; render(); }     // 화면 판 mm · 스테이지는 안 움직인다
+      else plateClick(p[0] / z.W, p[1] / z.H);
+      return false;
+    } });
   const go = h("input", { type: "checkbox", checked: man.clickGo.checked, onchange: () => { man.clickGo.checked = go.checked; } });
   const why = h("div", { class: "why" });
-  const add = btn("보정 점 추가", () => api("coord_add_here"));
-  const side = h("div", { class: "col" }, h("h4", { text: "판 사진" }), h("label", { class: "chk" }, go, "클릭 이동"), small("켜면 누른 위치로 이동 · 핀 맨 위로 올린 뒤"),
-    h("div", { class: "row" }, add), why, small("십자 = 핀 · 원 = 선택 위치"));
+  const toAdd = btn("보정 점 추가", () => { st.add = true; st.pick = null; render(); });
+  const nLine = h("div", { class: "small" });
+  const delLast = btn("마지막 지우기", async () => {
+    const n = (((S.prep || {}).coords || {}).extra || []).length;
+    if (!n) return;
+    const r = await api("coord_remove", { index: n - 1 });
+    if (r.ok) toast("보정 점 지움 · " + r.result.n + "개");
+  }, "sm");
+  const normal = h("div", { class: "col" }, h("h4", { text: "판 사진" }), h("label", { class: "chk" }, go, "클릭 이동"), small("켜면 누른 위치로 이동 · 핀 맨 위로 올린 뒤"),
+    h("div", { class: "row" }, toAdd), why, small("십자 · 사각형 = 핀 · 원 = 선택 위치"), nLine, h("div", { class: "row" }, delLast));
+  const dist = h("div", { class: "small" });
+  const addBtn = btn("추가", async () => {
+    if (!st.pick || st.busy) return;
+    st.busy = true; render();
+    try {
+      const r = await api("coord_add_at", { x: st.pick[0], y: st.pick[1], view: true });
+      if (r.ok) {
+        const q = r.result;
+        toast((q.replaced ? "보정 점 교체 · " : "보정 점 추가 · ") + q.n + "개 · 계산 위치와 " + q.moved.toFixed(2) + " mm");
+        st.add = false; st.pick = null;
+      }
+    } finally { st.busy = false; render(); }
+  }, "on");
+  const cancel = btn("취소", () => { st.add = false; st.pick = null; render(); });
+  const adding = h("div", { class: "col hidden" }, h("h4", { text: "보정 점 추가" }), small("핀이 실제로 있는 자리를 사진에서 누름"), small("십자 · 사각형 = 계산 위치"),
+    dist, h("div", { class: "row" }, addBtn, cancel));
+  const side = h("div", { class: "col" }, normal, adding);
   const render = () => {
     go.disabled = man.clickGo.disabled; if (go.disabled) go.checked = false; else go.checked = man.clickGo.checked;
-    add.disabled = man.addHere.b.disabled;
+    const addOff = man.addHere.disabled;
+    if (st.add && addOff && !st.busy) { st.add = false; st.pick = null; }      // 동작이 시작되면(측정 · 순회 · 이동 · 끊김) 보통 상태로
+    normal.classList.toggle("hidden", st.add);
+    adding.classList.toggle("hidden", !st.add);
+    toAdd.disabled = addOff;
     why.textContent = man.camNote.textContent;
+    const n = (((S.prep || {}).coords || {}).extra || []).length;
+    nLine.textContent = "보정 점 " + n + "개";
+    delLast.classList.toggle("hidden", !n);
+    delLast.disabled = running() || touring();
+    const pv = pinView();
+    dist.textContent = !st.pick ? "자리 선택 필요" : pv ? "계산 위치와 " + Math.hypot(st.pick[0] - pv[0], st.pick[1] - pv[1]).toFixed(2) + " mm" : "";
+    addBtn.disabled = !st.pick || st.busy || addOff;
     z.redraw();
   };
   const img = new Image();                                       // 판 사진의 실제 크기(보정 사진 · 1 mm = 8 px)를 읽고 연다
   img.onload = () => {
-    openZoomDialog("판 사진 · 클릭 이동", z, side, [btn("닫기", closeDialog)], render);
+    openZoomDialog("판 사진", z, side, [btn("닫기", closeDialog)], render);
     z.set([img.naturalWidth, img.naturalHeight], url, url, 0);
     render();
   };
@@ -364,10 +436,10 @@ function renderManual() {
   }
   man.clickGo.disabled = !hasPlate || !ready || busy || locked || !stage;     // 실시간 보기에서도 켤 수 있다(켜면 판 사진 보기로)
   if (man.clickGo.disabled) man.clickGo.checked = false;
-  man.addHere.b.disabled = busy || !ready || !pr.last_click || !stage;
+  const hasPhoto = !!(pr.photo && pr.photo.rect);
+  man.addHere.disabled = busy || !ready || !stage || !hasPhoto || !!S.move;   // 좌표 보정 완료 · 스테이지 연결 · 동작 중 아님 · 판 사진 있음
   man.camNote.textContent = !hasPlate ? "초기 설정 3 · 5 후 사용 가능" : !ready ? "초기 설정 5 후 사용 가능" : !stage ? NEED.stage
-    : busy ? busyText : locked ? "비상정지 해제 필요"
-    : fix && !pr.last_click ? "판 사진에서 위치 선택 필요" : fix ? "십자 = 핀 · 원 = 선택 위치" : "";
+    : busy ? busyText : locked ? "비상정지 해제 필요" : fix ? "십자 · 사각형 = 핀 · 원 = 선택 위치" : "";
   /* 샘플 줄(판 사진 보기일 때 · 순회 중에는 보기와 상관없이): 이전 · 선택 · 다음 · 이동 후 내리기 · 자동 순회 */
   const list = goSamples(), sSig = list.map((s) => s.id + ":" + s.name).join("|");
   if (sSig !== man.sSig) {
@@ -394,7 +466,7 @@ function drawManualOverlay() {
   if (man.view !== "fix") { setKids(man.ov); return; }
   const sz = S.cfg.plate_size_mm;
   man.pb.svg.setAttribute("viewBox", "0 0 " + sz + " " + sz);
-  /* 샘플 윤곽 · 이름 · 누른 위치 = 동그라미 · 지금 핀 위치 = 십자(스테이지 X · Y 를 좌표 변환으로 판 위로. 변환이 없거나 판 밖이면 그리지 않는다) */
+  /* 샘플 윤곽 · 이름 · 핀 놓을 자리 · 누른 위치 = 동그라미 · 지금 핀 위치 = 십자 + 사각형(스테이지 X · Y 를 좌표 변환으로 판 위로. 변환이 없거나 판 밖이면 그리지 않는다) */
   setKids(man.ov, ...plateOverlayKids(sz / man.pb.w, 1));
 }
 /* "실시간" 보기의 미리보기: 1 초마다 새로 받는다(204 = 아직 프레임 없음). "판 사진" 보기는 찍어 둔 사진이라 새로 받지 않는다 */

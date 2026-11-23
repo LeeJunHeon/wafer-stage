@@ -1,7 +1,10 @@
 """refdiff.py - 빈 판 사진과 비교해 샘플 찾기 · 두 사진 정렬.
 
-v2 core/refdiff.py 를 그대로 옮긴 것이다. **실제 사진으로 맞춘 방식과 값이라 바꾸지 않는다.**
+v2 core/refdiff.py 를 그대로 옮긴 것이다. **실제 사진으로 맞춘 방식과 값이라 바꾸지 않는다** - 예외는 정렬(_align_at)의 "다른 곳 빼기" 하나.
 빈 판 사진을 지금 사진에 맞추고(고역 통과 → 위상 상관 초기값 → ECC 유클리드: 이동 + 회전) 두 사진의 차이로 샘플을 찾는다.
+정렬은 두 사진이 실제로 다른 곳(샘플)을 빼고 맞춘다(v3): 샘플은 고역 영상에서 판 무늬보다 세서(고역 표준편차 빈 판 1.60 · 샘플 9개 2.80)
+판 전체로 맞추면 ECC 가 샘플에 끌려갔다(2026-11-23 측정 PC: 1/4 해상도 이동 12.7 px · 회전 0.65° - 실제 0.3, 1.6 px · 잔차 0.83 → 사진 한 장 검출 → 얼룩을 샘플로).
+정렬 뒤 차이가 잡음의 CHG_K 배를 넘는 곳을 넓혀 빼고 다시 맞춘다(CHG_ROUNDS 번) → 같은 사진 잔차 0.39 · 이동 0.3, 1.6 px · 9개.
 판의 긁힘 · 얼룩 · 조명 기울기는 두 사진에 똑같이 있어 차이에서 사라지므로 사진 한 장으로 찾는 것(fixed_detect)보다 반투명 샘플에 강하다.
 
   align(ref, cur, mask)           → {"M": 2x3 기준→현재, "dx", "dy", "theta_deg", "resid", "ok"}
@@ -26,12 +29,18 @@ FAINT_MIN_RATIO = 0.6         # 약한 칩 면적 하한(예상 칩 면적 배)
 RING_RATIO = 1.0              # 약한 칩: 테두리 평균 d / 내부 평균 d 가 이 이상
 # 정렬 잔차 = 기준(M⁻¹·x) 과 현재(x) 고역 영상 차이의 표준편차 / 현재 표준편차. 근거(2026-11-05 정답 6장, 바른 M): 0.23~0.47.
 # 일부러 틀린 M(진짜에서 20 px / 40 px 어긋남): 0.87~0.98 / 1.11~1.31, 항등(이동 14~17 px 장): 0.67~0.97. 그 사이에 둔다.
+# 샘플을 빼고 맞춘 뒤(v3 · 2026-11-23 사진): 바른 정렬 0.39 · 20 px 어긋남 0.91~0.98 · 40 px 1.2 · 전혀 다른 사진 1.2~1.4 → 두 기준은 그대로 둔다.
+# 2026-11-19 사진 쌍(샘플 1개 · 실제 19 px 밀림)은 0.74 → 0.45.
 GROW_MAX_TAKEN = 0.6          # 대신 당할 후보는 예상 칩 면적의 이 배보다 작은 것(반쪽)만 - 온전한 칩은 건드리지 않는다
 GROW_RATIO = 1.5              # 약한 칩 덩어리가 이미 찾은 후보 면적의 이 배 이상이면 그 후보를 대신한다(반쪽만 잡힌 반투명 칩)
 RESCUE_MAX_ASPECT = 3.0       # 긁힘 떼어 내고 되살린 덩어리의 종횡비 상한(긁힘 덩어리는 길쭉하다)
 RESID_FAIL = 0.75             # 이 이상이면 정렬 실패(바른 최대 0.47 과 틀린 최소 0.87 사이)
 RESID_EARLY = 0.55            # 이보다 작으면 1/4 해상도 결과로 끝낸다(바른 최대 0.47 위)
 MAX_SHIFT_FRAC = 0.12         # 위상 상관 초기값이 프레임의 이 비율보다 크면 정렬 실패로 본다
+CHG_K = 4.0                   # 정렬 뒤 차이가 잡음(남긴 곳의 강건 σ)의 이 배보다 크면 "두 사진이 다른 곳"
+CHG_GROW_PX = 11              # 다른 곳을 이만큼(작업 해상도 px · 타원 지름) 넓혀서 뺀다 - 고역 통과(σ 10)의 번짐
+CHG_MAX_FRAC = 0.5            # 뺄 곳이 이 비율을 넘으면 빼지 않는다(사진이 통째로 다른 경우)
+CHG_ROUNDS = 2                # 빼고 다시 맞추는 횟수
 
 
 def _hp(gray):
@@ -42,8 +51,10 @@ def _hp(gray):
 def _align_at(ref, cur, mask, scale):
     """기준(ref) → 현재(cur) 유클리드 변환 M(2x3, 원해상도 px). mask = 정렬에 쓸 곳(255) - 제외 영역 · 칩이 있을 법한 곳은 뺀다.
 
-    반환: {"ok", "M", "dx", "dy", "theta_deg", "resid", "init", "msg"}. 정렬 실패(상관이 약하거나 변위가 너무 큼)면 ok False.
-    resid = 정렬 뒤 고역 영상 차이의 표준편차 / 기준 고역 영상 표준편차 (0 에 가까울수록 잘 맞음).
+    두 사진이 실제로 다른 곳(샘플)은 빼고 맞춘다: 맞춘 뒤 차이 |d| > CHG_K × σ(남긴 곳의 강건 σ = 1.4826 × MAD)인 곳을
+    CHG_GROW_PX 넓혀 빼고(뺄 곳이 CHG_MAX_FRAC 를 넘으면 빼지 않음) 위상 상관 초기값부터 다시 ECC - CHG_ROUNDS 번.
+    반환: {"ok", "M", "dx", "dy", "theta_deg", "resid", "init", "msg", "excl"}. 정렬 실패(상관이 약하거나 변위가 너무 큼)면 ok False.
+    resid = 정렬 뒤 고역 영상 차이의 표준편차 / 현재 고역 영상 표준편차(둘 다 남긴 곳 · 0 에 가까울수록 잘 맞음) · excl = 뺀 비율(0~1).
     """
     h, w = cur.shape[:2]
     a = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
@@ -57,33 +68,48 @@ def _align_at(ref, cur, mask, scale):
     win = cv2.createHanningWindow((ha.shape[1], ha.shape[0]), cv2.CV_32F)
     (dx0, dy0), cc = cv2.phaseCorrelate(ha, hb, win)          # ha 를 hb 에 맞추려면 (dx0, dy0) 만큼 옮긴다
     out = {"ok": False, "M": np.array([[1.0, 0, 0], [0, 1.0, 0]]), "dx": 0.0, "dy": 0.0, "theta_deg": 0.0,
-           "resid": 9.9, "init": [dx0 / scale, dy0 / scale], "msg": ""}
+           "resid": 9.9, "init": [dx0 / scale, dy0 / scale], "msg": "", "excl": 0.0}
     if abs(dx0) > MAX_SHIFT_FRAC * ha.shape[1] or abs(dy0) > MAX_SHIFT_FRAC * ha.shape[0]:
         out["msg"] = "위상 상관 이동이 너무 큼 (%.0f, %.0f px)" % (dx0 / scale, dy0 / scale)
         return out
-    warp = np.array([[1.0, 0, dx0], [0, 1.0, dy0]], np.float32)
-    try:
-        crit = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 80, 1e-6)
-        w2 = warp.copy()
-        _cc, w2 = cv2.findTransformECC(ha, hb, w2, cv2.MOTION_EUCLIDEAN, crit,
-                                       None if sm is None else sm, 5)
-        warp = w2
-    except cv2.error as e:
-        out["msg"] = "정밀 정렬 실패 · 이동만 보정 (%s)" % str(e).splitlines()[0][:50]
-        # 위상 상관 초기값만으로 계속(ECC 가 중간에 망가뜨린 변환은 쓰지 않는다)
+    size = (hb.shape[1], hb.shape[0])
+    base = np.ones_like(hb, bool) if sm is None else (sm > 0)   # 남길 곳의 바탕 = 찾을 곳 - 가장자리 8 px
+    base[:8, :] = base[-8:, :] = False
+    base[:, :8] = base[:, -8:] = False
+    n_base = max(1, int(base.sum()))
+    init = np.array([[1.0, 0, dx0], [0, 1.0, dy0]], np.float32)
+    warp = init.copy()
+    use, excl = base, 0.0
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (CHG_GROW_PX, CHG_GROW_PX))
+    crit = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 80, 1e-6)
+    for r in range(CHG_ROUNDS + 1):
+        d = cv2.warpAffine(ha, warp, size, flags=cv2.INTER_LINEAR) - hb      # M = 기준→현재 이므로 기준(M⁻¹·x) = 정방향 warp
+        du = d[use]
+        sigma = 1.4826 * float(np.median(np.abs(du - np.median(du)))) + 1e-6
+        chg = cv2.dilate((np.abs(d) > CHG_K * sigma).astype(np.uint8), kern) > 0
+        new = base & ~chg
+        frac = 1.0 - float(new.sum()) / n_base
+        if frac <= CHG_MAX_FRAC:
+            use, excl = new, frac
+        if r == CHG_ROUNDS:
+            break
+        try:
+            _cc, w2 = cv2.findTransformECC(ha, hb, init.copy(), cv2.MOTION_EUCLIDEAN, crit,
+                                           use.astype(np.uint8) * 255, 5)
+            warp = w2
+        except cv2.error as e:
+            out["msg"] = "정밀 정렬 실패 · 이동만 보정 (%s)" % str(e).splitlines()[0][:50]
+            warp = init                                         # 위상 상관 초기값만으로 계속(ECC 가 중간에 망가뜨린 변환은 쓰지 않는다)
+            break
     Ms = np.asarray(warp, np.float64)
     M = Ms.copy()
     M[:, 2] = Ms[:, 2] / scale                                  # 이동만 원해상도로(회전 · 평행이동은 닮음 변환이라 선형부는 그대로)
     th = math.degrees(math.atan2(M[1, 0], M[0, 0]))
-    # 잔차: 정렬한 기준 고역 영상과 현재 고역 영상의 차이
-    wa = cv2.warpAffine(ha, Ms.astype(np.float32), (hb.shape[1], hb.shape[0]), flags=cv2.INTER_LINEAR)   # M = 기준→현재 이므로 기준(M⁻¹·x) = 정방향 warp
-    m = np.ones_like(hb, bool) if sm is None else (sm > 0)
-    m[:8, :] = m[-8:, :] = False
-    m[:, :8] = m[:, -8:] = False
-    sd = float(np.std(hb[m])) + 1e-6
-    resid = float(np.std((wa - hb)[m])) / sd
+    # 잔차: 정렬한 기준 고역 영상과 현재 고역 영상의 차이(남긴 곳만)
+    d = cv2.warpAffine(ha, Ms.astype(np.float32), size, flags=cv2.INTER_LINEAR) - hb
+    resid = float(np.std(d[use])) / (float(np.std(hb[use])) + 1e-6)
     out.update({"M": M, "dx": float(M[0, 2]), "dy": float(M[1, 2]), "theta_deg": th, "resid": resid,
-                "ok": bool(resid < RESID_FAIL and np.isfinite(resid)), "msg": out["msg"]})
+                "ok": bool(resid < RESID_FAIL and np.isfinite(resid)), "msg": out["msg"], "excl": excl})
     if not out["ok"] and not out["msg"]:
         out["msg"] = "정렬 잔차가 큼 (%.2f)" % resid
     return out

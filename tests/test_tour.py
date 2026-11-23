@@ -1,4 +1,4 @@
-"""히트건 · 쿨러 없이 "샘플 인식 → 이동 → 접촉": X · Y 조그 잠금(safety.reject_xy_jog) · [보정 점 추가] 거리 검사 ·
+"""히트건 · 쿨러 없이 "샘플 인식 → 이동 → 접촉": X · Y 조그 잠금(safety.reject_xy_jog) · [보정 점 추가](coord_add_at) 거리 검사 · 같은 자리 교체 ·
 샘플로 이동 + 내리기(prep.go_and_lower - plate_goto · sample_goto) · 자동 순회(app/jobs/tour.py)."""
 
 import threading
@@ -90,8 +90,10 @@ def test_sample_goto_lower_lifts_pin_first_then_lowers(ready_ctrl):
     assert log[iz] == "gz 0" and iz < ixy, "X · Y 가 움직이기 전에 Z 가 0 이 된다: %s" % log
     assert abs(ctrl.state.get("pos", "x") - b["xy"][0]) < 0.01 and abs(ctrl.state.get("pos", "y") - b["xy"][1]) < 0.01
     assert abs(ctrl.state.get("pos", "z") - cz) < 0.01
-    assert ctrl.prep.last_click["sample"] == b["name"], "[보정 점 추가] 가 그대로 되게 선택 위치를 남긴다"
-    ctrl.run_command("coord_add_here")
+    assert ctrl.prep.last_click["sample"] == b["name"] and ctrl.prep.last_click["plate"] == b["pin"], "선택 위치 = 그 샘플의 핀 놓을 자리"
+    lc = dict(ctrl.prep.last_click)
+    ctrl.run_command("coord_add_at", {"x": b["pin"][0], "y": b["pin"][1]})
+    assert ctrl.prep.last_click == lc, "보정 점 추가는 선택 위치를 바꾸지 않는다"
 
 
 def test_sample_goto_without_lower_stays_up(ready_ctrl):
@@ -149,20 +151,36 @@ def test_sample_goto_lower_rejected_without_contact_height(ready_ctrl):
 # ---------------------------------------------------------------------------
 # [2] 보정 점 추가 거리 검사
 # ---------------------------------------------------------------------------
-def test_coord_add_here_rejects_far_point(ready_ctrl):
+def test_coord_add_at_far_same_and_new_point(ready_ctrl):
     ctrl = ready_ctrl()
-    s = _found(ctrl)[0]
-    ctrl.run_command("plate_goto", {"x": s["plate"][0], "y": s["plate"][1]})
+    todo = _found(ctrl)
+    s, t = todo[0], todo[-1]
     x, y = s["xy"]
+    ex = lambda: ctrl.calib.d["coords"]["extra"]                    # noqa: E731
+    n0 = len(ex())
     far = x + 15.0 if x + 15.0 < float(ctrl.cfg["x_max_mm"]) else x - 15.0
-    ctrl.goto(far, y)
-    n0 = len(ctrl.calib.d["coords"]["extra"])
-    with pytest.raises(Rejected, match="떨어짐"):
-        ctrl.run_command("coord_add_here")
-    assert len(ctrl.calib.d["coords"]["extra"]) == n0
-    ctrl.goto(x + (2.0 if far > x else -2.0), y)                     # 한도(10 mm) 안
-    ctrl.run_command("coord_add_here")
-    assert len(ctrl.calib.d["coords"]["extra"]) == n0 + 1
+    ctrl.goto(far, y)                                                # 핀이 누른 자리에서 15 mm
+    with pytest.raises(Rejected, match="핀에서"):
+        ctrl.run_command("coord_add_at", {"x": s["pin"][0], "y": s["pin"][1]})
+    assert len(ex()) == n0
+    ctrl.goto(x, y)
+    r = ctrl.run_command("coord_add_at", {"x": s["pin"][0], "y": s["pin"][1]})
+    assert r["replaced"] is False and r["n"] == n0 + 1 and r["moved"] < 0.5
+    t0 = ex()[-1]["t"]
+    ctrl.goto(x + 0.5, y)                                            # 같은 자리(3 mm 안)를 다시: 점 수 그대로 · 그 점을 교체
+    r = ctrl.run_command("coord_add_at", {"x": s["pin"][0] + 1.0, "y": s["pin"][1]})
+    assert r["replaced"] is True and r["n"] == n0 + 1
+    assert abs(ex()[-1]["xy"][0] - (x + 0.5)) < 0.01 and ex()[-1]["t"] >= t0
+    assert _dist_xy(s["pin"], t["pin"]) > float(ctrl.cfg["coord_same_mm"])
+    ctrl.goto(*t["xy"])                                              # 다른 자리: 추가
+    r = ctrl.run_command("coord_add_at", {"x": t["pin"][0], "y": t["pin"][1]})
+    assert r["replaced"] is False and r["n"] == n0 + 2
+    ctrl.run_command("coord_remove", {"index": r["n"] - 1})           # [마지막 지우기]
+    assert len(ex()) == n0 + 1
+
+
+def _dist_xy(a, b):
+    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
 
 
 # ---------------------------------------------------------------------------

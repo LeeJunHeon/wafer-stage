@@ -503,7 +503,7 @@ function buildStep5() {
       h("div", { class: "grp" }, h("h4", { text: "정확도" }), pg.q),
       h("div", { class: "grp" }, h("h4", { text: "헤드 마커" }), pg.marker, h("div", { class: "row" }, pg.learn.b, pg.learn.w)),
       h("div", { class: "grp" }, h("h4", { text: "보정 점" }),
-        h("div", { class: "small", text: "수동 제어 탭 판 사진에서 추가" }),
+        h("div", { class: "small", text: "수동 제어 탭 [보정 점 추가] · 사진에서 핀 위치 누름" }),
         pg.extra, h("div", { class: "row" }, pg.clear))));
   pg.draw = () => {
     const co = P().coords;
