@@ -114,3 +114,35 @@ def test_solve_trim_opposite_sign():
 def test_solve_trim_no_period_and_limit():
     assert solve_trim(None, 5.0) is None
     assert solve_trim(0.1, 0.05)["trim_ppm"] == -3000                           # ±3000 안으로
+
+
+# ---- 안정 대기(temp_settle_s): 첫 출력을 넣은 뒤 한 번 · 단계 "안정" 은 기록만 ----
+FAST = 200.0
+
+
+def _trim_rows(make_ctrl, settle_s):
+    """[박자 보정] 을 끝까지(시험용 보드에는 박자가 없어 "박자가 안 보임" 중단이어도 된다) 돌리고 temp.csv 줄([경과 s, 단계])을 돌려준다."""
+    from tests.conftest import wait_for
+    c = make_ctrl(time_scale=FAST, heater_sync="none", temp_settle_s=settle_s, temp_trim_s=20.0)
+    c.lab.world = None
+    c.run_command("temptest_start", {"mode": "trim"})
+    assert wait_for(lambda: not c.temptest.active, 60), "박자 보정이 끝나지 않았다"
+    lines = (c.temptest.folder / "temp.csv").read_bytes().decode("utf-8-sig").splitlines()[1:]
+    return [(float(r.split(",")[1]), r.split(",")[2]) for r in lines]
+
+
+def test_settle_before_first_trim_rows(make_ctrl):
+    rows = _trim_rows(make_ctrl, 20.0)
+    names = [n for _, n in rows]
+    assert "안정" in names and "박자" in names
+    i0, i1 = names.index("안정"), names.index("박자")
+    assert all(n != "안정" for n in names[i1:]), "안정 줄은 첫 박자 줄보다 앞에만"
+    assert all(n == "안정" for n in names[i0:i1])
+    gaps = [b[0] - a[0] for a, b in zip(rows, rows[1:])]
+    tol = max(2.0, 3 * max(gaps))                                                # 기록된 점 간격 기준(시간 배율 · 시계 해상도)
+    assert abs((rows[i1][0] - rows[i0][0]) - 20.0) <= tol
+
+
+def test_settle_zero_skips(make_ctrl):
+    rows = _trim_rows(make_ctrl, 0.0)
+    assert "안정" not in [n for _, n in rows]

@@ -424,9 +424,13 @@ firmware/stage_v17/     펌웨어 V17(지금 쓰는 것 - V16 + 전원 맞춤 �
   calib `speed_max` · 화면 · 로그) ·
   **[박자 시험]**(beat - `_run_beat`): 쿨러 → `_station_on`(켠 뒤 100 % 유지 포함 · 예비 냉각 · 기준 온도 대기 없음) → 지금 출력 방식 · 칸 그대로 박자만 0 → 1 → 2
   (`c.heater_timing` · 설정은 그대로) · 박자마다 `temp_beat_pct`(20 %)로 `temp_beat_s`(60 s) 유지 · 기록(단계 "박자" · temp.csv 출력 방식 칸에 박자 이름 - `method_text(beat=True)`) ·
-  진행 "박자 1/3 · 전원 맞춤" → 출력 0 % → 정리(`_cleanup` - 설정의 출력 방식 · 박자로 되돌림 + 시작 전 박자 확인 · 끄는 순서 · 정지 · 비상정지 · 차단 · 오류도 같다).
+  첫 출력 뒤 안정 대기(`_settle` - 아래) · 진행 "박자 1/3 · 전원 맞춤" → 출력 0 % → 정리(`_cleanup` - 설정의 출력 방식 · 박자로 되돌림 + 시작 전 박자 확인 · 끄는 순서 · 정지 · 비상정지 · 차단 · 오류도 같다).
   분석 `beat_eval`: 뒤쪽 2/3 · 직선 추세 뺌 → 평균 · 흔들림(표준편차) · 폭 · 가장 센 주기(2~30 s · 0.2 s 간격 · cos · sin 최소제곱 진폭 · 본 구간 길이 이하만) · 진폭.
   summary.txt [박자 시험](조건 한 줄 + 박자별 한 줄) · 창 표 · 로그 한 줄. 설정은 저장하지 않는다. 안전 규칙은 맞추기와 같다(`_hold_for`) · 전원 맞춤 기준이 없음일 때만 시작 ·
+  **안정 대기**(`_settle` · 박자 시험 · 위상 찾기 · 박자 보정 공통 · 첫 `_power(pct)` 바로 뒤 한 번 · 위상 찾기는 첫 위상의 잠김 대기 앞): `temp_settle_s`(60 s · 0 이면 안 함) 동안
+  단계 "안정"(SETTLE) · 진행 "안정 대기 · 60 s" · `_hold_for`(안전 규칙 그대로) · 그 점은 temp.csv 에만(어떤 계산에도 안 씀) → 단계를 박자 · 위상 · 박자(TRIM)로 되돌림.
+  까닭: 켠 뒤 100 % 유지로 80 °C 근처까지 튄 온도가 유지 출력 온도로 식는 동안(시상수 16~23 s)이 첫 구간에 섞여 박자 보정의 보정 0 박자 주기가 8.9 s 대신 9.6~15 s
+  (보정 926 대신 556~868 ppm) · 위상 찾기의 위상 0 평균이 6~8 °C 높아 없는 경계를 만들었다. 결과 dict 에 `settle_s` · summary.txt 세 절의 조건 줄 끝 " · 안정 대기 60 s"(0 이면 안 붙임 - `settle_tail`) ·
   **[위상 찾기]**(phase - `_run_phase` · 기준이 없음이면 거절 "전원 맞춤 기준 없음 · 설정에서 영점 모듈 또는 전선 선택"): 쿨러 → `_station_on` → `temp_beat_pct` →
   위상 `PHASE_OFFS`(0 · 100 · … · 900 ‰)마다 `c.heater_phase` → 잠길 때까지 최대 `PHASE_LOCK_S`(5 s · `sync_problem` 으로 hz 를 물음) → `temp_phase_s`(30 s) 유지 · 단계 "위상" →
   `beat_eval`(뒤쪽 2/3) + 잠김(기다림 끝에 잠겼고 유지 중 풀리지 않음) → 출력 0 %. `pick_phase`(순수 함수): 평균 폭 = 최고 − 최저 · 이웃(900 과 0 도)의 평균 차이 > 폭 × `PHASE_EDGE`(0.35)면 경계
@@ -459,7 +463,7 @@ firmware/stage_v17/     펌웨어 V17(지금 쓰는 것 - V16 + 전원 맞춤 �
 - 조건은 자동 측정과 같은 설정(`run_start_c` · `run_heater_off_c` · `run_cool_end_c` · `run_heat_mode` · `run_point_step_c` · `cool_rate_separate` · heater_lead_* ·
   `heater_max_pct` · heat_model_* · `run_heat_hold_s` · `run_fan_during_cool` · `run_stall_s` · `run_stall_c` · `run_phase_limit_s`) +
   `temp_test_coolers`(쿨러 릴레이 안 · 빈 목록 가능) · `temp_test_interval_s`(≥ 온도 읽기 시간 · < 온도 못 읽음 허용 × 사용 비율) · `temp_test_mark_c` · `temp_test_precool` ·
-  박자 시험 `temp_beat_pct` · `temp_beat_s` · 환경 맞추기 `temp_sweep_s` · `temp_sweep_hold_s` · 위상 찾기 `temp_phase_s` · 박자 보정 `temp_trim_s` · 맞추기 `temp_tune_c` · `temp_tune_start_pct` · `temp_tune_slots`(기본 "17,33,50,100,300" · 10~1000 · 중복 없이 · 10개 이하 - `config.tune_slot_problems` · 펌웨어가 전원 주기의 정수배로 맞춤) · `temp_step_s`
+  박자 시험 `temp_beat_pct` · `temp_beat_s` · 유지 시험 안정 대기 `temp_settle_s` · 환경 맞추기 `temp_sweep_s` · `temp_sweep_hold_s` · 위상 찾기 `temp_phase_s` · 박자 보정 `temp_trim_s` · 맞추기 `temp_tune_c` · `temp_tune_start_pct` · `temp_tune_slots`(기본 "17,33,50,100,300" · 10~1000 · 중복 없이 · 10개 이하 - `config.tune_slot_problems` · 펌웨어가 전원 주기의 정수배로 맞춤) · `temp_step_s`
   (`config.temptest_problems` · 시작 때 `heat_problems` 도 - 표 `heat_curve` 는 2~12점 · 첫 점 0 % · 출력 · 온도 모두 증가 - `config.curve_problems`). 창에서 가열 방식 · 속도를 바로, 나머지는 [조건] 으로 고친다(같은 설정 값).
 - 순서(test · max): 쿨러 켬 → **스테이션 켜기**(`_station_on` · 단계 예비 냉각 · "스테이션 켜는 중": 히트건 켜기(Controller 히트건 함수 · 측정 주체 규칙) → 바로 출력 0 % 요청
   (켠 뒤 100 % 유지가 끝나면 적용 - 유지 때문에 85~104 °C 까지 튄다) → 유지 끝까지 기록만) → 예비 냉각(송풍 · 출력 0 % 로 시작 온도까지 · `temp_test_precool` 끄면 건너뜀 ·

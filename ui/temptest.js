@@ -19,7 +19,7 @@ const TT_KEYS = [
   ["run_stall_s", "냉각 정체 시간", "s"], ["run_stall_c", "냉각 정체 기준", "°C"], ["run_phase_limit_s", "한 단계 시간 한도", "s"], ["temp_test_coolers", "쿨러", "ints"],
   ["temp_test_precool", "예비 냉각", "bool"], ["temp_test_interval_s", "읽기 간격", "s"], ["temp_test_mark_c", "도달 표 간격", "°C"],
   ["temp_tune_c", "맞추기 비교 온도", "°C"], ["temp_tune_start_pct", "맞추기 시작 출력", "%"], ["temp_tune_slots", "맞추기 후보 칸", "str"],
-  ["temp_step_s", "맞추기 계단 유지", "s"], ["temp_beat_pct", "박자 시험 출력", "%"], ["temp_beat_s", "박자 시험 유지", "s"],
+  ["temp_step_s", "맞추기 계단 유지", "s"], ["temp_beat_pct", "박자 시험 출력", "%"], ["temp_beat_s", "박자 시험 유지", "s"], ["temp_settle_s", "유지 시험 안정 대기", "s"],
   ["temp_sweep_s", "훑기 올림 시간", "s"], ["temp_sweep_hold_s", "훑기 꼭대기 유지", "s"],
   ["temp_phase_s", "위상 찾기 유지", "s"], ["temp_trim_s", "박자 보정 유지", "s"], ["heater_tc_s", "제어 응답 시간", "s"], ["heat_curve", "출력별 온도 표", "str"], ["reversal_c", "역전 기준", "°C"],
 ];
