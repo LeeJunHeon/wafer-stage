@@ -399,6 +399,21 @@ function vq() { const c = (S && S.cfg) || {}; return "&r=" + (c.view_rot || 0) +
 function bootText(ht) {
   return ht && ht.boot_left > 0 ? "스테이션 켜는 중 · " + Math.ceil(ht.boot_left) + "초 뒤 출력 적용" : "";
 }
+/* 전원 맞춤 한 줄(펌웨어 V17 heater.sync - 온도 시험 창 · 수동 제어 히트건 칸): {text, warn} · 모르면 null */
+const SYNC_NAMES = { 0: "없음", 1: "영점 모듈", 2: "전선" };
+function syncText(ht) {
+  const z = ht && ht.sync;
+  if (!z || z.src == null) return null;
+  const name = SYNC_NAMES[z.src] || "기준 모름";
+  if (z.src === 0) return { text: "전원 맞춤 · 없음" + (z.trim ? " · 보정 " + z.trim + " ppm" : ""), warn: false };
+  if (z.lock) return { text: "전원 맞춤 · " + name + " · 잠김 · " + (z.hz == null ? "—" : Number(z.hz).toFixed(2) + " Hz") + " · 위상 " + (z.off == null ? "—" : z.off + " ‰"), warn: false };
+  return { text: "전원 맞춤 · " + name + " · 신호 없음" + (z.src === 2 && z.amp != null ? "(세기 " + z.amp + ")" : ""), warn: true };
+}
+function setSyncLine(el, ht) {
+  const s = syncText(ht);
+  el.textContent = s ? s.text : "";
+  el.className = (el.dataset.cls || "small") + (s && s.warn ? " st-warn" : "");
+}
 function renderDirs() {
   const d = (S && S.prep && S.prep.view && S.prep.view.dirs) || null;
   for (const pb of DIR_BOXES) for (const k of ["top", "bottom", "left", "right"]) { const t = d ? d[k] : ""; if (pb.dirs[k].textContent !== t) pb.dirs[k].textContent = t; }

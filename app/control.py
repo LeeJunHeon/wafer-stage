@@ -450,7 +450,8 @@ class Controller:
         self.state.set("heater", {"fan": fv, "element": ev, "fan_off_at": self._fan_off_epoch,
                                   "pct": self.heater_pct() if self.stage.connected else None, "heat_fw": bool(self.stage.heat_capable),
                                   "boot_left": round(self.boot_left(), 1), "boot_pending": self._boot_pending,
-                                  "method": self.stage.method_text() if self.stage.heat_capable else ""})
+                                  "method": self.stage.method_text() if self.stage.heat_capable else "",
+                                  "sync": dict(self.stage.heat_sync, cfg=self.cfg["heater_sync"]) if self.stage.heat_capable else None})
 
     def _apply_migration(self):
         """예전 settings.json 을 지금 규칙으로 옮긴 것(config._migrate)을 로그에 한 줄씩 남기고 파일에 저장한다.
@@ -926,28 +927,31 @@ class Controller:
             self._heater_sync()
 
     def heater_pct(self) -> float:
-        """지금 열선 출력 %(V16 이 알려 준 값 · 0.1 % 단위). 모르면(V11 ~ V15) 열선 켜짐 = 100 · 꺼짐 = 0."""
+        """지금 열선 출력 %(V17 이 알려 준 값 · 0.1 % 단위). 모르면(V11 ~ V16) 열선 켜짐 = 100 · 꺼짐 = 0."""
         p = self.stage.heat_pct if self.stage.heat_capable else None
         if p is not None:
             return round(float(p), 1)
         return 100.0 if self._element_on() else 0.0
 
-    # ---- 열선 출력 방식(V16 hpm · hpp · hps · hpj) ----
+    # ---- 열선 출력 방식(V17 hpm · hpp · hps · hpj · hpz · hpo · hpt) ----
     def _out_cfg(self):
-        """설정의 출력 방식 · 몰아 켜기 주기 · 고르게 칸 · 박자(출력 방식을 보내는 곳은 모두 이 넷을 같이 보낸다)."""
+        """설정의 출력 방식 · 몰아 켜기 주기 · 고르게 칸 · 박자 · 전원 맞춤 기준 · 위상 · 보정(출력 방식을 보내는 곳은 모두 이 일곱을 같이 보낸다).
+        기준이 없음이 아니면 박자 설정은 쓰지 않고 전원 맞춤(0)을 보낸다(펌웨어가 기준 사용 중 박자 1 · 2 를 거절한다 · 설정 저장은 막지 않는다)."""
         c = self.cfg
-        return c["heater_out_mode"], int(c["heater_pwm_period_ms"]), int(c["heater_slot_ms"]), c["heater_timing"]
+        timing = c["heater_timing"] if c["heater_sync"] == "none" else "sync"
+        return (c["heater_out_mode"], int(c["heater_pwm_period_ms"]), int(c["heater_slot_ms"]), timing,
+                c["heater_sync"], int(c["heater_phase_off"]), int(c["heater_trim_ppm"]))
 
     def heater_method(self, mode, ms):
         """설정은 그대로 두고 펌웨어에만 출력 방식을 보낸다([히트건 맞추기] 가 방식을 바꿔 가며 잰다). mode window → ms = 주기 · spread → ms = 칸."""
         self._need_heat_fw()
-        _m, period, slot, timing = self._out_cfg()
+        _m, period, slot, timing, sync, phase, trim = self._out_cfg()
         if mode == "window":
             period = int(ms)
         else:
             slot = int(ms)
         try:
-            self.stage.heat_out(mode, period, slot, timing)
+            self.stage.heat_out(mode, period, slot, timing, sync, phase, trim)
         except StageError as e:
             raise Rejected("출력 방식 보내기 실패 · %s" % e)
         self._publish_heater()
@@ -963,8 +967,44 @@ class Controller:
         self._publish_heater()
         return {"method": self.stage.method_text()}
 
+    def heater_phase(self, off):
+        """설정은 그대로 두고 펌웨어에만 전원 위상(‰ · hpo)을 보낸다([위상 찾기] 가 위상을 바꿔 가며 잰다 · 끝나면 heater_method_restore 가 설정값으로)."""
+        self._need_heat_fw()
+        try:
+            self.stage.heat_sync_set("off", int(off))
+        except StageError as e:
+            raise Rejected("전원 위상 보내기 실패 · %s" % e)
+        self._publish_heater()
+        return {"method": self.stage.method_text()}
+
+    def heater_trim(self, ppm):
+        """설정은 그대로 두고 펌웨어에만 타이머 보정(ppm · hpt)을 보낸다([박자 보정] · 끝나면 heater_method_restore 가 설정값으로)."""
+        self._need_heat_fw()
+        try:
+            self.stage.heat_sync_set("trim", int(ppm))
+        except StageError as e:
+            raise Rejected("타이머 보정 보내기 실패 · %s" % e)
+        self._publish_heater()
+        return {"method": self.stage.method_text()}
+
+    def sync_problem(self, refresh=True):
+        """전원 맞춤 기준(heater_sync)이 없음이 아닌데 펌웨어가 잠기지 않았으면 그 이유 · 아니면 None(온도 시험 · 자동 측정 시작 거절 · 시험 도중 메모).
+        refresh = 펌웨어에 hz 를 물어 본다(아니면 쉬는 동안 2 초마다 읽은 값). 묻기 실패면 마지막으로 아는 값으로 판단한다."""
+        src = self.cfg["heater_sync"]
+        if src == "none" or not self.stage.heat_capable:
+            return None
+        if refresh:
+            try:
+                self.stage.read_sync()
+            except StageError as e:
+                self.logs.app("전원 맞춤 상태 읽기 실패 · %s" % e, "warn")
+        z = self.stage.heat_sync
+        if z.get("src") == stage_mod.SYNCS[src] and z.get("lock"):
+            return None
+        return "전원 맞춤 신호 없음 · %s 확인" % ("영점 모듈(D19)" if src == "zc" else "전선(A0)")
+
     def heater_method_restore(self):
-        """설정의 출력 방식 · 박자를 펌웨어에 보낸다(맞추기 · 박자 시험 끝 · 측정 · 온도 시험 시작 · 설정 저장)."""
+        """설정의 출력 방식 · 박자 · 전원 맞춤(기준 · 위상 · 보정)을 펌웨어에 보낸다(맞추기 · 박자 시험 · 위상 찾기 · 박자 보정 끝 · 측정 · 온도 시험 시작 · 설정 저장)."""
         self._need_heat_fw()
         try:
             self.stage.heat_out(*self._out_cfg())
@@ -978,7 +1018,7 @@ class Controller:
         0 보다 크게 하려면 송풍이 켜져 있어야 한다(인터락 - 송풍이 꺼져 있으면 [켜기] 로 열선 → 송풍 순서부터). 열선이 꺼져 있다 켜지면 켜기 판정(차단 온도 · 온도 읽기)을 본다.
         상한 heater_max_pct. 펌웨어도 송풍이 꺼져 있으면 거부한다."""
         self._need_heat_fw()
-        pct = max(0.0, min(float(self.cfg["heater_max_pct"]), round(float(pct), 1)))        # 0.1 % 단위(V16)
+        pct = max(0.0, min(float(self.cfg["heater_max_pct"]), round(float(pct), 1)))        # 0.1 % 단위(V17)
         fan = self._roles()[0]
         with self._heater_lock:
             if pct > 0:
@@ -1715,14 +1755,15 @@ class Controller:
             self.logs.app("릴레이 역할 변경 · %s" % " · ".join("%s %s → %s" % (config_mod.BY_KEY[k].label, old[k], new[k]) for k in roles_changed))
             if self.stage.connected:
                 try:
-                    if self.stage.heat_capable:                     # 펌웨어 V16 의 송풍 · 열선 번호(hp 의 송풍 검사 · 열선 출력 핀)도 새 번호로
+                    if self.stage.heat_capable:                     # 펌웨어 V17 의 송풍 · 열선 번호(hp 의 송풍 검사 · 열선 출력 핀)도 새 번호로
                         fan, el = self._roles()[:2]
                         self.stage.heat_config(fan, el, *self._out_cfg())
                     self.stage.read_relays()                        # rs 를 다시 읽어 안전 감시가 새 번호의 릴레이를 기준으로 보게 한다
                 except StageError as e:
                     self.logs.app("릴레이 상태 읽기 실패 · %s" % e, "warn")
             self._heater_sync()
-        if any(k in new and new[k] != old[k] for k in ("heater_out_mode", "heater_pwm_period_ms", "heater_slot_ms", "heater_timing")) and self.stage.heat_capable:
+        out_keys = ("heater_out_mode", "heater_pwm_period_ms", "heater_slot_ms", "heater_timing", "heater_sync", "heater_phase_off", "heater_trim_ppm")
+        if any(k in new and new[k] != old[k] for k in out_keys) and self.stage.heat_capable:
             try:                                                    # 측정 · 온도 시험 중에는 여기 오지 않는다(위에서 거절 - 끝날 때 되돌리기가 적용)
                 self.heater_method_restore()
                 self.logs.app("열선 출력 방식 · %s" % self.stage.method_text())

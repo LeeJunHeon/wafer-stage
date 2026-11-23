@@ -8,12 +8,17 @@ heater.speed_table) ·
 beat = [박자 시험](_run_beat - 스테이션 켜기 뒤 지금 출력 방식 · 칸 그대로 열선 박자만 전원 맞춤 → 어긋남 → 무작위로 바꿔 가며 temp_beat_pct 로
 temp_beat_s 씩 유지 · 박자마다 뒤쪽 2/3 의 평균 · 흔들림 · 폭 · 가장 센 주기 - 설정은 저장하지 않는다) ·
 env = [환경 맞추기](_run_env - 스테이션 다이얼 · 쿨러 같은 환경을 바꾼 뒤 한 번: 기준 온도 → 출력 훑기(0 → 최대 → 0 % · 지금 출력 방식 그대로) →
-heater.fit_sweep 로 출력별 온도 표 · 열 모델(τ · θ)을 맞춰 저장 → 새 표로 확인 시험(_heat_cool - [시작] 과 같은 가열 · 냉각)).
-펌웨어 V16 필요(열선 출력 0.1 % · 출력 방식 · 전원 주기 단위 칸 · 박자 hpj).
+heater.fit_sweep 로 출력별 온도 표 · 열 모델(τ · θ)을 맞춰 저장 → 새 표로 확인 시험(_heat_cool - [시작] 과 같은 가열 · 냉각)) ·
+phase = [위상 찾기](_run_phase - 전원 맞춤 기준(heater_sync)이 있을 때: 전원 위상 0 · 100 · … · 900 ‰ 마다 temp_beat_pct 로 temp_phase_s 유지 →
+평균 · 흔들림 → pick_phase 로 고른 위상을 heater_phase_off 에 저장) ·
+trim = [박자 보정](_run_trim - 기준이 없음일 때: 타이머 보정 0 → +600 ppm 마다 temp_trim_s 유지 → 박자 주기 → solve_trim 으로 보정 → 확인 → heater_trim_ppm 저장).
+펌웨어 V17 필요(열선 출력 0.1 % · 출력 방식 · 전원 주기 단위 칸 · 박자 hpj · 전원 맞춤 hpz · hpo · hpt).
+배경(전원 맞춤): [환경 맞추기] 의 출력 훑기에서 출력만 올려도 온도가 약 9 초마다 +3~9 °C 계단으로 올랐다 - 틱이 전원 반주기와 약 0.1 % 어긋나
+켜는 순간의 전원 파형 위치가 약 9 초에 반주기씩 밀리고 그 위치에 따라 열이 잘 들어가는 상태와 덜 들어가는 상태가 갈린다.
 배경(박자): 타이머1 틱이 전원 60 Hz 반주기와 거의 같아 켜는 순간의 전원 파형 위치가 약 10 초 주기로 천천히 밀리고 그 주기로 열이 덩어리져 들어오는 것으로 보였다.
 배경: 열선 줄(SSR + 스테이션)은 명령한 % 를 그대로 통과시키지 않는다(같은 6 % 에서 칸 10 · 50 · 100 ms 가 64 · 42 · 45 °C) - 그래서 값마다 잰다.
 가열 · 냉각 속도 = 목표 점 간격 ÷ temp_test_interval_s × 60 · 속도 정하는 방법이 걸리는 시간이면 온도 차 ÷ 가열 · 냉각 시간(config.heat_rate_c_min).
-끝날 때마다(어떤 끝이든 · 다섯 시험 모두) temp_test/index.csv 에 한 줄을 덧붙인다(write_index).
+끝날 때마다(어떤 끝이든 · 일곱 시험 모두) temp_test/index.csv 에 한 줄을 덧붙인다(write_index).
 
 목적: "몇 °C 까지 몇 초에 도달하는지" · 최대 가열 속도 · 넘침(열선을 끈 뒤 더 오르는 정도) · 냉각 시간을 보고 히트건 · 가열 제어 값을 정한다.
 조건은 자동 측정과 같은 설정(run_start_c · run_heater_off_c · run_cool_end_c · run_heat_mode · run_point_step_c · cool_rate_separate ·
@@ -48,15 +53,16 @@ from app import config as config_mod
 from app import imgio
 from app.devices import meters
 from app.jobs import analysis
-from app.devices.stage import FW_NEED, TIMINGS, TIMING_NAMES
+from app.devices.stage import FW_NEED, SYNC_NAMES, SYNCS, TIMINGS, TIMING_NAMES
 from app.jobs import heater as heater_mod
 from app.jobs.heater import LineControl, RelayHeater, Stall
 from app.safety import Rejected
 from app.state import ALARM, NOTICE
 
-PRECOOL, HEAT, HOLD, COOL, SETTLE, COMPARE, STEP, BEAT, SWEEP = 0, 1, 2, 3, 4, 5, 6, 7, 8
-PHASES = ("예비 냉각", "가열", "유지", "냉각", "안정", "비교", "계단", "박자", "훑기")
-# 안정 · 비교 · 계단 = [히트건 맞추기] · 박자 = [박자 시험] · 훑기 = [환경 맞추기](가열 · 냉각 요약은 이 단계 점을 쓰지 않는다)
+PRECOOL, HEAT, HOLD, COOL, SETTLE, COMPARE, STEP, BEAT, SWEEP, PHASE_SCAN, TRIM = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+PHASES = ("예비 냉각", "가열", "유지", "냉각", "안정", "비교", "계단", "박자", "훑기", "위상", "박자")
+# 안정 · 비교 · 계단 = [히트건 맞추기] · 박자 = [박자 시험] · 훑기 = [환경 맞추기] · 위상 = [위상 찾기] · 박자(TRIM) = [박자 보정]
+# (가열 · 냉각 요약은 이 단계 점을 쓰지 않는다)
 DONE, STOPPED, ESTOPPED, ABORTED = "완료", "정지", "비상정지", "중단"
 CSV_HEADER = ("시각", "경과(s)", "단계", "온도(°C)", "목표(°C)", "열선 출력(%)", "출력 방식", "송풍", "쿨러")
 COND_KEYS = ("run_start_c", "run_heater_off_c", "run_cool_end_c", "run_heat_mode", "run_point_step_c", "cool_rate_separate",
@@ -67,9 +73,21 @@ COND_KEYS = ("run_start_c", "run_heater_off_c", "run_cool_end_c", "run_heat_mode
              "run_cool_mode", "run_cool_rate_c_min", "heater_lead_c", "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct",
              "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "reversal_c",
              "heater_out_mode", "heater_pwm_period_ms", "heater_slot_ms", "heater_timing", "temp_beat_pct", "temp_beat_s",
-             "run_rate_by", "run_heat_time_s", "run_cool_time_s", "temp_sweep_s", "temp_sweep_hold_s")
-MODES = {"test": "온도 시험", "tune": "히트건 맞추기", "max": "최대 속도 재기", "beat": "박자 시험", "env": "환경 맞추기"}
-FOLDER_TAIL = {"test": "", "tune": "_맞추기", "max": "_최대속도", "beat": "_박자", "env": "_환경"}
+             "run_rate_by", "run_heat_time_s", "run_cool_time_s", "temp_sweep_s", "temp_sweep_hold_s",
+             "heater_sync", "heater_phase_off", "heater_trim_ppm", "temp_phase_s", "temp_trim_s")
+MODES = {"test": "온도 시험", "tune": "히트건 맞추기", "max": "최대 속도 재기", "beat": "박자 시험", "env": "환경 맞추기",
+         "phase": "위상 찾기", "trim": "박자 보정"}
+FOLDER_TAIL = {"test": "", "tune": "_맞추기", "max": "_최대속도", "beat": "_박자", "env": "_환경", "phase": "_위상", "trim": "_보정"}
+NO_SYNC_ONLY = "전원 맞춤 기준이 없음일 때만"            # [박자 보정] · [박자 시험] 시작 거절(기준이 있으면 펌웨어가 박자 1 · 2 를 거절하고 틱이 기준을 따른다)
+# [위상 찾기]: 위상 순서(‰) · 위상을 바꾼 뒤 잠김을 기다리는 최대 시간 · 이웃 위상의 평균 차이가 전체 폭의 PHASE_EDGE 를 넘으면 경계 ·
+#   전체 폭이 PHASE_FLAT_C 미만이면 경계 없음
+PHASE_OFFS = tuple(range(0, 1000, 100))
+PHASE_LOCK_S = 5.0
+PHASE_EDGE, PHASE_FLAT_C = 0.35, 2.0
+# [박자 보정]: 두 번째 보정 값 · 앞 TRIM_SKIP_S 는 뺌 · 주기는 TRIM_P_MIN ~ 구간 ÷ 2 · 보정 0 에서 진폭이 TRIM_AMP_MIN 미만이면 중단 ·
+#   어긋남 = 1e6 ÷ (TICKS_PER_S × 박자 주기) ppm(틱 = 전원 반주기 · 60 Hz → 120 틱/s · 반주기 하나가 밀리는 데 걸리는 시간이 박자 주기) · 보정은 ±TRIM_LIMIT 안
+TRIM_STEP_PPM, TRIM_SKIP_S, TRIM_P_MIN, TRIM_AMP_MIN, TRIM_LIMIT = 600, 10.0, 3.0, 0.5, 3000
+TICKS_PER_S = 120
 # [환경 맞추기]: 기준 온도 대기 최대 ENV_BASE_MAX_S · 훑기 끝 0 % 유지 ENV_ZERO_S · 맞춤에 훑기 시작 ENV_PRE_S 전 점부터 ·
 #   천장 < 가열 끝 + ENV_CEIL_MIN_C 면 확인 시험 안 함 · < 가열 끝 + ENV_CEIL_WARN_C 면 메모
 ENV_BASE_MAX_S, ENV_ZERO_S, ENV_PRE_S = 300, 20, 10
@@ -124,6 +142,116 @@ def beat_eval(rows, secs):
     if P is not None:
         out.update(period_s=round(P, 1), amp_c=round(amp, 3))
     return out
+def pick_phase(rows):
+    """[위상 찾기] 줄 [{"off", "mean_c", "sd_c", …}](위상 순서) → (고른 위상 ‰, 같은 상태 위상 목록, 평균 온도 폭 °C). 평균이 없는 줄은 뺀다.
+    평균의 전체 폭 = 최고 − 최저. 이웃한 두 위상(마지막과 처음도 이웃)의 평균 차이가 폭의 PHASE_EDGE 를 넘으면 그 사이를 경계로 본다
+    (폭이 PHASE_FLAT_C 미만이면 경계 없음). 경계로 나뉜 구간 중 가장 긴 것(같으면 흔들림 평균이 작은 것)의 가운데 위상
+    (짝수 개면 가운데 둘 중 흔들림이 작은 쪽). 경계가 없으면 흔들림이 가장 작은 위상(같은 상태 = 전부). 줄이 없으면 (None, [], None)."""
+    v = [r for r in rows if r.get("mean_c") is not None]
+    if not v:
+        return None, [], None
+    sd = lambda r: math.inf if r.get("sd_c") is None else float(r["sd_c"])     # noqa: E731
+    means = [float(r["mean_c"]) for r in v]
+    span = max(means) - min(means)
+    n = len(v)
+    cut = [] if span < PHASE_FLAT_C or n < 2 else [i for i in range(n) if abs(means[i] - means[(i + 1) % n]) > PHASE_EDGE * span]
+    if not cut:
+        best = min(v, key=sd)
+        return best["off"], [r["off"] for r in v], round(span, 2)
+    segs = []
+    for k, b in enumerate(cut):                                     # 경계 b 다음 위상부터 다음 경계까지(원을 돈다 · 경계가 하나면 n 개 전부)
+        e = cut[(k + 1) % len(cut)]
+        seg, i = [], (b + 1) % n
+        while True:
+            seg.append(v[i])
+            if i == e:
+                break
+            i = (i + 1) % n
+        segs.append(seg)
+
+    def sd_mean(seg):
+        x = [sd(r) for r in seg if sd(r) != math.inf]
+        return sum(x) / len(x) if x else math.inf
+
+    best = max(segs, key=lambda s: (len(s), -sd_mean(s)))         # 같으면 앞의 것
+    m = len(best)
+    if m % 2:
+        pick = best[m // 2]
+    else:
+        a, b = best[m // 2 - 1], best[m // 2]
+        pick = a if sd(a) <= sd(b) else b
+    return pick["off"], [r["off"] for r in best], round(span, 2)
+
+
+def solve_trim(p0, p1, step_ppm=TRIM_STEP_PPM):
+    """[박자 보정] 보정 0 의 박자 주기 p0 · 보정 +step_ppm 의 주기 p1 → {"drift_ppm", "trim_ppm"}(p0 이 없으면 None).
+    어긋남 크기 = 1e6 ÷ (TICKS_PER_S × p0) ppm. 틱을 step_ppm 만큼 늘렸더니 박자가 p0 × 0.8 보다 짧아졌으면(어긋남이 커졌다) 어긋남은 + → 보정 = −크기,
+    아니면(p1 이 없거나 더 길면) 어긋남은 − → 보정 = +크기. 반올림해 ±TRIM_LIMIT 안으로(step_ppm 은 판정이 가정하는 두 번째 값 - 어긋남과 비슷한 크기)."""
+    if p0 is None or p0 <= 0:
+        return None
+    size = 1e6 / (TICKS_PER_S * float(p0))
+    drift = size if (p1 is not None and p1 < 0.8 * float(p0)) else -size
+    trim = max(-TRIM_LIMIT, min(TRIM_LIMIT, int(round(-drift))))
+    return {"drift_ppm": int(round(drift)), "trim_ppm": trim}
+
+
+def trim_eval(rows, skip_s=TRIM_SKIP_S):
+    """[박자 보정] 보정 하나의 기록 [(구간 경과 s, 온도)] → 앞 skip_s 를 뺀 구간에서 직선 추세를 뺀 뒤 흔들림(표준편차) ·
+    가장 센 주기(TRIM_P_MIN ~ 구간 길이 ÷ 2 · analysis.period_scan)와 그 진폭."""
+    out = {"period_s": None, "amp_c": None, "sd_c": None}
+    w = [(t, v) for t, v in rows if t >= skip_s]
+    if len(w) < 6:
+        return out
+    t = np.array([a for a, _ in w], float)
+    v = np.array([b for _, b in w], float)
+    tc = t - t.mean()
+    den = float(np.sum(tc * tc))
+    b = float(np.sum(tc * (v - v.mean())) / den) if den > 0 else 0.0
+    r = v - (v.mean() + b * tc)
+    out["sd_c"] = round(float(np.sqrt(np.mean(r * r))), 3)
+    P, amp = analysis.period_scan(t, r, TRIM_P_MIN, float(t[-1] - t[0]) / 2.0, BEAT_P_STEP)
+    if P is not None:
+        out.update(period_s=round(P, 1), amp_c=round(amp, 3))
+    return out
+
+
+def phase_run_text(run):
+    """같은 상태 위상 목록 → "200~600"(하나면 "400")."""
+    if not run:
+        return "—"
+    return "%d" % run[0] if len(run) == 1 else "%d~%d" % (run[0], run[-1])
+
+
+def phase_lines(ps):
+    """[위상 찾기] 결과 줄: 조건 한 줄 + 위상마다 한 줄 + 고른 위상."""
+    L = ["", "[위상 찾기]", "%s · %s · 출력 %s %% · 위상마다 %g s · 뒤쪽 2/3" % (
+        ps.get("method") or "출력 방식 모름", SYNC_NAMES.get(SYNCS.get(ps.get("src"), -1), "기준 모름"), _f(ps.get("pct")), ps.get("secs") or 0)]
+    L.append("위상 ‰ · 평균 °C · 흔들림 °C · 폭 °C · 주기 s · 잠김")
+    for r in ps.get("rows") or []:
+        L.append("%d · %s · %s · %s · %s · %s" % (r["off"], _f(r.get("mean_c")), _f(r.get("sd_c"), "%.2f"), _f(r.get("pp_c")),
+                                              _f(r.get("period_s")), "예" if r.get("lock") else "아니오"))
+    if ps.get("pick") is not None:
+        L.append("고른 위상 · %d ‰ · 같은 상태 %s ‰ · 평균 온도 폭 %s °C · %s" % (ps["pick"], phase_run_text(ps.get("run")), _f(ps.get("span_c")),
+                                                                    "저장" if ps.get("saved") else "저장 안 함"))
+    return L
+
+
+def trim_lines(tf):
+    """[박자 보정] 결과 줄: 조건 한 줄 + 보정마다 한 줄 + 계산 · 확인 · 저장."""
+    L = ["", "[박자 보정]", "%s · 출력 %s %% · 보정마다 %g s" % (tf.get("method") or "출력 방식 모름", _f(tf.get("pct")), tf.get("secs") or 0)]
+    L.append("보정 ppm · 주기 s · 진폭 °C · 흔들림 °C")
+    for r in tf.get("rows") or []:
+        L.append("%d · %s · %s · %s" % (r["ppm"], _f(r.get("period_s")), _f(r.get("amp_c")), _f(r.get("sd_c"))))
+    if tf.get("drift_ppm") is not None:
+        L.append("어긋남 %+d ppm → 보정 %+d ppm" % (tf["drift_ppm"], tf["trim_ppm"]))
+    ck = tf.get("check")
+    if ck:
+        L.append("확인 · %d · 주기 %s · 진폭 %s · 흔들림 %s" % (ck["ppm"], _f(ck.get("period_s")), _f(ck.get("amp_c")), _f(ck.get("sd_c"))))
+    if tf.get("trim_ppm") is not None:
+        L.append("저장 · 보정 %d ppm" % tf["trim_ppm"] if tf.get("saved") else "저장 안 함")
+    return L
+
+
 IV = "temp_test_interval_s"
 T_MISS_N = 3                                      # 온도를 이만큼 연속으로 못 읽으면 중단(열전대 끊김) - 자동 측정과 같다
 MAX_POINTS = 200000
@@ -340,11 +468,12 @@ def summary_lines(cd, res, result, started, notes):
         if notes:
             L += ["", "[메모]"] + list(notes)
         return L
-    if res.get("beat") is not None:
-        L += beat_lines(res["beat"])
-        if notes:
-            L += ["", "[메모]"] + list(notes)
-        return L
+    for key, fn in (("beat", beat_lines), ("phase_scan", phase_lines), ("trim_fit", trim_lines)):
+        if res.get(key) is not None:
+            L += fn(res[key])
+            if notes:
+                L += ["", "[메모]"] + list(notes)
+            return L
     L += ["", "[예비 냉각]"]
     pre = res.get("pre")
     if pre is None:
@@ -405,7 +534,7 @@ def summary_lines(cd, res, result, started, notes):
 
 
 # ----------------------------------------------------------------------
-# 결과 목록(temp_test/index.csv) - 시험이 끝날 때마다 한 줄(어떤 끝이든 · 다섯 시험 모두)
+# 결과 목록(temp_test/index.csv) - 시험이 끝날 때마다 한 줄(어떤 끝이든 · 일곱 시험 모두)
 # ----------------------------------------------------------------------
 INDEX_HEADER = ("시작 시각", "폴더 이름", "종류", "결과", "시작 온도(°C)", "가열 끝 온도(°C)", "냉각 끝 온도(°C)", "속도 정하는 방법",
                 "가열 설정 속도(°C/분)", "냉각 설정 속도(°C/분)", "읽기 간격(s)", "출력 방식", "열 모델",
@@ -558,6 +687,10 @@ class TempTest:
         self.beat = None                            # [박자 시험] 결과 {"pct", "secs", "method", "j0"(시작 전 박자), "rows": [{"j", "name", "mean_c", "sd_c", "pp_c", "period_s", "amp_c"}]}
         self.tune = None                            # [히트건 맞추기] 결과 {"base_c", "target_c", "cands", "pick", "p", "curve", "steps", "model", "saved"}
         self.sweep = None                           # [환경 맞추기] 결과(_run_env 의 설명 - 진행 중에도 아는 값부터)
+        self.phase_scan = None                      # [위상 찾기] 결과 {"method", "src", "pct", "secs", "rows": [{"off", "lock", "mean_c", "sd_c", "pp_c", "period_s", "amp_c"}],
+                                                    #   "pick", "run", "span_c", "saved"}
+        self.trim_fit = None                        # [박자 보정] 결과 {"method", "pct", "secs", "rows": [{"ppm", "period_s", "amp_c", "sd_c"}], "drift_ppm", "trim_ppm", "check", "saved"}
+        self._sync_noted = False                    # 시험 도중 전원 맞춤 풀림 메모를 남겼는가(한 번만)
         self.step_text = ""                         # 지금 하는 일 한 줄("스테이션 켜는 중" · "비교 3/7 · 고르게 70 ms · 맞춤 6.2 %")
         self.folder = None
         self.pts = []                               # [경과 s, 온도, 목표 | None, 열선 출력 %, 송풍, 단계]
@@ -607,7 +740,8 @@ class TempTest:
         return ""
 
     def start(self, mode="test"):
-        """mode: test(온도 시험) · tune([히트건 맞추기]) · max([최대 속도 재기]) · beat([박자 시험]) · env([환경 맞추기])."""
+        """mode: test(온도 시험) · tune([히트건 맞추기]) · max([최대 속도 재기]) · beat([박자 시험]) · env([환경 맞추기]) ·
+        phase([위상 찾기] - 전원 맞춤 기준이 있을 때만) · trim([박자 보정] - 기준이 없음일 때만)."""
         c = self.c
         if mode not in MODES:
             raise Rejected("시험 종류 오류")
@@ -621,6 +755,14 @@ class TempTest:
                 bad = config_mod.heat_problems(c.cfg.values) + config_mod.temptest_problems(c.cfg.values)
                 if bad:
                     raise Rejected(bad[0])
+                src = c.cfg["heater_sync"]
+                if mode == "phase" and src == "none":
+                    raise Rejected("전원 맞춤 기준 없음 · 설정에서 영점 모듈 또는 전선 선택")
+                if mode in ("trim", "beat") and src != "none":
+                    raise Rejected(NO_SYNC_ONLY)
+                why = c.sync_problem()                              # 기준을 골랐는데 잠기지 않았다
+                if why:
+                    raise Rejected(why)
                 self.cond = {k: c.cfg[k] for k in COND_KEYS}
                 self.mode = mode
                 self.started = time.time()
@@ -629,6 +771,7 @@ class TempTest:
                 self.jumps, self._jctl, self._jn = [], None, 0
                 self.phase, self.result, self.last_T, self.sp, self._miss = PRECOOL, "", None, None, 0
                 self.model, self.speed, self.tune, self.beat, self.sweep, self.step_text = None, None, None, None, None, ""
+                self.phase_scan, self.trim_fit, self._sync_noted = None, None, False
                 if c.stage.heat_capable:
                     c.heater_method_restore()                       # 설정의 출력 방식으로 시작(맞추기는 안에서 바꾼다)
                 self.method0 = c.stage.method_text()
@@ -733,7 +876,8 @@ class TempTest:
             self.c.logs.app("온도 시험 summary.txt 저장 실패 · %s" % e, "error")
         try:
             kind = {"test": "ramp %.1f C/min" % config_mod.heat_rate_c_min(self.cond, IV) if self.cond["run_heat_mode"] == "ramp" else "full",
-                    "tune": "heater tune", "max": "max speed", "beat": "beat test", "env": "environment fit"}[self.mode]
+                    "tune": "heater tune", "max": "max speed", "beat": "beat test", "env": "environment fit",
+                    "phase": "phase scan", "trim": "timer trim"}[self.mode]
             title = "temperature test %s | %s | target %g C" % (time.strftime("%Y-%m-%d %H:%M", time.localtime(self.started)), kind,
                                                             float(self.cond["run_heater_off_c"]))
             cv = res.get("curve") or {}
@@ -762,6 +906,8 @@ class TempTest:
             res["tune"] = self.tune if self.mode == "tune" else None
             res["beat"] = self.beat if self.mode == "beat" else None
             res["sweep"] = self.sweep if self.mode == "env" else None
+            res["phase_scan"] = self.phase_scan if self.mode == "phase" else None
+            res["trim_fit"] = self.trim_fit if self.mode == "trim" else None
             res["jumps"] = [{"phase": x["phase"], "t": x["t"], "sp": x["sp"], "d": round(x["j"]["d"], 1)} for x in self.jumps]
         return res
 
@@ -772,7 +918,8 @@ class TempTest:
         c.logs.app("%s 시작 · %s · %g → %g → %g °C · %s" % (MODES[self.mode], mode_text(cd), cd["run_start_c"], cd["run_heater_off_c"], cd["run_cool_end_c"], self.folder))
         kind, text = "done", ""
         try:
-            {"test": self._run, "tune": self._run_tune, "max": self._run_max, "beat": self._run_beat, "env": self._run_env}[self.mode](g)
+            {"test": self._run, "tune": self._run_tune, "max": self._run_max, "beat": self._run_beat, "env": self._run_env,
+             "phase": self._run_phase, "trim": self._run_trim}[self.mode](g)
         except _End as e:
             kind, text = e.kind, e.text
         except Exception as e:                                      # noqa: BLE001 - 예상 못 한 오류도 정리 · 저장을 거친다
@@ -831,12 +978,44 @@ class TempTest:
             c.logs.app("박자 시험 · %s · %s %% · %s" % (self.beat.get("method") or "-", _f(self.beat["pct"]), " / ".join(
                 "%s 흔들림 %s · 주기 %s s · 진폭 %s" % (r["name"], _f(r["sd_c"], "%.3f"), _f(r["period_s"], "%.1f"), _f(r["amp_c"], "%.3f"))
                 for r in self.beat["rows"])))
+        ps = self.phase_scan
+        if self.mode == "phase" and ps and ps["rows"]:                  # 끝까지 못 가도 잰 위상으로 고른 것은 보인다 · 저장은 끝까지 갔을 때만
+            ps["pick"], ps["run"], ps["span_c"] = pick_phase(ps["rows"])
+            if kind == "done" and ps["pick"] is not None:
+                c._remember(heater_phase_off=int(ps["pick"]))
+                ps["saved"] = True
+                self._send_saved("위상 찾기")
+            line = "위상 찾기 · 고른 위상 %s ‰ · 같은 상태 %s ‰ · 평균 온도 폭 %s °C · %s" % (
+                "—" if ps["pick"] is None else ps["pick"], phase_run_text(ps["run"]), _f(ps["span_c"]), "저장" if ps["saved"] else "저장 안 함")
+            self.notes.append(line)                                 # index.csv 메모 열(머리글은 그대로)
+            c.logs.app("%s · %s" % (line, " / ".join("%d ‰ %s °C" % (r["off"], _f(r.get("mean_c"))) for r in ps["rows"])))
+        tf = self.trim_fit
+        if self.mode == "trim" and tf and tf["rows"]:
+            if kind == "done" and tf["trim_ppm"] is not None:
+                c._remember(heater_trim_ppm=int(tf["trim_ppm"]))
+                tf["saved"] = True
+                self._send_saved("박자 보정")
+            ck = tf.get("check") or {}
+            line = "박자 보정 · 어긋남 %s ppm → 보정 %s ppm · 확인 주기 %s s · 진폭 %s °C · %s" % (
+                _f(tf["drift_ppm"], "%+d"), _f(tf["trim_ppm"], "%+d"), _f(ck.get("period_s")), _f(ck.get("amp_c")), "저장" if tf["saved"] else "저장 안 함")
+            self.notes.append(line)
+            c.logs.app("%s · %s" % (line, " / ".join("%+d ppm 주기 %s s · 진폭 %s" % (r["ppm"], _f(r.get("period_s")), _f(r.get("amp_c")))
+                                                     for r in tf["rows"])))
         if self.mode == "max" and kind == "done":
             heat = [(p[0], p[1]) for p in self.pts if p[5] == HEAT]
             cool = [(p[0], p[1]) for p in self.pts if p[5] == COOL]
             self.speed = heater_mod.speed_table(heat, cool)
             c.calib.set_speed_max(self.speed)
             c.logs.app("최대 속도 재기 · 저장 · %s" % " / ".join("%g°C %s·%s" % (r[0], _f(r[1]), _f(r[2])) for r in self.speed))
+
+    def _send_saved(self, name):
+        """저장한 전원 맞춤 값을 펌웨어에도 보낸다(정리 _cleanup 은 저장 전 설정값으로 되돌렸다)."""
+        c = self.c
+        if c.stage.connected and c.stage.heat_capable:
+            try:
+                c.heater_method_restore()
+            except Rejected as e:
+                c.logs.app("%s · 저장 값 보내기 실패 · %s" % (name, e), "warn")
 
     def _save_heat(self, curve, model, extra=None, what=()):
         """출력별 온도 표 · 열 모델을 설정에 저장한다([히트건 맞추기] · [환경 맞추기] 공통 - 장비 값 · c._remember).
@@ -1172,6 +1351,84 @@ class TempTest:
             row.update(beat_eval(self._hold_for(g, trips0, secs=secs), secs))
         self._power(g, 0)
         self.step_text = ""
+
+    # ---- [위상 찾기] · [박자 보정] ----
+    def _run_phase(self, g):
+        """[위상 찾기]: 쿨러 → 스테이션 켜기 → 지금 출력 방식 · 칸 · 기준 그대로 출력 temp_beat_pct → 위상 PHASE_OFFS 마다
+        펌웨어 위상만 바꾸고(c.heater_phase · 설정은 그대로) 잠길 때까지 최대 PHASE_LOCK_S → temp_phase_s 유지 · 기록(단계 "위상") →
+        뒤쪽 2/3 로 평균 · 흔들림 · 폭 · 주기(beat_eval) · 줄마다 잠김(기다림 끝에 잠겼고 유지하는 동안 풀리지 않음) → 출력 0 %.
+        고르기 · 저장은 _results(pick_phase · 끝까지 갔을 때 heater_phase_off). 되돌리기 · 끄는 순서는 _cleanup."""
+        c, cd = self.c, self.cond
+        pct = min(float(cd["temp_beat_pct"]), float(cd["heater_max_pct"]))
+        secs = float(cd["temp_phase_s"])
+        ps = self.phase_scan = {"method": "", "src": cd["heater_sync"], "pct": pct, "secs": secs, "rows": [], "pick": None, "run": [],
+                                "span_c": None, "saved": False}
+        self._coolers_on(g)
+        self.feeding = True
+        trips0 = self._station_on(g)
+        self.phase = PHASE_SCAN
+        n = len(PHASE_OFFS)
+        for i, off in enumerate(PHASE_OFFS):
+            self._sync_set(g, "off", off)
+            if i == 0:
+                ps["method"] = c.stage.method_text(sync=False)
+                self._power(g, pct)
+            row = {"off": off, "lock": False, "mean_c": None, "sd_c": None, "pp_c": None, "period_s": None, "amp_c": None}
+            ps["rows"].append(row)
+            self.step_text = "위상 %d/%d · %d ‰ · 잠김 대기" % (i + 1, n, off)
+            self._hold_for(g, trips0, secs=PHASE_LOCK_S, until=lambda: c.sync_problem() is None)
+            lock0 = c.sync_problem() is None
+            lost = []
+
+            def watch():                                            # 유지하는 동안 쉬는 동안 읽은 상태(2 초마다)로 풀림을 본다
+                if c.sync_problem(refresh=False):
+                    lost.append(1)
+                return False
+
+            self.step_text = "위상 %d/%d · %d ‰%s" % (i + 1, n, off, "" if lock0 else " · 잠김 안 됨")
+            row.update(beat_eval(self._hold_for(g, trips0, secs=secs, until=watch), secs))
+            row["lock"] = lock0 and not lost and c.sync_problem() is None
+        self._power(g, 0)
+        self.step_text = ""
+
+    def _run_trim(self, g):
+        """[박자 보정](기준 없음): 쿨러 → 스테이션 켜기 → 지금 출력 방식 · 칸 그대로 출력 temp_beat_pct → 펌웨어 보정만 0 → +TRIM_STEP_PPM ppm
+        (c.heater_trim · 설정은 그대로) 마다 temp_trim_s 유지 · 기록(단계 "박자") → trim_eval 로 박자 주기 · 진폭 →
+        solve_trim 으로 보정 → 그 보정으로 한 번 더 유지(확인) → 출력 0 %. 보정 0 에서 박자가 안 보이면 중단. 저장은 _results(끝까지 갔을 때)."""
+        c, cd = self.c, self.cond
+        pct = min(float(cd["temp_beat_pct"]), float(cd["heater_max_pct"]))
+        secs = float(cd["temp_trim_s"])
+        tf = self.trim_fit = {"method": "", "pct": pct, "secs": secs, "rows": [], "drift_ppm": None, "trim_ppm": None, "check": None, "saved": False}
+        self._coolers_on(g)
+        self.feeding = True
+        trips0 = self._station_on(g)
+        self.phase = TRIM
+        for i, ppm in enumerate((0, TRIM_STEP_PPM)):
+            self._sync_set(g, "trim", ppm)
+            if i == 0:
+                tf["method"] = c.stage.method_text(sync=False)
+                self._power(g, pct)
+            row = {"ppm": ppm, "period_s": None, "amp_c": None, "sd_c": None}
+            tf["rows"].append(row)
+            self.step_text = "박자 보정 %d/2 · 보정 %+d ppm" % (i + 1, ppm)
+            row.update(trim_eval(self._hold_for(g, trips0, secs=secs)))
+            if i == 0 and (row["period_s"] is None or (row["amp_c"] or 0.0) < TRIM_AMP_MIN):
+                raise _End("abort", "박자가 안 보임 · 박자 시험 출력 올리기")
+        tf.update(solve_trim(tf["rows"][0]["period_s"], tf["rows"][1]["period_s"], TRIM_STEP_PPM))
+        self._sync_set(g, "trim", tf["trim_ppm"])
+        ck = tf["check"] = {"ppm": tf["trim_ppm"], "period_s": None, "amp_c": None, "sd_c": None}
+        self.step_text = "박자 보정 확인 · 보정 %+d ppm" % tf["trim_ppm"]
+        ck.update(trim_eval(self._hold_for(g, trips0, secs=secs)))
+        self._power(g, 0)
+        self.step_text = ""
+
+    def _sync_set(self, g, what, v):
+        """펌웨어 전원 위상(off) · 타이머 보정(trim)만 바꾼다(설정은 그대로 - 끝에 _cleanup 이 되돌린다)."""
+        try:
+            (self.c.heater_phase if what == "off" else self.c.heater_trim)(v)
+        except Rejected as e:
+            self._check(g)
+            raise _End("abort", "%s 바꾸기 실패 · %s" % ("전원 위상" if what == "off" else "타이머 보정", e))
 
     def _timing(self, g, j):
         """펌웨어 박자만 바꾼다(설정은 그대로 - 끝에 _cleanup 이 되돌린다)."""
@@ -1534,6 +1791,10 @@ class TempTest:
     def _tick(self, t_it):
         self.publish()
         c = self.c
+        if not self._sync_noted and self.mode != "phase" and c.sync_problem(refresh=False):     # 멈추지 않고 한 번만(위상 찾기는 줄마다 잠김을 적는다)
+            self._sync_noted = True
+            self.notes.append("전원 맞춤 풀림 · 경과 %.0f s" % (c.clock() - self.t0))
+            c.logs.app("%s · 전원 맞춤 풀림 · %s" % (MODES[self.mode], c.stage.heat_sync), "warn")
         c.sleep(max(0.0, float(self.cond["temp_test_interval_s"]) - (c.clock() - t_it)))
 
     def _heat(self, g, t_heat, T0, off_c, trips0):
@@ -1678,6 +1939,7 @@ class TempTest:
                 "speed_max": sp_max.get("rows"), "speed_t": sp_max.get("t"),
                 "step_text": self.step_text if self._busy else "", "tune": self.tune if self.mode == "tune" else None,
                 "beat": self.beat if self.mode == "beat" else None, "sweep": self.sweep if self.mode == "env" else None,
+                "phase_scan": self.phase_scan if self.mode == "phase" else None, "trim_fit": self.trim_fit if self.mode == "trim" else None,
                 "q": round(self.heater.q, 2) if self._busy else None}
 
     def publish(self):

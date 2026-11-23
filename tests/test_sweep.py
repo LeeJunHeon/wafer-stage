@@ -3,6 +3,8 @@
 import math
 import random
 
+import pytest
+
 from app import config as config_mod
 from app.jobs import heater
 
@@ -66,7 +68,7 @@ def _cfg(**kw):
 
 def test_sweep_time_check():
     ok = _cfg(temp_sweep_s=120.0, temp_sweep_hold_s=20.0, heater_full_pct=90, heater_max_pct=100, heater_max_on_s=180.0)
-    assert config_mod.sweep_full_s(ok) == 2 * 120.0 * 0.1 + 20.0
+    assert config_mod.sweep_full_s(ok) == pytest.approx(2 * 120.0 * 0.1 + 20.0)          # 1 − 90/100 = 0.0999… 라 == 는 43.99999 에서 틀린다
     assert not [p for p in config_mod.temptest_problems(ok) if p.startswith("훑기")]
     bad = _cfg(temp_sweep_s=600.0, temp_sweep_hold_s=120.0, heater_full_pct=50, heater_max_pct=100, heater_max_on_s=180.0)
     msg = [p for p in config_mod.temptest_problems(bad) if p.startswith("훑기")]

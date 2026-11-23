@@ -28,15 +28,24 @@ import time
 PPMM = 160.0
 X_MAX, Y_MAX, Z_MAX = 39620, 39640, 7200
 N_RELAY = 10
-MAINS_HZ = 60                                               # 펌웨어 V15 · V16 의 전원 주파수(고르게 칸 = 전원 주기의 정수배)
+MAINS_HZ = 60                                               # 펌웨어 V15 ~ V17 의 전원 주파수(고르게 칸 = 전원 주기의 정수배)
+FW12 = ("V12", "V13", "V14", "V15", "V16", "V17")           # 열선 출력 hp · hpp · hcfg
+FW14 = ("V14", "V15", "V16", "V17")                         # 0.1 % 단위 · hpm · hps
+FW15 = ("V15", "V16", "V17")                                # hps = 전원 주기 단위
+FWJ = ("V16", "V17")                                        # 열선 박자 hpj
+FWZ = ("V17",)                                              # 전원 맞춤 hpz · hpo · hpt · hz · HP 줄 끝 Z · L
+HUM_MIN_A = 16                                              # 펌웨어 V17 전선 신호 세기 하한
 
 
 class FakeV11:
-    def __init__(self, time_scale=0.05, homed=True, banner=True, eeprom=None, firmware="V16"):
-        self.firmware = firmware                    # "V16"(기본 - V15 + 열선 박자 hpj) · "V15"(V14 + hps 를 전원 주기 단위로) · "V14"(출력 0.1 % · hpm 방식 · hps 칸) · "V13" · "V12"(hp · hpp · hcfg) · "V11"
+    def __init__(self, time_scale=0.05, homed=True, banner=True, eeprom=None, firmware="V17"):
+        self.firmware = firmware                    # "V17"(기본 - V16 + 전원 맞춤 hpz · hpo · hpt · hz) · "V16"(V15 + 열선 박자 hpj) · "V15"(V14 + hps 를 전원 주기 단위로) · "V14"(출력 0.1 % · hpm 방식 · hps 칸) · "V13" · "V12"(hp · hpp · hcfg) · "V11"
         self.hp_pct, self.hp_period, self.hp_fan, self.hp_el = 0, 1000, 0, 9     # 열선 출력 % · 주기 ms · 송풍 · 열선 인덱스(0 부터)
-        self.hp_mode, self.hp_slot = 0, (17 if firmware in ("V15", "V16") else 10)          # V14 · V15: 출력 방식(0 몰아 켜기 · 1 고르게) · 고르게 칸 ms(시험용은 시간 평균만 흉내 - 방식은 보고만)
+        self.hp_mode, self.hp_slot = 0, (17 if firmware in FW15 else 10)          # V14 · V15: 출력 방식(0 몰아 켜기 · 1 고르게) · 고르게 칸 ms(시험용은 시간 평균만 흉내 - 방식은 보고만)
         self.hp_j = 0                               # V16 열선 박자(켜질 때 0 · 보고 J=)
+        self.hp_sync, self.hp_off, self.hp_trim = 0, 0, 0   # V17 전원 맞춤 기준(0 없음 · 1 영점 모듈 · 2 전선) · 위상 ‰ · 보정 ppm(켜질 때 0)
+        self.zc_present = True                      # 시험: 영점 모듈 신호가 들어오는가
+        self.hum_amp = 200                          # 시험: 전선 신호 세기(ADC 값 · HUM_MIN_A 이상이면 잠김)
         self.timeout = 0.2
         self.write_timeout = None                   # pyserial 모양: 쓰기가 이 시간 안에 못 끝나면 SerialTimeoutException
         self.block_until = 0.0                      # 이 시각까지 쓰기가 막힘(USB 막힘 흉내)
@@ -206,6 +215,7 @@ class FakeV11:
         self.hx = self.hy = self.hz = (self.eeprom == "restored")
         self.hp_pct = 0
         self.hp_j = 0                                   # V16: 켜질 때 박자 0
+        self.hp_sync, self.hp_off, self.hp_trim = 0, 0, 0   # V17: 켜질 때 기준 없음 · 위상 0 · 보정 0
         self._set_relays([False] * N_RELAY)
         self.v, self.a, self.b = 6000, 40000, 300
         self.wd_ms = 0
@@ -254,7 +264,7 @@ class FakeV11:
 
     def _set_relays(self, relays):
         r = list(relays)
-        if getattr(self, "firmware", "V11") in ("V12", "V13", "V14", "V15", "V16"):               # 펌웨어 V12 relaySet 과 같다: 송풍이 꺼지면 열선도 끔(출력 0) · 열선 릴레이의 논리 상태 = 출력 > 0
+        if getattr(self, "firmware", "V11") in FW12:               # 펌웨어 V12 relaySet 과 같다: 송풍이 꺼지면 열선도 끔(출력 0) · 열선 릴레이의 논리 상태 = 출력 > 0
             prev = getattr(self, "relay", [False] * N_RELAY)
             if prev[self.hp_fan] and not r[self.hp_fan]:
                 r[self.hp_el] = False
@@ -268,7 +278,7 @@ class FakeV11:
 
     def _heat_set(self, pct):
         """열선 출력 %(heatSet): 0 이면 열선 끔 · 0 보다 크면 열선 켬(논리)."""
-        self.hp_pct = round(float(pct), 1) if self.firmware in ("V14", "V15", "V16") else int(pct)
+        self.hp_pct = round(float(pct), 1) if self.firmware in FW14 else int(pct)
         r = list(self.relay)
         r[self.hp_el] = self.hp_pct > 0
         self.relay = r
@@ -276,14 +286,26 @@ class FakeV11:
             self.on_relay(list(self.relay), self.hp_pct)
 
     def _hp_line(self):
-        if self.firmware in ("V14", "V15", "V16"):
-            self._emit("HP P=%.1f T=%d M=%d S=%d F=%d E=%d%s" % (self.hp_pct, self.hp_period, self.hp_mode, self.hp_slot, self.hp_fan + 1, self.hp_el + 1,
-                                                              " J=%d" % self.hp_j if self.firmware == "V16" else ""))
+        if self.firmware in FW14:
+            self._emit("HP P=%.1f T=%d M=%d S=%d F=%d E=%d%s%s" % (self.hp_pct, self.hp_period, self.hp_mode, self.hp_slot, self.hp_fan + 1, self.hp_el + 1,
+                                                                " J=%d" % self.hp_j if self.firmware in FWJ else "",
+                                                                " Z=%d L=%d" % (self.hp_sync, 1 if self.sync_locked() else 0) if self.firmware in FWZ else ""))
         else:
             self._emit("HP P=%d T=%d F=%d E=%d" % (self.hp_pct, self.hp_period, self.hp_fan + 1, self.hp_el + 1))
 
+    def sync_locked(self):
+        """펌웨어 V17 잠김(시험용은 신호가 있으면 바로 잠긴다): 영점 모듈이고 신호가 있음 · 전선이고 세기가 하한 이상."""
+        return (self.hp_sync == 1 and self.zc_present) or (self.hp_sync == 2 and self.hum_amp >= HUM_MIN_A)
+
+    def _hz_line(self):
+        """'HZ Z=1 L=1 F=5998 A=0 E=-12 O=250 R=0 N=120'(펌웨어 printHZ 와 같은 모양 · 오차 0 · 주파수 59.99 Hz)."""
+        lk = self.sync_locked()
+        n = (2 * MAINS_HZ if self.hp_sync == 1 and self.zc_present else 2 * MAINS_HZ if self.hp_sync == 2 and self.hum_amp >= 8 else 0)
+        self._emit("HZ Z=%d L=%d F=%d A=%d E=0 O=%d R=%d N=%d" % (self.hp_sync, 1 if lk else 0, 5999 if lk else 0,
+                                                              self.hum_amp if self.hp_sync == 2 else 0, self.hp_off, self.hp_trim, n))
+
     def _rs(self):
-        tail = (" HP=%.1f" % self.hp_pct if self.firmware in ("V14", "V15", "V16") else " HP=%d" % self.hp_pct) if self.firmware in ("V12", "V13", "V14", "V15", "V16") else ""
+        tail = (" HP=%.1f" % self.hp_pct if self.firmware in FW14 else " HP=%d" % self.hp_pct) if self.firmware in FW12 else ""
         self._emit("RS " + " ".join("R%d=%d" % (i + 1, 1 if on else 0) for i, on in enumerate(self.relay)) + tail)
 
     split_st = 0                                            # 시험: 다음 ST 몇 개를 줄 중간에서 둘로 나눠 보낸다(앞 조각은 줄바꿈 없음 - pyserial 이 0.2 s 에 줄 중간까지만 주는 경우)
@@ -371,13 +393,15 @@ class FakeV11:
         self.abort_flag = False                           # 펌웨어는 명령마다 abortFlag 를 지운다
         num = lambda i, d=0: float(tok[i]) if len(tok) > i else d       # noqa: E731
         if c == "!":
-            if self.firmware in ("V12", "V13", "V14", "V15", "V16"):
+            if self.firmware in FW12:
                 self._heat_set(0)
                 self._emit("  (이동 중에만 유효) · 열선 출력 0")
             else:
                 self._emit("  (이동 중에만 유효)")
-        elif c in ("hp", "hpp", "hcfg") and self.firmware in ("V12", "V13", "V14", "V15", "V16") or (c in ("hpm", "hps") and self.firmware in ("V14", "V15", "V16")) or (c == "hpj" and self.firmware == "V16"):
+        elif c in ("hp", "hpp", "hcfg") and self.firmware in FW12 or (c in ("hpm", "hps") and self.firmware in FW14) or (c == "hpj" and self.firmware in FWJ):
             self._hp_cmd(c, tok)
+        elif c in ("hpz", "hpo", "hpt", "hz") and self.firmware in FWZ:
+            self._hz_cmd(c, tok)
         elif c == "st":
             self._st()
         elif c == "p":
@@ -486,13 +510,39 @@ class FakeV11:
         self._emit("--- 원점 설정 완료 (저장됨) ---")
         self._st()
 
+    def _hz_cmd(self, c, tok):
+        """펌웨어 V17 hpzCmd · hpoCmd · hptCmd · printHZ 와 같다(숫자 없이 = 보고 · 같은 기준을 다시 보내면 그대로)."""
+        if c == "hz" or len(tok) < 2:
+            self._hz_line()
+            return
+        v = tok[1]
+        if c == "hpz":
+            if v not in ("0", "1", "2"):
+                self._emit("  [거부] hpz <0|1|2> · 0 없음 · 1 영점 모듈(D19) · 2 전선(A0)")
+            else:
+                self.hp_sync = int(v)
+                if self.hp_sync:
+                    self.hp_j = 0
+        elif c == "hpo":
+            if not (v.isdigit() and len(v) <= 3):
+                self._emit("  [거부] hpo <0~999> ‰")
+            else:
+                self.hp_off = int(v)
+        else:
+            ok = re.fullmatch(r"-?\d{1,4}", v) is not None and -3000 <= int(v) <= 3000
+            if not ok:
+                self._emit("  [거부] hpt <-3000~3000> ppm")
+            else:
+                self.hp_trim = int(v)
+        self._hz_line()
+
     def _hp_cmd(self, c, tok):
         """펌웨어 V12 ~ V16 hpCmd · hpmCmd · hppCmd · hpsCmd · hpjCmd · hcfgCmd 와 같다(V14 ~ V16 = 0.1 % 단위 · hpm · hps · V15 · V16 의 hps = 전원 주기 단위 · V16 hpj 박자)."""
         if c == "hp":
             if len(tok) < 2:
                 self._hp_line()
                 return
-            v14 = self.firmware in ("V14", "V15", "V16")
+            v14 = self.firmware in FW14
             ok = re.fullmatch(r"\d{1,3}(\.\d)?" if v14 else r"\d{1,3}", tok[1]) is not None
             if not ok or float(tok[1]) > 100:
                 self._emit("  [거부] hp <0~100.0> · 소수 한 자리" if v14 else "  [거부] hp <0~100>")
@@ -521,7 +571,7 @@ class FakeV11:
             if not 10 <= v <= 1000:
                 self._emit("  [거부] hps <10~1000> ms")
                 return
-            if self.firmware in ("V15", "V16"):             # 전원 주기 수로 맞추고 실제 칸 ms 를 돌려준다(60 Hz: 20 → 1 주기 = 17)
+            if self.firmware in FW15:             # 전원 주기 수로 맞추고 실제 칸 ms 를 돌려준다(60 Hz: 20 → 1 주기 = 17)
                 cyc = min(60, max(1, (v * MAINS_HZ + 500) // 1000))
                 self.hp_slot = (cyc * 1000 + MAINS_HZ // 2) // MAINS_HZ
             else:
@@ -533,6 +583,10 @@ class FakeV11:
                 return
             if tok[1] not in ("0", "1", "2"):
                 self._emit("  [거부] hpj <0|1|2> · 0 전원 맞춤 · 1 어긋남 · 2 무작위")
+                return
+            if tok[1] != "0" and self.hp_sync != 0:              # V17: 기준 사용 중에는 박자 1 · 2 거절
+                self._emit("  [거부] 전원 맞춤 기준 사용 중")
+                self._hp_line()
                 return
             self.hp_j = int(tok[1])
             self._hp_line()
@@ -579,7 +633,7 @@ class FakeV11:
             return
         r = list(self.relay)
         r[n - 1] = on
-        if self.firmware in ("V12", "V13", "V14", "V15", "V16") and n - 1 == self.hp_el:          # 열선 릴레이: 켬 = 출력 100 % · 끔 = 0 %
+        if self.firmware in FW12 and n - 1 == self.hp_el:          # 열선 릴레이: 켬 = 출력 100 % · 끔 = 0 %
             self.hp_pct = 100 if on else 0
             self._heat_set(self.hp_pct)
         else:
@@ -698,7 +752,7 @@ class FakeV11:
             el = (time.monotonic() - t0) / sc
             if self._peek_abort() or self.abort_flag:                 # 64 펄스 경계(또는 첫 펄스 전)에서만 보인다
                 aborted = True
-                if self.firmware in ("V12", "V13", "V14", "V15", "V16") and self.hp_pct:
+                if self.firmware in FW12 and self.hp_pct:
                     self._heat_set(0)                                   # 펌웨어 V12: 이동 중 '!' 도 열선 출력 0
                 p_el = pa(el)
                 t_arr = None

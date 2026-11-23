@@ -27,8 +27,8 @@ app/jobs/               측정: run.py(순서 · 한계 · 가열 제어 · 정�
 app/results.py          측정 결과 탭: 저장된 기록 읽기 · 그림 저장 · NAS 다시 복사 · 폴더 열기
 ui/                     화면(빌드 없는 HTML · CSS · JS): core.js · jog.js · graph.js · prep.js · manual.js(수동 제어 탭) · temptest.js(온도 시험 창) · measure.js · results.js · settings.js · app.js
 tests/                  pytest 빠른 시험(전체 2 분 안) · conftest.py(시험용 장비 · 시계 꽂기 · 초기 설정 값 넣기)
-tests/fakes/            시험용 장비(시험만 쓴다): world.py(세계 하나 · 배선) · fake_v11.py(V11 ~ V16 보드 - 기본 V16) · fake_visa.py(+ 열 모델) · fake_camera.py · fake_heatgun.py(인터락 · 출력 %)
-firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아 켜기 / 고르게 · 틱 = 전원 반주기 · 칸 = 전원 주기의 정수배 · 열선 박자 hpj). firmware/stage_v11/ ~ stage_v15/ 는 예전 것 그대로 둔다(고치지 않는다)
+tests/fakes/            시험용 장비(시험만 쓴다): world.py(세계 하나 · 배선) · fake_v11.py(V11 ~ V17 보드 - 기본 V17) · fake_visa.py(+ 열 모델) · fake_camera.py · fake_heatgun.py(인터락 · 출력 %)
+firmware/stage_v17/     펌웨어 V17(지금 쓰는 것 - V16 + 전원 맞춤 기준 hpz · 위상 hpo · 보정 hpt · 상태 hz). firmware/stage_v11/ ~ stage_v16/ 은 예전 것 그대로 둔다(고치지 않는다)
 ```
 - 데이터 폴더 기본값 `..\data_v3`. 경로는 pathlib. 측정 PC 는 Windows 11 + Python 3.12.
 - 로그 세 가지(프로그램 app · 시리얼 serial · VISA visa)는 설정과 상관없이 항상 저장한다(끄는 설정을 만들지 않는다).
@@ -52,18 +52,33 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
   imgio 는 파이썬이 바이트를 읽고 쓰고(유니코드 경로) OpenCV 는 메모리에서만 해석 · 변환한다. 쓰기는 임시 파일 → `os.replace`(원자적). 못 읽으면 None 이 아니라 `ImageIOError`.
 
 ## 2. 하드웨어 값 (확정)
-- 아두이노 Mega + 펌웨어 V16(V11 ~ V15 도 연결은 된다), 115200, 줄끝 `\n`. 포트는 settings `stage_port`(측정 PC 는 COM5).
+- 아두이노 Mega + 펌웨어 V17(V11 ~ V16 도 연결은 된다), 115200, 줄끝 `\n`. 포트는 settings `stage_port`(측정 PC 는 COM5).
+  **펌웨어 V17**(V16 + 전원 맞춤): 틱 길이를 소수까지(`hpPerQ` = 카운트 × 256 · ±2 % · 소수 누적 `hpFrac` · 다음 틱 한 번 `hpAdj` ±틱/4 · 박자 0 일 때 OCR1A = 틱 + hpAdj − 1 · 틱 수 `hpTick`).
+  `hpz <0|1|2>` 기준(0 없음 · 1 영점 모듈 D19 INT2 풀업 올라가는 모서리 · 2 전선 A0 ADC AVcc 분주 128 · 켜질 때 0 · 값이 바뀔 때만 틱 기준값 · 잠김 0 · 그 기준의 인터럽트만 ·
+  1 · 2 면 박자 0 · 그동안 hpj 1 · 2 는 "[거부] 전원 맞춤 기준 사용 중") · `hpo <0~999>` 위상 ‰(영점이 틱 시작에서 틱 × ‰ 뒤 · 바뀌면 잠김 0) ·
+  `hpt <-3000~3000>` 보정 ppm(기준 없음일 때 hpPerQ = 기준값 × (1 + ppm/1e6) · 기준이 있으면 값만) · `hz` → "HZ Z= L= F=(주파수 × 100 · 잠겼을 때만) A=(전선 세기) E=(위상 오차 평균 µs) O= R= N=(최근 1 초 사건)" ·
+  hpz · hpo · hpt 는 적용 뒤 HZ 줄 · HP 줄 끝 " Z= L=". 보정: e = 영점이 바라는 자리보다 늦은 카운트 → hpAdj += e/4 · hpPerQ += 4e.
+  영점 모듈: 직전 사건부터 < 0.6 틱 버림 · 0.8~1.2 · 1.8~2.2 틱 받아들임(오차) · 그 밖 받아들이되 잠김 세기 0 · |e| < 틱/32 120번 → 잠김 · |e| ≥ 틱/8 30번 또는 60 틱 사건 없음 → 풀림.
+  전선: 비교 B(위상 자리 = Z 표본) · C(반 틱 뒤 = P 표본)에서 변환 · 평균 1/256 · 세기 |pc| 평균 1/16 · e = −zc × sign(pc) × (틱/3) ÷ |pc|(±틱/8 · |pc| < 8 이면 0) ·
+  세기 ≥ 16 이고 |e| < 틱/32 120 틱 → 잠김 · 세기 < 16 60 틱 또는 |e| ≥ 틱/8 30 틱 → 풀림. 배선: 영점 모듈 VCC 5V · GND · OUT → D19 / 전선 한 가닥 → A0.
+  배경: [환경 맞추기] 훑기에서 출력만 올려도 약 9 초마다 +3~9 °C 계단 - 틱이 반주기와 약 0.1 % 어긋나 켜는 순간의 파형 위치가 9 초에 반주기씩 밀렸다.
+  프로그램: 설정 `heater_sync`(none | zc | hum · "전원 맞춤 기준") · `heater_phase_off`(‰ · [위상 찾기]) · `heater_trim_ppm`([박자 보정])을 출력 방식과 같이 보낸다
+  (`Controller._out_cfg` 일곱 - 기준이 없음이 아니면 열선 박자는 sync(0)로 · `Stage.heat_out` 이 hpz → hpo → hpt → hpj 순서 · `Stage.heat_sync_set` 응답 확인) ·
+  `Controller.heater_phase` · `heater_trim`(설정은 그대로 펌웨어만 - 시험) · `stage.heat_sync`(HZ · HP 줄 · 쉬는 동안 2 초마다 hz) → 화면 `state.heater.sync` (`core.js syncText`) ·
+  `Controller.sync_problem`: 기준이 있는데 잠기지 않았으면 온도 시험 · 자동 측정 시작 · 재개 거절 "전원 맞춤 신호 없음 · 영점 모듈(D19) 확인" / "… · 전선(A0) 확인" ·
+  온도 시험 도중 풀리면 메모 "전원 맞춤 풀림 · 경과 n s" 한 번(멈추지 않음 · [위상 찾기] 는 줄마다 잠김을 적으므로 빼고). `method_text` 끝 " · 영점 모듈 250 ‰" · " · 전선 250 ‰" · " · 보정 -926 ppm".
+  heat_capable · 열선 출력은 V17 만(`stage.HEAT_FW` · `Z_FWS`) · FW_NEED "펌웨어 V17 필요 · firmware/stage_v17 업로드".
   **펌웨어 V16**(V15 + 열선 박자): `hpj <0|1|2>` - 0 전원 맞춤(OCR1A = 기준값 · V15 그대로) · 1 어긋남(기준값 + 기준값/64 고정) · 2 무작위(비교 인터럽트마다
   기준값/2 + xorshift16 % 기준값 → 틱 0.5~1.5 배 · 평균 1 배). 켜질 때 0 · 값이 바뀌면 OCR1A 를 그 자리에서 맞춤 · 보고 HP 줄 끝 `J=n`(hp · hpm · hps · hpj 응답).
   까닭: 틱이 전원 반주기와 거의 같아 켜는 순간의 전원 파형 위치가 약 10 초 주기로 밀리고 그 주기로 열이 덩어리져 들어오는 것으로 보였다.
   프로그램: 설정 `heater_timing`(sync | detune | random · "열선 박자" · 장비 값)을 출력 방식과 같이 보낸다(`Controller._out_cfg` 넷 - 연결 · 설정 저장 · 측정 · 시험 시작 ·
   `heater_method_restore`) · `Stage.heat_timing`(hpj 전송 · 응답 J 확인 · `stage.heat_j`) · `Controller.heater_timing`(설정은 그대로 펌웨어만 - 박자 시험) ·
-  `method_text` 는 박자가 0 이 아니면 " · 어긋남" · " · 무작위". hpj 는 V16 만(`stage.J_FWS`) · `heat_capable` 은 V16 만.
+  `method_text` 는 박자가 0 이 아니면 " · 어긋남" · " · 무작위". hpj 는 V16 · V17(`stage.J_FWS`).
   **펌웨어 V15**(V14 + 아래 셋): 타이머1 틱 = 전원 반주기(`MAINS_HZ` 60 → 8.33 ms) · 고르게 칸 = 전원 주기의 정수배(`hps` ms → (ms × 60 + 500) ÷ 1000 주기 · 1~60 ·
   보고 S = 실제 칸 ms - 17 · 33 · 50 · 100 · 300, 보낸 값과 달라도(20 → 17) 오류 아님 · 화면 · 기록은 돌려준 값) · 0 에서 켤 때 첫 칸을 억지로 켜지 않음(hpm 도) ·
   누적을 지우지 않음(시작 500). 까닭: 10 ms 틱은 반주기 8.33 ms 와 어긋나 제로크로스 SSR 이 반주기 1 · 2 개를 통과시켜 짧은 칸이 출렁였고, V14 는 hp 0.1 마다 300 ms 칸을 통째로 켜
-  냉각 끝에서 3~5 °C 씩 튀었다. 0.1 % 파싱 · M · S · hpm · hps 처리는 V14 ~ V16(`stage.HP_FWS`).
-  **열선 출력(V14 ~ V16 공통)**: 0.1 % 단위(`hp 30.5` · hpPm 0~1000) · 출력 방식 `hpm 0` 몰아 켜기(주기 `hpp` 앞쪽에 몰아 켬 - V13 과 같음) /
+  냉각 끝에서 3~5 °C 씩 튀었다. 0.1 % 파싱 · M · S · hpm · hps 처리는 V14 ~ V17(`stage.HP_FWS`).
+  **열선 출력(V14 ~ V17 공통)**: 0.1 % 단위(`hp 30.5` · hpPm 0~1000) · 출력 방식 `hpm 0` 몰아 켜기(주기 `hpp` 앞쪽에 몰아 켬 - V13 과 같음) /
   `hpm 1` 고르게(칸 `hps` 10~1000 ms 가 시작될 때마다 누적에 pm 을 더해 1000 이상이면 그 칸을 켬 - 시그마-델타) · 보고 "HP P=30.5 T= M= S= F= E=" · rs 끝 " HP=30.5".
   0 초과끼리 바꾸면 몰아 켜기는 주기 위치 유지 · 고르게는 누적 유지(다음 칸부터 새 값). 프로그램: `stage.heat_out` · `Controller.heater_method`(설정은 그대로 펌웨어에만 - 맞추기) ·
   `heater_method_restore`(설정값 - 측정 · 온도 시험 시작 · 맞추기 끝 · 설정 저장). 설정 `heater_out_mode`(window | spread · 기본 spread) · `heater_pwm_period_ms` · `heater_slot_ms`(기본 300 - 지금까지 가장 좋았던 조합).
@@ -71,7 +86,7 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
   V12 는 hp 마다 주기를 0 부터 다시 시작하고 열선을 바로 켜서, 0.5 s 마다 % 를 보내는 램프 제어에서 5 s 주기가 끝나기 전에 계속 다시 시작돼 열선이 사실상 계속 켜졌다): `hp <0~100>`(0 보다 크면 송풍이 켜져 있어야 함 - 아니면 거부) · `hp`(보고 "HP P= T= F= E=") · `hpp <200~5000 ms>`(주기 · 기본 1000) ·
   `hcfg <송풍> <열선>`(프로그램이 연결 때 · 릴레이 역할을 바꿀 때 `Stage.heat_config`). 타이머1 인터럽트(10 ms)가 주기마다 주기 × % 동안만 열선 SSR 을 켠다(블로킹 이동 중에도).
   송풍이 꺼지면(r · r all 0 · 통신 감시) 출력 0 · '!' 비상정지 · 열선 r 명령도 출력 0(또는 r 열선 1 = 100 %). rs 줄 끝 " HP=n". EEPROM 형식은 V11 과 같다.
-  V11 · V12 면 이동 · 쿨러는 되고 열선 출력이 필요한 일(측정 · 온도 시험 · 수동 열선 출력)은 "펌웨어 V16 필요 · firmware/stage_v16 업로드"(`stage.FW_NEED` · `heat_capable` = V16) · 연결 때 주의 `fw_heat`.
+  V11 ~ V16 이면 이동 · 쿨러는 되고 열선 출력이 필요한 일(측정 · 온도 시험 · 수동 열선 출력)은 "펌웨어 V17 필요 · firmware/stage_v17 업로드"(`stage.FW_NEED` · `heat_capable` = V17) · 연결 때 주의 `fw_heat`.
   **포트를 자동으로 찾거나 여러 개 열지 않는다**(열면 보드가 재시작하고 COM4 는 다른 장비다). 사람이 고른 하나만 열고, 프로그램이 도는 동안 유지한다.
   여는 것은 [연결] 과 시작 때의 설정값 자동 연결뿐이다. 장비 목록을 읽을 때도 포트 · 측정 장비는 열지 않는다(5번 "장비 목록").
   **사용 안 할 포트**(settings `blocked_ports`, 기본 `["COM4"]` - LabVIEW 용 Uno): 선택 상자에는 "COM4 · … (사용 안 함)" 으로 보이지만 고를 수 없고,
@@ -96,7 +111,8 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
 - 시리얼은 일꾼 스레드 하나. 명령은 한 번에 하나, 응답을 받은 뒤 다음 명령. 예외는 `!`(줄 서지 않고 `Stage.bang()` 이 바로 쓴다).
 - **이동 중에는 `!` 말고 어떤 줄도 안 나간다**(펌웨어는 이동 중 줄을 처리하지 않고 수신 버퍼가 64 바이트다).
 - 이동 완료 = `" | X="` · `이미 그 위치` · `[거부]` · `[!] 중단`. 시간 한도 = 계산 시간 × 1.5 + 2 s. 넘으면 `!` → 입력 비움 → `st` 로 맞춤.
-- 연결: 배너로 V16 ~ V11 확인(아니면 거절) → `wd 2000` → (V14 ~ V16 이면 `hcfg` · `hpm` · `hpp` · `hps` · V16 은 `hpj`) → `st` · `rs`. 쉬는 동안 0.5 초마다 `st`. 배너가 다시 보이면 보드 재시작(비상정지처럼 처리).
+- 연결: 배너로 V17 ~ V11 확인(아니면 거절) → `wd 2000` → (V14 ~ V17 이면 `hcfg` · `hpm` · `hpp` · `hps` · V17 은 `hpz` · `hpo` · `hpt` · V16 · V17 은 `hpj`) → `st` · `rs`.
+  쉬는 동안 0.5 초마다 `st` · 2 초마다 `rs` · V17 은 2 초마다 `hz`. 배너가 다시 보이면 보드 재시작(비상정지처럼 처리).
 - 원점: 지금 자리 `zx zy zz z` 또는 끝단 밀기 `fz x|y|z`, 끝나면 `save`. 로그 한 줄 "원점 등록 · 축 · 방식 · 등록 뒤 X · Y · Z mm". 조그 `jx/jy/jz`(원점 없어도 됨), 절대 이동 `gx/gy/gz`(원점 필요).
 - **위치 기억**(펌웨어 V11): 위치는 RAM 에만 있고 EEPROM 에는 "save 이후 움직였는가" 만 적는다(첫 이동 때 ok=0 · save 때 ok=1). 포트를 열면 보드가 재시작하고
   ok=0 이면 "save 하지 않고 꺼짐 → 위치 불신" 으로 세 축 원점이 없어진다. 그래서 **위치 저장**(`Controller.save_position` = `save` → `st` 로 DIRTY=0 확인)을
@@ -386,7 +402,7 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
   (`Controller.feed_temperature` 가 부른다 · 0.2 s 보다 가까운 줄은 건너뜀 · 시각 · 경과 · 온도 · 열선 출력 · 출력 방식 · 송풍 · 열선 · 켜기 유지 · 쿨러 · 하는 일).
   쓰기 실패는 로그 한 번 · 그 파일만 멈춤. 온도 감시 스레드는 히트건이 켜져 있거나 기록이 열려 있으면 `temp_test_interval_s` 간격으로 읽는다.
 - 목적: 샘플 · 저항계 · 모터 없이 히트건 · 쿨러의 온도 거동만 잰다(도달 시간 · 최대 가열 속도 · 넘침 · 냉각 시간 → 히트건 · 가열 제어 값 정하기).
-- **시험 셋**(`temptest_start(mode)` · 펌웨어 V16 필요): [시작](test - 아래 순서) · **[히트건 맞추기]**(tune - `_run_tune`):
+- **시험 셋**(`temptest_start(mode)` · 펌웨어 V17 필요): [시작](test - 아래 순서) · **[히트건 맞추기]**(tune - `_run_tune`):
   1. 쿨러 → `_station_on`(아래 순서와 같음).
   2. 기준 온도(`_tune_base` · 단계 예비 냉각): 출력 0 % · 송풍으로 시작 온도 이하 → 최근 20 s 내려간 폭 < 0.5 °C(도달 뒤 최대 120 s) → 마지막 5 s 평균. 정체면 중단.
   3. 비교(단계 비교 · `temp_tune_slots` 가 있을 때): 칸마다 `c.heater_method("spread", ms)`(설정은 그대로) → `_tune_fit`: 첫 후보 `temp_tune_start_pct` · 다음은 앞 후보의 맞춘 값.
@@ -410,7 +426,18 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
   (`c.heater_timing` · 설정은 그대로) · 박자마다 `temp_beat_pct`(20 %)로 `temp_beat_s`(60 s) 유지 · 기록(단계 "박자" · temp.csv 출력 방식 칸에 박자 이름 - `method_text(beat=True)`) ·
   진행 "박자 1/3 · 전원 맞춤" → 출력 0 % → 정리(`_cleanup` - 설정의 출력 방식 · 박자로 되돌림 + 시작 전 박자 확인 · 끄는 순서 · 정지 · 비상정지 · 차단 · 오류도 같다).
   분석 `beat_eval`: 뒤쪽 2/3 · 직선 추세 뺌 → 평균 · 흔들림(표준편차) · 폭 · 가장 센 주기(2~30 s · 0.2 s 간격 · cos · sin 최소제곱 진폭 · 본 구간 길이 이하만) · 진폭.
-  summary.txt [박자 시험](조건 한 줄 + 박자별 한 줄) · 창 표 · 로그 한 줄. 설정은 저장하지 않는다. 안전 규칙은 맞추기와 같다(`_hold_for`) ·
+  summary.txt [박자 시험](조건 한 줄 + 박자별 한 줄) · 창 표 · 로그 한 줄. 설정은 저장하지 않는다. 안전 규칙은 맞추기와 같다(`_hold_for`) · 전원 맞춤 기준이 없음일 때만 시작 ·
+  **[위상 찾기]**(phase - `_run_phase` · 기준이 없음이면 거절 "전원 맞춤 기준 없음 · 설정에서 영점 모듈 또는 전선 선택"): 쿨러 → `_station_on` → `temp_beat_pct` →
+  위상 `PHASE_OFFS`(0 · 100 · … · 900 ‰)마다 `c.heater_phase` → 잠길 때까지 최대 `PHASE_LOCK_S`(5 s · `sync_problem` 으로 hz 를 물음) → `temp_phase_s`(30 s) 유지 · 단계 "위상" →
+  `beat_eval`(뒤쪽 2/3) + 잠김(기다림 끝에 잠겼고 유지 중 풀리지 않음) → 출력 0 %. `pick_phase`(순수 함수): 평균 폭 = 최고 − 최저 · 이웃(900 과 0 도)의 평균 차이 > 폭 × `PHASE_EDGE`(0.35)면 경계
+  (폭 < `PHASE_FLAT_C` 2 °C 면 경계 없음 → 흔들림 최소) · 가장 긴 구간(같으면 흔들림 평균이 작은 것)의 가운데(짝수 개면 가운데 둘 중 흔들림이 작은 쪽) · 평균이 없는 줄은 뺌.
+  끝까지 갔으면 `heater_phase_off` 저장(`c._remember`) · 펌웨어에도(`_send_saved` → `heater_method_restore`). `self.phase_scan`(method · src · pct · secs · rows · pick · run · span_c · saved) ·
+  summary.txt [위상 찾기] · 메모 한 줄(index.csv 메모 열) ·
+  **[박자 보정]**(trim - `_run_trim` · 기준이 있으면 거절 "전원 맞춤 기준이 없음일 때만"): 쿨러 → `_station_on` → `temp_beat_pct` → 보정 0 → `TRIM_STEP_PPM`(+600)마다 `c.heater_trim` →
+  `temp_trim_s`(45 s) 유지 · 단계 "박자"(TRIM) → `trim_eval`(앞 `TRIM_SKIP_S` 10 s 뺌 · 직선 추세 뺌 · `period_scan` 3 s ~ 구간 ÷ 2 · 흔들림) · 보정 0 에서 주기 없음 · 진폭 < 0.5 °C 면
+  "중단 · 박자가 안 보임 · 박자 시험 출력 올리기" → `solve_trim(p0, p1)`(순수 함수 · 크기 1e6 ÷ (120 × p0) ppm · p1 < 0.8 p0 이면 어긋남 + → 보정 − · 아니면 + · ±3000) →
+  그 보정으로 한 번 더 유지(확인 `check`) → 출력 0 %. 끝까지 갔으면 `heater_trim_ppm` 저장 · 펌웨어에도. `self.trim_fit`(method · pct · secs · rows · drift_ppm · trim_ppm · check · saved) ·
+  summary.txt [박자 보정] · 메모 한 줄. 두 시험 모두 그래프 제목 "phase scan" · "timer trim" · 폴더 이름 뒤 "_위상" · "_보정" ·
   **[환경 맞추기]**(env - `_run_env` · 스테이션 다이얼 · 쿨러 같은 환경을 바꾼 뒤 한 번):
   1. 쿨러 → `_station_on` → 기준 온도(`_flat_wait` · 단계 예비 냉각 · 출력 0 % · `_tune_base` 와 같은 판정이되 시작 온도 도달은 요구하지 않음 · 최대 `ENV_BASE_MAX_S` 300 s → 그때 값).
   2. 출력 훑기(`_sweep` · 단계 훑기 · 목표 없음 · 지금 출력 방식 · 칸 · 박자 그대로 · 온도를 보고 고치지 않음): 올림(`heater_max_pct` × 경과 ÷ `temp_sweep_s` · 0.1 % 단위) →
@@ -426,13 +453,13 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
   결과 `self.sweep`(method · sweep_s · hold_s · top_pct · base_c · ceil_c · tau · theta · rms · curve · up · down · saved · saved_text) → `res["sweep"]` · view `sweep` ·
   summary.txt 조건 뒤 [환경 맞추기] 뒤에 확인 시험 절들. 그래프 제목 "environment fit". 설정 `temp_sweep_s`(120 s) · `temp_sweep_hold_s`(20 s) ·
   검사(`temptest_problems` · `config.sweep_full_s`): 2 × 올림 시간 × (1 − 연속 판정 ÷ 최대 출력)(음수면 0) + 꼭대기 ≥ 열선 연속 최대 시간이면 거절.
-  폴더 이름 뒤에 "_맞추기" · "_최대속도" · "_박자" · "_환경".
-- 창 배치: 왼쪽 = 진행 한 줄 + 그래프(크게 · 역전 자리 작은 삼각형 · 아래 띠 = 열선 출력 %) · 오른쪽 = 환경 맞추기 · 가열 · 냉각 결과 · 열 모델 · 최대 속도 표 · 도달 표(값이 있는 줄만) · 예상 · 조건(처음부터 펼침).
+  폴더 이름 뒤에 "_맞추기" · "_최대속도" · "_박자" · "_환경" · "_위상" · "_보정".
+- 창 배치: 왼쪽 = 진행 한 줄 + 전원 맞춤 한 줄(경고 색 = 신호 없음) + 그래프(크게 · 역전 자리 작은 삼각형 · 아래 띠 = 열선 출력 %) · 오른쪽 = 환경 맞추기 · 가열 · 냉각 결과 · 히트건 맞추기 · 박자 시험 · 위상 찾기 · 박자 보정 · 열 모델 · 최대 속도 표 · 도달 표(값이 있는 줄만) · 예상 · 조건(처음부터 펼침).
   [조건 고치기] 의 쿨러 칸을 비우면 [](쿨러 없이).
 - 조건은 자동 측정과 같은 설정(`run_start_c` · `run_heater_off_c` · `run_cool_end_c` · `run_heat_mode` · `run_point_step_c` · `cool_rate_separate` · heater_lead_* ·
   `heater_max_pct` · heat_model_* · `run_heat_hold_s` · `run_fan_during_cool` · `run_stall_s` · `run_stall_c` · `run_phase_limit_s`) +
   `temp_test_coolers`(쿨러 릴레이 안 · 빈 목록 가능) · `temp_test_interval_s`(≥ 온도 읽기 시간 · < 온도 못 읽음 허용 × 사용 비율) · `temp_test_mark_c` · `temp_test_precool` ·
-  박자 시험 `temp_beat_pct` · `temp_beat_s` · 환경 맞추기 `temp_sweep_s` · `temp_sweep_hold_s` · 맞추기 `temp_tune_c` · `temp_tune_start_pct` · `temp_tune_slots`(기본 "17,33,50,100,300" · 10~1000 · 중복 없이 · 10개 이하 - `config.tune_slot_problems` · 펌웨어가 전원 주기의 정수배로 맞춤) · `temp_step_s`
+  박자 시험 `temp_beat_pct` · `temp_beat_s` · 환경 맞추기 `temp_sweep_s` · `temp_sweep_hold_s` · 위상 찾기 `temp_phase_s` · 박자 보정 `temp_trim_s` · 맞추기 `temp_tune_c` · `temp_tune_start_pct` · `temp_tune_slots`(기본 "17,33,50,100,300" · 10~1000 · 중복 없이 · 10개 이하 - `config.tune_slot_problems` · 펌웨어가 전원 주기의 정수배로 맞춤) · `temp_step_s`
   (`config.temptest_problems` · 시작 때 `heat_problems` 도 - 표 `heat_curve` 는 2~12점 · 첫 점 0 % · 출력 · 온도 모두 증가 - `config.curve_problems`). 창에서 가열 방식 · 속도를 바로, 나머지는 [조건] 으로 고친다(같은 설정 값).
 - 순서(test · max): 쿨러 켬 → **스테이션 켜기**(`_station_on` · 단계 예비 냉각 · "스테이션 켜는 중": 히트건 켜기(Controller 히트건 함수 · 측정 주체 규칙) → 바로 출력 0 % 요청
   (켠 뒤 100 % 유지가 끝나면 적용 - 유지 때문에 85~104 °C 까지 튄다) → 유지 끝까지 기록만) → 예비 냉각(송풍 · 출력 0 % 로 시작 온도까지 · `temp_test_precool` 끄면 건너뜀 ·
@@ -445,7 +472,7 @@ firmware/stage_v16/     펌웨어 V16(지금 쓰는 것 - 출력 0.1 % · 몰아
   시험 시작은 자동 측정 · 접촉 탐색 중 · 릴레이(히트건 · 쿨러 · 송풍 늦게 끄기)가 켜져 있으면 거절. 측정 시작과는 `runner._lock` 으로 엇갈리지 않는다.
 - 저장: `<데이터 폴더>/temp_test/YYYYMMDD_HHMMSS/` temp.csv(UTF-8 BOM · 시각 · 경과 · 단계 · 온도 · 목표 · 열선 · 송풍 · 쿨러) · summary.txt(조건 + 결과) ·
   graph.png(서버가 OpenCV 로 그림 - 글자는 영문). summary.txt 조건에 "속도 정하는 방법 · …" 한 줄 · [점 · 속도 · 역전] 뒤에 [흔들림](가열 · 냉각 한 줄씩).
-  **결과 목록** `<데이터 폴더>/temp_test/index.csv`(`temptest.write_index` · `INDEX_HEADER` 순서 · utf-8-sig · CRLF): 시험이 끝날 때마다(어떤 끝이든 · 다섯 시험 모두) 한 줄 -
+  **결과 목록** `<데이터 폴더>/temp_test/index.csv`(`temptest.write_index` · `INDEX_HEADER` 순서 · utf-8-sig · CRLF): 시험이 끝날 때마다(어떤 끝이든 · 일곱 시험 모두) 한 줄 -
   조건(온도 · 속도 정하는 방법 · 설정 속도 · 읽기 간격 · 시작 때 출력 방식 · 열 모델) + 가열 · 냉각 결과(걸린 시간 = 가열 목표 도달 · 냉각 끝까지 · curve_stats · 넘침 · 흔들림) + 메모.
   없으면 머리글부터 · 머리글이 다르면 예전 파일을 index_<YYYYMMDD_HHMMSS>.csv 로 옮기고 새로 · 쓰기 실패는 로그만.
   로그: 시작 · 끝 · 요약 한 줄. 화면: `state.temptest` + `GET /api/temptest/points`.

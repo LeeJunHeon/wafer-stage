@@ -55,7 +55,7 @@ COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "
              "heater_max_c", "heater_max_on_s", "plate_size_mm", "cooler_grid", "cooler_relays", "heater_fan_relay", "heater_element_relay",
              "run_heat_mode", "run_point_step_c", "cool_rate_separate", "run_heat_hold_s",
              "run_fan_during_cool", "heater_start_gap_s", "heater_fan_after_s", "run_cool_mode", "run_cool_rate_c_min", "heater_lead_c",
-             "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct", "heater_pwm_period_ms", "heater_timing",
+             "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct", "heater_pwm_period_ms", "heater_timing", "heater_sync", "heater_phase_off", "heater_trim_ppm",
              "run_rate_by", "run_heat_time_s", "run_cool_time_s",
              "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "heat_curve", "heater_tc_s", "heater_pi_filter_s", "heater_jump_c", "heater_turn_s", "reversal_c")
 CONTROL_HEADER = ("회차", "단계", "경과(s)", "온도(°C)", "저항(Ω)", "목표 온도(°C)", "열선 출력(%)", "송풍")     # <이름>_<전압>V_control.csv 의 첫 줄
@@ -166,6 +166,9 @@ class Runner:
                 raise Rejected("온도 시험 중 실행 불가")
             if c.stage.connected and not c.stage.heat_capable:      # 열선 출력 % 제어가 필요하다
                 raise Rejected(FW_NEED)
+            why = c.sync_problem()                                  # 전원 맞춤 기준을 골랐는데 잠기지 않았다
+            if why:
+                raise Rejected(why)
             miss = self.gate()
             if miss:
                 raise Rejected("필요 항목: " + " · ".join(m["text"] for m in miss))
@@ -217,6 +220,9 @@ class Runner:
                 raise Rejected("온도 시험 중 실행 불가")
             if self.c.stage.connected and not self.c.stage.heat_capable:
                 raise Rejected(FW_NEED)
+            why = self.c.sync_problem()
+            if why:
+                raise Rejected(why)
             miss = self.gate()
             if miss:
                 raise Rejected("필요 항목: " + " · ".join(m["text"] for m in miss))

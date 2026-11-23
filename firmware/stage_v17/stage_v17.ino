@@ -1,0 +1,1450 @@
+//====================================================================
+// 4축 스텝모터 제어 V17 — 절대좌표 + 원점 + 소프트리밋 + 위치 기억(세션 단위)
+//                        + 릴레이 10 + 통신 감시(워치독) + 열선 출력 %(시간 비례 · 0.1 % 단위 · 몰아 켜기 / 고르게 · 전원 주기 단위 · 박자 선택)
+//                        + 전원 맞춤 기준(틱을 전원 파형에 붙잡기 · 영점 모듈 D19 / 전선 A0 / 기준 없이 틱 길이 보정)
+//
+// V16 에서 바뀐 것(V17):
+//   [환경 맞추기] 의 출력 훑기에서 출력만 올려도 온도가 약 9 초마다 +3~9 °C 계단으로 올랐다(계단 사이 흔들림 0.3 °C).
+//   틱이 전원 반주기와 약 0.1 % 어긋나 켜는 순간의 전원 파형 위치가 약 9 초에 반주기씩 밀리고, 그 위치에 따라 열이 잘 들어가는 상태와
+//   덜 들어가는 상태가 갈린다 → 틱을 전원 파형에 붙잡는 방법 셋을 넣어 하나씩 시험한다.
+//   틱 길이를 소수까지: hpPerQ = 틱 길이(타이머 카운트) × 256(기준값 = (HP_OCR_BASE + 1) × 256 · ±2 % 안) · 소수 누적 hpFrac ·
+//     다음 틱 한 번만 더할 카운트 hpAdj(±틱/4 로 자름). 박자 0 이면 비교 A 인터럽트마다 OCR1A = 틱 + hpAdj − 1. 틱 수 hpTick.
+//     박자 1 · 2 는 V16 그대로(기준 없음일 때만).
+//   hpz <0|1|2> 전원 맞춤 기준: 0 없음 · 1 영점 모듈(D19 · INT2 · 풀업 · 올라가는 모서리) · 2 전선(A0 이 줍는 60 Hz 잡음 · ADC).
+//     켜질 때 0. 값이 바뀌면 hpPerQ 를 기준값(0 이면 보정 반영)으로 · 잠김 0 · 그 기준의 인터럽트만 켬. 1 · 2 면 박자 0 으로 하고
+//     그동안 hpj 1 · 2 는 "[거부] 전원 맞춤 기준 사용 중". 같은 값을 다시 보내면 아무것도 바꾸지 않는다(잠김 유지).
+//   hpo <0~999> 전원 위상 ‰: 기준 신호의 영점이 틱 시작에서 틱 길이의 몇 ‰ 뒤에 오게 할지(hpOffCnt = 틱 × 값 ÷ 1000). 켜질 때 0.
+//     값이 바뀌면 잠김을 0 으로(새 자리에 다시 잠겨야 한다).
+//   hpt <-3000~3000> 타이머 보정 ppm: 기준 없음일 때 hpPerQ = 기준값 × (1 + ppm ÷ 1e6). 기준이 1 · 2 면 값만 기억. 켜질 때 0.
+//   hz 상태 한 줄 "HZ Z=1 L=1 F=5998 A=0 E=-12 O=250 R=0 N=120"(Z 기준 · L 잠김 · F 전원 주파수 × 100(잠겼을 때만 · 아니면 0) ·
+//     A 신호 세기(전선 · 모듈은 0) · E 위상 오차 평균 µs · O 위상 ‰ · R 보정 ppm · N 최근 1 초에 받아들인 기준 사건 수).
+//     hpz · hpo · hpt 는 숫자 없이 보내면 이 줄 · 숫자와 함께 보내면 적용 뒤 이 줄. HP 줄 끝에 " Z=<기준> L=<잠김>".
+//   보정(두 기준 같음): e = 영점이 바라는 자리보다 늦게 온 카운트(+) → hpAdj += e ÷ 4 · hpPerQ += e × 4.
+//   인터럽트 안에서는 float 를 쓰지 않는다. 모터 · 릴레이 · 통신 감시 · EEPROM · hp/hpm/hpp/hps/hpj/hcfg 의 뜻과 안전 경로는 V16 과 같다.
+//
+// V15 에서 바뀐 것(V16):
+//   열선 박자 hpj <0|1|2> (켜질 때 0 · 숫자 없이 hpj = 지금 값 보고). 타이머1 틱이 전원 반주기와 거의 같아서 켜는 순간의 전원 파형 위치가
+//   약 10 초 주기로 천천히 밀리고, 그 주기로 열이 덩어리져 들어오는 것으로 보였다 → 박자를 일부러 어긋나게 / 무작위로 바꿔 비교한다.
+//     0 = 전원 맞춤(V15 와 같다 · OCR1A = 기준값 HP_OCR_BASE)
+//     1 = 어긋남(OCR1A = 기준값 + 기준값 / 64 고정 · 틱 약 1.6 % 길다)
+//     2 = 무작위(비교 인터럽트마다 OCR1A = 기준값 / 2 + (16 비트 xorshift 난수 % 기준값) → 틱 0.5 ~ 1.5 배 · 평균 1 배)
+//   값이 바뀌면 OCR1A 를 그 자리에서 맞춘다(0 · 1 은 고정값으로). 보고 "HP P=30.5 T=1000 M=1 S=17 F=1 E=10 J=0" - 끝에 J 를 덧붙였다.
+//   칸 길이(틱 수) · 누적 · 출력 % 계산 · 다른 명령 · 안전 경로 · EEPROM 형식은 V15 와 같다(틱을 세는 다른 시간은 없다 - millis 는 타이머0).
+//
+// V14 에서 바뀐 것(V15):
+//   타이머1 틱 = 전원 반주기(MAINS_HZ 60 → 8.33 ms · 50 → 10 ms). V14 는 10 ms 틱이었는데 전원 반주기는 8.33 ms(60 Hz)라
+//     제로크로스 SSR 이 한 번 켤 때 반주기 1 개 또는 2 개를 통과시켜 짧은 칸(10~20 ms)이 크게 출렁였다.
+//   고르게 칸 = 전원 주기의 정수배(hpSlotCyc 1~60 주기 · 한 칸 = 2 × hpSlotCyc 틱) → 한 번 켤 때 켜지는 양이 항상 같다.
+//     hps <10~1000> ms 는 (ms × MAINS_HZ + 500) / 1000 주기로 맞추고 보고 S 는 실제 칸 ms(60 Hz: 1 주기 17 · 2 주기 33 · 3 주기 50 · 6 주기 100 · 18 주기 300).
+//   0 에서 켤 때 첫 칸(첫 주기)을 억지로 켜지 않는다(고르게) - V14 는 hp 0.1 을 보낼 때마다 300 ms 칸을 통째로 켜 냉각 끝에서 3~5 °C 씩 튀었다.
+//   고르게 누적 hpAcc 는 어디서도 0 으로 지우지 않는다(출력 0 · hpm · hps 에도 그대로 · 시작값 500). hpm 도 첫 칸을 켜지 않는다.
+//   몰아 켜기 주기 hpp 는 틱으로 바꿔 센다(hpPeriodTicks). 보고 형식 "HP P=30.5 T=1000 M=1 S=17 F=1 E=10" 은 같다.
+//   모터 · 릴레이 · 통신 감시 · EEPROM 형식 · 매직 · 안전 경로(송풍 꺼짐 · '!' · 통신 감시 · r all 0 → 출력 0)는 V14 와 같다.
+//
+// V13 에서 바뀐 것(V14):
+//   열선 출력 단위 0.1 %(hpPm 0~1000 = 0.0~100.0 %). 정수 % 는 1 % ≈ 1.3 °C 계단이라 목표 점 간격 0.27 °C 보다 컸다.
+//   출력 방식 hpMode: 0 = 몰아 켜기(V13 그대로 - 주기 hpPeriod 앞쪽 (주기 × pm/1000) 동안 켬) ·
+//                     1 = 고르게(칸 hpSlot 10~1000 ms 가 시작될 때마다 누적 hpAcc 에 pm 을 더해 1000 이상이면 그 칸을 켜고 1000 을 뺌 - 시그마-델타).
+//     5 s 주기 몰아 켜기는 30 % 에서 5 s 주기로 ±3 °C 출렁였다. 30 % 를 10 ms 칸으로 고르게 켜면 10 칸 중 3 칸이 고르게 켜진다.
+//   명령: hp <0~100.0>(소수 한 자리 - 직접 파싱) · hpm <0|1>(방식) · hpp <200~5000>(몰아 켜기 주기) · hps <10~1000>(고르게 칸) · hcfg 그대로.
+//   보고 "HP P=30.5 T=1000 M=1 S=10 F=1 E=10" · rs 줄 끝 " HP=30.5".
+//   EEPROM 형식 · 매직 · 모터 · 릴레이 · 통신 감시 · 안전 경로(송풍 꺼짐 · '!' · 통신 감시 · r all 0 → 출력 0)는 V13 과 같다.
+//
+// V12 에서 바뀐 것(V13):
+//   출력 % 를 바꿀 때 주기를 처음부터 다시 시작하지 않는다. V12 는 hp 를 받을 때마다 주기를 0 부터 다시 시작하고 열선을 바로 켰다 →
+//   램프 제어가 0.5 s 마다 바뀐 % 를 보내면 주기(5 s)가 끝나기 전에 계속 다시 시작되어 열선이 사실상 계속 켜졌다.
+//     0 으로      → 바로 끔
+//     0 → 0 초과  → 새 주기 시작(바로 켬)
+//     0 초과끼리  → 주기 위치를 그대로 두고 비율만 바꾼다(지금 위치에서 켜짐 · 꺼짐을 새 비율로 바로 다시 판정)
+//     100         → 계속 켬
+//   그 밖의 명령 · 안전 규칙(송풍 꺼지면 0 · '!' · 통신 감시 · r all 0) · EEPROM 형식 · 매직은 V12 와 같다.
+//
+// V11 에서 바뀐 것(V12):
+//   열선 출력 %: 열선 릴레이(R10 · SSR)를 주기마다 (주기 × %) 동안만 켠다. 타이머1 인터럽트(10 ms)가 켜고 끄므로
+//             블로킹 모터 이동 중에도 멈추지 않는다. 릴레이 극성 · 핀은 relaySet 과 같은 표(RELAY_PIN · RELAY_ACTIVE_LOW).
+//     hp <0~100>     열선 출력 % (0 보다 크면 송풍이 켜져 있어야 한다 - 아니면 거부)
+//     hp             지금 값 보고 → "HP P=37 T=1000 F=1 E=10" (P = 출력 % · T = 주기 ms · F = 송풍 · E = 열선 릴레이 번호)
+//     hpp <200~5000> 주기 ms (기본 1000)
+//     hcfg <송풍> <열선>  송풍 · 열선 릴레이 번호(기본 1 10 · 프로그램이 연결 때 알려 준다 · 같은 번호 거부)
+//   r <열선> 1 = 출력 100 % · r <열선> 0 = 0 %. 출력이 0 보다 크면 rs 의 열선 R 값이 1 이다(논리 상태).
+//   안전: 송풍이 꺼지면(r <송풍> 0 · r all 0 · 통신 감시) 출력 0 · 열선 끔. '!' 비상정지 · 통신 감시 · r all 0 · 열선 r 명령은 출력을 0(또는 그 값)으로.
+//   rs 줄 끝에 " HP=<출력 %>". st 줄은 V11 과 같다.
+//   히트건 켜는 순서(열선 → 송풍 · 인터락)는 프로그램이 지금처럼 맡는다: r <열선> 1 → (대기) → r <송풍> 1 → hp 로 조절.
+// EEPROM 형식·매직(POSA)은 V11 과 같다 — V11 에서 저장한 위치가 그대로 복원된다.
+// 그 밖의 명령·출력 형식은 V11 과 같다.
+//
+// V10 에서 바뀐 것(V11):
+//   RELAY_ACTIVE_LOW = false — 2026-10-26 실장 확인, 구동 회로가 HIGH 에서 켜진다
+//             (KOINO KH-103-4CL DC24V 소켓형). 부팅 순서(꺼짐 레벨 → OUTPUT)는 그대로.
+//   호밍 센서를 물리적으로 없앴다 → hs / hw · H1~H8 · 디바운스 코드 제거.
+//             그 핀(D23~D37 홀수)은 설정하지 않는다(기본 입력).
+//   통신 감시 "wd <ms>"(0 = 끔, 기본 0). 아래 [통신 감시] 참고.
+// EEPROM 형식·매직(POSA)은 V10 과 같다 — V10 에서 저장한 위치가 그대로 복원된다.
+// 그 밖의 명령·출력 형식(st 한 줄 · 이동 보고 · r/rs · sp 등)은 V10 과 같다.
+//
+// V9 → V10 에서 바뀐 것(기록):
+//   배선이 전부 바뀌었다(아래 새 핀맵). 핀은 '드라이버 번호' 로 정의하고,
+//             축(X1·X2·Y·Z) ↔ 드라이버 배정은 맨 위 배정 블록 4줄로 정한다.
+//   펄스 출력을 일반화했다. V9 는 PORTE/PORTG 와 비트마스크를 하드코딩했다.
+//             V10 은 setup 에서 각 축 PUL 핀의 포트 레지스터·비트를 구해 두고,
+//             한 펄스에 움직일 축들을 포트별로 묶어 포트당 한 번씩 쓴다
+//             (같은 포트면 한 번의 쓰기로 동시 출력). 배정을 바꿔도 코드는 그대로.
+//             펄스 폭·DIR 준비 시간·속도/가속 프로파일은 V9 와 같다.
+//   릴레이 10개(r / rs). (호밍 센서 읽기는 V11 에서 없앴다)
+//   배선이 바뀌었으므로 EEPROM 위치 기록을 새로 잡는다 → EE_MAGIC "POSA".
+//             V9 이하로 저장한 기록은 '기록 없음' 으로 읽힌다(형식 자체는 V9 와 같다).
+// 그 밖의 명령·출력 형식(st 한 줄 포함)은 V9 와 같다.
+//
+// [Z 규약]  Z=0 이 맨 위(들어 올린 자리)다. 값이 커질수록 아래로 내려간다.
+//           펄스 부호도 같다(+ = 아래). 원점은 위쪽 하드스톱으로 밀어서 잡고,
+//           거기서 HOME_GAP 만큼 아래로 물러난 자리가 0 이다(X·Y 와 같은 규칙).
+//
+// Arduino Mega 2560 + MotorBank MSD-224 x4
+//
+//   드라이버 (아두이노는 ENA+/DIR+/PUL+ 만 제어, − 쪽은 GND 공통. ENA LOW = 동작)
+//     드라이버1 = X1 : ENA=D39  DIR=D41  PUL=D5 (PE3)
+//     드라이버2 = X2 : ENA=D43  DIR=D45  PUL=D4 (PG5)
+//     드라이버3 = Y  : ENA=D47  DIR=D49  PUL=D3 (PE5)
+//     드라이버4 = Z  : ENA=D51  DIR=D53  PUL=D2 (PE4)
+//   릴레이 (출력, HIGH = 켜짐, 전원·리셋 시 전부 꺼짐)
+//     R1 D22(노) R2 D24(주) R3 D26(보) R4 D28(갈) R5 D30(파)
+//     R6 D32(녹) R7 D34(노) R8 D36(주) R9 D38(빨) R10 D40(검)
+//   (D23~D37 홀수는 V10 의 호밍 센서 자리 — V11 은 쓰지 않는다)
+//
+//   160 펄스 = 1mm
+//   X 스트로크 39,620 펄스 (247.6mm)   Y 스트로크 39,640 펄스 (247.8mm)
+//   Z 스트로크 7,200 펄스 (45mm) — 실측값 (Z_PPMM 도 실측 확인)
+//   위 세 값은 기계 한계다. 앱(settings.json "limits")은 이 안에서 실사용 범위를
+//   따로 정한다 — 앱 설정이 여기보다 크면 앱이 연결할 때 경고를 남긴다.
+//
+// 시리얼: 115200 bps, 줄 끝 = "새 줄". 명령어와 숫자 사이 띄어쓰기 필수.
+//
+// [핵심 규칙]  원점이 없으면 fz 와 jx/jy/jz 외에는 아무것도 움직이지 않는다.
+//              축 배정이 잘못되면(아래 배정 블록) 모든 이동 명령을 거부한다.
+//
+// [위치 기억]  위치는 RAM. EEPROM에는 "저장 이후 움직였는가"만 표시.
+//   첫 이동 시  ok=0 기록 (세션에 1회)   /   save 시  ok=1 기록
+//   전원 켤 때  ok=1 이면 복원, ok=0 이면 원점없음 (save 안 하고 꺼진 것)
+//   → 세션당 EEPROM 쓰기 2회. 수명 걱정 없음.
+//   파이썬이 메인이면: 이동 보고를 파일에 기록하고, 파킹/종료 때 save 전송.
+//
+// [원점]
+//   fz x [탐색펄스] / fz y / fz z   - 그만큼 0 쪽으로 밀고 2mm 이격 후 0
+//                                     (기본 800 = 5mm, 상한 1600. Z 는 위쪽이 0 쪽)
+//   z / zx / zy / zz  지금 위치를 0 으로 등록 (움직이지 않음. z 는 X·Y 만)
+//   sp x y           PC가 알려준 위치로 세팅 + 원점OK  (파이썬 복구용)
+//   home             (0,0) 으로 복귀 (X·Y 만)
+//
+// [절대 이동]  gx 16000   gy 8000   gz 1600   g 16000 8000   mx 100.0   my 50.5   mz 10.0
+// [상대 이동]  x 1600   y -1600   x1 200   x2 200
+// [수동 이동]  jx 1600   jy -1600   jz 800   (원점 없어도 됨. 8000 펄스까지. 범위 밖이면 그 축 원점 해제)
+// [테스트]     rx 5000 10   ry 5000 10   fx 5000 5   fy 5000 5
+// [상태]       p  (사람용)     st  (파싱용 한 줄: ST X= Y= X2= Z= HX= HY= HZ= DIRTY=)
+// [릴레이]     r <n> 1 / r <n> 0 (n=1~10)   r all 0   rs (RS R1=0 ... R10=0, 1=켜짐)
+// [통신 감시]  wd <ms>  (0 = 끔)
+// [열선 출력]  hp <0~100.0>  hp  hpm <0|1>  hpp <ms>  hps <ms>  hpj <0|1|2>  hcfg <송풍> <열선>   (V16 - hps 는 전원 주기 단위 · hpj 박자)
+// [전원 맞춤]  hpz <0|1|2>  hpo <0~999>  hpt <-3000~3000>  hz   (V17 - 기준 · 위상 ‰ · 보정 ppm · 상태 한 줄)
+//   배선: 영점 모듈 VCC 5V · GND · OUT → D19 / 전선 한 가닥 → A0
+// [기타]       save   forget   v a b w   e 0/1   !
+//
+// [통신 감시]  마지막으로 줄을 받은 뒤 wd ms 가 지나면 켜진 릴레이를 전부 끄고
+//   "  [!] 통신 끊김 · 릴레이 전부 꺼짐" 을 한 번 출력한다(다음 줄을 받을 때까지 다시 안 찍는다).
+//   판정은 loop() 에서만 한다 — 블로킹 이동(수 초) 중에는 판정하지 않고, 명령이 끝나는
+//   순간(이동이 끝나는 순간) 타이머를 다시 시작한다. 그래서 긴 이동이 거짓 경보를 내지 않는다.
+//   PC 쪽은 감시 시간의 1/3 주기로 rs 를 보내 하트비트로 쓴다. 켜진 릴레이가 없으면 아무것도 안 한다.
+//====================================================================
+#include <EEPROM.h>
+
+// ==================================================================
+//  배정 블록 — 축 ↔ 드라이버 번호(1~4), 릴레이 극성
+//  확정 배정 (2026-10-26)
+// ==================================================================
+const uint8_t AXIS_X1_DRV = 1;   // PUL 5 (PE3)
+const uint8_t AXIS_X2_DRV = 2;   // PUL 4 (PG5)
+const uint8_t AXIS_Y_DRV  = 3;   // PUL 3 (PE5)
+const uint8_t AXIS_Z_DRV  = 4;   // PUL 2 (PE4)
+
+// true = 릴레이 입력이 LOW 일 때 켜짐(흔한 릴레이 모듈). HIGH 에서 켜지면 false.
+// 2026-10-26 실장 확인: 구동 회로가 HIGH 에서 켜진다(KOINO KH-103-4CL DC24V 소켓형).
+const bool RELAY_ACTIVE_LOW = false;
+
+// ==================================================================
+//  핀 표
+// ==================================================================
+struct DrvPins { uint8_t ena, dir, pul; };
+const DrvPins DRV[4] = {
+  { 39, 41, 5 },   // 드라이버1
+  { 43, 45, 4 },   // 드라이버2
+  { 47, 49, 3 },   // 드라이버3
+  { 51, 53, 2 },   // 드라이버4
+};
+
+const uint8_t N_RELAY = 10;
+const uint8_t RELAY_PIN[N_RELAY] = { 22, 24, 26, 28, 30, 32, 34, 36, 38, 40 };
+
+// 모터(물리) 번호. 배정 블록 순서와 같다.
+enum Motor { MT_X1, MT_X2, MT_Y, MT_Z, N_MOTOR };
+const uint8_t AXIS_DRV[N_MOTOR] = { AXIS_X1_DRV, AXIS_X2_DRV, AXIS_Y_DRV, AXIS_Z_DRV };
+
+// setup 에서 배정을 검사하고 채운다. assignOk 가 false 면 아래 표는 쓰지 않는다.
+bool              assignOk = false;
+uint8_t           mDir[N_MOTOR];
+volatile uint8_t *pulReg[N_MOTOR];   // PUL 핀의 출력 포트 레지스터
+uint8_t           pulMask[N_MOTOR];  // 그 포트 안의 비트
+// 한 펄스에 같이 나갈 PUL 비트를 포트별로 묶은 것(moveAxis)
+struct PulGroup { volatile uint8_t *reg; uint8_t mask; };
+
+const long  X_MAX    = 39620;
+const long  Y_MAX    = 39640;
+// 기계 한계(펄스). 앱의 가동범위 설정은 이 안에서 쓰는 실사용 범위다.
+// 실측: 위 끝단에서 2mm 이격한 0 에서 아래 끝단까지 45mm (2026-09-16).
+const long  Z_MAX    = 7200;     // 45mm — 실측값
+const float Z_PPMM   = 160.0;    // 실측 확인 2026-09-14 (1mm 명령 = 1mm 이동)
+const float PPMM     = 160.0;
+const long  HOME_GAP = 320;
+
+const bool X2_DIR_INVERT   = false;
+// Z 가 반대로 움직이면(+ 인데 위로 간다) 이것만 true 로 바꾼다.
+const bool Z_DIR_INVERT    = false;
+const long BACKLASH_TAKEUP = 0;
+
+const uint16_t PULSE_HIGH_US = 5;
+const uint16_t DIR_SETUP_US  = 50;
+
+float    vMax = 6000.0, accel = 40000.0, vStart = 300.0;
+uint16_t pauseMs = 200;
+
+long posX1 = 0, posX2 = 0, posY = 0, posZ = 0;
+bool homedX = false, homedY = false, homedZ = false;
+bool abortFlag = false;
+bool eeDirty   = false;     // 저장 이후 이동이 있었는가 (RAM)
+
+bool    relayOn[N_RELAY];   // 논리 상태(1 = 켜짐). 극성과 무관
+// 통신 감시(워치독). wdMs = 0 이면 끔.
+unsigned long wdMs = 0;
+unsigned long lastRxMs = 0;  // 마지막으로 줄을 받은(또는 명령이 끝난) 시각
+bool wdTripped = false;      // 이번 끊김을 이미 알렸는가
+
+// 열선 출력(V16 - 0.1 % 단위 · 틱 = 전원 반주기 · 박자 선택). 인터럽트와 같이 쓰는 값은 volatile · 바꿀 때는 cli 구간에서.
+const uint8_t MAINS_HZ = 60;   // 전원 주파수. 50 Hz 지역이면 50 으로 바꿔 올린다
+const uint16_t HP_OCR_BASE = (uint16_t)((F_CPU / 8UL + MAINS_HZ) / (2UL * MAINS_HZ) - 1UL);   // 박자 기준값 = 전원 반주기(60 Hz → 16666)
+volatile uint8_t  hpJ      = 0;      // 열선 박자: 0 전원 맞춤 · 1 어긋남 · 2 무작위
+volatile uint16_t hpRnd    = 0xACE1; // 무작위 박자의 16 비트 xorshift 상태(0 이 아니어야 한다)
+volatile uint16_t hpPm     = 0;      // 0~1000 = 0.0~100.0 %
+volatile uint8_t  hpMode   = 0;      // 0 몰아 켜기 · 1 고르게
+volatile uint16_t hpPeriod = 1000;   // 몰아 켜기 주기 ms(받은 값 - 보고용)
+volatile uint16_t hpPeriodTicks = (uint16_t)((1000UL * 2UL * MAINS_HZ + 500UL) / 1000UL);   // 몰아 켜기 주기(틱) = (ms × 2 × MAINS_HZ + 500) / 1000
+volatile uint8_t  hpSlotCyc = 1;     // 고르게 칸 = 전원 주기 수(1~60). 한 칸 = 2 × hpSlotCyc 틱
+volatile uint16_t hpPhase  = 0;      // 주기 · 칸 안의 지금 틱
+volatile uint16_t hpAcc    = 500;    // 고르게 누적(0~999). 어디서도 0 으로 지우지 않는다
+volatile bool     hpOut    = false;  // 지금 열선 핀이 켜져 있는가
+uint8_t hpFan = 0;                   // 송풍 릴레이 인덱스(0 부터) = R1
+uint8_t hpEl  = 9;                   // 열선 릴레이 인덱스 = R10
+
+// 전원 맞춤(V17). 틱 길이 = hpPerQ / 256 카운트(2 MHz). 박자 0 일 때만 쓴다(1 · 2 는 V16 그대로).
+const uint8_t  ZC_PIN      = 19;                                        // 영점 모듈 OUT(INT2)
+const uint32_t HP_Q_BASE   = ((uint32_t)HP_OCR_BASE + 1UL) * 256UL;     // 기준값(전원 반주기 × 256)
+const uint32_t HP_Q_MIN    = HP_Q_BASE - HP_Q_BASE / 50;                // ±2 %
+const uint32_t HP_Q_MAX    = HP_Q_BASE + HP_Q_BASE / 50;
+const uint8_t  LOCK_GOOD_N = 120;    // |e| < 틱/32 가 이만큼 이어지면 잠김
+const uint8_t  LOCK_BAD_N  = 30;     // |e| ≥ 틱/8 이 이만큼 이어지면 풀림
+const uint8_t  LOCK_GAP_N  = 60;     // 영점 모듈: 이만큼의 틱 동안 받아들인 사건이 없으면 풀림 · 전선: 세기 < HUM_MIN_A 가 이만큼 이어지면 풀림
+const int16_t  HUM_MIN_A   = 16;     // 전선 신호 세기 하한(ADC 값)
+const int16_t  HUM_MIN_P   = 8;      // 전선 P 표본 |pc| 하한(이보다 작으면 오차를 계산하지 않음)
+const uint16_t ADC_END_GAP = 300;    // 전선 표본 자리는 틱 끝에서 이만큼 안쪽까지
+volatile uint32_t hpPerQ   = HP_Q_BASE;   // 틱 길이 × 256
+volatile uint8_t  hpFrac   = 0;           // 소수 누적(1/256 카운트)
+volatile int16_t  hpAdj    = 0;           // 다음 틱 한 번만 더할 카운트
+volatile uint16_t hpTick   = 0;           // 틱 수(비교 A 인터럽트마다 +1)
+volatile uint16_t hpPer    = HP_OCR_BASE + 1;   // 이번 틱의 정수 길이(hpAdj 빼고) - 다른 인터럽트가 읽는다
+volatile uint8_t  hpZ      = 0;           // 기준: 0 없음 · 1 영점 모듈 · 2 전선
+volatile uint16_t hpOffPm  = 0;           // 전원 위상 ‰
+volatile uint16_t hpOffCnt = 0;           // = hpPer × hpOffPm / 1000
+int16_t           hpTrim   = 0;           // 타이머 보정 ppm(기준 없음일 때만 반영)
+volatile uint8_t  hpLock   = 0;           // 잠김
+volatile uint8_t  hpGood   = 0, hpBad = 0, hpWeak = 0;   // 잇따른 좋은 · 나쁜 · 약한 횟수(255 에서 멈춤)
+volatile bool     hpHaveEv = false;       // 직전에 받아들인 사건이 있는가(영점 모듈)
+volatile uint16_t hpEvTick = 0, hpEvT = 0;   // 직전에 받아들인 사건의 틱 · TCNT1
+volatile uint16_t hpEvCnt  = 0;           // 이번 1 초에 받아들인 사건
+volatile int32_t  hpErrSum = 0;           // 이번 1 초 오차 합(카운트)
+volatile uint16_t hpErrCnt = 0;
+volatile uint16_t hpN      = 0;           // 최근 1 초에 받아들인 사건 수(보고 N)
+volatile int16_t  hpE      = 0;           // 최근 1 초 위상 오차 평균 µs(보고 E)
+volatile uint8_t  hpSecTick = 0;          // 1 초(2 × MAINS_HZ 틱) 세기
+volatile int32_t  hpMQ     = 512L * 256L; // 전선: 평균 × 256
+volatile int16_t  hpZc     = 0;           // 전선: Z 표본 − 평균
+volatile int16_t  hpAQ     = 0;           // 전선: 세기 × 16
+volatile uint8_t  hpAdcWhich = 0;         // 지금 변환 중인 표본: 0 Z · 1 P
+
+enum Axis { AX_X, AX_Y, AX_Z, AX_X1, AX_X2 };
+
+// ==================================================================
+//  EEPROM — 슬롯 1개, 세션당 2회 쓰기
+// ==================================================================
+struct PosRec {
+  uint32_t magic;
+  int32_t  x1, x2, y, z;
+  uint8_t  homedX, homedY, homedZ;
+  uint8_t  ok;       // 1 = 저장 이후 이동 없음 (신뢰)  0 = 이동 있었음 (불신)
+  uint8_t  sum;
+};
+// 기록 형식이 바뀌면 매직도 바꾼다 - 옛 기록을 새 구조로 읽으면 위치가 엉킨다.
+// V10 은 형식은 같지만 배선이 전부 바뀌어 V9 위치를 믿을 수 없으므로 바꿨다.
+const uint32_t EE_MAGIC = 0x504F5341UL;   // "POSA"
+const int      EE_ADDR  = 0;
+
+uint8_t recSum(const PosRec &r) {
+  const uint8_t *p = (const uint8_t*)&r;
+  uint8_t s = 0;
+  for (size_t i = 0; i < sizeof(PosRec) - 1; i++) s += p[i];
+  return (uint8_t)(0xFF - s);
+}
+
+void eeWrite(bool ok) {
+  PosRec r;
+  r.magic = EE_MAGIC;
+  r.x1 = posX1; r.x2 = posX2; r.y = posY; r.z = posZ;
+  r.homedX = homedX ? 1 : 0;
+  r.homedY = homedY ? 1 : 0;
+  r.homedZ = homedZ ? 1 : 0;
+  r.ok  = ok ? 1 : 0;
+  r.sum = recSum(r);
+  EEPROM.put(EE_ADDR, r);     // 바뀐 바이트만 실제로 씀
+  eeDirty = !ok;
+}
+
+int eeLoad() {   // 0=기록없음  1=복원  2=저장 안 하고 꺼짐
+  PosRec r;
+  EEPROM.get(EE_ADDR, r);
+  if (r.magic != EE_MAGIC || recSum(r) != r.sum) return 0;
+  if (!r.ok) return 2;
+  posX1 = r.x1; posX2 = r.x2; posY = r.y; posZ = r.z;
+  homedX = r.homedX; homedY = r.homedY; homedZ = r.homedZ;
+  return 1;
+}
+
+void markDirty() { if (!eeDirty) eeWrite(false); }   // 세션 첫 이동에만 실제 쓰기
+
+// ==================================================================
+//  축 배정 검사 · 포트 캐시
+// ==================================================================
+const __FlashStringHelper* motorName(uint8_t m) {
+  switch (m) {
+    case MT_X1: return F("X1");
+    case MT_X2: return F("X2");
+    case MT_Y:  return F("Y");
+    default:    return F("Z");
+  }
+}
+
+// 같은 드라이버 두 번, 1~4 밖이면 오류를 찍고 false.
+bool checkAssign() {
+  bool ok = true;
+  for (uint8_t m = 0; m < N_MOTOR; m++) {
+    if (AXIS_DRV[m] < 1 || AXIS_DRV[m] > 4) {
+      Serial.print(F("  [오류] 축 배정: ")); Serial.print(motorName(m));
+      Serial.print(F("=드라이버")); Serial.print(AXIS_DRV[m]);
+      Serial.println(F(" (1~4 밖)"));
+      ok = false;
+    }
+    for (uint8_t k = 0; k < m; k++) {
+      if (AXIS_DRV[k] == AXIS_DRV[m]) {
+        Serial.print(F("  [오류] 축 배정: ")); Serial.print(motorName(k));
+        Serial.print(F(" 와 ")); Serial.print(motorName(m));
+        Serial.print(F(" 가 같은 드라이버")); Serial.println(AXIS_DRV[m]);
+        ok = false;
+      }
+    }
+  }
+  if (!ok) Serial.println(F("  [오류] 배정 블록(AXIS_*_DRV)을 고쳐 다시 업로드할 때까지 모든 이동을 거부합니다"));
+  return ok;
+}
+
+void cacheMotorPins() {
+  for (uint8_t m = 0; m < N_MOTOR; m++) {
+    const DrvPins &d = DRV[AXIS_DRV[m] - 1];
+    mDir[m]    = d.dir;
+    pulReg[m]  = portOutputRegister(digitalPinToPort(d.pul));
+    pulMask[m] = digitalPinToBitMask(d.pul);
+  }
+}
+
+// 부팅 로그용: "X1=D5(PE 0x08)"
+void printMotorPul(uint8_t m) {
+  const DrvPins &d = DRV[AXIS_DRV[m] - 1];
+  Serial.print(motorName(m)); Serial.print(F("=D")); Serial.print(d.pul);
+  Serial.print(F("(P")); Serial.print((char)('A' + digitalPinToPort(d.pul) - 1));
+  Serial.print(F(" 0x"));
+  if (pulMask[m] < 0x10) Serial.print('0');
+  Serial.print(pulMask[m], HEX); Serial.print(')');
+}
+
+bool rejectIfBadAssign() {
+  if (assignOk) return false;
+  Serial.println(F("  [거부] 축 배정 오류 → 배정 블록(AXIS_*_DRV)을 고쳐 다시 업로드"));
+  return true;
+}
+
+// ==================================================================
+//  릴레이
+// ==================================================================
+// 정책: 전원 투입·리셋 시 전부 꺼짐, 명령으로만 켜진다.
+//       비상정지(!)·forget·e 는 릴레이를 건드리지 않는다 — 측정 장비 쿨러 등의
+//       전원을 모터 사정으로 함부로 끊지 않는다. 끄려면 r <n> 0 / r all 0.
+uint8_t relayLevel(bool on) { return (on != RELAY_ACTIVE_LOW) ? HIGH : LOW; }
+
+void heatSet(uint16_t pm);
+
+void relaySet(uint8_t i, bool on) {
+  if (i == hpEl) { heatSet(on ? 1000 : 0); return; }   // 열선은 출력으로만(켬 = 100.0 %)
+  relayOn[i] = on;
+  digitalWrite(RELAY_PIN[i], relayLevel(on));
+  if (i == hpFan && !on) heatSet(0);                   // 송풍이 꺼지면 열선도 끈다
+}
+
+// ---- 열선 출력(V16) ----
+// 핀은 hpOut 으로만 쓴다. heatSet 은 cli 구간 안에서:
+//   0 → 바로 끔(누적 · 칸 위치는 그대로) / 1000 이상 → 켬
+//   몰아 켜기 → 0 에서 켜면 위치 0(새 주기) · 0 초과끼리는 위치 유지 · 새 비율로 지금 판정
+//   고르게 → 아무것도 하지 않는다(지금 칸은 그대로 · 다음 칸부터 새 값. 0 에서 켜도 첫 칸을 억지로 켜지 않는다)
+void heatSet(uint16_t pm) {
+  if (pm > 1000) pm = 1000;
+  uint8_t sreg = SREG; cli();
+  uint16_t old = hpPm;
+  hpPm = pm;
+  if (pm == 0) {
+    hpOut = false;
+  } else if (pm >= 1000) {
+    hpOut = true;
+  } else if (hpMode == 0) {
+    if (old == 0) hpPhase = 0;
+    hpOut = hpPhase < (uint16_t)(((uint32_t)hpPeriodTicks * pm) / 1000UL);
+  }
+  relayOn[hpEl] = pm > 0;
+  digitalWrite(RELAY_PIN[hpEl], relayLevel(hpOut));
+  SREG = sreg;
+}
+
+// 타이머1 비교 일치(전원 반주기마다): 몰아 켜기 = 주기 앞쪽 (주기 × pm/1000) 틱 동안 켬 ·
+// 고르게 = 칸(2 × hpSlotCyc 틱)이 시작될 때마다 누적으로 판정(pm 이 0 이어도 누적은 그대로). 블로킹 이동 중에도 돈다.
+// 박자 2(무작위)면 들어올 때마다 다음 틱 길이를 OCR1A 에 넣는다(CTC 는 OCR1A 를 바로 쓴다 · 카운터는 방금 0 으로 돌아와 새 값(기준값/2 이상)보다 작다).
+// 박자 0(V17): 다음 틱 = hpPerQ 의 정수부 + 소수 누적의 올림 + hpAdj(한 번만 · ±틱/4) → OCR1A. 전선이면 이번 틱의 두 표본 자리(비교 B · C)도.
+ISR(TIMER1_COMPA_vect) {
+  hpTick++;
+  if (hpJ == 2) {
+    uint16_t x = hpRnd;
+    x ^= x << 7; x ^= x >> 9; x ^= x << 8;               // 16 비트 xorshift(7, 9, 8)
+    hpRnd = x;
+    OCR1A = HP_OCR_BASE / 2 + (x % HP_OCR_BASE);         // 0.5 ~ 1.5 배
+  } else if (hpJ == 0) {
+    uint32_t q = hpPerQ;
+    uint16_t per = (uint16_t)(q >> 8);
+    uint16_t f = (uint16_t)hpFrac + (uint16_t)(q & 0xFF);
+    hpFrac = (uint8_t)f;
+    hpPer = per;
+    if (f >= 256) per++;
+    int16_t a = hpAdj;
+    hpAdj = 0;
+    int16_t lim = (int16_t)(per / 4);
+    if (a > lim) a = lim;
+    if (a < -lim) a = -lim;
+    uint16_t top = (uint16_t)((int16_t)per + a - 1);
+    OCR1A = top;
+    if (hpZ == 2) {
+      uint16_t last = top - ADC_END_GAP;
+      uint16_t zb = hpOffCnt;
+      uint16_t pc = hpOffCnt + hpPer / 2;
+      if (pc >= hpPer) pc -= hpPer;
+      OCR1B = zb < last ? zb : last;
+      OCR1C = pc < last ? pc : last;
+    }
+  }
+  if (hpZ == 1 && (uint16_t)(hpTick - hpEvTick) > LOCK_GAP_N) { hpLock = 0; hpGood = 0; }   // 사건이 끊겼다
+  if (++hpSecTick >= 2 * MAINS_HZ) {                     // 1 초: 보고 N · E 를 정하고 위상 자리를 지금 틱 길이로 다시 셈
+    hpSecTick = 0;
+    hpN = hpEvCnt;
+    hpEvCnt = 0;
+    hpE = hpErrCnt ? (int16_t)(hpErrSum / (int32_t)hpErrCnt / 2) : 0;   // 카운트(0.5 µs) → µs
+    hpErrSum = 0;
+    hpErrCnt = 0;
+    hpOffCnt = (uint16_t)(((uint32_t)hpPer * hpOffPm) / 1000UL);
+  }
+  uint16_t pm = hpPm;
+  bool on = hpOut;
+  uint16_t ph = hpPhase + 1;
+  if (hpMode == 0) {
+    if (ph >= hpPeriodTicks) ph = 0;
+    if (pm == 0) on = false;
+    else if (pm >= 1000) on = true;
+    else on = ph < (uint16_t)(((uint32_t)hpPeriodTicks * pm) / 1000UL);
+  } else {
+    if (ph >= (uint16_t)hpSlotCyc * 2) {                 // 새 칸: 누적으로 판정(pm 이 0 이어도 누적은 그대로 둔다)
+      ph = 0;
+      uint16_t acc = hpAcc + pm;
+      bool hit = acc >= 1000;
+      if (hit) acc -= 1000;
+      hpAcc = acc;
+      on = hit;
+    }
+    if (pm == 0) on = false;
+    else if (pm >= 1000) on = true;
+  }
+  hpPhase = ph;
+  if (on != hpOut) {
+    hpOut = on;
+    digitalWrite(RELAY_PIN[hpEl], relayLevel(on));   // digitalWrite 는 안에서 인터럽트를 막고 쓴다
+  }
+}
+
+// ---- 전원 맞춤(V17) - 아래 두 함수는 인터럽트 안에서만 부른다 ----
+// 보정: e > 0 = 영점이 바라는 자리보다 늦게 왔다 → 다음 틱을 늘리고(hpAdj) 틱 길이도 조금 늘린다(hpPerQ · ±2 % 안).
+static inline void hpCorrect(int16_t e) {
+  int16_t lim = (int16_t)(hpPer / 4);
+  int16_t a = hpAdj + e / 4;
+  if (a > lim) a = lim;
+  if (a < -lim) a = -lim;
+  hpAdj = a;
+  int32_t q = (int32_t)hpPerQ + (int32_t)e * 4;
+  if (q < (int32_t)HP_Q_MIN) q = HP_Q_MIN;
+  if (q > (int32_t)HP_Q_MAX) q = HP_Q_MAX;
+  hpPerQ = (uint32_t)q;
+}
+
+// 잠김 판정: good = |e| < 틱/32 · bad = |e| ≥ 틱/8. good 이 LOCK_GOOD_N 번 이어지면 잠김 · bad 가 LOCK_BAD_N 번 이어지면 풀림.
+static inline void hpLockStep(bool good, bool bad) {
+  if (good) { if (hpGood < 255) hpGood++; } else hpGood = 0;
+  if (bad)  { if (hpBad < 255) hpBad++; }  else hpBad = 0;
+  if (hpGood >= LOCK_GOOD_N) hpLock = 1;
+  if (hpBad >= LOCK_BAD_N) hpLock = 0;
+}
+
+static inline uint16_t uabs16(int16_t v) { return v < 0 ? (uint16_t)(-v) : (uint16_t)v; }
+
+// 영점 모듈(hpz 1): D19 올라가는 모서리. 직전에 받아들인 사건부터의 간격으로 고른다:
+//   < 0.6 틱 버림(잡음 · 겹친 모서리) · 0.8~1.2 틱(반주기마다) · 1.8~2.2 틱(주기마다) 받아들이고 오차 계산 · 그 밖은 받아들이되 잠김 세기 0.
+ISR(INT2_vect) {
+  uint16_t t = TCNT1;
+  uint16_t tick = hpTick;
+  uint16_t per = hpPer;
+  if ((TIFR1 & (1 << OCF1A)) && t < per / 2) tick++;     // 틱이 막 넘어갔는데 비교 A 인터럽트가 아직(이 인터럽트가 먼저 돈다)
+  bool ok = false;
+  if (hpHaveEv) {
+    int32_t iv = (int32_t)(uint16_t)(tick - hpEvTick) * per + (int32_t)t - (int32_t)hpEvT;
+    if (iv * 5 < (int32_t)per * 3) return;              // < 0.6 틱
+    ok = (iv * 5 >= (int32_t)per * 4 && iv * 5 <= (int32_t)per * 6) || (iv * 5 >= (int32_t)per * 9 && iv * 5 <= (int32_t)per * 11);
+  }
+  hpHaveEv = true;
+  hpEvTick = tick;
+  hpEvT = t;
+  hpEvCnt++;
+  if (!ok) { hpGood = 0; return; }
+  int16_t h = (int16_t)(per / 2);
+  int32_t e = (int32_t)t - (int32_t)hpOffCnt;
+  while (e > h) e -= per;
+  while (e < -h) e += per;
+  hpErrSum += e;
+  hpErrCnt++;
+  hpCorrect((int16_t)e);
+  uint16_t ae = uabs16((int16_t)e);
+  hpLockStep(ae < per / 32, ae >= per / 8);
+}
+
+// 전선(hpz 2): 틱 안 두 자리에서 A0 변환을 시작한다 - 비교 B = 위상 자리(Z 표본) · 비교 C = 반 틱 뒤(P 표본).
+ISR(TIMER1_COMPB_vect) { hpAdcWhich = 0; ADCSRA |= (1 << ADSC); }
+ISR(TIMER1_COMPC_vect) { hpAdcWhich = 1; ADCSRA |= (1 << ADSC); }
+
+// 변환 끝: 평균 m 을 1/256 씩 따라감. Z 표본은 zc = x − m 을 기억 · P 표본 pc = x − m 으로 세기(1/16 씩)와 오차:
+//   e = −(zc × sign(pc)) × (틱 / 3) ÷ |pc| (±틱/8) - 반 틱 = 반주기 = π 라디안이므로 zc/pc ≈ 위상 오차(라디안) × 틱/π.
+ISR(ADC_vect) {
+  int16_t x = (int16_t)ADC;
+  int32_t mq = hpMQ;
+  mq += ((int32_t)x * 256L - mq) / 256L;
+  hpMQ = mq;
+  int16_t d = x - (int16_t)(mq >> 8);
+  if (hpAdcWhich == 0) { hpZc = d; return; }
+  uint16_t ap = uabs16(d);
+  hpAQ += (int16_t)(((int16_t)ap * 16 - hpAQ) / 16);
+  int16_t A = hpAQ / 16;
+  uint16_t per = hpPer;
+  int16_t e = 0;
+  bool have = ap >= (uint16_t)HUM_MIN_P;
+  if (have) {
+    int32_t num = -(int32_t)hpZc * (d > 0 ? 1L : -1L) * (int32_t)(per / 3);
+    int32_t ev = num / (int32_t)ap;
+    int32_t lim = per / 8;
+    if (ev > lim) ev = lim;
+    if (ev < -lim) ev = -lim;
+    e = (int16_t)ev;
+    hpEvCnt++;
+    hpErrSum += e;
+    hpErrCnt++;
+    hpCorrect(e);
+  }
+  uint16_t ae = uabs16(e);
+  hpLockStep(have && A >= HUM_MIN_A && ae < per / 32, have && ae >= per / 8);
+  if (A < HUM_MIN_A) { if (hpWeak < 255) hpWeak++; } else hpWeak = 0;
+  if (hpWeak >= LOCK_GAP_N) hpLock = 0;
+}
+
+// 타이머 보정 ppm → 틱 길이 × 256(32 비트가 넘치지 않게 천 단위로 나눠 계산 · ±2 % 안).
+uint32_t trimQ(int16_t ppm) {
+  int32_t d = (int32_t)(HP_Q_BASE / 1000UL) * ppm / 1000L + (int32_t)(HP_Q_BASE % 1000UL) * ppm / 1000000L;
+  int32_t q = (int32_t)HP_Q_BASE + d;
+  if (q < (int32_t)HP_Q_MIN) q = HP_Q_MIN;
+  if (q > (int32_t)HP_Q_MAX) q = HP_Q_MAX;
+  return (uint32_t)q;
+}
+
+// 기준을 바꾼다(cli 구간 안에서 부른다): 틱 길이를 기준값(없음이면 보정 반영)으로 · 잠김 0 · 그 기준의 인터럽트만 켠다.
+void hpSyncApply(uint8_t z) {
+  EIMSK  &= ~(1 << INT2);
+  TIMSK1 &= ~((1 << OCIE1B) | (1 << OCIE1C));
+  ADCSRA &= ~(1 << ADIE);
+  hpZ = z;
+  if (z) hpJ = 0;
+  hpPerQ = z ? HP_Q_BASE : trimQ(hpTrim);
+  hpFrac = 0;
+  hpAdj = 0;
+  hpLock = 0;
+  hpGood = hpBad = hpWeak = 0;
+  hpHaveEv = false;
+  hpEvTick = hpTick;
+  hpEvCnt = 0; hpErrSum = 0; hpErrCnt = 0;
+  uint16_t per = (uint16_t)(hpPerQ >> 8);
+  hpPer = per;
+  hpOffCnt = (uint16_t)(((uint32_t)per * hpOffPm) / 1000UL);
+  if (hpJ == 0) {
+    uint16_t top = per - 1;
+    if (TCNT1 >= top) TCNT1 = 0;
+    OCR1A = top;
+  }
+  if (z == 1) {
+    EIFR = (1 << INTF2);                                 // 바꾸기 전에 걸린 모서리는 버린다
+    EIMSK |= (1 << INT2);
+  } else if (z == 2) {
+    hpMQ = 512L * 256L;
+    hpZc = 0;
+    hpAQ = 0;
+    OCR1B = hpOffCnt;
+    OCR1C = hpOffCnt + per / 2 >= per ? hpOffCnt + per / 2 - per : hpOffCnt + per / 2;
+    ADCSRA |= (1 << ADIF);                               // 끝난 변환 표시 지움(1 을 써서)
+    ADCSRA |= (1 << ADIE);
+    TIFR1 = (1 << OCF1B) | (1 << OCF1C);
+    TIMSK1 |= (1 << OCIE1B) | (1 << OCIE1C);
+  }
+}
+
+void syncInit() {
+  // 영점 모듈 D19(INT2): 풀업 · 올라가는 모서리(켜기는 hpz 1 일 때만).
+  pinMode(ZC_PIN, INPUT_PULLUP);
+  EICRA = (EICRA & ~((1 << ISC21) | (1 << ISC20))) | (1 << ISC21) | (1 << ISC20);
+  // 전선 A0: 기준 AVcc · 채널 0 · 분주 128(125 kHz · 한 변환 약 104 µs) · 디지털 입력 버퍼 끔(변환 끝 인터럽트는 hpz 2 일 때만).
+  ADMUX  = (1 << REFS0);
+  ADCSRB &= ~(1 << MUX5);
+  DIDR0 |= (1 << ADC0D);
+  ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
+}
+
+void heatTimerInit() {
+  // 타이머1(16 비트): CTC · 분주 8 → 2 MHz · OCR1A = 전원 반주기(60 Hz → 16666 = 8.3335 ms · 50 Hz → 19999 = 10 ms).
+  // PUL 핀(D2~D5)은 타이머3 · 0 쪽이라 겹치지 않는다.
+  uint8_t sreg = SREG; cli();
+  TCCR1A = 0;
+  TCCR1B = (1 << WGM12) | (1 << CS11);
+  TCNT1  = 0;
+  OCR1A  = HP_OCR_BASE;                                  // 켜질 때 박자 0(전원 맞춤)
+  TIMSK1 |= (1 << OCIE1A);
+  SREG = sreg;
+}
+
+uint16_t slotMs() {                                      // 실제 고르게 칸 ms(보고 S)
+  return (uint16_t)(((uint32_t)hpSlotCyc * 1000UL + MAINS_HZ / 2) / MAINS_HZ);
+}
+
+void printPm(uint16_t pm) {                              // 0.1 % 단위 → "30.5"
+  Serial.print(pm / 10); Serial.print('.'); Serial.print(pm % 10);
+}
+
+void printHP() {
+  Serial.print(F("HP P=")); printPm(hpPm);
+  Serial.print(F(" T="));   Serial.print(hpPeriod);
+  Serial.print(F(" M="));   Serial.print(hpMode);
+  Serial.print(F(" S="));   Serial.print(slotMs());
+  Serial.print(F(" F="));   Serial.print(hpFan + 1);
+  Serial.print(F(" E="));   Serial.print(hpEl + 1);
+  Serial.print(F(" J="));   Serial.print(hpJ);
+  Serial.print(F(" Z="));   Serial.print(hpZ);
+  Serial.print(F(" L="));   Serial.println(hpLock);
+}
+
+// "HZ Z=1 L=1 F=5998 A=0 E=-12 O=250 R=0 N=120" - 인터럽트가 쓰는 값은 cli 구간에서 한 번에 읽는다.
+void printHZ() {
+  uint8_t sreg = SREG; cli();
+  uint8_t z = hpZ, l = hpLock;
+  uint32_t q = hpPerQ;
+  int16_t a = hpAQ / 16, e = hpE;
+  uint16_t o = hpOffPm, n = hpN;
+  SREG = sreg;
+  uint32_t q4 = q >> 4;                                  // 전원 주파수 × 100 = 2 MHz ÷ (2 × 틱) × 100 = 1.6e9 ÷ (hpPerQ / 16)
+  uint32_t f = (l && q4) ? (1600000000UL + q4 / 2) / q4 : 0;
+  Serial.print(F("HZ Z=")); Serial.print(z);
+  Serial.print(F(" L="));   Serial.print(l);
+  Serial.print(F(" F="));   Serial.print(f);
+  Serial.print(F(" A="));   Serial.print(z == 2 ? a : 0);
+  Serial.print(F(" E="));   Serial.print(e);
+  Serial.print(F(" O="));   Serial.print(o);
+  Serial.print(F(" R="));   Serial.print(hpTrim);
+  Serial.print(F(" N="));   Serial.println(n);
+}
+
+bool isUIntN(const String &s, uint8_t maxLen) {
+  if (s.length() == 0 || s.length() > maxLen) return false;
+  for (unsigned int i = 0; i < s.length(); i++) if (!isDigit(s.charAt(i))) return false;
+  return true;
+}
+
+// "30" · "30.5" → 305(0.1 % 단위). 정수 1~3자리 + 선택으로 '.' 와 숫자 한 자리. 형식 오류면 -1(float 를 쓰지 않는다).
+long parsePm(const String &s) {
+  int dot = s.indexOf('.');
+  String ip = dot < 0 ? s : s.substring(0, dot);
+  if (!isUIntN(ip, 3)) return -1;
+  long v = ip.toInt() * 10;
+  if (dot >= 0) {
+    String fp = s.substring(dot + 1);
+    if (fp.length() != 1 || !isDigit(fp.charAt(0))) return -1;
+    v += fp.charAt(0) - '0';
+  }
+  return v;
+}
+
+void hpCmd(const String &s1, int nTok) {
+  if (nTok < 2) { printHP(); return; }
+  long pm = parsePm(s1);
+  if (pm < 0 || pm > 1000) { Serial.println(F("  [거부] hp <0~100.0> · 소수 한 자리")); return; }
+  if (pm > 0 && !relayOn[hpFan]) { Serial.println(F("  [거부] 송풍 꺼짐 · 송풍 켠 뒤 hp")); printHP(); return; }
+  heatSet((uint16_t)pm);
+  printHP();
+}
+
+void hpmCmd(const String &s1, int nTok) {
+  if (nTok < 2) { printHP(); return; }
+  if (s1 != "0" && s1 != "1") { Serial.println(F("  [거부] hpm <0|1> · 0 몰아 켜기 · 1 고르게")); return; }
+  uint8_t sreg = SREG; cli();
+  hpMode = (uint8_t)(s1.charAt(0) - '0');
+  hpPhase = 0;                                           // 방식만 바꾼다(첫 칸 · 첫 주기를 억지로 켜지 않음 · 누적 그대로)
+  SREG = sreg;
+  printHP();
+}
+
+void hppCmd(const String &s1, int nTok) {
+  if (nTok < 2) { printHP(); return; }
+  long v = isUIntN(s1, 4) ? s1.toInt() : -1;
+  if (v < 200 || v > 5000) { Serial.println(F("  [거부] hpp <200~5000> ms")); return; }
+  uint8_t sreg = SREG; cli();
+  hpPeriod = (uint16_t)v;
+  hpPeriodTicks = (uint16_t)(((uint32_t)v * 2UL * MAINS_HZ + 500UL) / 1000UL);
+  hpPhase = 0;
+  SREG = sreg;
+  printHP();
+}
+
+void hpsCmd(const String &s1, int nTok) {
+  if (nTok < 2) { printHP(); return; }
+  long v = isUIntN(s1, 4) ? s1.toInt() : -1;
+  if (v < 10 || v > 1000) { Serial.println(F("  [거부] hps <10~1000> ms")); return; }
+  long cyc = (v * MAINS_HZ + 500L) / 1000L;              // 전원 주기 수로 맞춘다(60 Hz: 20 → 1 주기 = 17 ms)
+  if (cyc < 1) cyc = 1;
+  if (cyc > 60) cyc = 60;
+  uint8_t sreg = SREG; cli();
+  hpSlotCyc = (uint8_t)cyc;
+  hpPhase = 0;                                           // 누적은 그대로
+  SREG = sreg;
+  printHP();
+}
+
+void hpjCmd(const String &s1, int nTok) {
+  if (nTok < 2) { printHP(); return; }
+  if (s1 != "0" && s1 != "1" && s1 != "2") { Serial.println(F("  [거부] hpj <0|1|2> · 0 전원 맞춤 · 1 어긋남 · 2 무작위")); return; }
+  uint8_t j = (uint8_t)(s1.charAt(0) - '0');
+  if (j != 0 && hpZ != 0) { Serial.println(F("  [거부] 전원 맞춤 기준 사용 중")); printHP(); return; }
+  uint8_t sreg = SREG; cli();
+  hpJ = j;
+  uint16_t top = (j == 1) ? (uint16_t)(HP_OCR_BASE + HP_OCR_BASE / 64)
+               : (j == 0) ? (uint16_t)((hpPerQ >> 8) - 1) : HP_OCR_BASE;   // 0 = 소수 틱(다음 인터럽트부터 hpPerQ) · 2 는 다음 인터럽트부터 난수 · 그때까지 기준값
+  if (TCNT1 >= top) TCNT1 = 0;                           // 지난 값이 더 길었으면 카운터가 새 값을 넘어 65535 까지 가지 않게(이번 틱만 조금 길어짐)
+  OCR1A = top;
+  SREG = sreg;
+  printHP();
+}
+
+void hpzCmd(const String &s1, int nTok) {
+  if (nTok < 2) { printHZ(); return; }
+  if (s1 != "0" && s1 != "1" && s1 != "2") { Serial.println(F("  [거부] hpz <0|1|2> · 0 없음 · 1 영점 모듈(D19) · 2 전선(A0)")); printHZ(); return; }
+  uint8_t z = (uint8_t)(s1.charAt(0) - '0');
+  uint8_t sreg = SREG; cli();
+  if (z != hpZ) hpSyncApply(z);                          // 같은 값이면 그대로(잠김 유지)
+  SREG = sreg;
+  printHZ();
+}
+
+void hpoCmd(const String &s1, int nTok) {
+  if (nTok < 2) { printHZ(); return; }
+  long v = isUIntN(s1, 3) ? s1.toInt() : -1;
+  if (v < 0 || v > 999) { Serial.println(F("  [거부] hpo <0~999> ‰")); printHZ(); return; }
+  uint8_t sreg = SREG; cli();
+  if ((uint16_t)v != hpOffPm) {
+    hpOffPm = (uint16_t)v;
+    hpOffCnt = (uint16_t)(((uint32_t)hpPer * hpOffPm) / 1000UL);
+    hpLock = 0;                                          // 새 자리에 다시 잠겨야 한다
+    hpGood = hpBad = 0;
+  }
+  SREG = sreg;
+  printHZ();
+}
+
+void hptCmd(const String &s1, int nTok) {
+  if (nTok < 2) { printHZ(); return; }
+  bool neg = s1.length() > 1 && s1.charAt(0) == '-';
+  String d = neg ? s1.substring(1) : s1;
+  long v = isUIntN(d, 4) ? d.toInt() : 99999L;
+  if (neg) v = -v;
+  if (v < -3000 || v > 3000) { Serial.println(F("  [거부] hpt <-3000~3000> ppm")); printHZ(); return; }
+  uint8_t sreg = SREG; cli();
+  hpTrim = (int16_t)v;
+  if (hpZ == 0) hpPerQ = trimQ(hpTrim);                  // 기준이 있으면 값만 기억(기준을 없음으로 바꿀 때 반영)
+  SREG = sreg;
+  printHZ();
+}
+
+void hcfgCmd(const String &s1, const String &s2, int nTok) {
+  long f = (nTok > 1 && isUIntN(s1, 2)) ? s1.toInt() : 0;
+  long e = (nTok > 2 && isUIntN(s2, 2)) ? s2.toInt() : 0;
+  if (f < 1 || f > N_RELAY || e < 1 || e > N_RELAY || f == e) { Serial.println(F("  [거부] hcfg <송풍 1~10> <열선 1~10> · 서로 다른 번호")); printHP(); return; }
+  heatSet(0);                                          // 바꾸기 전 열선 끔(예전 열선 핀)
+  hpFan = (uint8_t)(f - 1);
+  hpEl  = (uint8_t)(e - 1);
+  relayOn[hpEl] = false;
+  digitalWrite(RELAY_PIN[hpEl], relayLevel(false));
+  hpOut = false;
+  printHP();
+}
+
+void relaysInit() {
+  // 순서가 중요하다: 꺼짐 레벨을 먼저 digitalWrite 한 뒤 pinMode(OUTPUT).
+  // 반대로 하면 OUTPUT 으로 바뀌는 순간 핀이 LOW 로 나가 (LOW 에서 켜지는 릴레이가)
+  // 잠깐 켜지는 펄스가 생긴다. 입력 상태에서 HIGH 를 쓰면 풀업이 켜지고,
+  // OUTPUT 으로 바뀔 때 그 레벨 그대로 나간다.
+  for (uint8_t i = 0; i < N_RELAY; i++) {
+    relayOn[i] = false;
+    digitalWrite(RELAY_PIN[i], relayLevel(false));
+    pinMode(RELAY_PIN[i], OUTPUT);
+  }
+}
+
+void printRS() {
+  Serial.print(F("RS"));
+  for (uint8_t i = 0; i < N_RELAY; i++) {
+    Serial.print(F(" R")); Serial.print(i + 1); Serial.print('=');
+    Serial.print(relayOn[i] ? 1 : 0);
+  }
+  Serial.print(F(" HP=")); printPm(hpPm);
+  Serial.println();
+}
+
+bool isUInt(const String &s) {
+  if (s.length() == 0 || s.length() > 3) return false;
+  for (unsigned int i = 0; i < s.length(); i++) if (!isDigit(s.charAt(i))) return false;
+  return true;
+}
+
+void relayCmd(const String &s1, const String &s2, int nTok) {
+  if (nTok < 3 || (s2 != "0" && s2 != "1")) {
+    Serial.println(F("  [거부] r <1~10> <1|0>  또는  r all 0"));
+    return;
+  }
+  bool on = (s2 == "1");
+  if (s1 == "all") {
+    if (on) { Serial.println(F("  [거부] r all 은 0 만 (켜기는 하나씩)")); return; }
+    for (uint8_t i = 0; i < N_RELAY; i++) relaySet(i, false);
+    Serial.println(F("  릴레이 전부 꺼짐"));
+    printRS();
+    return;
+  }
+  long n = isUInt(s1) ? s1.toInt() : 0;
+  if (n < 1 || n > N_RELAY) {
+    Serial.println(F("  [거부] 릴레이 번호는 1~10"));
+    return;
+  }
+  relaySet(n - 1, on);
+  Serial.print(F("  릴레이 R")); Serial.print(n);
+  Serial.println(on ? F(" 켜짐") : F(" 꺼짐"));
+  printRS();
+}
+
+// ==================================================================
+//  통신 감시
+// ==================================================================
+void wdKick() { lastRxMs = millis(); wdTripped = false; }
+
+void wdCheck() {
+  if (wdMs == 0 || wdTripped) return;
+  if (millis() - lastRxMs <= wdMs) return;
+  bool any = false;
+  for (uint8_t i = 0; i < N_RELAY; i++) if (relayOn[i]) { any = true; break; }
+  if (!any) return;
+  for (uint8_t i = 0; i < N_RELAY; i++) relaySet(i, false);
+  wdTripped = true;
+  Serial.println(F("  [!] 통신 끊김 · 릴레이 전부 꺼짐"));
+  printRS();
+}
+
+void wdCmd(const String &s1, int nTok) {
+  bool digits = s1.length() > 0 && s1.length() <= 6;
+  for (unsigned int i = 0; digits && i < s1.length(); i++) if (!isDigit(s1.charAt(i))) digits = false;
+  if (nTok < 2 || !digits) {
+    Serial.print(F("  통신 감시 ")); Serial.print(wdMs); Serial.println(F("ms (wd <ms>, 0 = 끔)"));
+    return;
+  }
+  long v = s1.toInt();
+  if (v < 0 || v > 600000L) { Serial.println(F("  [거부] wd 는 0~600000 ms")); return; }
+  wdMs = (unsigned long)v;
+  wdKick();
+  Serial.print(F("  통신 감시 ")); Serial.print(wdMs);
+  Serial.println(wdMs ? F("ms") : F("ms (끔)"));
+}
+
+// ==================================================================
+long  axPos(Axis ax)   { return (ax == AX_Y) ? posY : (ax == AX_Z) ? posZ : posX1; }
+long  axMax(Axis ax)   { return (ax == AX_Y) ? Y_MAX : (ax == AX_Z) ? Z_MAX : X_MAX; }
+
+// V7 추가 상수
+const long HOME_SEARCH_DEFAULT = 800;    // fz 인자 없을 때 5mm 만 민다
+const long HOME_SEARCH_MAX     = 1600;   // fz 탐색 상한 10mm (넘으면 거부)
+const long JOG_MAX_PULSE       = 8000;   // jx/jy 한 번에 50mm 까지
+bool  axHomed(Axis ax) { return (ax == AX_Y) ? homedY : (ax == AX_Z) ? homedZ : homedX; }
+void  clearHomed(Axis ax) { if (ax == AX_Y) homedY = false; else if (ax == AX_Z) homedZ = false; else homedX = false; }
+long  labs2(long v)    { return v < 0 ? -v : v; }
+
+const __FlashStringHelper* axName(Axis ax) {
+  switch (ax) {
+    case AX_X:  return F("X ");
+    case AX_Z:  return F("Z ");
+    case AX_X1: return F("X1");
+    case AX_X2: return F("X2");
+    default:    return F("Y ");
+  }
+}
+
+// 드라이버 4개 모두. 배정과 무관하게 표에서 직접 쓴다(배정 오류여도 안전하게 풀고 잠근다).
+void motorsEnable(bool on) {
+  for (uint8_t d = 0; d < 4; d++) digitalWrite(DRV[d].ena, on ? LOW : HIGH);
+}
+void motorsOn() { motorsEnable(true); }
+
+void printStatus() {
+  Serial.print(F("  v=")); Serial.print(vMax, 0);
+  Serial.print(F(" a=")); Serial.print(accel, 0);
+  Serial.print(F(" b=")); Serial.print(vStart, 0);
+  Serial.print(F(" w=")); Serial.print(pauseMs); Serial.println(F("ms"));
+
+  Serial.print(F("  X=")); Serial.print(posX1);
+  Serial.print(F(" (")); Serial.print(posX1 / PPMM, 2); Serial.print(F("mm)"));
+  Serial.print(homedX ? F(" [원점OK]") : F(" [원점없음]"));
+  Serial.print(F("   Y=")); Serial.print(posY);
+  Serial.print(F(" (")); Serial.print(posY / PPMM, 2); Serial.print(F("mm)"));
+  Serial.print(homedY ? F(" [원점OK]") : F(" [원점없음]"));
+  Serial.println(eeDirty ? F("   (저장 안 됨)") : F("   (저장됨)"));
+
+  Serial.print(F("  Z=")); Serial.print(posZ);
+  Serial.print(F(" (")); Serial.print(posZ / Z_PPMM, 2); Serial.print(F("mm)"));
+  Serial.print(homedZ ? F(" [원점OK]") : F(" [원점없음]"));
+  Serial.println(F("   (0 = 맨 위, + = 아래)"));
+
+  if (posX1 != posX2) {
+    Serial.print(F("  [!] X 틀어짐  X1=")); Serial.print(posX1);
+    Serial.print(F(" X2=")); Serial.println(posX2);
+  }
+  if (!homedX || !homedY || !homedZ)
+    Serial.println(F("  → 원점이 없는 축은 움직이지 않습니다. fz x / fz y / fz z 또는 sp x y"));
+}
+
+// p 전용: 배정 블록(축→드라이버→핀), 릴레이, 통신 감시
+void printWiring() {
+  Serial.println(assignOk ? F("  배정 (축 → 드라이버 → ENA/DIR/PUL)")
+                          : F("  배정 [오류] — 이동 거부 중"));
+  for (uint8_t m = 0; m < N_MOTOR; m++) {
+    Serial.print(F("    ")); Serial.print(motorName(m));
+    Serial.print(F(" → 드라이버")); Serial.print(AXIS_DRV[m]);
+    if (AXIS_DRV[m] >= 1 && AXIS_DRV[m] <= 4) {
+      const DrvPins &d = DRV[AXIS_DRV[m] - 1];
+      Serial.print(F(" → D")); Serial.print(d.ena);
+      Serial.print(F("/D"));   Serial.print(d.dir);
+      Serial.print(F("/D"));   Serial.print(d.pul);
+    }
+    Serial.println();
+  }
+  Serial.print(F("  릴레이 (RELAY_ACTIVE_LOW=")); Serial.print(RELAY_ACTIVE_LOW ? 1 : 0);
+  Serial.print(F(")  ")); printRS();
+  Serial.print(F("  통신 감시 ")); Serial.print(wdMs); Serial.println(wdMs ? F("ms") : F("ms (끔)"));
+}
+
+// 파싱용 한 줄
+void printST() {
+  Serial.print(F("ST X="));  Serial.print(posX1);
+  Serial.print(F(" Y="));    Serial.print(posY);
+  Serial.print(F(" X2="));   Serial.print(posX2);
+  Serial.print(F(" Z="));    Serial.print(posZ);
+  Serial.print(F(" HX="));   Serial.print(homedX ? 1 : 0);
+  Serial.print(F(" HY="));   Serial.print(homedY ? 1 : 0);
+  Serial.print(F(" HZ="));   Serial.print(homedZ ? 1 : 0);
+  Serial.print(F(" DIRTY=")); Serial.println(eeDirty ? 1 : 0);
+}
+
+bool requireHomed(Axis ax) {
+  if (axHomed(ax)) return true;
+  if (ax == AX_Z) {
+    Serial.println(F("  [거부] 원점 미확정 → fz z 또는 zz"));
+    return false;
+  }
+  Serial.print(F("  [거부] 원점 미확정 → fz "));
+  Serial.print(ax == AX_Y ? F("y") : F("x"));
+  Serial.println(F(" 또는 sp x y"));
+  return false;
+}
+
+bool checkLimit(Axis ax, long target) {
+  long hi = axMax(ax);
+  if (target < 0 || target > hi) {
+    Serial.print(F("  [거부] 범위 밖  목표=")); Serial.print(target);
+    Serial.print(F("  허용=0~")); Serial.println(hi);
+    return false;
+  }
+  return true;
+}
+
+// ------------------------------------------------------------------
+void setDir(Axis ax, bool pos) {
+  bool d2 = X2_DIR_INVERT ? !pos : pos;
+  switch (ax) {
+    case AX_X:  digitalWrite(mDir[MT_X1], pos); digitalWrite(mDir[MT_X2], d2); break;
+    case AX_X1: digitalWrite(mDir[MT_X1], pos); break;
+    case AX_X2: digitalWrite(mDir[MT_X2], d2);  break;
+    case AX_Y:  digitalWrite(mDir[MT_Y], pos);  break;
+    case AX_Z:  digitalWrite(mDir[MT_Z], Z_DIR_INVERT ? !pos : pos); break;
+  }
+  delayMicroseconds(DIR_SETUP_US);
+}
+
+// ax 가 움직이는 모터들을 포트별로 묶는다. 같은 포트면 비트를 OR 해 한 묶음 —
+// 한 번의 쓰기로 동시에 올라가고 내려간다(X1·X2 동기). 반환값 = 묶음 수.
+uint8_t buildPulGroups(Axis ax, PulGroup g[]) {
+  uint8_t ms[2], nm = 0;
+  switch (ax) {
+    case AX_X:  ms[nm++] = MT_X1; ms[nm++] = MT_X2; break;
+    case AX_X1: ms[nm++] = MT_X1; break;
+    case AX_X2: ms[nm++] = MT_X2; break;
+    case AX_Y:  ms[nm++] = MT_Y;  break;
+    case AX_Z:  ms[nm++] = MT_Z;  break;
+  }
+  uint8_t ng = 0;
+  for (uint8_t i = 0; i < nm; i++) {
+    uint8_t m = ms[i], j = 0;
+    while (j < ng && g[j].reg != pulReg[m]) j++;
+    if (j == ng) { g[ng].reg = pulReg[m]; g[ng].mask = 0; ng++; }
+    g[j].mask |= pulMask[m];
+  }
+  return ng;
+}
+
+void addPos(Axis ax, long d) {
+  switch (ax) {
+    case AX_X:  posX1 += d; posX2 += d; break;
+    case AX_X1: posX1 += d; break;
+    case AX_X2: posX2 += d; break;
+    case AX_Y:  posY  += d; break;
+    case AX_Z:  posZ  += d; break;
+  }
+}
+
+// ---- 실제 펄스 출력 (검사 없음. 상위에서 검사) ----
+void moveAxis(Axis ax, unsigned long steps, bool pos) {
+  if (steps == 0) return;
+  if (rejectIfBadAssign()) return;     // 상위에서 이미 막지만, 표가 비어 있으면 절대 쓰지 않는다
+  markDirty();
+
+  PulGroup grp[2];
+  uint8_t  nGrp = buildPulGroups(ax, grp);
+  setDir(ax, pos);
+
+  unsigned long nAcc = 0;
+  if (vMax > vStart) nAcc = (unsigned long)((vMax*vMax - vStart*vStart) / (2.0*accel));
+  if (nAcc * 2UL > steps) nAcc = steps / 2UL;
+  unsigned long decStart = steps - nAcc;
+
+  float v = vStart;
+  unsigned long emitted = 0;
+  bool lagged = false;
+  unsigned long t0 = micros();
+  unsigned long next = t0;
+
+  for (unsigned long i = 0; i < steps; i++) {
+    if ((i & 0x3F) == 0 && Serial.available() && Serial.peek() == '!') {
+      Serial.read(); abortFlag = true; heatSet(0); break;           // 비상정지: 열선 출력 0(V12)
+    }
+    while ((long)(micros() - next) < 0) { }
+
+    // 포트 레지스터를 포인터로 읽고-고쳐-쓰므로 그 사이 인터럽트를 막는다.
+    // 묶음이 둘(다른 포트)이어도 연속 쓰기라 같은 펄스 폭 안에 함께 나간다.
+    // 확정 배정에서는 X1(PE3)·X2(PG5) 가 다른 포트라 X 이동이 늘 두 묶음이다:
+    // 올림 두 번이 한 cli 구간, 내림 두 번이 다른 한 cli 구간 안에서 연속으로 일어나
+    // 두 PUL 의 시차는 몇 클럭(1µs 미만)이고, 둘 다 HIGH 폭은 PULSE_HIGH_US 이상이다.
+    // 인터럽트가 끼어들 수 없으므로 X1·X2 의 펄스 수와 주기는 항상 같다.
+    uint8_t sreg = SREG; cli();
+    for (uint8_t k = 0; k < nGrp; k++) *grp[k].reg |= grp[k].mask;
+    SREG = sreg;
+    delayMicroseconds(PULSE_HIGH_US);
+    sreg = SREG; cli();
+    for (uint8_t k = 0; k < nGrp; k++) *grp[k].reg &= (uint8_t)~grp[k].mask;
+    SREG = sreg;
+    emitted++;
+
+    if (i < nAcc)           v += accel / v;
+    else if (i >= decStart) v -= accel / v;
+    if (v > vMax)   v = vMax;
+    if (v < vStart) v = vStart;
+
+    next += (unsigned long)(1000000.0 / v);
+    if ((long)(micros() - next) > 0) { next = micros(); lagged = true; }
+  }
+
+  unsigned long dt = micros() - t0;
+  addPos(ax, pos ? (long)emitted : -(long)emitted);
+
+  Serial.print(F("  ")); Serial.print(axName(ax));
+  Serial.print(pos ? F(" + ") : F(" - "));
+  Serial.print(F("cmd=")); Serial.print(steps);
+  Serial.print(F(" out=")); Serial.print(emitted);
+  Serial.print(F(" t=")); Serial.print(dt / 1000.0, 2); Serial.print(F("ms"));
+  Serial.print(F(" | X=")); Serial.print(posX1);
+  Serial.print(F(" Y=")); Serial.print(posY);
+  Serial.print(F(" Z=")); Serial.print(posZ);
+  if (posX1 != posX2) Serial.print(F("  [!] X 틀어짐"));
+  if (lagged)         Serial.print(F("  [!] CPU"));
+  if (abortFlag)      Serial.print(F("  [!] 중단"));
+  Serial.println();
+}
+
+void moveRel(Axis ax, long delta) {
+  if (delta == 0) return;
+  if (!requireHomed(ax)) return;
+  if (!checkLimit(ax, axPos(ax) + delta)) return;
+  moveAxis(ax, labs2(delta), delta > 0);
+}
+
+void moveSingle(Axis ax, long delta) {
+  if (delta == 0) return;
+  if (!requireHomed(AX_X)) return;
+  long cur = (ax == AX_X1) ? posX1 : posX2;
+  if (!checkLimit(AX_X, cur + delta)) return;
+  Serial.println(F("  (단독 이동 - 갠트리가 틀어집니다)"));
+  moveAxis(ax, labs2(delta), delta > 0);
+}
+
+void gotoAbs(Axis ax, long target) {
+  if (!requireHomed(ax)) return;
+  if (!checkLimit(ax, target)) return;
+  long d = target - axPos(ax);
+  if (d == 0) { Serial.println(F("  이미 그 위치")); return; }
+
+  if (BACKLASH_TAKEUP > 0 && d < 0 && (target - BACKLASH_TAKEUP) >= 0) {
+    moveAxis(ax, labs2(d) + BACKLASH_TAKEUP, false);
+    delay(pauseMs);
+    moveAxis(ax, BACKLASH_TAKEUP, true);
+    return;
+  }
+  moveAxis(ax, labs2(d), d > 0);
+}
+
+// ---- 수동 이동 (원점이 없어도 움직인다) ----
+// 사람이 보면서 캐리지를 끝단까지 몰고 가는 용도다. 가동범위 밖이라고 거부하지
+// 않는다 - 거부하면 원점이 있는 축을 하드스톱까지 몰고 갈 방법이 없다. 대신 범위를
+// 벗어나는 순간 그 축의 원점을 해제한다(끝에 닿아 탈조하면 좌표를 못 믿는다).
+// 한 번에 갈 수 있는 거리는 제한해 '크게 잘못 보내는' 사고를 막는다.
+void jogRel(Axis ax, long delta) {
+  if (delta == 0) return;
+  if (labs2(delta) > JOG_MAX_PULSE) {
+    Serial.println(F("  [거부] jx/jy/jz 는 한 번에 8000 펄스까지"));
+    return;
+  }
+  if (axHomed(ax)) {
+    long t = axPos(ax) + delta;
+    if (t < 0 || t > axMax(ax)) {
+      clearHomed(ax);
+      Serial.print(F("  [!] ")); Serial.print(axName(ax));
+      Serial.println(F(" 가동범위 밖 → 원점 해제 (다시 등록 필요)"));
+      eeWrite(true);
+    }
+  }
+  motorsOn();                 // e 1 로 풀어 둔 뒤에도 바로 움직일 수 있게
+  moveAxis(ax, labs2(delta), delta > 0);
+}
+
+// ---- 자동 원점 (원점 없이 움직이는 유일한 명령) ----
+void findZero(Axis ax, long searchLen) {
+  // 인자가 없으면 짧게만 민다. 스트로크 전체를 미는 기본값은 이미 끝에 닿아
+  // 있을 때 수십 초를 갈아 먹는다. 긴 거리는 잘라 주는 대신 거부한다 -
+  // 사람이 끝단 근처까지 몰고 온 뒤에 쓰는 명령이다.
+  if (searchLen <= 0) searchLen = HOME_SEARCH_DEFAULT;
+  if (searchLen > HOME_SEARCH_MAX) {
+    Serial.println(F("  [거부] fz 탐색은 1600 펄스(10mm)까지"));
+    return;
+  }
+
+  Serial.print(F("--- 원점 탐색 (탐색 ")); Serial.print(searchLen);
+  Serial.println(F(" 펄스) --- 끝에 닿으면 드르륵 소리 (정상)"));
+
+  motorsOn();
+  float sv = vMax, sa = accel;
+  bool  hx = homedX, hy = homedY, hz = homedZ;
+  homedX = false; homedY = false; homedZ = false;
+  vMax = 1200.0; accel = 20000.0;
+
+  moveAxis(ax, searchLen, false);
+  delay(500);
+  if (!abortFlag) moveAxis(ax, HOME_GAP, true);
+
+  vMax = sv; accel = sa;
+  homedX = hx; homedY = hy; homedZ = hz;
+
+  if (abortFlag) { Serial.println(F("--- 중단됨. 원점 설정 안 됨 ---")); return; }
+  if      (ax == AX_X) { posX1 = 0; posX2 = 0; homedX = true; }
+  else if (ax == AX_Z) { posZ = 0; homedZ = true; }
+  else                 { posY = 0; homedY = true; }
+  eeWrite(true);
+  Serial.println(F("--- 원점 설정 완료 (저장됨) ---"));
+  printStatus();
+}
+
+void reciprocate(Axis ax, long n, int cycles) {
+  if (!requireHomed(ax)) return;
+  if (!checkLimit(ax, axPos(ax) + n)) return;
+  Serial.println(F("--- 왕복 ---"));
+  for (int c = 1; c <= cycles; c++) {
+    Serial.print(F("[cyc ")); Serial.print(c); Serial.print('/');
+    Serial.print(cycles); Serial.println(F("]"));
+    moveAxis(ax, n, true);  if (abortFlag) break;
+    delay(pauseMs);
+    moveAxis(ax, n, false); if (abortFlag) break;
+    delay(pauseMs);
+  }
+  Serial.println(F("--- 종료 ---"));
+  printStatus();
+}
+
+void repeatSame(Axis ax, long n, int cycles, bool pos) {
+  if (!requireHomed(ax)) return;
+  long tot = n * (long)cycles;
+  if (!checkLimit(ax, axPos(ax) + (pos ? tot : -tot))) return;
+  Serial.println(F("--- 단방향 ---"));
+  for (int c = 1; c <= cycles; c++) {
+    Serial.print(F("[cyc ")); Serial.print(c); Serial.print('/');
+    Serial.print(cycles); Serial.println(F("]"));
+    moveAxis(ax, n, pos); if (abortFlag) break;
+    delay(pauseMs);
+  }
+  Serial.println(F("--- 종료 ---"));
+  printStatus();
+}
+
+// 배정 오류일 때 거부할 명령(모터를 움직이는 것 전부)
+bool isMotionCmd(const String &c) {
+  static const char* const M[] = { "fz", "home", "gx", "gy", "gz", "mx", "my", "mz", "g",
+                                   "jx", "jy", "jz", "x", "y", "x1", "x2",
+                                   "rx", "ry", "fx", "fy" };
+  for (uint8_t i = 0; i < sizeof(M) / sizeof(M[0]); i++) if (c == M[i]) return true;
+  return false;
+}
+
+// ------------------------------------------------------------------
+void setup() {
+  relaysInit();                // 맨 먼저 — 부팅 순간에도 릴레이가 켜지지 않게
+  heatTimerInit();             // 열선 출력 %(V12) - 출력 0 으로 시작
+  syncInit();                  // 전원 맞춤(V17) - 기준 없음으로 시작(인터럽트는 hpz 로 켠다)
+
+  // 드라이버 4개 핀은 배정과 무관하게 표 전체를 LOW 로(V9 와 같음. ENA LOW = 동작)
+  for (uint8_t d = 0; d < 4; d++) {
+    const uint8_t pins[3] = { DRV[d].ena, DRV[d].dir, DRV[d].pul };
+    for (uint8_t k = 0; k < 3; k++) { pinMode(pins[k], OUTPUT); digitalWrite(pins[k], LOW); }
+  }
+
+  Serial.begin(115200);
+  Serial.setTimeout(30);
+  Serial.println(F("=== 3-AXIS V17 ==="));
+  Serial.print(F("  X 0~")); Serial.print(X_MAX);
+  Serial.print(F("  Y 0~")); Serial.print(Y_MAX);
+  Serial.print(F("  Z 0~")); Serial.print(Z_MAX);
+  Serial.println(F("   (160 pulse = 1mm, Z: 0 = 맨 위)"));
+  Serial.print(F("  열선 출력: 전원 ")); Serial.print(MAINS_HZ);
+  Serial.print(F(" Hz · 틱 ")); Serial.print(1000.0 / (2.0 * MAINS_HZ), 2);
+  Serial.print(F(" ms · 고르게 칸 = 전원 주기 ")); Serial.print(hpSlotCyc); Serial.println(F(" 개 · 박자 0(전원 맞춤) · 기준 없음"));
+
+  Serial.print(F("  배정 X1=드라이버")); Serial.print(AXIS_X1_DRV);
+  Serial.print(F(" X2=드라이버")); Serial.print(AXIS_X2_DRV);
+  Serial.print(F(" Y=드라이버"));  Serial.print(AXIS_Y_DRV);
+  Serial.print(F(" Z=드라이버"));  Serial.print(AXIS_Z_DRV);
+  Serial.print(F("  RELAY_ACTIVE_LOW=")); Serial.println(RELAY_ACTIVE_LOW ? 1 : 0);
+
+  assignOk = checkAssign();
+  if (assignOk) {
+    cacheMotorPins();
+    Serial.print(F("  PUL"));
+    for (uint8_t m = 0; m < N_MOTOR; m++) { Serial.print(' '); printMotorPul(m); }
+    Serial.println();
+  }
+
+  int r = eeLoad();
+  if (r == 1)      Serial.println(F("  EEPROM: 마지막 저장 위치 복원  (꺼진 동안 손으로 밀었다면 fz 로 재등록)"));
+  else if (r == 2) Serial.println(F("  EEPROM: save 하지 않고 꺼짐 → 위치 불신"));
+  else             Serial.println(F("  EEPROM: 기록 없음"));
+  printStatus();
+  wdKick();
+}
+
+void loop() {
+  wdCheck();                   // 블로킹 이동 중에는 여기 오지 않는다(판정 안 함)
+  if (!Serial.available()) return;
+  String line = Serial.readStringUntil('\n');
+  wdKick();                    // 줄을 받았다
+  line.trim();
+  if (line.length() == 0) return;
+  handleLine(line);
+  wdKick();                    // 명령이 끝난 순간(긴 이동 포함) 타이머를 다시 시작한다
+}
+
+void handleLine(const String &line) {
+
+  String tok[3]; int nTok = 0; int st = 0;
+  for (int i = 0; i <= (int)line.length() && nTok < 3; i++) {
+    if (i == (int)line.length() || line.charAt(i) == ' ') {
+      if (i > st) tok[nTok++] = line.substring(st, i);
+      st = i + 1;
+    }
+  }
+  String c = tok[0]; c.toLowerCase();
+  String s1 = tok[1]; s1.toLowerCase();
+  long  a1 = (nTok > 1) ? tok[1].toInt()   : 0;
+  long  a2 = (nTok > 2) ? tok[2].toInt()   : 0;
+  float f1 = (nTok > 1) ? tok[1].toFloat() : 0.0;
+
+  abortFlag = false;
+
+  if (isMotionCmd(c) && rejectIfBadAssign()) return;
+
+  // ---- 원점 / 위치 세팅 ----
+  if (c == "fz") {
+    if      (s1 == "x") findZero(AX_X, a2);
+    else if (s1 == "y") findZero(AX_Y, a2);
+    else if (s1 == "z") findZero(AX_Z, a2);   // Z 는 0 쪽 = 위
+    else Serial.println(F("  ? fz x [탐색펄스]  (x / y / z. 기본 800 = 5mm, 상한 1600)"));
+  }
+  else if (c == "z")  { posX1 = 0; posX2 = 0; posY = 0; homedX = true; homedY = true;
+                        eeWrite(true); Serial.println(F("  X, Y 여기를 0 으로 등록 (저장됨)")); printStatus(); }
+  else if (c == "zx") { posX1 = 0; posX2 = 0; homedX = true;
+                        eeWrite(true); Serial.println(F("  X 여기를 0 으로 등록 (저장됨)")); printStatus(); }
+  else if (c == "zy") { posY = 0; homedY = true;
+                        eeWrite(true); Serial.println(F("  Y 여기를 0 으로 등록 (저장됨)")); printStatus(); }
+  else if (c == "zz") { posZ = 0; homedZ = true;
+                        eeWrite(true); Serial.println(F("  Z 여기를 0 으로 등록 (저장됨)")); printStatus(); }
+  else if (c == "sp") {                              // PC가 알려준 위치
+    if (nTok < 3) Serial.println(F("  ? sp <x> <y>"));
+    else if (a1 < 0 || a1 > X_MAX || a2 < 0 || a2 > Y_MAX)
+      Serial.println(F("  [거부] sp 값이 범위 밖"));
+    else {
+      posX1 = a1; posX2 = a1; posY = a2; homedX = true; homedY = true;
+      eeWrite(true);
+      Serial.println(F("  PC 위치로 세팅 (저장됨)")); printStatus();
+    }
+  }
+  else if (c == "home") {
+    if (requireHomed(AX_X) && requireHomed(AX_Y)) {
+      gotoAbs(AX_X, 0);
+      if (!abortFlag) { delay(pauseMs); gotoAbs(AX_Y, 0); }
+    }
+  }
+
+  // ---- 절대 이동 ----
+  else if (c == "gx") gotoAbs(AX_X, a1);
+  else if (c == "gy") gotoAbs(AX_Y, a1);
+  else if (c == "gz") gotoAbs(AX_Z, a1);
+  else if (c == "mx") gotoAbs(AX_X, (long)(f1 * PPMM + 0.5));
+  else if (c == "my") gotoAbs(AX_Y, (long)(f1 * PPMM + 0.5));
+  else if (c == "mz") gotoAbs(AX_Z, (long)(f1 * Z_PPMM + 0.5));
+  else if (c == "g") {
+    if (requireHomed(AX_X) && requireHomed(AX_Y)
+        && checkLimit(AX_X, a1) && checkLimit(AX_Y, a2)) {
+      gotoAbs(AX_X, a1);
+      if (!abortFlag) { delay(pauseMs); gotoAbs(AX_Y, a2); }
+    }
+  }
+
+  // ---- 상대 이동 ----
+  else if (c == "jx") jogRel(AX_X, a1);        // 원점 없어도 됨
+  else if (c == "jy") jogRel(AX_Y, a1);        // 원점 없어도 됨
+  else if (c == "jz") jogRel(AX_Z, a1);        // 원점 없어도 됨 (- = 위)
+  else if (c == "x")  moveRel(AX_X, a1);
+  else if (c == "y")  moveRel(AX_Y, a1);
+  else if (c == "x1") moveSingle(AX_X1, a1);
+  else if (c == "x2") moveSingle(AX_X2, a1);
+
+  // ---- 테스트 ----
+  else if (c == "rx") { if (a1 && a2 > 0) reciprocate(AX_X, labs2(a1), a2); }
+  else if (c == "ry") { if (a1 && a2 > 0) reciprocate(AX_Y, labs2(a1), a2); }
+  else if (c == "fx") { if (a1 && a2 > 0) repeatSame(AX_X, labs2(a1), a2, a1 >= 0); }
+  else if (c == "fy") { if (a1 && a2 > 0) repeatSame(AX_Y, labs2(a1), a2, a1 >= 0); }
+
+  // ---- 릴레이 / 통신 감시 ----
+  else if (c == "r")  relayCmd(s1, tok[2], nTok);
+  else if (c == "rs") printRS();
+  else if (c == "wd") wdCmd(s1, nTok);
+  else if (c == "hp")   hpCmd(s1, nTok);
+  else if (c == "hpp")  hppCmd(s1, nTok);
+  else if (c == "hpm")  hpmCmd(s1, nTok);
+  else if (c == "hps")  hpsCmd(s1, nTok);
+  else if (c == "hpj")  hpjCmd(s1, nTok);
+  else if (c == "hpz")  hpzCmd(s1, nTok);
+  else if (c == "hpo")  hpoCmd(s1, nTok);
+  else if (c == "hpt")  hptCmd(s1, nTok);
+  else if (c == "hz")   printHZ();
+  else if (c == "hcfg") hcfgCmd(s1, tok[2], nTok);
+
+  // ---- 저장 / 상태 ----
+  else if (c == "save")   { eeWrite(true); Serial.println(F("  저장됨 (신뢰 확정)")); }
+  else if (c == "forget") { homedX = false; homedY = false; homedZ = false; eeWrite(true);   // 릴레이는 그대로
+                            Serial.println(F("  기록 삭제")); printStatus(); }
+  else if (c == "st")     printST();
+  else if (c == "p")      { printStatus(); printWiring(); }
+
+  // ---- 파라미터 / 기타 ----
+  else if (c == "v") { if (a1 > 0) vMax   = a1; printStatus(); }
+  else if (c == "a") { if (a1 > 0) accel  = a1; printStatus(); }
+  else if (c == "b") { if (a1 > 0) vStart = a1; printStatus(); }
+  else if (c == "w") { pauseMs = a1; printStatus(); }
+  else if (c == "e") {
+    if (a1) {
+      motorsEnable(false);
+      homedX = false; homedY = false; homedZ = false; eeWrite(true);
+      Serial.println(F("  모터 풀림 - 위치 신뢰 해제. 다시 움직이려면 fz 또는 sp 필요"));
+    } else { motorsOn(); Serial.println(F("  모터 켜짐")); }
+  }
+  else if (c == "!") { heatSet(0); Serial.println(F("  (이동 중에만 유효) · 열선 출력 0")); }   // 열선만 끈다(다른 릴레이는 그대로)
+  else {
+    Serial.println(F("  ? fz z zx zy zz sp home gx gy gz g mx my mz jx jy jz x y x1 x2 rx ry fx fy save forget st p v a b w e !"));
+    Serial.println(F("    jx/jy/jz <±펄스> : 원점 없어도 되는 이동. 범위 밖으로 나가면 그 축 원점 해제"));
+    Serial.println(F("    Z: 0 = 맨 위, + = 아래. 원점은 위쪽 하드스톱 (fz z)"));
+    Serial.println(F("    r <1~10> <1|0> / r all 0 / rs : 릴레이    wd <ms> : 통신 감시 (0 = 끔)"));
+    Serial.println(F("    hp <0~100.0> / hp / hpm <0|1> / hpp <ms> / hps <ms> / hcfg <송풍> <열선> : 열선 출력 % (0 몰아 켜기 · 1 고르게)"));
+    Serial.println(F("    hps <10~1000> : 고르게 칸 ms → 전원 주기 정수배로 맞춤(60 Hz: 17 · 33 · 50 · 100 · 300) · 보고 S = 실제 칸 ms"));
+    Serial.println(F("    hpj <0|1|2> : 열선 박자 0 전원 맞춤 · 1 어긋남(틱 +1/64) · 2 무작위(틱 0.5~1.5 배) · 보고 J"));
+    Serial.println(F("    hpz <0|1|2> : 전원 맞춤 기준 0 없음 · 1 영점 모듈(D19) · 2 전선(A0) / hpo <0~999> 위상 ‰ / hpt <-3000~3000> 보정 ppm / hz 상태"));
+  }
+}

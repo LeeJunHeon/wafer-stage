@@ -3,7 +3,9 @@
          오른쪽 = 결과(가열 · 냉각 점 수 · 속도 · 점 간격 · 역전 · 목표선 차이 · 열 모델 · 최대 속도 표 · 도달 표는 값이 있는 줄만) + 조건(접어 둠).
    시험 셋: [시작](온도 시험) · [히트건 맞추기](후보 칸을 같은 온도에서 비교 · 출력별 온도 표 · 열 모델) · [최대 속도 재기](5 °C 구간별 최대 가열 · 냉각 속도) ·
    [박자 시험](열선 박자 전원 맞춤 · 어긋남 · 무작위를 같은 출력으로 비교 - 흔들림 · 가장 센 주기) ·
-   [환경 맞추기](환경을 바꾼 뒤 한 번 - 출력 훑기 → 출력별 온도 표 · 열 모델 저장 → 새 표로 가열 · 냉각 확인 시험). 펌웨어 V16 필요.
+   [환경 맞추기](환경을 바꾼 뒤 한 번 - 출력 훑기 → 출력별 온도 표 · 열 모델 저장 → 새 표로 가열 · 냉각 확인 시험) ·
+   [위상 찾기](전원 맞춤 기준이 있을 때 - 위상 ‰ 마다 평균 · 흔들림 → 고른 위상 저장) · [박자 보정](기준 없음 - 타이머 보정 ppm 계산 · 확인 · 저장).
+   진행 줄 아래에 전원 맞춤 한 줄(core.js syncText). 펌웨어 V17 필요.
    창을 닫아도 시험은 서버에서 계속된다. 다시 열면 이어서 보인다(점은 /api/temptest/points 로 새 점만 받는다). */
 "use strict";
 
@@ -18,7 +20,8 @@ const TT_KEYS = [
   ["temp_test_precool", "예비 냉각", "bool"], ["temp_test_interval_s", "읽기 간격", "s"], ["temp_test_mark_c", "도달 표 간격", "°C"],
   ["temp_tune_c", "맞추기 비교 온도", "°C"], ["temp_tune_start_pct", "맞추기 시작 출력", "%"], ["temp_tune_slots", "맞추기 후보 칸", "str"],
   ["temp_step_s", "맞추기 계단 유지", "s"], ["temp_beat_pct", "박자 시험 출력", "%"], ["temp_beat_s", "박자 시험 유지", "s"],
-  ["temp_sweep_s", "훑기 올림 시간", "s"], ["temp_sweep_hold_s", "훑기 꼭대기 유지", "s"], ["heater_tc_s", "제어 응답 시간", "s"], ["heat_curve", "출력별 온도 표", "str"], ["reversal_c", "역전 기준", "°C"],
+  ["temp_sweep_s", "훑기 올림 시간", "s"], ["temp_sweep_hold_s", "훑기 꼭대기 유지", "s"],
+  ["temp_phase_s", "위상 찾기 유지", "s"], ["temp_trim_s", "박자 보정 유지", "s"], ["heater_tc_s", "제어 응답 시간", "s"], ["heat_curve", "출력별 온도 표", "str"], ["reversal_c", "역전 기준", "°C"],
 ];
 
 function ttActive() { return !!(S && S.temptest && S.temptest.active); }
@@ -27,7 +30,7 @@ function ttWhy() {
   if (ttActive()) return "";
   if (running()) return "자동 측정 중 사용 불가";
   if (!devOk("stage")) return NEED.stage;
-  if (!(S.heater || {}).heat_fw) return "펌웨어 V16 필요 · firmware/stage_v16 업로드";
+  if (!(S.heater || {}).heat_fw) return "펌웨어 V17 필요 · firmware/stage_v17 업로드";
   if (!devOk("k2110")) return NEED.k2110;
   if (S.estop_locked) return "비상정지 해제 필요";
   const ht = S.heater || {};
@@ -55,6 +58,7 @@ function openTempTest() {
   tt.condView = h("div", { class: "tt-cond" });
   tt.condBtn = btn("조건 고치기", () => { tt.edit = !tt.edit; ttBuildCond(); });
   tt.prog = h("div", { class: "tt-prog" });
+  tt.sync = h("div", { class: "small" });                                    // 전원 맞춤 한 줄
   tt.why = h("div", { class: "why hidden" });
   tt.curve = h("div", { class: "tt-sec" });
   tt.heat = h("div", { class: "tt-sec" });
@@ -62,6 +66,8 @@ function openTempTest() {
   tt.tune = h("div", { class: "tt-sec" });
   tt.env = h("div", { class: "tt-sec" });
   tt.beat = h("div", { class: "tt-sec" });
+  tt.phase = h("div", { class: "tt-sec" });
+  tt.trim = h("div", { class: "tt-sec" });
   tt.speed = h("div", { class: "tt-sec" });
   tt.marks = h("div", {});
   tt.canvas = h("canvas", {});
@@ -79,21 +85,25 @@ function openTempTest() {
     h("div", { class: "tt-sec" }, h("h4", { text: "가열 · 냉각" }), tt.curve), tt.heat,
     h("div", { class: "tt-sec" }, h("h4", { text: "히트건 맞추기" }), tt.tune),
     h("div", { class: "tt-sec" }, h("h4", { text: "박자 시험" }), tt.beat),
+    h("div", { class: "tt-sec" }, h("h4", { text: "위상 찾기" }), tt.phase),
+    h("div", { class: "tt-sec" }, h("h4", { text: "박자 보정" }), tt.trim),
     h("div", { class: "tt-sec" }, h("h4", { text: "열 모델" }), tt.model),
     h("div", { class: "tt-sec" }, h("h4", { text: "최대 속도" }), tt.speed),
     h("div", { class: "tt-sec" }, h("h4", { text: "도달 표" }), tt.marks), tt.expect, tt.cond);
-  const main = h("div", { class: "tt-main" }, tt.prog, tt.why, tt.box);
+  const main = h("div", { class: "tt-main" }, tt.prog, tt.sync, tt.why, tt.box);
   tt.startBtn = btn("시작", () => api("temptest_start", { mode: "test" }), "on");
   tt.envBtn = btn("환경 맞추기", () => api("temptest_start", { mode: "env" }));
   tt.stepBtn = btn("히트건 맞추기", () => api("temptest_start", { mode: "tune" }));
   tt.beatBtn = btn("박자 시험", () => api("temptest_start", { mode: "beat" }));
+  tt.phaseBtn = btn("위상 찾기", () => api("temptest_start", { mode: "phase" }));
+  tt.trimBtn = btn("박자 보정", () => api("temptest_start", { mode: "trim" }));
   tt.maxBtn = btn("최대 속도 재기", () => api("temptest_start", { mode: "max" }));
   tt.stopBtn = btn("정지", () => api("temptest_stop"));
   tt.folderBtn = btn("폴더 열기", () => api("temptest_open_folder"));
   tt.edit = false;
   tt.open = true;
   openDialog("온도 시험", h("div", { class: "tt2" }, main, side),
-    [tt.folderBtn, h("span", { class: "sp" }), tt.envBtn, tt.stepBtn, tt.beatBtn, tt.maxBtn, tt.startBtn, tt.stopBtn, btn("닫기", () => { tt.open = false; closeDialog(); })],
+    [tt.folderBtn, h("span", { class: "sp" }), tt.envBtn, tt.stepBtn, tt.beatBtn, tt.phaseBtn, tt.trimBtn, tt.maxBtn, tt.startBtn, tt.stopBtn, btn("닫기", () => { tt.open = false; closeDialog(); })],
     { cls: "tt-box", render: renderTempTest });
   tt.condSig = "";
   ttPoll();
@@ -172,7 +182,8 @@ function renderTempTest() {
   if (sig !== tt.condSig && !(tt.edit && tt.condView.contains(document.activeElement))) ttBuildCond();
   /* 진행 */
   const why = ttWhy();
-  for (const b of [tt.startBtn, tt.envBtn, tt.stepBtn, tt.beatBtn, tt.maxBtn]) b.disabled = act || !!why;
+  for (const b of [tt.startBtn, tt.envBtn, tt.stepBtn, tt.beatBtn, tt.phaseBtn, tt.trimBtn, tt.maxBtn]) b.disabled = act || !!why;
+  setSyncLine(tt.sync, devOk("stage") ? S.heater : null);
   tt.stopBtn.disabled = !act;
   tt.folderBtn.disabled = !t.folder;
   setWhy(tt.why, act ? "" : why);
@@ -236,6 +247,31 @@ function renderTempTest() {
           h("td", { class: "num", text: ttFmt(r.sd_c, 2) }), h("td", { class: "num", text: ttFmt(r.pp_c, 2) }),
           h("td", { class: "num", text: r.period_s == null ? "—" : ttFmt(r.period_s, 1) + " (" + ttFmt(r.amp_c, 2) + ")" }))))) : null);
   } else setKids(tt.beat, small("[박자 시험] 필요 · 박자별 흔들림 비교"));
+  /* 위상 찾기 결과: 위상마다 평균 · 흔들림 · 폭 · 주기 · 잠김(고른 줄 굵게) · 고른 위상 · 저장 상태 */
+  const ps = t.phase_scan || s.phase_scan;
+  if (ps) {
+    const run = ps.run || [];
+    setKids(tt.phase, h("div", { class: "small", text: (ps.method || "출력 방식 모름") + " · 출력 " + ttFmt(ps.pct, 1, " %") + " · 위상마다 " + ttFmt(ps.secs, 0, " s") }),
+      (ps.rows || []).length ? h("table", { class: "tb tt-marks tt-tune" }, h("thead", {}, h("tr", {}, h("th", { class: "num", text: "위상 ‰" }), h("th", { class: "num", text: "평균 °C" }),
+        h("th", { class: "num", text: "흔들림 °C" }), h("th", { class: "num", text: "폭 °C" }), h("th", { class: "num", text: "주기 s" }), h("th", { text: "잠김" }))),
+        h("tbody", {}, ...ps.rows.map((r) => h("tr", { class: r.off === ps.pick ? "sel" : "" }, h("td", { class: "num", text: String(r.off) }),
+          h("td", { class: "num", text: ttFmt(r.mean_c, 1) }), h("td", { class: "num", text: ttFmt(r.sd_c, 2) }), h("td", { class: "num", text: ttFmt(r.pp_c, 1) }),
+          h("td", { class: "num", text: ttFmt(r.period_s, 1) }), h("td", { class: r.lock ? "" : "st-warn", text: r.lock ? "예" : "아니오" }))))) : null,
+      ps.pick != null ? h("div", { class: "small", text: "고른 위상 " + ps.pick + " ‰ · 같은 상태 " + (run.length > 1 ? run[0] + "~" + run[run.length - 1] : (run[0] == null ? "—" : run[0])) + " ‰ · 폭 " + ttFmt(ps.span_c, 1, " °C") }) : null,
+      h("div", { class: ps.saved ? "small" : "small st-warn", text: ps.saved ? "저장 완료 · 위상 " + ps.pick + " ‰" : act ? "진행 중" : "저장 안 함" }));
+  } else setKids(tt.phase, small("[위상 찾기] · 전원 맞춤 기준 있을 때"));
+  /* 박자 보정 결과: 보정마다 주기 · 진폭 · 흔들림 · 어긋남 → 보정 · 확인(굵게) · 저장 상태 */
+  const tf = t.trim_fit || s.trim_fit;
+  if (tf) {
+    const tr = (r, cls) => h("tr", { class: cls || "" }, h("td", { class: "num", text: String(r.ppm) }), h("td", { class: "num", text: ttFmt(r.period_s, 1) }),
+      h("td", { class: "num", text: ttFmt(r.amp_c, 1) }), h("td", { class: "num", text: ttFmt(r.sd_c, 1) }));
+    setKids(tt.trim, h("div", { class: "small", text: (tf.method || "출력 방식 모름") + " · 출력 " + ttFmt(tf.pct, 1, " %") + " · 보정마다 " + ttFmt(tf.secs, 0, " s") }),
+      (tf.rows || []).length ? h("table", { class: "tb tt-marks tt-tune" }, h("thead", {}, h("tr", {}, h("th", { class: "num", text: "보정 ppm" }), h("th", { class: "num", text: "주기 s" }),
+        h("th", { class: "num", text: "진폭 °C" }), h("th", { class: "num", text: "흔들림 °C" }))),
+        h("tbody", {}, ...tf.rows.map((r) => tr(r)), tf.check ? tr(tf.check, "sel") : null)) : null,
+      tf.drift_ppm != null ? h("div", { class: "small", text: "어긋남 " + (tf.drift_ppm >= 0 ? "+" : "") + tf.drift_ppm + " ppm → 보정 " + (tf.trim_ppm >= 0 ? "+" : "") + tf.trim_ppm + " ppm" }) : null,
+      h("div", { class: tf.saved ? "small" : "small st-warn", text: tf.saved ? "저장 완료 · 보정 " + tf.trim_ppm + " ppm" : act ? "진행 중" : "저장 안 함" }));
+  } else setKids(tt.trim, small("[박자 보정] · 전원 맞춤 기준 없음일 때"));
   const rows = (s.speed || t.speed_max || []);
   setKids(tt.speed, rows.length ? h("table", { class: "tb tt-marks" }, h("thead", {}, h("tr", {}, h("th", { text: "구간" }), h("th", { class: "num", text: "가열" }), h("th", { class: "num", text: "냉각 °C/분" }))),
     h("tbody", {}, ...rows.map((r) => h("tr", {}, h("td", { text: r[0] + "~" + (r[0] + 5) + " °C" }), h("td", { class: "num", text: ttFmt(r[1], 1) }), h("td", { class: "num", text: ttFmt(r[2], 1) })))))
