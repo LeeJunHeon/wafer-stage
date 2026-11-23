@@ -29,21 +29,23 @@ PPMM = 160.0
 X_MAX, Y_MAX, Z_MAX = 39620, 39640, 7200
 N_RELAY = 10
 MAINS_HZ = 60                                               # 펌웨어 V15 ~ V17 의 전원 주파수(고르게 칸 = 전원 주기의 정수배)
-FW12 = ("V12", "V13", "V14", "V15", "V16", "V17")           # 열선 출력 hp · hpp · hcfg
-FW14 = ("V14", "V15", "V16", "V17")                         # 0.1 % 단위 · hpm · hps
-FW15 = ("V15", "V16", "V17")                                # hps = 전원 주기 단위
-FWJ = ("V16", "V17")                                        # 열선 박자 hpj
-FWZ = ("V17",)                                              # 전원 맞춤 hpz · hpo · hpt · hz · HP 줄 끝 Z · L
+FW12 = ("V12", "V13", "V14", "V15", "V16", "V17", "V18")           # 열선 출력 hp · hpp · hcfg
+FW14 = ("V14", "V15", "V16", "V17", "V18")                         # 0.1 % 단위 · hpm · hps
+FW15 = ("V15", "V16", "V17", "V18")                                # hps = 전원 주기 단위
+FWJ = ("V16", "V17", "V18")                                        # 열선 박자 hpj
+FWZ = ("V17", "V18")                                              # 전원 맞춤 hpz · hpo · hpt · hz · HP 줄 끝 Z · L
+FWR = ("V18",)                                              # 켜는 순간 돌리기 hpr · HP 줄 끝 G(V17 은 hpr 을 모른다)
 HUM_MIN_A = 16                                              # 펌웨어 V17 전선 신호 세기 하한
 
 
 class FakeV11:
-    def __init__(self, time_scale=0.05, homed=True, banner=True, eeprom=None, firmware="V17"):
-        self.firmware = firmware                    # "V17"(기본 - V16 + 전원 맞춤 hpz · hpo · hpt · hz) · "V16"(V15 + 열선 박자 hpj) · "V15"(V14 + hps 를 전원 주기 단위로) · "V14"(출력 0.1 % · hpm 방식 · hps 칸) · "V13" · "V12"(hp · hpp · hcfg) · "V11"
+    def __init__(self, time_scale=0.05, homed=True, banner=True, eeprom=None, firmware="V18"):
+        self.firmware = firmware                    # "V18"(기본 - V17 + 켜는 순간 돌리기 hpr) · "V17"(V16 + 전원 맞춤 hpz · hpo · hpt · hz) · "V16"(V15 + 열선 박자 hpj) · "V15"(V14 + hps 를 전원 주기 단위로) · "V14"(출력 0.1 % · hpm 방식 · hps 칸) · "V13" · "V12"(hp · hpp · hcfg) · "V11"
         self.hp_pct, self.hp_period, self.hp_fan, self.hp_el = 0, 1000, 0, 9     # 열선 출력 % · 주기 ms · 송풍 · 열선 인덱스(0 부터)
         self.hp_mode, self.hp_slot = 0, (17 if firmware in FW15 else 10)          # V14 · V15: 출력 방식(0 몰아 켜기 · 1 고르게) · 고르게 칸 ms(시험용은 시간 평균만 흉내 - 방식은 보고만)
         self.hp_j = 0                               # V16 열선 박자(켜질 때 0 · 보고 J=)
         self.hp_sync, self.hp_off, self.hp_trim = 0, 0, 0   # V17 전원 맞춤 기준(0 없음 · 1 영점 모듈 · 2 전선) · 위상 ‰ · 보정 ppm(켜질 때 0)
+        self.hp_rot = 0                             # V18 켜는 순간 돌리기 ‰(켜질 때 0 · 보고 G= · 시험용은 보고만 - 켜는 순간은 흉내 내지 않는다)
         self.zc_present = True                      # 시험: 영점 모듈 신호가 들어오는가
         self.hum_amp = 200                          # 시험: 전선 신호 세기(ADC 값 · HUM_MIN_A 이상이면 잠김)
         self.timeout = 0.2
@@ -216,6 +218,7 @@ class FakeV11:
         self.hp_pct = 0
         self.hp_j = 0                                   # V16: 켜질 때 박자 0
         self.hp_sync, self.hp_off, self.hp_trim = 0, 0, 0   # V17: 켜질 때 기준 없음 · 위상 0 · 보정 0
+        self.hp_rot = 0                                 # V18: 켜질 때 돌리기 0
         self._set_relays([False] * N_RELAY)
         self.v, self.a, self.b = 6000, 40000, 300
         self.wd_ms = 0
@@ -287,9 +290,10 @@ class FakeV11:
 
     def _hp_line(self):
         if self.firmware in FW14:
-            self._emit("HP P=%.1f T=%d M=%d S=%d F=%d E=%d%s%s" % (self.hp_pct, self.hp_period, self.hp_mode, self.hp_slot, self.hp_fan + 1, self.hp_el + 1,
-                                                                " J=%d" % self.hp_j if self.firmware in FWJ else "",
-                                                                " Z=%d L=%d" % (self.hp_sync, 1 if self.sync_locked() else 0) if self.firmware in FWZ else ""))
+            self._emit("HP P=%.1f T=%d M=%d S=%d F=%d E=%d%s%s%s" % (self.hp_pct, self.hp_period, self.hp_mode, self.hp_slot, self.hp_fan + 1, self.hp_el + 1,
+                                                                  " J=%d" % self.hp_j if self.firmware in FWJ else "",
+                                                                  " Z=%d L=%d" % (self.hp_sync, 1 if self.sync_locked() else 0) if self.firmware in FWZ else "",
+                                                                  " G=%d" % self.hp_rot if self.firmware in FWR else ""))
         else:
             self._emit("HP P=%d T=%d F=%d E=%d" % (self.hp_pct, self.hp_period, self.hp_fan + 1, self.hp_el + 1))
 
@@ -398,7 +402,7 @@ class FakeV11:
                 self._emit("  (이동 중에만 유효) · 열선 출력 0")
             else:
                 self._emit("  (이동 중에만 유효)")
-        elif c in ("hp", "hpp", "hcfg") and self.firmware in FW12 or (c in ("hpm", "hps") and self.firmware in FW14) or (c == "hpj" and self.firmware in FWJ):
+        elif c in ("hp", "hpp", "hcfg") and self.firmware in FW12 or (c in ("hpm", "hps") and self.firmware in FW14) or (c == "hpj" and self.firmware in FWJ) or (c == "hpr" and self.firmware in FWR):
             self._hp_cmd(c, tok)
         elif c in ("hpz", "hpo", "hpt", "hz") and self.firmware in FWZ:
             self._hz_cmd(c, tok)
@@ -576,6 +580,16 @@ class FakeV11:
                 self.hp_slot = (cyc * 1000 + MAINS_HZ // 2) // MAINS_HZ
             else:
                 self.hp_slot = v - v % 10
+            self._hp_line()
+        elif c == "hpr":                                    # V18 켜는 순간 돌리기(시험용은 보고만)
+            if len(tok) < 2:
+                self._hp_line()
+                return
+            if not (tok[1].isdigit() and len(tok[1]) <= 3):
+                self._emit("  [거부] hpr <0~999> ‰")
+                self._hp_line()
+                return
+            self.hp_rot = int(tok[1])
             self._hp_line()
         elif c == "hpj":                                    # 박자(시험용은 보고만 - 틱 길이는 흉내 내지 않는다)
             if len(tok) < 2:

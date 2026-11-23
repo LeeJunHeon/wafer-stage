@@ -1,4 +1,4 @@
-"""전원 맞춤(펌웨어 V17): HZ 줄 읽기 · 시험용 보드의 hpz · hpo · hpt 응답 · [위상 찾기] 고르기(pick_phase) · [박자 보정] 계산(solve_trim)."""
+"""전원 맞춤(펌웨어 V17 · V18) · 켜는 순간 돌리기(V18 hpr): HZ 줄 읽기 · 시험용 보드의 hpz · hpo · hpt 응답 · [위상 찾기] 고르기(pick_phase) · [박자 보정] 계산(solve_trim)."""
 
 import pytest
 
@@ -25,11 +25,11 @@ def test_parse_hp_sync_tail():
     assert h["src"] is None and h["lock"] is None
 
 
-# ---- 시험용 보드 V17 응답 ----
+# ---- 시험용 보드 V18 응답(전원 맞춤은 V17 과 같다) ----
 def test_fake_board_sync_commands(make_ctrl):
     c = make_ctrl(meters=False)
     st = c.stage
-    assert st.firmware == "V17" and st.heat_capable
+    assert st.firmware == "V18" and st.heat_capable
     assert st.read_sync()["src"] == 0                                           # 연결 때 설정 기본값(없음)을 보냈다
     st.heat_sync_set("src", "zc")
     assert st.heat_sync["src"] == 1 and st.heat_sync["lock"] is True
@@ -146,3 +146,37 @@ def test_settle_before_first_trim_rows(make_ctrl):
 def test_settle_zero_skips(make_ctrl):
     rows = _trim_rows(make_ctrl, 0.0)
     assert "안정" not in [n for _, n in rows]
+
+
+# ---- 켜는 순간 돌리기(heater_rotate_pm · V18 hpr · HP 줄 G=) ----
+def test_parse_hp_rotate_tail():
+    assert stage_mod.parse_hp("HP P=30.5 T=1000 M=1 S=300 F=1 E=10 J=0 Z=0 L=0 G=382")["rot"] == 382
+    assert stage_mod.parse_hp("HP P=30.5 T=1000 M=1 S=300 F=1 E=10 J=0 Z=0 L=0")["rot"] is None     # V17
+
+
+def test_rotate_send_and_method_text(make_ctrl):
+    c = make_ctrl(meters=False)
+    st = c.stage
+    assert st.heat_rot == 0 and "돌리기" not in st.method_text()
+    st.heat_rotate(382)
+    assert st.heat_rot == 382 and c.fake_fw.hp_rot == 382
+    assert st.method_text().endswith(" · 돌리기 382 ‰")
+    with pytest.raises(stage_mod.StageRejected):
+        st.heat_rotate(1000)                                                    # 0~999 밖
+
+
+def test_rotate_setting_sent_on_connect(make_ctrl):
+    c = make_ctrl(meters=False, heater_rotate_pm=382)
+    assert c.fake_fw.hp_rot == 382 and " · 돌리기 382 ‰" in c.stage.method_text()
+
+
+@pytest.mark.parametrize("over", [{"heater_sync": "zc"}, {"heater_sync": "hum"}, {"heater_timing": "detune"}])
+def test_rotate_zero_when_sync_or_timing(make_ctrl, over):
+    c = make_ctrl(meters=False, heater_rotate_pm=382, **over)                  # 기준이 있거나 박자가 전원 맞춤이 아니면 0 을 보낸다
+    assert c._out_cfg()[-1] == 0
+    assert c.fake_fw.hp_rot == 0 and "돌리기" not in c.stage.method_text()
+
+
+def test_v17_board_gets_no_hpr(make_ctrl):
+    c = make_ctrl(meters=False, firmware="V17", heater_rotate_pm=382)          # V17 은 hpr 을 모른다 - 보내지 않는다(열선 출력도 V18 필요)
+    assert not c.stage.heat_capable and c.stage.heat_rot is None and c.fake_fw.hp_rot == 0

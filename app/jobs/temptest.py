@@ -14,7 +14,8 @@ heater.fit_sweep 로 출력별 온도 표 · 열 모델(τ · θ)을 맞춰 저�
 phase = [위상 찾기](_run_phase - 전원 맞춤 기준(heater_sync)이 있을 때: 전원 위상 0 · 100 · … · 900 ‰ 마다 temp_beat_pct 로 temp_phase_s 유지 →
 평균 · 흔들림 → pick_phase 로 고른 위상을 heater_phase_off 에 저장) ·
 trim = [박자 보정](_run_trim - 기준이 없음일 때: 타이머 보정 0 → +600 ppm 마다 temp_trim_s 유지 → 박자 주기 → solve_trim 으로 보정 → 확인 → heater_trim_ppm 저장).
-펌웨어 V17 필요(열선 출력 0.1 % · 출력 방식 · 전원 주기 단위 칸 · 박자 hpj · 전원 맞춤 hpz · hpo · hpt).
+펌웨어 V18 필요(열선 출력 0.1 % · 출력 방식 · 전원 주기 단위 칸 · 박자 hpj · 전원 맞춤 hpz · hpo · hpt · 켜는 순간 돌리기 hpr -
+출력 방식 글(stage.method_text · temp.csv · summary.txt)에 " · 돌리기 382 ‰" · [박자 시험] 은 박자를 바꾸는 동안 돌리기 0).
 배경(전원 맞춤): [환경 맞추기] 의 출력 훑기에서 출력만 올려도 온도가 약 9 초마다 +3~9 °C 계단으로 올랐다 - 틱이 전원 반주기와 약 0.1 % 어긋나
 켜는 순간의 전원 파형 위치가 약 9 초에 반주기씩 밀리고 그 위치에 따라 열이 잘 들어가는 상태와 덜 들어가는 상태가 갈린다.
 배경(박자): 타이머1 틱이 전원 60 Hz 반주기와 거의 같아 켜는 순간의 전원 파형 위치가 약 10 초 주기로 천천히 밀리고 그 주기로 열이 덩어리져 들어오는 것으로 보였다.
@@ -76,7 +77,7 @@ COND_KEYS = ("run_start_c", "run_heater_off_c", "run_cool_end_c", "run_heat_mode
              "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "reversal_c",
              "heater_out_mode", "heater_pwm_period_ms", "heater_slot_ms", "heater_timing", "temp_beat_pct", "temp_beat_s",
              "run_rate_by", "run_heat_time_s", "run_cool_time_s", "temp_sweep_s", "temp_sweep_hold_s",
-             "heater_sync", "heater_phase_off", "heater_trim_ppm", "temp_phase_s", "temp_trim_s", "temp_settle_s")
+             "heater_sync", "heater_phase_off", "heater_trim_ppm", "temp_phase_s", "temp_trim_s", "temp_settle_s", "heater_rotate_pm")
 MODES = {"test": "온도 시험", "tune": "히트건 맞추기", "max": "최대 속도 재기", "beat": "박자 시험", "env": "환경 맞추기",
          "phase": "위상 찾기", "trim": "박자 보정"}
 FOLDER_TAIL = {"test": "", "tune": "_맞추기", "max": "_최대속도", "beat": "_박자", "env": "_환경", "phase": "_위상", "trim": "_보정"}
@@ -453,6 +454,8 @@ def summary_lines(cd, res, result, started, notes):
     L = ["온도 시험 · %s" % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started)), "결과 · %s" % result, ""]
     L.append("[조건]")
     L.append("가열 방식 · %s" % mode_text(cd))
+    if res.get("method0"):
+        L.append("시작 때 출력 방식 · %s" % res["method0"])            # 펌웨어가 알려 준 방식 · 칸 · 박자 · 전원 맞춤 · 돌리기
     by_time = cd.get("run_rate_by") == "time"
     L.append("속도 정하는 방법 · 걸리는 시간 · 가열 %g s · 냉각 %g s" % (cd["run_heat_time_s"], cd["run_cool_time_s"]) if by_time else "속도 정하는 방법 · 점 간격")
     L.append("시작 온도 %g °C · 가열 끝 온도 %g °C · 냉각 끝 온도 %g °C" % (cd["run_start_c"], cd["run_heater_off_c"], cd["run_cool_end_c"]))
@@ -910,6 +913,7 @@ class TempTest:
         res = summarize(self.pts, self.elog, self.ev, self.cond) if self.cond else None
         if res is not None:
             res["model"] = self.model
+            res["method0"] = self.method0
             res["speed"] = self.speed
             res["tune"] = self.tune if self.mode == "tune" else None
             res["beat"] = self.beat if self.mode == "beat" else None
@@ -1346,6 +1350,7 @@ class TempTest:
         self._coolers_on(g)
         self.feeding = True
         trips0 = self._station_on(g)
+        self._rotate_off(g)                                         # 박자를 바꾸는 동안 돌리기 0(끝에 _cleanup 이 설정값으로)
         self.phase = BEAT
         for i, j in enumerate(BEATS):
             name = TIMING_NAMES[j]
@@ -1454,6 +1459,14 @@ class TempTest:
         except Rejected as e:
             self._check(g)
             raise _End("abort", "%s 바꾸기 실패 · %s" % ("전원 위상" if what == "off" else "타이머 보정", e))
+
+    def _rotate_off(self, g):
+        """펌웨어 켜는 순간 돌리기만 0 으로(설정은 그대로 - 끝에 _cleanup 의 heater_method_restore 가 되돌린다)."""
+        try:
+            self.c.heater_rotate(0)
+        except Rejected as e:
+            self._check(g)
+            raise _End("abort", "켜는 순간 돌리기 바꾸기 실패 · %s" % e)
 
     def _timing(self, g, j):
         """펌웨어 박자만 바꾼다(설정은 그대로 - 끝에 _cleanup 이 되돌린다)."""

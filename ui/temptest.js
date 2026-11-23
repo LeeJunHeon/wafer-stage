@@ -5,7 +5,7 @@
    [박자 시험](열선 박자 전원 맞춤 · 어긋남 · 무작위를 같은 출력으로 비교 - 흔들림 · 가장 센 주기) ·
    [환경 맞추기](환경을 바꾼 뒤 한 번 - 출력 훑기 → 출력별 온도 표 · 열 모델 저장 → 새 표로 가열 · 냉각 확인 시험) ·
    [위상 찾기](전원 맞춤 기준이 있을 때 - 위상 ‰ 마다 평균 · 흔들림 → 고른 위상 저장) · [박자 보정](기준 없음 - 타이머 보정 ppm 계산 · 확인 · 저장).
-   진행 줄 아래에 전원 맞춤 한 줄(core.js syncText). 펌웨어 V17 필요.
+   진행 줄 아래에 전원 맞춤 한 줄(core.js syncText · 켜는 순간 돌리기 포함). 펌웨어 V18 필요.
    창을 닫아도 시험은 서버에서 계속된다. 다시 열면 이어서 보인다(점은 /api/temptest/points 로 새 점만 받는다). */
 "use strict";
 
@@ -30,7 +30,7 @@ function ttWhy() {
   if (ttActive()) return "";
   if (running()) return "자동 측정 중 사용 불가";
   if (!devOk("stage")) return NEED.stage;
-  if (!(S.heater || {}).heat_fw) return "펌웨어 V17 필요 · firmware/stage_v17 업로드";
+  if (!(S.heater || {}).heat_fw) return "펌웨어 V18 필요 · firmware/stage_v18 업로드";
   if (!devOk("k2110")) return NEED.k2110;
   if (S.estop_locked) return "비상정지 해제 필요";
   const ht = S.heater || {};
