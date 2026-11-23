@@ -192,6 +192,7 @@ def test_find_all_samples(ready_ctrl):
     w = ctrl.world
     r = ctrl.run_command("samples_find")
     assert r["n"] == len(w.samples) == 9
+    assert ctrl.prep.find_info["path"] == "빈 판 비교", "시험용 장비도 빈 판 비교 경로를 탄다: %s" % ctrl.prep.find_info
     seen = set()
     for s in ctrl.prep.samples:
         i = _nearest(w, s["plate"])

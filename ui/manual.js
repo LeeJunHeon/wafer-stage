@@ -279,7 +279,8 @@ function openPlateBig(addMode) {
       const r = await api("coord_add_at", { x: st.pick[0], y: st.pick[1], view: true });
       if (r.ok) {
         const q = r.result;
-        toast((q.replaced ? "보정 점 교체 · " : "보정 점 추가 · ") + q.n + "개 · 계산 위치와 " + q.moved.toFixed(2) + " mm");
+        toast((q.replaced ? "보정 점 교체 · " : "보정 점 추가 · ") + q.n + "개 · 계산 위치와 " + q.moved.toFixed(2) + " mm"
+          + (q.left == null ? "" : " → " + (q.replaced ? "교체" : "추가") + " 뒤 " + q.left.toFixed(2) + " mm"));
         st.add = false; st.pick = null;
       }
     } finally { st.busy = false; render(); }
@@ -295,7 +296,7 @@ function openPlateBig(addMode) {
     normal.classList.toggle("hidden", st.add);
     adding.classList.toggle("hidden", !st.add);
     toAdd.disabled = addOff;
-    why.textContent = man.camNote.textContent;
+    setWhy(why, man.camWhy);                                     // 막는 까닭이 있을 때만(안내 글은 아래 한 줄)
     const n = (((S.prep || {}).coords || {}).extra || []).length;
     nLine.textContent = "보정 점 " + n + "개";
     delLast.classList.toggle("hidden", !n);
@@ -438,8 +439,9 @@ function renderManual() {
   if (man.clickGo.disabled) man.clickGo.checked = false;
   const hasPhoto = !!(pr.photo && pr.photo.rect);
   man.addHere.disabled = busy || !ready || !stage || !hasPhoto || !!S.move;   // 좌표 보정 완료 · 스테이지 연결 · 동작 중 아님 · 판 사진 있음
-  man.camNote.textContent = !hasPlate ? "초기 설정 3 · 5 후 사용 가능" : !ready ? "초기 설정 5 후 사용 가능" : !stage ? NEED.stage
-    : busy ? busyText : locked ? "비상정지 해제 필요" : fix ? "십자 · 사각형 = 핀 · 원 = 선택 위치" : "";
+  man.camWhy = !hasPlate ? "초기 설정 3 · 5 후 사용 가능" : !ready ? "초기 설정 5 후 사용 가능" : !stage ? NEED.stage
+    : busy ? busyText : locked ? "비상정지 해제 필요" : "";                  // 막는 까닭만([크게 보기] 옆 칸도 이것만 보인다)
+  man.camNote.textContent = man.camWhy || (fix ? "십자 · 사각형 = 핀 · 원 = 선택 위치" : "");
   /* 샘플 줄(판 사진 보기일 때 · 순회 중에는 보기와 상관없이): 이전 · 선택 · 다음 · 이동 후 내리기 · 자동 순회 */
   const list = goSamples(), sSig = list.map((s) => s.id + ":" + s.name).join("|");
   if (sSig !== man.sSig) {

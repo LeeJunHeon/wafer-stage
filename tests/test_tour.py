@@ -27,6 +27,7 @@ def _in_thread(fn):
 
 def _found(ctrl):
     ctrl.run_command("samples_find")
+    assert ctrl.prep.find_info["path"] == "빈 판 비교", "시험용 장비도 빈 판 비교 경로를 탄다: %s" % ctrl.prep.find_info
     todo = [s for s in ctrl.prep.samples if s["xy"] is not None]
     assert todo, "샘플이 검출돼야 한다"
     return todo
@@ -166,15 +167,18 @@ def test_coord_add_at_far_same_and_new_point(ready_ctrl):
     ctrl.goto(x, y)
     r = ctrl.run_command("coord_add_at", {"x": s["pin"][0], "y": s["pin"][1]})
     assert r["replaced"] is False and r["n"] == n0 + 1 and r["moved"] < 0.5
+    assert r["left"] is not None and 0 <= r["left"] <= r["moved"] + 0.01, "추가 뒤 그 자리에 남은 차이는 계산 위치와의 차이보다 크지 않다"
     t0 = ex()[-1]["t"]
     ctrl.goto(x + 0.5, y)                                            # 같은 자리(3 mm 안)를 다시: 점 수 그대로 · 그 점을 교체
     r = ctrl.run_command("coord_add_at", {"x": s["pin"][0] + 1.0, "y": s["pin"][1]})
     assert r["replaced"] is True and r["n"] == n0 + 1
+    assert r["left"] is not None and 0 <= r["left"] <= r["moved"] + 0.01
     assert abs(ex()[-1]["xy"][0] - (x + 0.5)) < 0.01 and ex()[-1]["t"] >= t0
     assert _dist_xy(s["pin"], t["pin"]) > float(ctrl.cfg["coord_same_mm"])
     ctrl.goto(*t["xy"])                                              # 다른 자리: 추가
     r = ctrl.run_command("coord_add_at", {"x": t["pin"][0], "y": t["pin"][1]})
     assert r["replaced"] is False and r["n"] == n0 + 2
+    assert r["left"] is not None and 0 <= r["left"] <= r["moved"] + 0.01
     ctrl.run_command("coord_remove", {"index": r["n"] - 1})           # [마지막 지우기]
     assert len(ex()) == n0 + 1
 

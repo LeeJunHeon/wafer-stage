@@ -22,7 +22,8 @@ import numpy as np
 from app.vision import fixed_detect, refdiff
 
 PARAMS = {"fixed": {}}                              # v2 기본값 그대로(fixed_detect.DEFAULTS)
-ROW_K = 0.6                                         # 줄 묶기: 가운데 y 가 샘플 긴 변의 이 배 안이면 같은 줄
+GAIN_MAX = 4.0                                      # 밝기 맞추기 배율 한도(1/4 ~ 4 배)
+ROW_K = 0.6                                        # 줄 묶기: 가운데 y 가 샘플 긴 변의 이 배 안이면 같은 줄
 
 
 def _quiet(*_a, **_k):
@@ -105,7 +106,12 @@ def find_samples(cur, empty, ppmm, margin_mm=0.0, log=None, layout="free", rows=
 
 
 def match_light(ref, cur, valid):
-    """빈 판 사진(ref)의 밝기 · 대비를 지금 사진(cur)에 맞춘다: 찾을 곳(valid) 안에서 채널마다 평균 · 표준편차를 같게.
+    """빈 판 사진(ref)의 밝기를 지금 사진(cur)에 맞춘다: 찾을 곳(valid) 안 채널마다 중앙값의 비 g = median(cur) ÷ median(ref)
+    (ref 중앙값이 0 에 가까우면 1 · 1/GAIN_MAX ~ GAIN_MAX 로 자름)를 ref 채널에 곱한다.
+    까닭: 조명이 바뀌면 화소 값은 곱으로 변하고, 중앙값은 판의 일부만 차지하는 샘플에 거의 안 흔들린다. 예전(평균 · 표준편차 맞춤)은
+    지금 사진의 샘플이 표준편차를 키워 빈 판 사진의 대비를 1.16~1.23 배(시험용 장비) · 1.08~1.11 배(2026-11-23 사진) · 진한 샘플 20개를 더하면 3.3 배로 늘려
+    차이 영상에 판 무늬가 남았다(샘플 0개 · 정렬 실패). 중앙값 배율로: 시험용 장비 9개(잔차 0.05) · 실제 사진 9개(0.38) · 진한 샘플 20개 더한 사진 29개 ·
+    ×0.8 · ×1.15 + 5 · ×1.3 · 감마 0.85 · 채널별(B ×1.1 · R ×0.9) 모두 9개 · 빈 판 대 빈 판 ×1.2 는 0개.
     반환 (맞춘 ref, 맞추기 전 밝기 차이 % = |평균 차이| ÷ ref 평균). 검출기의 값(v2)은 그대로 - 입력만 맞춘다."""
     m = valid > 0
     out = ref.astype(np.float32).copy()
@@ -114,9 +120,9 @@ def match_light(ref, cur, valid):
     for ch in range(out.shape[2] if out.ndim == 3 else 1):
         a = out[:, :, ch] if out.ndim == 3 else out
         b = c32[:, :, ch] if c32.ndim == 3 else c32
-        ma, sa = float(a[m].mean()), float(a[m].std())
-        mb, sb = float(b[m].mean()), float(b[m].std())
-        a[:] = (a - ma) * (sb / sa if sa > 1e-6 else 1.0) + mb
+        ma, mb = float(np.median(a[m])), float(np.median(b[m]))
+        g = mb / ma if ma > 1e-6 else 1.0
+        a *= min(GAIN_MAX, max(1.0 / GAIN_MAX, g))
     diff = abs(mc_all - mr_all) / max(1e-6, mr_all) * 100.0
     return np.clip(out, 0, 255).astype(np.uint8), diff
 

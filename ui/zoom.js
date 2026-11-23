@@ -23,7 +23,11 @@ function zoomView(opts) {
   z.hi.addEventListener("load", () => z.hi.classList.remove("hidden"));
 
   /* ---- 좌표 ---- */
-  const rect = () => z.el.getBoundingClientRect();
+  /* 칸의 테두리 안쪽(사진 · 덧그림의 기준). getBoundingClientRect 는 1px 테두리까지 넣어 누른 자리가 화면 1 px 오른쪽 아래로 밀렸다(창에 맞춘 판 사진 0.21 mm) */
+  const rect = () => {
+    const b = z.el.getBoundingClientRect();
+    return { left: b.left + z.el.clientLeft, top: b.top + z.el.clientTop, width: z.el.clientWidth, height: z.el.clientHeight };
+  };
   z.toPx = (ev) => { const r = rect(); const x = z.tx + (ev.clientX - r.left) / z.s, y = z.ty + (ev.clientY - r.top) / z.s; return [Math.max(0, Math.min(z.W - 1, x)), Math.max(0, Math.min(z.H - 1, y))]; };
   z.inside = (ev) => { const r = rect(); const x = z.tx + (ev.clientX - r.left) / z.s, y = z.ty + (ev.clientY - r.top) / z.s; return x >= 0 && y >= 0 && x < z.W && y < z.H; };
   function clamp() {                                         // 사진이 칸보다 크면 칸을 벗어나지 않게, 작으면 가운데

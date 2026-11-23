@@ -981,14 +981,19 @@ class Prep:
             dq = float(np.hypot(qx - px, qy - py))
             if dq <= same and (near is None or dq < near[0]):
                 near = (dq, i)
-        if near is None:
-            self.c.logs.app("보정 점 추가 · 계산 위치와 %.2f mm · 핀 X %.3f · Y %.3f" % (d, cx, cy))
-        else:
-            self.c.logs.app("보정 점 교체 · %d번 · 계산 위치와 %.2f mm · 핀 X %.3f · Y %.3f" % (near[1] + 1, d, cx, cy))
         self.calib.add_extra(photo_px, (cx, cy), replace=None if near is None else near[1])
+        n = len(self.calib.d["coords"]["extra"])
+        k = n - 1 if near is None else near[1]                          # 추가 · 교체한 그 점
+        left = self.calib.extra_errors()[k]                             # 변환은 꼭짓점 + 보정 점 전체의 최소제곱 - 그 자리에 남은 차이
+        left = None if left is None else round(float(left), 2)
+        lt = "—" if left is None else "%.2f mm" % left
+        if near is None:
+            self.c.logs.app("보정 점 추가 · 계산 위치와 %.2f mm → 추가 뒤 %s · 핀 X %.3f · Y %.3f" % (d, lt, cx, cy))
+        else:
+            self.c.logs.app("보정 점 교체 · %d번 · 계산 위치와 %.2f mm → 교체 뒤 %s · 핀 X %.3f · Y %.3f" % (k + 1, d, lt, cx, cy))
         self._refresh_samples()
         self.publish()
-        return {"n": len(self.calib.d["coords"]["extra"]), "moved": round(d, 2), "replaced": near is not None}
+        return {"n": n, "moved": round(d, 2), "replaced": near is not None, "left": left}
 
     def coord_remove(self, index):
         self.c._no_run("보정 점 지우기")

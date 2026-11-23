@@ -1,11 +1,11 @@
-"""빈 판 사진 정렬(refdiff.align): 두 사진이 실제로 다른 곳(샘플)을 빼고 맞춘다.
+"""빈 판 사진 정렬(refdiff.align): 두 사진이 실제로 다른 곳(샘플)을 빼고 맞춘다. 밝기 맞추기(find.match_light): 채널별 중앙값 배율 - 샘플에 안 흔들림.
 합성 사진 - 판 무늬(완만한 밝기 + 가는 긁힘) · 샘플 0 · 1 · 9개 · 사진 밀림. 고치기 전 코드는 샘플 1개부터 ok False · 잔차 0.86~1.00 이었다."""
 
 import cv2
 import numpy as np
 import pytest
 
-from app.vision import refdiff
+from app.vision import find, refdiff
 
 N = 800
 
@@ -58,3 +58,33 @@ def test_align_fails_on_different_plate(n_samples):
     cur = _photo(_board(2), (0, 0), n_samples, noise_seed=200)
     a = refdiff.align(ref, cur, None)
     assert not a["ok"], a
+
+
+def _valid():
+    v = np.zeros((N, N), np.uint8)
+    v[20:N - 20, 20:N - 20] = 255
+    return v
+
+
+def test_match_light_follows_gain():
+    ref = _photo(_board(1), (0, 0), 0, noise_seed=100)
+    cur = np.clip(ref.astype(np.float32) * 1.2, 0, 255).astype(np.uint8)
+    out, _diff = find.match_light(ref, cur, _valid())
+    assert float(np.mean(np.abs(out.astype(np.float32) - cur.astype(np.float32)))) < 1.5
+
+
+def test_match_light_ignores_samples():
+    """진한 사각형(밝기 20 · 235 번갈아)이 넓이 10 % 를 덮어도 빈 판 사진을 바꾸지 않는다."""
+    ref = _photo(_board(1), (0, 0), 0, noise_seed=100)
+    cur = ref.copy()
+    side, k = 80, 0
+    target = 0.10 * N * N
+    for y in range(40, N - side - 40, 140):
+        for x in range(40, N - side - 40, 140):
+            if k * side * side >= target:
+                break
+            cur[y:y + side, x:x + side] = 20 if k % 2 == 0 else 235
+            k += 1
+    assert k * side * side >= target * 0.95
+    out, _diff = find.match_light(ref, cur, _valid())
+    assert float(np.mean(np.abs(out.astype(np.float32) - ref.astype(np.float32)))) < 1.5
