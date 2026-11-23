@@ -17,12 +17,14 @@ from app import geometry as geo
 from app import imgio
 from app.calib import CORNERS
 from app.devices.camera import CameraError
+from app.devices.stage import PPMM, Discarded as StageDiscarded, StageError
 from app.safety import Rejected
 from app.state import ALARM, NOTICE
 from app.vision import find as find_mod
 
 SNAP_MM = 8.0                                      # 판 사진을 누른 자리가 샘플 가운데에서 이 안이면 샘플 가운데로 붙는다
 AT_TOL_MM = 0.2                                    # "그 자리에 있다"고 보는 차이
+LOWER_TOL_MM = 0.05                                # 샘플로 이동한 뒤 내리기 전: st 로 다시 읽은 X · Y 가 목표와 이 안이어야 내린다
 
 
 class Prep:
@@ -870,8 +872,50 @@ class Prep:
         self.publish()
         return {"px": [round(m0[0], 1), round(m0[1], 1)]}
 
-    def plate_goto(self, x, y, view=False):
-        """판 사진을 누른 자리(판 mm - view 면 화면 판 mm)로 간다(핀 맨 위로 올린 뒤). 샘플 근처를 누르면 샘플 가운데로 붙는다."""
+    def _click_at(self, Hp, px, py, snapped):
+        """마지막으로 고른 위치(판 mm → 사진 픽셀)를 남긴다 - [보정 점 추가] 가 이 사진 픽셀과 그때의 핀 위치를 짝으로 쓴다."""
+        photo_px = geo.apply1(np.linalg.inv(Hp), px, py)
+        self.last_click = {"px": [round(photo_px[0], 1), round(photo_px[1], 1)], "plate": [round(px, 2), round(py, 2)], "sample": snapped}
+        self.publish()
+        return photo_px
+
+    def go_and_lower(self, sx, sy, lower, read=False, g=None, on_lower=None):
+        """샘플(또는 판 위 한 점)로 이동하고 lower 면 접촉 높이까지 내린다 - plate_goto · sample_goto · 자동 순회(app/jobs/tour.py)가 같이 쓴다.
+        이동은 Controller.goto(핀 맨 위 → st 로 Z 0 확인 → X → Y). 내리기는 Controller.contact_fixed(측정의 고정 높이 접촉과 같은 규칙 · 마지막 approach_mm 느리게).
+        내리기 전 확인: 시작 때 잡은 세대가 그대로(이동 도중 [정지] · 비상정지가 없었음) · 비상정지 아님 · st 로 다시 읽은 X · Y 가 대상과 LOWER_TOL_MM 안.
+        하나라도 아니면 내리지 않는다. g = 부르는 쪽이 잡은 세대(순회 - 그 사이 [정지] 도 본다). 반환: 내렸으면 contact_fixed 결과 · 아니면 None."""
+        c = self.c
+        if lower:                                                   # 내릴 수 없으면 움직이기 전에 거절한다
+            if c.cfg["contact_z_mm"] is None:
+                raise Rejected("접촉 높이 필요 (초기 설정 6)")
+            if not c.stage.homed.get("z"):
+                raise Rejected("Z 원점 필요 (초기 설정 2)")
+        g = c.safety.generation if g is None else g
+        if not c.safety.gen_ok(g):
+            raise Rejected(c._cancel_text())
+        c.goto(sx, sy)
+        if not lower:
+            return None
+        if not c.safety.gen_ok(g) or c.safety.locked:               # 이동이 끝난 뒤에 [정지] · 비상정지가 들어왔다
+            raise Rejected(c._cancel_text())
+        try:
+            pos = c.stage.read_status(g)["pos"]
+        except StageDiscarded:
+            raise Rejected(c._cancel_text())
+        except StageError as e:
+            raise Rejected("위치 읽기 실패 · %s" % e)
+        x, y = pos["x"] / PPMM, pos["y"] / PPMM
+        if abs(x - sx) > LOWER_TOL_MM or abs(y - sy) > LOWER_TOL_MM:
+            c.logs.app("샘플 위치 도달 실패 · 목표 X %.3f · Y %.3f · 현재 X %.3f · Y %.3f · 내리지 않음" % (sx, sy, x, y), "warn")
+            raise Rejected("샘플 위치 도달 실패 · 내리지 않음")
+        if on_lower is not None:
+            on_lower()
+        return c.contact_fixed(c.cfg["contact_z_mm"], g, read=read)
+
+    def plate_goto(self, x, y, view=False, lower=False):
+        """판 사진을 누른 자리(판 mm - view 면 화면 판 mm)로 간다(핀 맨 위로 올린 뒤). 샘플 근처를 누르면 샘플 가운데로 붙는다.
+        lower = 샘플에 붙었을 때만 접촉 높이까지 내린다(go_and_lower). 샘플이 아닌 자리는 lower 여도 내리지 않는다."""
+        self.c._no_run("클릭 이동")
         Hp, Hs = self.calib.plate_h(self._size_mm()), self.calib.stage_h()
         if Hp is None or Hs is None:
             raise Rejected("초기 설정 3 · 5 필요")
@@ -885,21 +929,47 @@ class Prep:
         if best is not None:
             px, py = best[1]["plate"]
             snapped = best[1]["name"]
-        photo_px = geo.apply1(np.linalg.inv(Hp), px, py)
+        photo_px = self._click_at(Hp, px, py, snapped)
         sx, sy = geo.apply1(Hs, *photo_px)
-        self.last_click = {"px": [round(photo_px[0], 1), round(photo_px[1], 1)], "plate": [round(px, 2), round(py, 2)], "sample": snapped}
-        self.publish()
-        self.c.goto(sx, sy)
-        return {"xy": [round(sx, 2), round(sy, 2)], "sample": snapped, "pos": dict(self.c.state.get("pos"))}     # 화면이 좌표 이동 칸을 채운다
+        res = self.go_and_lower(sx, sy, bool(lower) and snapped is not None)
+        return {"xy": [round(sx, 2), round(sy, 2)], "sample": snapped, "lowered": res is not None,
+                "pos": dict(self.c.state.get("pos"))}                # 화면이 좌표 이동 칸을 채운다
+
+    def sample_goto(self, id, lower=False):
+        """수동 제어 탭 [◀ 이전] [다음 ▶] · 샘플 선택: 그 샘플 가운데(샘플 xy)로 이동 · lower 면 접촉 높이까지(go_and_lower).
+        판 사진을 누른 것과 같이 last_click(사진 픽셀 · 판 mm · 샘플 이름)을 남긴다 - [보정 점 추가] 가 그대로 된다."""
+        self.c._no_run("샘플로 이동")
+        s = next((q for q in self.samples if str(q["id"]) == str(id)), None)
+        if s is None:
+            raise Rejected("샘플 없음 · 샘플 검출 필요")
+        if s["xy"] is None:
+            raise Rejected("샘플 좌표 없음 · 초기 설정 5 필요")
+        Hp = self.calib.plate_h(self._size_mm())
+        if Hp is not None:
+            self._click_at(Hp, float(s["plate"][0]), float(s["plate"][1]), s["name"])
+        res = self.go_and_lower(float(s["xy"][0]), float(s["xy"][1]), bool(lower))
+        return {"xy": list(s["xy"]), "sample": s["name"], "lowered": res is not None, "pos": dict(self.c.state.get("pos"))}
 
     def coord_add_here(self):
-        """[보정 점 추가]: (마지막으로 누른 사진 좌표, 지금 스테이지 X · Y)를 보정 점으로 더하고 변환을 전체 점으로 다시 맞춘다."""
+        """[보정 점 추가]: (마지막으로 누른 사진 좌표, 지금 스테이지 X · Y)를 보정 점으로 더하고 변환을 전체 점으로 다시 맞춘다.
+        누른 위치를 지금 변환으로 계산한 X · Y 와 핀 위치가 coord_add_max_mm 보다 멀면 거절한다(잘못 찍은 점이 좌표 전체를 틀지 않게)."""
         if self.last_click is None:
             raise Rejected("판 사진에서 위치 선택 필요")
         if not self.calib.coords_ready():
             raise Rejected("좌표 보정 필요 (초기 설정 5)")
         self._need_xy()
         self.c._no_run("보정 점 더하기")
+        Hs = self.calib.stage_h()
+        if Hs is None:
+            raise Rejected("좌표 보정 필요 (초기 설정 5)")
+        ex, ey = geo.apply1(Hs, *self.last_click["px"])
+        cx, cy = self._xy()
+        d = float(np.hypot(cx - ex, cy - ey))
+        lim = float(self.cfg["coord_add_max_mm"])
+        if d > lim:
+            self.c.logs.app("보정 점 거절 · 선택 위치 X %.3f · Y %.3f · 핀 X %.3f · Y %.3f · %.2f mm · 한도 %g mm" % (ex, ey, cx, cy, d, lim), "warn")
+            raise Rejected("선택 위치에서 %.1f mm 떨어짐 · 한도 %g mm · 위치 다시 선택" % (d, lim))
+        self.c.logs.app("보정 점 추가 · 선택 위치와 %.2f mm · 핀 X %.3f · Y %.3f" % (d, cx, cy))
         self.calib.add_extra(self.last_click["px"], self._xy())
         self.last_click = None
         self._refresh_samples()

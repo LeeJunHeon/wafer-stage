@@ -15,6 +15,14 @@ async function stopMove() {
   } catch (e) { toast("서버 전송 실패"); }
 }
 
+/* X · Y 조그 잠금(서버 safety.reject_xy_jog 와 같은 조건): 핀이 접촉 높이 − xy_jog_clear_mm 보다 아래면 이유 한 줄 · 아니면 "" */
+function xyJogWhy() {
+  const c = (S && S.cfg) || {}, clear = Number(c.xy_jog_clear_mm || 0), cz = c.contact_z_mm, z = S && S.pos ? S.pos.z : null;
+  if (!(clear > 0) || cz == null || !(S.homed && S.homed.z) || z == null || z <= 0) return "";
+  const lim = Number(cz) - clear;
+  return z > lim + 1e-6 ? "핀이 접촉 높이 근처 · X · Y 조그 불가 · Z " + Math.max(0, lim).toFixed(2) + " mm 위로 올리기" : "";
+}
+
 function jogPart() {
   const st = { step: 1 };
   const STEPS = [0.1, 1, 10];
@@ -45,14 +53,16 @@ function jogPart() {
       h("div", { class: "zcol" }, ...moveBtns.slice(4))),
     why);
   function update() {
-    const run = running() ? "측정 중 사용 불가" : "";         // 서버도 거절한다 - 화면은 이유만 미리 보여 준다
+    const run = running() ? "측정 중 사용 불가" : touring() ? "순회 중 사용 불가" : "";     // 서버도 거절한다 - 화면은 이유만 미리 보여 준다
     const block = run || (!devOk("stage") ? "스테이지 연결 필요" : "") || (S.estop_locked ? "비상정지 해제 필요" : "");      // 스테이지 없음 · 비상정지 중에는 이동 버튼이 모두 꺼진다
-    moveBtns.forEach((b) => { b.disabled = !!block; if (b.dataset.pos) { const t = padDir(b.dataset.pos).label; if (b.textContent !== t) b.textContent = t; } });
-    stopBtn.disabled = !!run || !devOk("stage");                 // 스테이지가 연결돼 있으면 항상 누를 수 있다(측정 중에는 꺼진다)
-    stopBtn.classList.toggle("moving", !stopBtn.disabled && !!(S && S.move));     // 이동 중에는 빨강 테두리
-    stopBtn.title = run ? "측정 중 · 측정 중지 또는 비상정지 사용" : !devOk("stage") ? "스테이지 연결 필요 (초기 설정 1)" : "";
-    why.textContent = block;
-    why.classList.toggle("hidden", !block);
+    const xyWhy = block ? "" : xyJogWhy();                       // 핀이 접촉 높이 근처면 X · Y 네 버튼만 끈다(Z 버튼은 그대로 - 서버 safety.reject_xy_jog 와 같은 조건)
+    moveBtns.forEach((b) => { b.disabled = !!block || (!!b.dataset.pos && !!xyWhy); if (b.dataset.pos) { const t = padDir(b.dataset.pos).label; if (b.textContent !== t) b.textContent = t; } });
+    stopBtn.disabled = running() || !devOk("stage");             // 스테이지가 연결돼 있으면 항상 누를 수 있다(측정 중에는 꺼진다 · 순회 중에는 순회를 끝낸다)
+    stopBtn.classList.toggle("moving", !stopBtn.disabled && !!(S && (S.move || touring())));     // 이동 중 · 순회 중에는 빨강 테두리
+    stopBtn.title = running() ? "측정 중 · 측정 중지 또는 비상정지 사용" : !devOk("stage") ? "스테이지 연결 필요 (초기 설정 1)" : "";
+    const line = block || xyWhy;
+    why.textContent = line;
+    why.classList.toggle("hidden", !line);
   }
   return { el, update, state: st };
 }

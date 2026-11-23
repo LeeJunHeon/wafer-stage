@@ -83,7 +83,7 @@ function renderSettingsPage() {
     else if (r.it.kind === "grid" || r.it.kind === "ints" || r.it.kind === "xy" || r.it.kind === "list") r.input.value = v == null ? "" : JSON.stringify(v);
     else r.input.value = v == null ? "" : v;
   }
-  const lock = running() || !!(S.temptest && S.temptest.active);  // 측정 · 온도 시험 중에는 설정을 바꾸지 않는다(서버도 거절)
+  const lock = running() || touring() || !!(S.temptest && S.temptest.active);  // 측정 · 온도 시험 중에는 설정을 바꾸지 않는다(서버도 거절)
   if (stg.imp) stg.imp.disabled = lock;
   for (const r of Object.values(stg.rows)) {
     r.input.disabled = lock;

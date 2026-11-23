@@ -14,6 +14,7 @@
  4. 자동 X · Y 이동 전에는 Z 를 맨 위로 올리고 st 로 Z=0 을 확인한다(control 이 순서를 지키고, 여기서는 Z 가 확인됐는지 판정한다).
  5. 원점이 있는 축은 가동 범위 밖으로 가는 명령을 거절한다.
     수동 Z 하강 한도(z_floor_mode, 기본 끔)가 켜져 있으면 수동 조그 · 좌표 이동이 한도 아래로 가는 명령을 거절한다.
+    X · Y 조그 잠금: 핀이 접촉 높이 − xy_jog_clear_mm 보다 아래면 X · Y 조그를 거절한다(접촉 높이 · Z 원점이 없으면 막지 않음 · Z 조그 · 자동 이동은 상관없음).
  6. 통신 감시 · 종료 처리는 control 이 한다(여기에는 판정만).
  7. 경보는 state.alarms 한 곳에만 쌓는다.
 
@@ -158,6 +159,18 @@ class Safety:
             return "Z 원점 필요 · Z 하강 한도 사용 중"
         if float(target_mm) > floor + 1e-9:
             return "Z 하강 한도 %.2f mm" % floor
+        return None
+
+    def reject_xy_jog(self, z_mm: Optional[float], z_homed: bool) -> Optional[str]:
+        """X · Y 조그의 판정: 핀이 접촉 높이에서 xy_jog_clear_mm 안쪽으로 내려가 있으면 거절한다(샘플을 긁지 않게 - Z 를 올리면 풀린다).
+        여유 0 · 접촉 높이 없음 · Z 원점 없음(위치를 모름)이면 막지 않는다. 핀이 맨 위(Z 0)면 언제나 된다(접촉 높이가 여유보다 작을 때)."""
+        clear = float(self.cfg["xy_jog_clear_mm"])
+        cz = self.cfg["contact_z_mm"]
+        if clear <= 0 or cz is None or not z_homed or z_mm is None or float(z_mm) <= 0:
+            return None
+        lim = float(cz) - clear
+        if float(z_mm) > lim + 1e-6:
+            return "핀이 접촉 높이 근처 · X · Y 조그 불가 · Z %.2f mm 위로 올리기" % max(0.0, lim)
         return None
 
     def z_is_top(self, z_pulse) -> bool:

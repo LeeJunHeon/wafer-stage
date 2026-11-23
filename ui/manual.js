@@ -3,7 +3,9 @@
    실시간 화면을 보정해 보여 주지 않는 까닭: 헤드가 판 위에 있으면 헤드가 판을 가린다.
    장비가 연결되지 않았으면 그 장비가 필요한 버튼을 끄고 이유를 한 줄 보인다(서버도 거절한다 - 화면은 미리 알려 준다).
    히트건 = 송풍 + 열선. [켜기] 는 서버가 열선 → 송풍 순서로 켠다 · [끄기] 는 열선을 끄고 송풍은 heater_fan_after_s 뒤에 끈다.
-   [온도 시험] 은 큰 창(ui/temptest.js)을 연다. 온도 시험 중에는 히트건 · 쿨러 버튼 · 접촉 탐색을 끈다([전체 끄기] 는 시험을 정지하고 끈다). */
+   [온도 시험] 은 큰 창(ui/temptest.js)을 연다. 온도 시험 중에는 히트건 · 쿨러 버튼 · 접촉 탐색을 끈다([전체 끄기] 는 시험을 정지하고 끈다).
+   판 사진 보기 아래 샘플 줄: [◀ 이전] [샘플 선택] [다음 ▶] = sample_goto(샘플 가운데로 · 핀 맨 위 확인) · "이동 후 내리기"(화면 값 · 시작 때 끔 · 켤 때 확인 창) =
+   샘플로 간 뒤 접촉 높이까지(판 사진 · [크게 보기] 에서 샘플을 눌러도) · [자동 순회] = 포함 샘플을 차례로 이동 → 접촉 높이 → 머묾(app/jobs/tour.py) · 순회 중 [순회 정지]. */
 "use strict";
 
 const man = {};
@@ -29,6 +31,18 @@ function buildManual() {
     if (man.clickGo.checked && man.view !== "fix") { man.viewFix.checked = true; setView("fix"); }
   } });
   man.addHere = busyGate("보정 점 추가", () => api("coord_add_here"), "sm");
+  /* 샘플 줄: 순서 = S.samples 중 xy 가 있는 것(표 순서) · 지금 선택 = last_click.sample */
+  man.sPrev = btn("◀ 이전", () => sampleStep(-1), "sm");
+  man.sNext = btn("다음 ▶", () => sampleStep(1), "sm");
+  man.sSel = h("select", { onchange: () => { const id = man.sSel.value; if (id) sampleGo(id); } });
+  man.sSig = "";
+  man.lowerChk = h("input", { type: "checkbox", onchange: () => { if (man.lowerChk.checked) { man.lowerChk.checked = false; askLower(); } } });
+  man.tourBtn = btn("자동 순회", () => (touring() ? api("tour_stop") : apiMove("tour_start")), "sm");
+  man.sWhy = h("span", { class: "why nowrap" });
+  man.tourLine = h("div", { class: "small" });
+  man.tourRows = h("div", { class: "small tour-rows hidden" });
+  man.samplePart = h("div", { class: "row hidden" }, man.sPrev, man.sSel, man.sNext, h("label", { class: "chk" }, man.lowerChk, "이동 후 내리기"),
+    h("span", { class: "sp" }), man.tourBtn, man.sWhy);
   man.camNote = h("span", { class: "why nowrap" });
   man.pb.inner.addEventListener("click", (ev) => {                 // 판 사진 보기에서 사진을 누르면 그 위치로 이동(핀을 맨 위로 올린 뒤)
     if (man.view !== "fix" || !man.pb.url) return;                // 사진이 없는 빈 상자는 누를 수 없다
@@ -39,7 +53,8 @@ function buildManual() {
     h("div", { class: "row" }, h("h3", { text: "카메라" }), h("span", { class: "sp" }),
       h("label", { class: "chk" }, man.viewRaw, "실시간"), h("label", { class: "chk" }, man.viewFix, "판 사진")),
     man.pb.box,
-    h("div", { class: "row" }, man.fixPart, h("label", { class: "chk" }, man.clickGo, "클릭 이동"), man.addHere.b, man.camNote));
+    h("div", { class: "row" }, man.fixPart, h("label", { class: "chk" }, man.clickGo, "클릭 이동"), man.addHere.b, man.camNote),
+    man.samplePart, man.tourLine, man.tourRows);
 
   /* ---- 왼쪽: 이동(조그 · 촬영 위치 · 좌표 이동을 옆으로 놓아 높이를 줄인다 - 카메라가 그만큼 커진다) ---- */
   man.jog = jogPart();
@@ -125,8 +140,54 @@ async function plateClick(fx, fy) {
   if (!man.clickGo.checked || man.clickGo.disabled || running()) return;
   if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
   const sz = S.cfg.plate_size_mm;
-  const r = await api("plate_goto", { x: fx * sz, y: fy * sz, view: true });      // 화면(문 기준) 판 mm - 서버가 저장 좌표로 바꾼다
+  const r = await api("plate_goto", { x: fx * sz, y: fy * sz, view: true, lower: lowerOn() });   // 화면(문 기준) 판 mm - 서버가 저장 좌표로 바꾼다 · 샘플에 붙었을 때만 내린다
   if (r.ok) fillHere(r.result && r.result.pos);                               // 클릭 이동 뒤에도 좌표 이동 칸을 채운다
+}
+/* 샘플 줄: 이동할 수 있는 샘플(xy 있음 · 표 순서) · 지금 선택(last_click.sample 이름) */
+const goSamples = () => (S.samples || []).filter((s) => s.xy);
+const lowerOn = () => !!(man.lowerChk && man.lowerChk.checked && !man.lowerChk.disabled);
+function curSampleIdx() {
+  const lc = (S.prep || {}).last_click, list = goSamples();
+  return lc && lc.sample ? list.findIndex((s) => s.name === lc.sample) : -1;
+}
+async function sampleGo(id) {
+  const r = await api("sample_goto", { id: Number(id), lower: lowerOn() });
+  if (r.ok) fillHere(r.result && r.result.pos);
+}
+function sampleStep(d) {
+  const list = goSamples();
+  if (!list.length) return;
+  const i = curSampleIdx(), j = i < 0 ? (d > 0 ? 0 : list.length - 1) : i + d;
+  if (j < 0 || j >= list.length) return;
+  sampleGo(list[j].id);
+}
+/* "이동 후 내리기" 를 켤 때 한 번 확인(내용은 서버 move_plan "sample_lower" - 지금 접촉 높이 · 저속 거리) */
+async function askLower() {
+  const p = await api("move_plan", { name: "sample_lower" });
+  if (!p.ok || !p.result) return;
+  openDialog(p.result.title, planBody(p.result),
+    [noEnter(btn("취소", closeDialog)), noEnter(btn("켜기", () => { closeDialog(); if (!man.lowerChk.disabled) man.lowerChk.checked = true; }, "on"))]);
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+}
+/* 자동 순회: 버튼([자동 순회] / [순회 정지]) · 진행 한 줄 · 끝난 뒤 결과 목록(이름 · 저항 또는 "기록 없음"). 반환 = 시작할 수 없는 까닭 */
+function renderTour(stage, ready, locked, ttOn) {
+  const t = S.tour || {}, on = !!t.active, c = S.cfg || {}, ht = S.heater || {};
+  const nUse = (S.samples || []).filter((s) => s.use && s.xy).length;
+  const why = on ? "" : running() ? "측정 중 사용 불가" : ttOn ? "온도 시험 중 사용 불가" : !stage ? NEED.stage : locked ? "비상정지 해제 필요"
+    : (ht.fan || ht.element) ? "히트건 끈 뒤 순회" : !(S.homed.x && S.homed.y && S.homed.z) ? "원점 필요 (초기 설정 2)" : !ready ? "초기 설정 5 후 사용 가능"
+    : c.contact_z_mm == null ? "접촉 높이 필요 (초기 설정 6)" : !nUse ? "포함 샘플 없음" : "";
+  man.tourBtn.textContent = on ? "순회 정지" : "자동 순회";
+  man.tourBtn.classList.toggle("on", on);
+  man.tourBtn.disabled = !on && !!why;
+  man.tourLine.textContent = on ? "순회 " + t.i + "/" + t.n + " · " + (t.name || "") + " · " + (t.step || "") : t.result ? "순회 결과 · " + t.result : "";
+  man.tourLine.className = "small" + (on ? " st-warn" : "");
+  const rows = t.rows || [], sig = on ? "" : JSON.stringify(rows);
+  if (sig !== man.tourSig) {
+    man.tourSig = sig;
+    setKids(man.tourRows, ...(on ? [] : rows.map((r) => h("div", { text: r.name + " · " + (r.ohm == null ? "기록 없음" : fmtOhm(r.ohm)) + (r.note ? " · " + r.note : "") }))));
+  }
+  man.tourRows.classList.toggle("hidden", on || !rows.length);
+  return why;
 }
 /* 좌표 이동 칸(X · Y · Z)에 현재 위치(또는 받은 위치) */
 function fillHere(pos) {
@@ -139,8 +200,9 @@ function fillHere(pos) {
 function plateOverlayKids(k, u) {
   const sz = S.cfg.plate_size_mm, kids = [], pr = S.prep || {};
   const halo = (tag, a, wd) => { kids.push(svgEl(tag, Object.assign({}, a, { stroke: "#FFFFFF", "stroke-width": (wd + 2.5) * k, fill: "none" })), svgEl(tag, Object.assign({}, a, { stroke: "#1F2329", "stroke-width": wd * k, fill: "none" }))); };
+  const selName = pr.last_click && pr.last_click.sample;           // 선택된 샘플(샘플 줄 · 클릭 이동)은 윤곽을 굵게
   for (const s of S.samples || []) {
-    halo("polygon", { points: s.voutline.map((p) => p[0] * u + "," + p[1] * u).join(" "), "stroke-linejoin": "round" }, 1.5);
+    halo("polygon", { points: s.voutline.map((p) => p[0] * u + "," + p[1] * u).join(" "), "stroke-linejoin": "round" }, s.name === selName ? 3 : 1.5);
     kids.push(svgEl("text", { x: s.vplate[0] * u, y: Math.min(...s.voutline.map((p) => p[1])) * u - 4 * k, "font-size": 12 * k, "text-anchor": "middle", fill: "#1F2329", stroke: "#FFFFFF", "stroke-width": 3 * k, "paint-order": "stroke", text: s.name }));
   }
   const lc = pr.last_click;
@@ -220,7 +282,8 @@ function heaterText(ht) {
 }
 function renderManual() {
   const c = S.cfg || {};
-  const busy = running(), locked = !!S.estop_locked;              // 측정 중 · 비상정지 중: 이동 · 릴레이 켜기가 꺼진다(끄기는 된다)
+  const busy = running() || touring(), locked = !!S.estop_locked;      // 측정 중 · 순회 중 · 비상정지 중: 이동 · 릴레이 켜기가 꺼진다(끄기는 된다)
+  const busyText = running() ? "측정 중 사용 불가" : "순회 중 사용 불가";
   const tts = S.temptest || {}, ttOn = !!tts.active;              // 온도 시험 중: 히트건 · 쿨러 버튼 · 접촉 탐색은 시험이 쓴다
   const stage = devOk("stage"), tOk = devOk("k2110"), rOk = devOk("k2450");
   man.temp.textContent = S.temp.value == null ? "—" : S.temp.value.toFixed(1) + " °C";
@@ -234,7 +297,7 @@ function renderManual() {
   man.headNote.textContent = hp ? "" : "초기 설정 3 에서 설정";
   man.go.disabled = busy || locked || !stage;
   man.here.disabled = !stage;
-  man.lower.set(busy ? "측정 중 사용 불가" : !stage ? NEED.stage : locked ? "비상정지 해제 필요" : c.contact_z_mm == null ? "접촉 높이 필요 (초기 설정 6)" : !S.homed.z ? "Z 원점 필요 (초기 설정 2)" : "");
+  man.lower.set(busy ? busyText : !stage ? NEED.stage : locked ? "비상정지 해제 필요" : c.contact_z_mm == null ? "접촉 높이 필요 (초기 설정 6)" : !S.homed.z ? "Z 원점 필요 (초기 설정 2)" : "");
   setWhy(man.moveWhy, "");                                        // 이동 패드의 이유 한 줄(jogPart)이 스테이지 · 측정 · 비상정지를 알린다
 
   /* 수동 측정: 온도 1회 = 온도계 · 저항 1회 · 연속 측정 = 저항계 */
@@ -243,7 +306,7 @@ function renderManual() {
   man.mon.disabled = busy || (!S.monitor && (locked || !rOk));
   man.condBtn.disabled = busy;
   const miss = [!tOk ? NEED.k2110 : "", !rOk ? NEED.k2450 : ""].filter(Boolean);
-  setWhy(man.measWhy, busy ? "측정 중 사용 불가" : miss.join(" · "));
+  setWhy(man.measWhy, busy ? busyText : miss.join(" · "));
   const ct = (S.prep && S.prep.contact) || {};
   const search = c.contact_mode === "search";                    // [접촉 탐색] 은 접촉 방식이 전기 탐색일 때만 보인다
   man.contact.b.classList.toggle("hidden", !search);
@@ -253,7 +316,7 @@ function renderManual() {
 
   /* 릴레이 시험: 스테이지 연결 필요. 히트건 줄 · 쿨러 줄(cooler_relays 만) */
   const ht = S.heater || {}, hOn = !!(ht.fan || ht.element);
-  const relayBlock = busy ? "측정 중 사용 불가" : ttOn ? "온도 시험 중 · 창의 [정지] 사용" : !stage ? NEED.stage : locked ? "비상정지 해제 필요" : "";
+  const relayBlock = busy ? busyText : ttOn ? "온도 시험 중 · 창의 [정지] 사용" : !stage ? NEED.stage : locked ? "비상정지 해제 필요" : "";
   man.hOn.disabled = !!relayBlock || !!ht.element;
   man.hEl.textContent = ht.element ? "열선 끄기" : "열선 켜기";
   man.hEl.disabled = busy || ttOn || !stage || !ht.fan || (!ht.element && locked);        // 송풍이 켜진 동안만(끄기는 비상정지 중에도)
@@ -303,8 +366,26 @@ function renderManual() {
   if (man.clickGo.disabled) man.clickGo.checked = false;
   man.addHere.b.disabled = busy || !ready || !pr.last_click || !stage;
   man.camNote.textContent = !hasPlate ? "초기 설정 3 · 5 후 사용 가능" : !ready ? "초기 설정 5 후 사용 가능" : !stage ? NEED.stage
-    : busy ? "측정 중 사용 불가" : locked ? "비상정지 해제 필요"
+    : busy ? busyText : locked ? "비상정지 해제 필요"
     : fix && !pr.last_click ? "판 사진에서 위치 선택 필요" : fix ? "십자 = 핀 · 원 = 선택 위치" : "";
+  /* 샘플 줄(판 사진 보기일 때 · 순회 중에는 보기와 상관없이): 이전 · 선택 · 다음 · 이동 후 내리기 · 자동 순회 */
+  const list = goSamples(), sSig = list.map((s) => s.id + ":" + s.name).join("|");
+  if (sSig !== man.sSig) {
+    man.sSig = sSig;
+    setKids(man.sSel, h("option", { value: "", text: list.length ? "샘플 선택" : "샘플 없음" }), ...list.map((s) => h("option", { value: String(s.id), text: s.name })));
+  }
+  const ci = curSampleIdx();
+  if (document.activeElement !== man.sSel) man.sSel.value = ci < 0 ? "" : String(list[ci].id);
+  const goOff = !ready || !stage || busy || locked || !list.length;
+  man.sSel.disabled = goOff;
+  man.sPrev.disabled = goOff || ci === 0;
+  man.sNext.disabled = goOff || (ci >= 0 && ci === list.length - 1);
+  const lowWhy = c.contact_z_mm == null ? "내리기 · 접촉 높이 필요" : !S.homed.z ? "내리기 · Z 원점 필요" : "";
+  man.lowerChk.disabled = !!lowWhy || busy || locked || !stage;
+  if (man.lowerChk.disabled) man.lowerChk.checked = false;
+  const tourWhy = renderTour(stage, ready, locked, ttOn);
+  man.samplePart.classList.toggle("hidden", !(fix || touring()));
+  man.sWhy.textContent = ready && stage && !busy && !list.length ? "샘플 검출 필요" : lowWhy || tourWhy;
   drawManualOverlay();
   man.jog.update();
 }

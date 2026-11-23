@@ -25,6 +25,7 @@ from app.logs import Logs
 from app.jobs.run import WAIT as RUN_WAIT, Runner
 from app.heaterlog import HeaterLog
 from app.jobs.temptest import TempTest
+from app.jobs.tour import Tour
 from app.prep import Prep
 from app.safety import BY_MANUAL, BY_RUN, Rejected, Safety
 from app.state import ALARM, NOTICE, State
@@ -117,6 +118,7 @@ class Controller:
         self.prep = Prep(self)
         self.runner = Runner(self)                                  # 측정(app/jobs/run.py)
         self.temptest = TempTest(self)                              # 온도 시험(app/jobs/temptest.py - 수동 제어 탭)
+        self.tour = Tour(self)                                      # 자동 순회(app/jobs/tour.py - 수동 제어 탭 · 샘플마다 이동 → 접촉 높이 → 머묾)
         self.heaterlog = HeaterLog(self)                            # 히트건을 쓰는 동안의 기록(app/heaterlog.py)
         self.heater_trip = ""                                       # 안전 규칙이 열선을 마지막으로 끈 이유
         self.heater_trips = 0                                       # 안전 규칙이 열선을 끈 횟수(측정이 "안전 규칙이 먼저 껐다" 를 알아챈다)
@@ -138,6 +140,7 @@ class Controller:
         self._k2450_user = None                                     # 지금 K2450 을 쓰는 쪽(USE_*). 없으면 None
         self._scan_lock = threading.Lock()                          # 장비 목록 읽기는 한 번에 하나
         self._motion = threading.Lock()
+        self._halt_lock = threading.Lock()                          # 이동 정지(세대 올림 → '!' → st)는 한 번에 하나 · 끝날 때까지 잡는다
         self._plock = threading.Lock()                              # 조그 대기 칸 · 현재 이동 종류
         self._cur_kind = None
         self._jog_pending = None                                    # 대기 칸 하나: {"axis", "mm"}
@@ -159,6 +162,7 @@ class Controller:
         self.prep.publish()
         self.runner.publish()
         self.temptest.publish()
+        self.tour.publish()
         # 측정 시작 조건(gate)의 입력이 바뀌는 길을 여기 한 곳에 모은다 → gate_inputs_changed:
         #   state 의 devices(장비 연결 · 끊김 · 오류) · homed(세 축 원점) · estop_locked(비상정지) · cfg(접촉 높이 등 설정) /
         #   calib 저장(판 영역 · 좌표 보정 · 접촉 높이 기록) / prep.pos_block(헤드 위치 확인)
@@ -272,7 +276,10 @@ class Controller:
     # 포트를 열면 보드가 재시작하고 ok=0 이면 "save 하지 않고 꺼짐 → 위치 불신" 으로 세 축 원점이 없어진다.
     # 그래서 정상 종료 · [연결 끊기] · 측정이 끝나 정리(핀 맨 위)까지 마친 때 save 한다. 이동마다 하지 않는다(EEPROM 수명 - 저장 1회 + 다음 첫 이동 1회).
     def _stop_jobs(self, why):
-        """측정 · 온도 시험을 멈추고 정리가 끝나기를 기다린다(닫기 · 연결 끊기 앞)."""
+        """측정 · 온도 시험 · 자동 순회를 멈추고 정리가 끝나기를 기다린다(닫기 · 연결 끊기 앞)."""
+        if self.tour.active:
+            self.tour.stop()                                        # 남은 단계를 버리고 핀 맨 위로 올린 뒤 끝난다
+            self.tour.join(timeout=20)
         if self.runner.active:
             self.runner._stop = True
             self.runner.join(timeout=20)
@@ -623,6 +630,10 @@ class Controller:
         if self.run_active():
             raise Rejected("측정 중 · 측정 중지 또는 비상정지 사용")
         self._need_stage()
+        with self._halt_lock:                                       # 자동 순회는 이 정지가 끝난 뒤에 핀을 올린다(세대는 이 잠금 안에서 바뀐다)
+            return self._motion_stop(source)
+
+    def _motion_stop(self, source):
         t0 = time.monotonic()
         pct0 = self.heater_pct() if self.stage.heat_capable else 0     # '!' 를 받으면 펌웨어 V13 가 열선 출력을 0 으로 만든다 - 뒤에서 rs 로 맞춘다
         self.safety.cancel_pending()
@@ -669,7 +680,7 @@ class Controller:
         mm = float(mm)
         if stage_mod.mm_to_pulse(mm) == 0:
             raise Rejected("이동 거리 너무 짧음")
-        why = self.safety.reject_move(axis in "xy", self._heater_on())
+        why = self.safety.reject_move(axis in "xy", self._heater_on()) or self._reject_xy_jog(axis)
         if why:
             raise Rejected(why)
         if not self._motion.acquire(blocking=False):
@@ -709,10 +720,16 @@ class Controller:
         if mv is not None:
             self.state.set("move", dict(mv, pending=self._jog_pending and dict(self._jog_pending)))
 
+    def _reject_xy_jog(self, axis):
+        """X · Y 조그 잠금(safety.reject_xy_jog): 핀이 접촉 높이 근처면 X · Y 조그를 거절한다. Z 조그 · 자동 이동(goto 는 Z 를 먼저 올린다)에는 쓰지 않는다."""
+        if axis not in "xy":
+            return None
+        return self.safety.reject_xy_jog(self._mm("z"), bool(self.stage.homed.get("z")))
+
     def _jog_once(self, axis, mm):
         g = self.safety.generation
         pulses = stage_mod.mm_to_pulse(mm)
-        why = self.safety.reject_move(axis in "xy", self._heater_on())
+        why = self.safety.reject_move(axis in "xy", self._heater_on()) or self._reject_xy_jog(axis)     # 대기 칸에서 꺼낸 조그도 그 순간 Z 로 다시 본다
         if why:
             raise Rejected(why)
         cur = self._mm(axis)
@@ -1751,6 +1768,8 @@ class Controller:
             raise Rejected("측정 중 실행 불가")
         if self.temptest.active:
             raise Rejected("온도 시험 중 실행 불가")                  # 시험이 쓰는 값 · 릴레이 역할이 도중에 바뀌지 않게
+        if self.tour.active:
+            raise Rejected("순회 중 실행 불가")                        # 접촉 높이 · 머무는 시간이 도중에 바뀌지 않게
         old = dict(self.cfg.values)
         new = self.cfg.checked(patch)
         roles_changed = [k for k in config_mod.ROLE_KEYS if k in new and new[k] != old[k]]
@@ -1894,9 +1913,11 @@ class Controller:
         fn = COMMANDS.get(name)
         if fn is None:
             raise Rejected("알 수 없는 명령: %s" % name)
-        if self.run_active() and name not in RUN_ALLOWED:           # 측정 중에는 손으로 하는 이동 · 릴레이 · 측정을 막는다(측정은 명령이 아니라 메서드를 직접 부른다)
-            if not (name == "raw" and (args or {}).get("target") == "stage" and str((args or {}).get("line", "")).strip().split(" ")[0].lower() in ("st", "rs", "p")):
-                raise Rejected("측정 중 실행 불가")
+        raw_read = name == "raw" and (args or {}).get("target") == "stage" and str((args or {}).get("line", "")).strip().split(" ")[0].lower() in ("st", "rs", "p")
+        if self.run_active() and name not in RUN_ALLOWED and not raw_read:     # 측정 중에는 손으로 하는 이동 · 릴레이 · 측정을 막는다(측정은 명령이 아니라 메서드를 직접 부른다)
+            raise Rejected("측정 중 실행 불가")
+        if self.tour.active and name not in TOUR_ALLOWED and not raw_read:     # 자동 순회 중: 측정 중과 같은 방식(읽기 · 순회 정지 · 정지 · 비상정지만)
+            raise Rejected("순회 중 실행 불가")
         if self.temptest.active and name in TEMPTEST_BLOCKED:        # 온도 시험이 히트건 · 쿨러 · 안전 감시를 쓰는 중
             raise Rejected("온도 시험 중 실행 불가")
         obj = self
@@ -1946,13 +1967,33 @@ class Controller:
         return out
 
     def move_plan(self, name: str, args: Optional[dict] = None):
-        """실행 전 확인 창 내용 {"title", "purpose", "steps", "note", "warn", "warn_top"} 또는 None(확인 필요 없음 · 설정 "자동 이동 전 확인" 끔)."""
-        if not self.cfg["confirm_auto_move"]:
-            return None
+        """실행 전 확인 창 내용 {"title", "purpose", "steps", "note", "warn", "warn_top"} 또는 None(확인 필요 없음 · 설정 "자동 이동 전 확인" 끔).
+        "sample_lower" 는 명령이 아니라 수동 제어 탭 "이동 후 내리기" 를 켤 때 한 번 묻는 내용이다(모터를 바로 움직이지 않는 켜기라 설정과 상관없이 묻는다)."""
         a = dict(args or {})
         c = self.cfg
+        if name == "sample_lower":
+            if c["contact_z_mm"] is None:
+                return None
+            plan = {"title": "이동 후 내리기", "purpose": "샘플로 이동한 뒤 핀을 접촉 높이 Z %.2f mm 까지 내림 · 마지막 %.1f mm 는 느리게"
+                                                          % (float(c["contact_z_mm"]), float(c["approach_mm"])),
+                    "steps": ["핀 맨 위(Z 0) → 샘플 위 X · Y 이동", "위치 확인(0.05 mm 안) 후 Z %.2f mm 까지 내림" % float(c["contact_z_mm"])],
+                    "note": "샘플 선택 · 판 사진의 샘플 클릭 때 · 저항은 재지 않음", "warn": self.MOVE_WARN, "warn_top": ""}
+            return plan
+        if not self.cfg["confirm_auto_move"]:
+            return None
         plan = None
-        if name == "set_origin" and a.get("mode") == "end":
+        if name == "tour_start":
+            todo = self.tour.targets()
+            if todo and c["contact_z_mm"] is not None:
+                names = [s["name"] for s in todo]
+                order = " → ".join(names[:8]) + (" 외 %d개" % (len(names) - 8) if len(names) > 8 else "")
+                read = bool(c["contact_fixed_read"]) and self.k2450 is not None and self.k2450.is_open
+                plan = {"title": "자동 순회", "purpose": "샘플 %d개 차례로 접촉 · 첫 샘플 X %.2f · Y %.2f" % (len(todo), todo[0]["xy"][0], todo[0]["xy"][1]),
+                        "steps": ["순서 · %s" % order, "샘플마다: 핀 맨 위(Z 0) → 샘플 위 X · Y 이동",
+                                  "Z %.2f mm 까지 내림(접촉 높이) · 마지막 %.1f mm 는 느리게" % (float(c["contact_z_mm"]), float(c["approach_mm"])),
+                                  "%g 초 머묾 · %s" % (float(c["tour_dwell_s"]), "저항 한 번 기록" if read else "저항 안 잼"), "끝나면 핀 맨 위(Z 0)"],
+                        "note": "히트건 · 쿨러 안 씀 · [순회 정지] · [정지] 로 멈춤"}
+        elif name == "set_origin" and a.get("mode") == "end":
             ax = str(a.get("axis", "")).lower()
             push, gap = stage_mod.FIND_PULSE / PPMM, stage_mod.FIND_GAP_PULSE / PPMM
             steps = ([] if ax == "z" else ["핀 맨 위(Z 0) 확인"]) + [
@@ -2181,7 +2222,8 @@ COMMANDS = {
     "photo_head_set": "prep.photo_head_set", "marker_check": "prep.marker_check", "photo_take": "prep.photo_take", "plate_set": "prep.plate_set",
     "empty_take": "prep.empty_take", "coord_set": "prep.coord_set", "coord_goto_d": "prep.coord_goto_d", "coord_clear": "prep.coord_clear",
     "marker_learn": "prep.marker_learn", "plate_goto": "prep.plate_goto", "coord_add_here": "prep.coord_add_here", "coord_remove": "prep.coord_remove",
-    "samples_find": "prep.samples_find", "sample_use": "prep.sample_use",
+    "samples_find": "prep.samples_find", "sample_use": "prep.sample_use", "sample_goto": "prep.sample_goto",
+    "tour_start": "tour.start", "tour_stop": "tour.stop",
     "settings_export": "settings_export", "settings_import_preview": "settings_import_preview", "settings_import_apply": "settings_import_apply",
     "move_plan": "move_plan", "quit_plan": "quit_plan", "app_quit": "app_quit",
     "focus_find": "prep.focus_find", "focus_nudge": "prep.focus_nudge", "focus_apply": "prep.focus_apply",
@@ -2204,6 +2246,11 @@ TEMPTEST_BLOCKED = {"run_start", "run_resume", "contact_find", "cooler_only", "h
 # 측정 중에도 되는 명령(읽기 · 측정 조작 · 경보 지우기). 그 밖의 명령은 측정 중에 거절한다. 비상정지는 명령 줄을 거치지 않는다.
 RUN_ALLOWED = {"heater_off_now", "move_plan", "quit_plan", "app_quit", "estop_release", "alarm_clear", "motion_stop", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_requeue",
                "sample_rename", "batch_set", "result_open_folder", "result_nas_copy"}
+
+# 자동 순회 중에도 되는 명령(읽기 · 순회 정지 · 이동 정지 · 경보 지우기 · 확인 창). 손으로 하는 이동 · 릴레이 · 측정 · 설정은 막는다(측정 중과 같은 방식).
+# 이동 패드 [정지](motion_stop)도 순회를 끝낸다(세대가 바뀌면 남은 단계를 버리고 핀 맨 위). 비상정지는 명령 줄을 거치지 않는다.
+TOUR_ALLOWED = {"tour_stop", "motion_stop", "heater_off_now", "move_plan", "quit_plan", "app_quit", "estop_release", "alarm_clear",
+                "result_open_folder", "result_nas_copy", "temptest_open_folder"}
 
 
 def _ohm(v):

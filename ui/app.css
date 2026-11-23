@@ -220,6 +220,7 @@ table.ctab tr:hover td { background: none; }
 #man-right .relays { display: flex; flex-wrap: wrap; }
 #cmd-log { height: 88px; flex: none; overflow-y: auto; background: #F7F8F9; border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font-family: Consolas, "맑은 고딕", monospace; font-size: 12px; line-height: 16px; white-space: pre-wrap; word-break: break-all; }   /* 최근 5줄 */
 #cmd-log .tx { color: var(--ink2); } #cmd-log .rx { color: var(--ink); } #cmd-log .er { color: var(--err-ink); }
+.tour-rows { max-height: 80px; overflow-y: auto; flex: none; }   /* 자동 순회 결과(이름 · 저항) - 넘치면 이 상자 안에서만 스크롤 */
 .quick { display: flex; flex-wrap: nowrap; gap: 4px; flex: none; }
 .quick .btn { height: 28px; font-size: 12px; padding: 0 8px; }
 #man-cmd select { width: 160px; }

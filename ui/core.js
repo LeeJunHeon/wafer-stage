@@ -346,6 +346,7 @@ const DOT = { "연결": "ok", "연결 중": "warn", "오류": "err", "끊김": "
 const dotOf = (d) => DOT[d.state] || "off";
 const devOk = (k) => S && S.devices[k].state === "연결";
 const running = () => !!(S && S.run && S.run.active);
+const touring = () => !!(S && S.tour && S.tour.active);            // 자동 순회 중(수동 제어 탭) - 서버가 손으로 하는 이동 · 릴레이 · 측정 · 설정을 막는다
 
 /* ====================================================================
    아래 상태줄(장비 상태는 여기 한 곳) · 경보 띠
