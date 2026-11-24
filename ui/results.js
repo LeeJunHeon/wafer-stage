@@ -118,7 +118,7 @@ function renderRecord() {
   const e2 = (v) => (v == null ? "—" : fmtOhm2(v)), t1 = (v) => (v == null ? "—" : v.toFixed(1) + " °C");
   setKids(rs.tbody, ...rec.samples.map((s) => {
     const a = s.sum || {}, col = pickColor(s.id);
-    return h("tr", { class: rs.picks.includes(s.id) ? "sel" : "", onclick: () => { if (s.n) togglePick(s.id); } }, h("td", {}, col ? swatch(col) : null, s.name + (s.status !== "완료" ? " · " + s.status : "")),
+    return h("tr", { class: rs.picks.includes(s.id) ? "sel" : "", onclick: () => { if (s.n) togglePick(s.id); } }, h("td", {}, col ? swatch(col) : null, s.name + (s.status !== "완료" ? " · " + s.status + (s.reason ? " · " + s.reason : "") : "")),
       h("td", { class: "num", text: e2(a.r_start) }), h("td", { class: "num", text: e2(a.r_peak) }), h("td", { class: "num", text: a.ratio == null ? "—" : a.ratio >= 100 ? Math.round(a.ratio).toLocaleString() : a.ratio.toFixed(1) }),
       h("td", { class: "num", text: t1(a.t_heat) }), h("td", { class: "num", text: t1(a.t_cool) }), h("td", { class: "num", text: t1(a.hyst) }), spacingCell(a.spacing));
   }));

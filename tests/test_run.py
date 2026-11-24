@@ -341,7 +341,7 @@ def test_max_on_time_moves_on_to_cooling(ready_ctrl):
     ctrl.run_command("run_start")
     _finish(ctrl)
     it = ctrl.runner.items[ids[0]]
-    assert it["status"] == DONE and "가열 끝 온도 미도달" in it["notes"]
+    assert it["status"] == FAIL and it["reason"].startswith("가열 중단 · "), "안전 규칙이 가열을 끊으면 그 샘플은 실패: %s" % it["reason"]
     assert max(p[0] for p in it["points"]) < 85.0 and it["points"][-1][2] == 1, "냉각으로 넘어가 끝까지 기록한다"
     _all_off(ctrl)
     cmds = _relay_cmds(ctrl, n0)

@@ -163,6 +163,7 @@ function planBody(plan) {
   return h("div", { class: "plan" },
     plan.warn_top ? h("div", { class: "st-err plan-top", text: plan.warn_top }) : null,
     plan.purpose ? h("div", { text: plan.purpose }) : null,
+    plan.photo ? h("div", { class: plan.photo_old ? "st-warn" : "small", text: plan.photo + (plan.photo_old && plan.photo !== "사진 없음" ? " · 1시간 넘음" : "") }) : null,   // 측정 시작 · 재개: 사진 시각(1시간 넘으면 주의 색)
     h("ol", {}, ...(plan.steps || []).map((s) => h("li", { text: s }))),
     plan.note ? h("div", { class: "small", text: plan.note }) : null,
     plan.warn ? h("div", { class: "st-warn", text: plan.warn }) : null);
@@ -283,15 +284,15 @@ function setTab(t) {
 const f1 = (v) => (v == null ? "—" : Number(v).toFixed(1));
 const f2 = (v) => (v == null ? "—" : Number(v).toFixed(2));
 const f3 = (v) => (v == null ? "—" : Number(v).toFixed(3));
-function fmtOhm(v) {
+function fmtOhm(v) {                                        // GΩ 까지(안 닿은 핀 586 MΩ ~ 6.2 GΩ · 서버 contact.ohm_text 와 같은 단위)
   if (v == null) return "—";
   const a = Math.abs(v);
-  return a >= 1e6 ? (v / 1e6).toPrecision(4) + " MΩ" : a >= 1e3 ? (v / 1e3).toPrecision(4) + " kΩ" : v.toPrecision(4) + " Ω";
+  return a >= 1e9 ? (v / 1e9).toPrecision(4) + " GΩ" : a >= 1e6 ? (v / 1e6).toPrecision(4) + " MΩ" : a >= 1e3 ? (v / 1e3).toPrecision(4) + " kΩ" : v.toPrecision(4) + " Ω";
 }
 function fmtOhm2(v) {                                       // 짧게(표 · 한 줄 안내용)
   if (v == null) return "—";
   const a = Math.abs(v);
-  return a >= 1e6 ? (v / 1e6).toPrecision(3) + " MΩ" : a >= 1e3 ? (v / 1e3).toPrecision(3) + " kΩ" : v.toPrecision(3) + " Ω";
+  return a >= 1e9 ? (v / 1e9).toPrecision(3) + " GΩ" : a >= 1e6 ? (v / 1e6).toPrecision(3) + " MΩ" : a >= 1e3 ? (v / 1e3).toPrecision(3) + " kΩ" : v.toPrecision(3) + " Ω";
 }
 function fmtDur(sec) {
   if (sec == null) return "—";

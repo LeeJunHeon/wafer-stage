@@ -338,7 +338,14 @@ ITEMS = (
          Item("contact_mode", "fixed", "choice", "접촉 방식", choices=(("fixed", "고정 높이"), ("search", "전기 탐색")),
               common=True, desc="고정 높이는 접촉 높이까지만 하강 · 전기 탐색은 전류를 보며 더 하강\n접촉 판정 기준을 정한 뒤 전기 탐색으로 변경"),
          Item("contact_fixed_read", True, "bool", "접촉 후 저항 기록",
-              common=True, desc="고정 높이로 내린 뒤 저항을 한 번 재서 기록 · 판정 없음\n끄면 재지 않음"),
+              common=True, desc="고정 높이로 내린 뒤 저항을 한 번 재서 기록\n끄면 재지 않음 · 접촉 확인을 쓰면 켜야 함"),
+         Item("contact_check", "skip", "choice", "접촉 확인",
+              choices=(("off", "사용 안 함"), ("skip", "그 샘플 건너뜀"), ("stop", "측정 멈춤")),
+              common=True, desc="고정 높이로 내린 뒤 저항으로 접촉 판단 · 사용 안 함 = 기록만\n건너뜀 = 핀 올리고 다음 샘플 · 측정 멈춤 = 측정 중지 · [측정 재개] 로 그 샘플부터"),
+         Item("contact_max_ohm", 1e8, "float", "접촉 판정 상한", "Ω", 1e3, 1e13,
+              desc="이보다 크면 안 닿음으로 판단\n실측 2026-11-23: 닿음 2.2 kΩ ~ 3.3 MΩ · 안 닿음 586 MΩ 이상"),
+         Item("contact_min_ohm", None, "optfloat", "금속 판 판정 하한", "Ω", 0.001, 1e6,
+              desc="이보다 작으면 금속 판에 닿은 것으로 판단 · 비우면 보지 않음\n판에 닿았을 때 값을 재서 정할 것"),
          Item("tour_dwell_s", 3.0, "float", "순회 머무는 시간", "s", 0, 60,
               desc="[자동 순회] 가 샘플마다 접촉 높이에서 머무는 시간"),
          Item("contact_z_mm", None, "optfloat", "접촉 높이", "mm", 0, 100,
@@ -591,6 +598,10 @@ def problems(v: dict) -> list:
     need_back = int(v["contact_confirm_n"]) * float(v["contact_search_step_mm"])
     if float(v["contact_search_back_mm"]) < need_back - 1e-9:
         out.append("탐색 되돌림 거리 %g mm · 탐색 간격 × 확인 횟수 %g mm 이상 필요" % (v["contact_search_back_mm"], need_back))
+    if v.get("contact_check", "off") != "off" and not v.get("contact_fixed_read", True):
+        out.append("접촉 확인 사용 중 · 접촉 후 저항 기록 켬 필요")
+    if v.get("contact_min_ohm") is not None and not float(v["contact_min_ohm"]) < float(v["contact_max_ohm"]):
+        out.append("금속 판 판정 하한 %g Ω · 접촉 판정 상한 %g Ω 미만 필요" % (v["contact_min_ohm"], v["contact_max_ohm"]))
     if not float(v["contact_open_a"]) < float(v["contact_ilim_a"]):
         out.append("미접촉 판정 전류 %g A · 접촉 확인 전류 한도 %g A 미만 필요" % (v["contact_open_a"], v["contact_ilim_a"]))
     # ---- Z 하강 한도 · 포트 ----

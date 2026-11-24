@@ -3,13 +3,15 @@
 대상 = 샘플 목록(prep.samples) 중 포함(use)이고 스테이지 X · Y 가 있는 것(표 순서).
 샘플마다: 이동(Controller.goto - 핀 맨 위 → st 로 Z 0 확인 → X → Y) → 위치 확인 → 접촉 높이까지 내림(Controller.contact_fixed -
 마지막 approach_mm 는 느리게) → tour_dwell_s 머묾 → 다음 샘플(goto 가 핀을 맨 위로 올린다). 이동 · 내리기는 prep.go_and_lower 하나를
-[샘플 이동] 과 같이 쓴다. 저항계가 연결돼 있고 contact_fixed_read 면 내린 뒤 저항을 한 번 재서 기록만 한다(판정 없음 - 측정 작업과 같이 K2450 사용권을 쥔다).
+[샘플 이동] 과 같이 쓴다. 저항계가 연결돼 있고 contact_fixed_read 면 내린 뒤 저항을 한 번 재서 기록한다(측정 작업과 같이 K2450 사용권을 쥔다) ·
+contact_check 가 off 가 아니면 측정과 같은 판정(contact.judge_fixed)을 결과 줄 note 에 "안 닿음 · …" / "금속 판 의심 · …"(순회는 멈추지 않는다).
 끝: 완료 · [순회 정지] · 이동 패드 [정지](세대가 바뀜) · 거절된 단계 → 핀 맨 위로 올리고 끝 / 비상정지 → 핀을 움직이지 않고 끝.
 순회 중에는 Controller.run_command 가 TOUR_ALLOWED 밖의 명령(손으로 하는 이동 · 릴레이 · 측정 · 설정)을 막는다.
 """
 
 import threading
 
+from app import contact as contact_mod
 from app.devices.stage import PPMM
 from app.safety import Rejected
 
@@ -148,6 +150,10 @@ class Tour:
                     raise
                 x, y = c._mm("x"), c._mm("y")
                 row.update(x=None if x is None else round(x, 3), y=None if y is None else round(y, 3), z=res["z"], ohm=res["ohm"])
+                if read and c.cfg["contact_check"] != "off":           # 접촉 확인(측정과 같은 판정) - 순회는 멈추지 않고 결과 줄에 적기만
+                    j = contact_mod.judge_fixed(res["ohm"], float(c.cfg["contact_max_ohm"]), c.cfg["contact_min_ohm"], tripped=bool(res.get("tripped")))
+                    if j is not None:
+                        row["note"] = j[1]
                 c.logs.app("샘플 순회 · %s · X %s · Y %s · Z %.3f · 저항 %s" % (s["name"], "—" if x is None else "%.3f" % x, "—" if y is None else "%.3f" % y,
                                                                          res["z"], "—" if res["ohm"] is None else "%.6g Ω" % res["ohm"]))
                 self._set_step(STEP_DWELL)

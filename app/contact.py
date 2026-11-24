@@ -28,6 +28,35 @@ KEYS = ("volt", "ilim_a", "nplc", "step_mm", "start_above_mm", "max_below_mm", "
 FAIL_TEXT = {"none": "미접촉", "short": "금속 판 접촉", "four": "4핀 접촉 실패", "inst": "저항계 오류", "step": "하강 간격 초과"}
 
 
+def ohm_text(v):
+    """저항 글(화면 core.js fmtOhm2 와 같은 꼴 - 유효 숫자 3자리 · Ω · kΩ · MΩ · GΩ)."""
+    if v is None:
+        return "—"
+    a = abs(float(v))
+    for k, u in ((1e9, "GΩ"), (1e6, "MΩ"), (1e3, "kΩ")):
+        if a >= k:
+            return "%.3g %s" % (v / k, u)
+    return "%.3g Ω" % v
+
+
+JUDGE_WORD = {"open": "접촉 안 됨", "metal": "금속 판 의심", "none": "저항 못 읽음"}      # 측정 멈춤 경보 "측정 멈춤 · 1-5 접촉 안 됨 · 2.56 GΩ"
+
+
+def judge_fixed(ohm, max_ohm, min_ohm=None, tripped=False):
+    """접촉 확인(고정 높이로 내린 뒤 잰 저항 한 번): None = 닿음 · 아니면 (코드, 글).
+    open "안 닿음 · 2.56 GΩ"(> max_ohm) · metal "금속 판 의심 · 0.8 Ω"(< min_ohm · 전류 한도 걸림) · none "저항 못 읽음".
+    근거(2026-11-23 · 0.1 V): 닿음 2.2 kΩ ~ 3.3 MΩ · 안 닿음 586 MΩ ~ 6.2 GΩ. 측정(app/jobs/run.py) · 자동 순회(app/jobs/tour.py)가 같이 쓴다."""
+    if tripped:
+        return ("metal", "금속 판 의심 · 전류 한도" + ("" if ohm is None else " · " + ohm_text(ohm)))
+    if ohm is None:
+        return ("none", "저항 못 읽음")
+    if min_ohm is not None and float(ohm) < float(min_ohm):
+        return ("metal", "금속 판 의심 · " + ohm_text(ohm))
+    if float(ohm) > float(max_ohm):
+        return ("open", "안 닿음 · " + ohm_text(ohm))
+    return None
+
+
 class ContactFail(Exception):
     """접촉 찾기 실패. code: none(안 닿음) · short(금속 판 · 단락) · four(4단자 확인 실패) · inst(K2450 오류) · step(걸음 한도를 넘는 이동 요청).
     문구는 사람이 읽는 한 문장."""

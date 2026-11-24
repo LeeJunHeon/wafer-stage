@@ -1,5 +1,7 @@
 """헤드 마커 읽기(prep._marker_pair): 가라앉을 때까지 읽고 최근 3장의 가운데 값 · 끝까지 흔들리면 marker_settle_s 뒤 거절 · 안 보이면 None.
-시험용 카메라의 마커를 world.marker_shake 로 흔든다(프레임마다 더 옮길 양 mm)."""
+시험용 카메라의 마커를 world.marker_shake 로 흔든다(프레임마다 더 옮길 양 mm · 마커만 움직이고 배경 · 헤드는 그대로).
+흔드는 크기 ±0.5 mm(한 번에 1 mm) = 실제 로그(0.85 mm)와 같은 크기: 화면 멈춤 검사(폭 320 px 전체 밝기 차이 - 마커 테두리 약 1 px)에는 안 걸리고
+마커 연속 읽기 허용(0.5 mm)은 넘는다. ±2 mm 는 화면 멈춤 검사에 먼저 걸려 "카메라 화면 안정 안 됨" 으로 거절됐다."""
 
 import itertools
 import math
@@ -8,6 +10,8 @@ import time
 import pytest
 
 from app.safety import Rejected
+
+SHAKE_MM = 0.5                                                       # 마커 흔들기 ±mm(위 설명)
 
 
 def _tol_px(ctrl):
@@ -20,8 +24,8 @@ def test_marker_settles_after_shaking(ready_ctrl):
     ctrl.goto(head[0], head[1])
     base = ctrl.prep._marker_pair()
     assert base is not None
-    t_end = time.monotonic() + 0.4                                    # 처음 0.4 s 동안 ±2 mm 로 흔들리다 가라앉는다
-    flip = itertools.cycle((2.0, -2.0))
+    t_end = time.monotonic() + 0.4                                    # 처음 0.4 s 동안 흔들리다 가라앉는다
+    flip = itertools.cycle((SHAKE_MM, -SHAKE_MM))
     ctrl.world.marker_shake = lambda: (next(flip), 0.0) if time.monotonic() < t_end else (0.0, 0.0)
     m = ctrl.prep._marker_pair()
     assert m is not None
@@ -32,7 +36,7 @@ def test_marker_keeps_shaking_is_rejected_after_limit(ready_ctrl):
     ctrl = ready_ctrl(marker_settle_s=0.6)
     head = ctrl.cfg["photo_head_xy"]
     ctrl.goto(head[0], head[1])
-    flip = itertools.cycle((2.0, -2.0))
+    flip = itertools.cycle((SHAKE_MM, -SHAKE_MM))
     ctrl.world.marker_shake = lambda: (next(flip), 0.0)
     t0 = time.monotonic()
     with pytest.raises(Rejected, match="마커 위치 흔들림"):

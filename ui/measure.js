@@ -132,6 +132,7 @@ function progText(row, s, brief) {                               // brief: 덧�
   if (st === "측정 중") return "측정 중 · " + (STAGE_NAMES[R().stage] || "") + (S.temp.value != null ? " " + S.temp.value.toFixed(1) + " °C" : "");
   if (st === "실패") return "실패 · " + row.reason;
   if (st === "중지") return "중지" + (row.reason ? " · " + row.reason : "");
+  if ((st === "건너뜀" || st === "대기") && row.reason) return st + " · " + row.reason;      // 예) 건너뜀 · 안 닿음 · 2.56 GΩ / 대기 · 시작 온도 미도달
   if (st === "제외") return "제외" + (s && s.weak ? " · 미확인" : s && s.small ? " · 핀보다 작음 · " + sizeText(s) : "");
   return st;
 }

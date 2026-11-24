@@ -3,7 +3,9 @@
 샘플 하나의 순서
   1. 이동  : 히트건(송풍 · 열선)이 꺼질 때까지 기다림 → 핀 맨 위(Z 0, st 로 확인) → 샘플의 핀 놓을 자리로 X · Y(샘플 xy = 윤곽 안 가장 넉넉한 곳).
   2. 접촉  : 접촉 방식(contact_mode)에 따라
-             고정 높이(기본) - 저장한 접촉 높이까지 정확히 내리고 끝낸다. 내린 뒤 저항을 한 번 재서 기록만 한다(판정 없음 · 실패 없음).
+             고정 높이(기본) - 저장한 접촉 높이까지 정확히 내리고 끝낸다. 내린 뒤 저항을 한 번 재서 기록한다.
+                               접촉 확인(contact_check - contact.judge_fixed): 안 닿음 · 금속 판 의심이면 skip = 그 샘플 "건너뜀" · stop = "대기" + 측정 멈춤 · off = 기록만.
+                               판정은 가열 · 저항계 출력 · 쿨러 켜기 전.
              전기 탐색(선택) - 저장한 접촉 높이 − 0.3 mm 까지 내린 뒤 전기로 확인하며 내린다. 실패(안 닿음 · 금속 판 · 4단자)면 핀을 올리고 이 샘플은 "실패".
   3. 냉각  : 쿨러를 켠다. 온도가 시작 온도보다 높으면 내려갈 때까지 기다린다(기록하지 않는다). 회차마다 가열 전에 같은 조건을 본다.
              정체로 시작 온도에 못 닿으면 가열하지 않고 측정 전체를 멈춘다 - 그 샘플은 "대기" 로 남아 [측정 재개] 로 다시 시작한다.
@@ -15,6 +17,7 @@
 5. 냉각  : 열선 끔. 냉각 방식(run_cool_mode) "ramp"(기본) - 송풍을 켜 둔 채 같은 출력 % 제어로 목표선(가열 끝 순간 온도 − 냉각 속도 × 경과)을 따른다.
                                               "free" - 자연 냉각. 송풍은 run_fan_during_cool 이면 냉각 동안 켜 두고, 아니면 heater_fan_after_s 뒤 끈다.
              냉각 끝 온도 아래로 내려갈 때까지 기록한다(열선을 끈 뒤 더 오르는 구간도 그대로 기록). 정체로 끝나면 "냉각 끝 온도 미도달" 주의.
+             안전 규칙이 가열을 끊었으면 그 회차는 자연 냉각으로 끝까지 기록한 뒤 그 샘플은 "실패 · 가열 중단 · …"(남은 회차는 안 함).
              목표선(가열 · 냉각)은 온도가 heater_lead_c 넘게 뒤처지면 기다린다(heater.LineControl - 온도 시험과 같은 것).
   6. 반복이 2회 이상이면 4~5 를 되풀이(송풍이 켜져 있으면 열선만 다시 켠다).
   7. 저장  : K2450 출력 끔 → 쿨러 끔 → 핀 맨 위 → 파일 닫기 → NAS 복사.
@@ -50,6 +53,7 @@ T_MISS_N = 3                                      # 온도를 이만큼 연속�
 MAX_POINTS = 200000
 COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "meter_ilim_a", "run_start_c", "run_heater_off_c", "run_cool_end_c",
              "run_repeat", "run_interval_s", "run_cooler_mode", "run_cooler_during_heat", "contact_mode", "contact_fixed_read", "contact_z_mm",
+             "contact_check", "contact_max_ohm", "contact_min_ohm",
              "run_no_rise_s", "run_no_rise_c",
              "run_fast_rise_c_s", "run_stall_s", "run_stall_c", "run_phase_limit_s", "run_open_n", "contact_open_a", "nas_dir", "nas_date_folder",
              "heater_max_c", "heater_max_on_s", "plate_size_mm", "cooler_grid", "cooler_relays", "heater_fan_relay", "heater_element_relay",
@@ -67,6 +71,19 @@ class SampleFail(Exception):
 
 class RunAbort(Exception):
     """측정 장비 오류 등 - 측정 전체를 멈추고 경보를 낸다."""
+
+
+class ContactSkip(Exception):
+    """접촉 확인(고정 높이) · 안 닿음 - 그 샘플만 건너뛴다(핀은 정리가 올린다 · 가열하지 않는다)."""
+
+
+class ContactStop(RunAbort):
+    """접촉 확인(고정 높이) · 안 닿음 - 측정 전체를 멈춘다. 그 샘플은 "대기" 로 남아 [측정 재개] 가 그 샘플부터 한다."""
+
+    def __init__(self, name, code, text):
+        super().__init__("%s %s" % (name, contact_mod.JUDGE_WORD.get(code, text) + ("" if code == "none" else " · " + text.split(" · ")[-1])))
+        self.text = text                                            # 샘플 이유(예 "안 닿음 · 2.56 GΩ")
+        self.alarm = "측정 멈춤 · %s" % self                        # 경보 "측정 멈춤 · 1-5 접촉 안 됨 · 2.56 GΩ"
 
 
 class StartTempAbort(RunAbort):
@@ -349,6 +366,11 @@ class Runner:
         except Halt as h:
             halted = True
             self.msg = {"stop": "측정 중지", "estop": "비상정지로 중지"}.get(h.kind, "")
+        except ContactStop as e:
+            halted = True
+            self.msg = e.alarm
+            c.state.alarm("run", e.alarm, ALARM, dismiss=True)
+            c.logs.app(e.alarm, "warn")
         except RunAbort as e:
             halted = True
             self.msg = "측정 중지 · %s" % e
@@ -401,6 +423,11 @@ class Runner:
         except SampleFail as e:
             it.update(status=FAIL, reason=str(e))
             c.logs.app("샘플 %s 실패 · %s" % (it["name"], e), "warn")
+        except ContactSkip as e:                                    # 접촉 확인 · 건너뜀: 가열 전이다 - 다음 샘플로
+            it.update(status=SKIPPED, reason=str(e))
+        except ContactStop as e:                                    # 접촉 확인 · 측정 멈춤: 끝나지 않은 채 남긴다 - [측정 재개] 가 이 샘플부터
+            it.update(status=WAIT, reason=e.text)
+            abort = e
         except StartTempAbort as e:
             it.update(status=WAIT, reason="시작 온도 미도달")          # 끝나지 않은 채 남긴다 - [측정 재개] 가 이 샘플부터 다시 한다
             c.logs.app("샘플 %s · %s · %.1f °C" % (it["name"], e, self._last_T if self._last_T is not None else float("nan")), "warn")
@@ -465,9 +492,10 @@ class Runner:
                     raise RunAbort(str(e))
                 raise SampleFail(contact_mod.FAIL_TEXT.get(e.code, str(e)))
             it["contact"] = dict({k: res[k] for k in ("first_z", "final_z", "r2", "r4")}, mode="search")
-        else:                                                       # 고정 높이(기본): 저장한 접촉 높이까지만 내린다. 저항은 기록만(판정 없음)
+        else:                                                       # 고정 높이(기본): 저장한 접촉 높이까지만 내린다
             self._set(1, "접촉 높이로 하강")
             it["contact"] = c.contact_fixed(cd["contact_z_mm"], g, read=bool(cd.get("contact_fixed_read", True)), meter=cd)
+            self._contact_check(it, cd)                             # 접촉 확인(가열 · 저항계 출력 · 쿨러 켜기 전)
         # ---- 3 냉각(시작 전) ----
         self._check(g)
         self._coolers = self._coolers_for(it)
@@ -508,8 +536,7 @@ class Runner:
             ramp_cool = cd.get("run_cool_mode", "free") == "ramp" and reached     # 안전 규칙이 가열을 끊었으면 그 회차는 자연 냉각(열선을 다시 켜지 않는다)
             if not ramp_cool and not cd.get("run_fan_during_cool", True):
                 self.heater.off()                                   # 송풍은 열선 끈 뒤 heater_fan_after_s 에 꺼진다
-            if not reached:
-                it["notes"].append("가열 끝 온도 미도달")
+            cut = None if reached else (self._heat_cut or "안전 규칙")
             # ---- 5 냉각 ----
             if not cd["run_cooler_during_heat"]:
                 for n in self._coolers:
@@ -533,8 +560,26 @@ class Runner:
                 it["notes"].append("냉각 끝 온도 미도달")
             it["peak"] = peak["t"] if it["peak"] is None else max(it["peak"], peak["t"] or -1e9)
             self._close_cycle(it)
+            if cut is not None:                                     # 안전 규칙이 가열을 끊었다: 냉각까지 기록한 뒤 그 샘플은 실패 · 남은 회차는 하지 않는다
+                raise SampleFail("가열 중단 · %s" % cut)
         # ---- 7 저장 ---- (출력 끔 · 쿨러 끔 · 핀 맨 위 · 파일 닫기 · NAS 복사는 _one 의 정리가 한다)
         self._set(5, "저장 중", 0.5)
+
+    def _contact_check(self, it, cd):
+        """접촉 확인(contact_check - 고정 높이일 때만): 내린 뒤 잰 저항으로 judge_fixed. off 면 기록만(판정 없음).
+        안 닿음 · 금속 판 의심 · 못 읽음이면 skip → ContactSkip(그 샘플 건너뜀) · stop → ContactStop(측정 멈춤 · 그 샘플은 대기). 핀은 _one 의 정리가 올린다."""
+        chk = cd.get("contact_check", "off")
+        if chk == "off":
+            return
+        ct = it["contact"]
+        j = contact_mod.judge_fixed(ct.get("ohm"), float(cd.get("contact_max_ohm", 1e8)), cd.get("contact_min_ohm"), tripped=bool(ct.get("tripped")))
+        ct["judge"] = "ok" if j is None else j[0]
+        if j is None:
+            return
+        self.c.logs.app("샘플 %s · 접촉 확인 · %s" % (it["name"], j[1]), "warn")
+        if chk == "stop":
+            raise ContactStop(it["name"], j[0], j[1])
+        raise ContactSkip(j[1])
 
     def _precool(self, it, g, start_c):
         """가열 전: 온도가 시작 온도 이하인지 본다. 아니면 쿨러로 더 식힌다(기록하지 않는다). 정체로 못 닿으면 StartTempAbort(측정 전체를 멈춘다)."""
@@ -651,6 +696,7 @@ class Runner:
         hold_s = float(cd.get("run_heat_hold_s", 0.0))
         t0 = c.clock()
         trips0 = c.heater_trips
+        self._heat_cut = None                                       # 안전 규칙이 가열을 끊은 까닭(False 를 돌려줄 때)
         if not ramp and int(cd["heater_max_pct"]) < 100:
             self.heater.power(cd["heater_max_pct"])                 # 계속 가열: 최대 출력
         self._elog(it, t0, self.heater.pct)                         # 열선 출력을 바꾼 때 - run.json element_log
@@ -694,6 +740,7 @@ class Runner:
                 self._row(it, T, R, 0, sp)
             if c.heater_trips != trips0:                            # 안전 규칙이 열선을 껐다(차단 온도 · 열선 연속 최대 시간 · 온도 못 읽음)
                 c.logs.app("샘플 %s · 열선이 %g °C 에 닿기 전에 꺼짐 · %s" % (it["name"], off_c, c.heater_trip or ""), "warn")
+                self._heat_cut = c.heater_trip or "안전 규칙"
                 return False
             if T is not None:
                 if hold_t0 is None and T >= off_c:
@@ -719,6 +766,7 @@ class Runner:
                     except Rejected as e:                           # 안전 규칙이 켜기를 거절했다(온도 못 읽음 · 차단 온도 …) - 비상정지면 _check 가 멈춘다
                         self._check(g)
                         c.logs.app("샘플 %s · 열선 켜기 거절 · %s" % (it["name"], e), "warn")
+                        self._heat_cut = "열선 켜기 거절 · %s" % e
                         return False
                     self._note_jumps(it, ctl, "가열")
                 self.frac = max(0.0, min(1.0, (T - T_start) / max(1e-6, off_c - T_start)))

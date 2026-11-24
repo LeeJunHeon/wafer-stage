@@ -61,7 +61,8 @@ def test_default_is_fixed_height_and_run_goes_exactly_to_the_saved_height(ready_
     내린 뒤 잰 저항은 run.json 의 샘플 contact 에 기록만 한다."""
     # 접촉 단계를 보는 시험: 가열 · 냉각 구간은 짧게. 핀이 안 닿아 열전대가 공기 온도를 재므로 열선을 계속 켠다(계속 가열) -
     # 가열 속도 제어로는 열선을 켜고 끄는 동안 공기 온도가 거의 안 올라 "온도 상승 없음" 이 된다(접촉과 상관없는 일)
-    ctrl = ready_ctrl(time_scale=FAST, run_heater_off_c=40.0, run_cool_end_c=36.0, run_heat_mode="full")
+    # 접촉 확인(contact_check)을 끈 경우 = 기록만(판정은 tests/test_contact_check.py)
+    ctrl = ready_ctrl(time_scale=FAST, run_heater_off_c=40.0, run_cool_end_c=36.0, run_heat_mode="full", contact_check="off")
     assert ctrl.cfg["contact_mode"] == "fixed" and ctrl.cfg["contact_fixed_read"] is True
     cz = ctrl.cfg["contact_z_mm"]                                    # 13.4 mm: 표면이 13.5 mm 인 샘플에는 닿지 않는 높이
     ctrl.run_command("samples_find")

@@ -967,7 +967,12 @@ class Prep:
             snapped = best[1]["name"]
         photo_px = self._click_at(Hp, px, py, snapped)
         sx, sy = self.calib.to_stage(photo_px)
-        res = self.go_and_lower(sx, sy, bool(lower) and snapped is not None)
+        try:
+            res = self.go_and_lower(sx, sy, bool(lower) and snapped is not None)
+        except Rejected as e:
+            self.c.logs.app("좌표 이동 · 클릭 · X %.1f · Y %.1f%s → 멈춤 · %s · %s" % (sx, sy, " · " + snapped if snapped else "", e, self.c._pos_text()))
+            raise
+        self.c.logs.app("좌표 이동 · 클릭 · X %.1f · Y %.1f%s → 끝 %s" % (sx, sy, " · " + snapped if snapped else "", self.c._pos_text()))
         return {"xy": [round(sx, 2), round(sy, 2)], "sample": snapped, "lowered": res is not None,
                 "pos": dict(self.c.state.get("pos"))}                # 화면이 좌표 이동 칸을 채운다
 
@@ -984,7 +989,12 @@ class Prep:
         if Hp is not None:
             pin = s.get("pin") or s["plate"]
             self._click_at(Hp, float(pin[0]), float(pin[1]), s["name"])
-        res = self.go_and_lower(float(s["xy"][0]), float(s["xy"][1]), bool(lower))
+        try:
+            res = self.go_and_lower(float(s["xy"][0]), float(s["xy"][1]), bool(lower))
+        except Rejected as e:
+            self.c.logs.app("좌표 이동 · 샘플 %s · X %.1f · Y %.1f → 멈춤 · %s · %s" % (s["name"], s["xy"][0], s["xy"][1], e, self.c._pos_text()))
+            raise
+        self.c.logs.app("좌표 이동 · 샘플 %s · X %.1f · Y %.1f → 끝 %s" % (s["name"], s["xy"][0], s["xy"][1], self.c._pos_text()))
         return {"xy": list(s["xy"]), "sample": s["name"], "lowered": res is not None, "pos": dict(self.c.state.get("pos"))}
 
     def coord_add_at(self, x, y, view=False):

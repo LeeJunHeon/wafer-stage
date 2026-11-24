@@ -539,8 +539,7 @@ class Controller:
         self.temptest.on_estop()                                    # 온도 시험도 바로 끝난다(기록 · 요약은 저장)
         with self._plock:
             self._jog_pending = None                                # 대기 중이던 조그를 지운다
-        self._monitor_on = False
-        self.state.set("monitor", False)
+        self._monitor_stop("비상정지")
         banged = False
         try:
             banged = self.stage.bang()
@@ -744,8 +743,15 @@ class Controller:
         tgt = {a: self._mm(a) for a in AXES}
         if tgt[axis] is not None:
             tgt[axis] = round(tgt[axis] + pulses / PPMM, 3)
-        with self._moving("조그 %s" % axis.upper(), tgt, lock=False):
-            self.stage.jog(axis, pulses, g)
+        word = ("하강" if pulses > 0 else "상승") if axis == "z" else ("+" if pulses > 0 else "−")
+        head = "조그 · %s%s %.2f mm" % (axis.upper(), " " + word if axis == "z" else word, abs(pulses) / PPMM)
+        try:
+            with self._moving("조그 %s" % axis.upper(), tgt, lock=False):
+                self.stage.jog(axis, pulses, g)
+        except Exception:
+            self.logs.app("%s · %s %s → %s · 정지" % (head, axis.upper(), "—" if cur is None else "%.3f" % cur, "—" if self._mm(axis) is None else "%.3f" % self._mm(axis)))
+            raise
+        self.logs.app("%s · %s %s → %s" % (head, axis.upper(), "—" if cur is None else "%.3f" % cur, "—" if self._mm(axis) is None else "%.3f" % self._mm(axis)))
 
     def goto(self, x: float, y: float, z: Optional[float] = None):
         """좌표로 가기: Z 맨 위 → st 로 Z=0 확인 → X → Y → (z 가 있으면) Z."""
@@ -787,6 +793,28 @@ class Controller:
             st = self.stage.read_status(g)
         if not self.safety.z_is_top(st["pos"]["z"]):
             raise Rejected("Z 맨 위 확인 실패")
+
+    def manual_goto(self, x: float, y: float, z: Optional[float] = None):
+        """화면 [이동] · [촬영 위치로 이동](명령 goto): goto + 로그 한 줄 "좌표 이동 · X 43.0 · Y 37.0 → 끝 X … · Y … · Z …"(측정 · 순회의 이동은 남기지 않는다)."""
+        head = "좌표 이동 · X %.1f · Y %.1f%s" % (float(x), float(y), "" if z is None else " · Z %.1f" % float(z))
+        try:
+            r = self.goto(x, y, z)
+        except Rejected as e:
+            self.logs.app("%s → 멈춤 · %s · %s" % (head, e, self._pos_text()))
+            raise
+        self.logs.app("%s → 끝 %s" % (head, self._pos_text()))
+        return r
+
+    def manual_z_top(self):
+        """화면 [핀 상승](명령 z_top): z_top + 로그 한 줄."""
+        z0 = self._mm("z")
+        try:
+            self.z_top()
+        except Rejected as e:
+            self.logs.app("좌표 이동 · 핀 상승 → 멈춤 · %s · %s" % (e, self._pos_text()))
+            raise
+        self.logs.app("좌표 이동 · 핀 상승 · Z %s → 끝 %s" % ("—" if z0 is None else "%.3f" % z0, self._pos_text()))
+        return {"pos": dict(self.state.get("pos"))}
 
     def z_top(self):
         self._need_stage()
@@ -1325,6 +1353,7 @@ class Controller:
             self.state.set_device("k2110", "오류", str(e), dev.addr)
             raise Rejected(str(e))
         self.feed_temperature(v)
+        self.logs.app("수동 측정 · 온도 %s" % ("값 없음" if v is None else "%.1f °C" % v))
         return {"temp": v, "note": "" if v is not None else "값 없음 · 열전대 확인 필요"}
 
     def read_resistance(self):
@@ -1332,7 +1361,10 @@ class Controller:
         dev = self._need_k2450()
         self._no_run("저항 측정")                                   # 측정이 K2450 을 쓰는 중이다(설정을 바꾸면 안 된다)
         with self._use_k2450(USE_ONCE):
-            return self._measure_r(dev)
+            r = self._measure_r(dev)
+        self.logs.app("수동 측정 · 저항 %s · %.2f V · %s · %s" % (contact_mod.ohm_text(r.get("ohm")), float(r.get("volt") or self.cfg["meter_volt"]),
+                                                            "4단자" if r.get("four_wire") else "2단자", self._pos_text()))
+        return r
 
     def _measure_r(self, dev, meter=None):
         """저항 한 번(설정 → 출력 켜기 → 읽기 → 출력 끄기)을 재서 화면 상태에 올린다. 사용권을 가진 쪽만 부른다. meter = 측정 조건(없으면 지금 설정)."""
@@ -1361,8 +1393,7 @@ class Controller:
                 raise Rejected("저항계 사용 중 · %s" % self._k2450_user)
             self._k2450_user = who
         if stop_monitor and self._monitor_on:                       # 사용권을 얻은 뒤에 끈다(거절됐는데 연속 측정만 꺼지는 일이 없게). 그 사이 루프는 사용권을 못 얻어 건너뛴다
-            self._monitor_on = False
-            self.state.set("monitor", False)
+            self._monitor_stop("%s 시작" % who)
             self.logs.app("연속 측정 끔 · %s 시작" % who)
 
     def _k2450_try(self, who) -> bool:
@@ -1851,9 +1882,28 @@ class Controller:
             if self.k2450 is None or not self.k2450.is_open:         # 연속 측정은 저항을 1 초마다 잰다(온도는 따로 늘 읽는다)
                 raise Rejected("저항계 연결 필요")
             self._no_run("연속 측정")                               # 측정 작업 중에는 켜지 않는다(측정 시작이 꺼 둔다)
+        if on and not self._monitor_on:
+            self._mon_stats = {"n": 0, "lo": None, "hi": None}
+            self.logs.app("연속 측정 시작 · 저항 · %s" % self._pos_text())
+        if not on:
+            self._monitor_stop()
         self._monitor_on = on
         self.state.set("monitor", on)
         return {"monitor": on}
+
+    def _monitor_stop(self, why: str = ""):
+        """연속 측정 끄기(버튼 · 비상정지 · 다른 기능 시작 · 오류 - 한 곳): 켜져 있었으면 로그 "연속 측정 끝 · 23회 · 최소 … · 최대 …"."""
+        was = self._monitor_on
+        self._monitor_on = False
+        self.state.set("monitor", False)
+        if was:
+            st = getattr(self, "_mon_stats", None) or {"n": 0, "lo": None, "hi": None}
+            self.logs.app("연속 측정 끝 · %d회 · 최소 %s · 최대 %s%s" % (st["n"], contact_mod.ohm_text(st["lo"]), contact_mod.ohm_text(st["hi"]),
+                                                                    " · " + why if why else ""))
+
+    def _pos_text(self):
+        """로그용 지금 핀 위치 "X 44.650 · Y 37.600 · Z 21.000"."""
+        return " · ".join("%s %s" % (a.upper(), "—" if self._mm(a) is None else "%.3f" % self._mm(a)) for a in AXES)
 
     def _monitor_loop(self):
         while self._alive:
@@ -1865,14 +1915,17 @@ class Controller:
                 self.logs.app("초기 설정 요약 오류 · %s: %s" % (type(e).__name__, e), "error")
             if self._monitor_on:
                 if self.safety.locked:
-                    self._monitor_on = False
-                    self.state.set("monitor", False)
+                    self._monitor_stop("비상정지")
                 elif self.k2450 is not None and self.k2450.is_open and self._k2450_try(USE_MONITOR):
                     try:                                            # 사용권을 못 얻으면(다른 기능이 K2450 을 쓰는 중) 이 회차는 건너뛴다 - 오류로 끄지 않는다
-                        self._measure_r(self.k2450)
+                        r = self._measure_r(self.k2450)
+                        st = getattr(self, "_mon_stats", None)
+                        if st is not None and r.get("ohm") is not None:     # 끝날 때 한 줄(점마다는 남기지 않는다)
+                            st["n"] += 1
+                            st["lo"] = r["ohm"] if st["lo"] is None else min(st["lo"], r["ohm"])
+                            st["hi"] = r["ohm"] if st["hi"] is None else max(st["hi"], r["ohm"])
                     except Rejected as e:
-                        self._monitor_on = False
-                        self.state.set("monitor", False)
+                        self._monitor_stop("오류")
                         self.state.alarm("monitor", "연속 측정 중지 · %s" % e, NOTICE)
                     finally:
                         self._k2450_release(USE_MONITOR)
@@ -1979,6 +2032,28 @@ class Controller:
                     "steps": ["핀 맨 위(Z 0) → 샘플 위 X · Y 이동", "위치 확인(0.05 mm 안) 후 Z %.2f mm 까지 내림" % float(c["contact_z_mm"])],
                     "note": "샘플 선택 · 판 사진의 샘플 클릭 때 · 저항은 재지 않음", "warn": self.MOVE_WARN, "warn_top": ""}
             return plan
+        if name in ("run_start", "run_resume"):                     # 측정 시작 · 재개 창은 "자동 이동 전 확인" 설정과 상관없이 늘 띄운다(사진 시각 · 샘플 수를 보게)
+            plan = None
+            if name == "run_start":
+                todo = [s for s in self.prep.samples if s["use"] and s["xy"] is not None]
+                xy = [s["xy"] for s in todo]
+            else:
+                todo = [i for i in self.runner.order if self.runner.items[i]["status"] == RUN_WAIT]
+                xy = [self.runner.items[i]["xy"] for i in todo]
+            if todo:
+                cool = {"zone": "샘플 아래 구역 쿨러", "all": "쿨러 전부", "none": "쿨러 안 씀"}.get(c["run_cooler_mode"], c["run_cooler_mode"])
+                down = ("Z %.2f mm 까지 내림(접촉 높이)" % c["contact_z_mm"] if c["contact_mode"] == "fixed" or c["contact_z_mm"] is None
+                        else "접촉 높이 %.2f − %.2f mm 에서 전기 탐색" % (c["contact_z_mm"], c["contact_start_above_mm"])) if c["contact_z_mm"] is not None else "접촉 높이까지 내림"
+                plan = {"title": "측정 시작" if name == "run_start" else "측정 재개",
+                        "purpose": "샘플 %d개 차례로 측정 · 첫 샘플 X %.2f · Y %.2f" % (len(todo), xy[0][0], xy[0][1]),
+                        "steps": ["샘플마다: 핀 맨 위(Z 0) → 샘플 위 X · Y 이동", down,
+                                  "냉각(%g °C) → 가열(%g °C) → 냉각(%g °C) · 반복 %d회" % (c["run_start_c"], c["run_heater_off_c"], c["run_cool_end_c"], c["run_repeat"]),
+                                  "핀 맨 위(Z 0) → 다음 샘플"],
+                        "note": "히트건 · %s 사용" % cool}
+                plan.update(self._photo_line(len(todo)))
+                plan["warn"] = self.MOVE_WARN
+                plan["warn_top"] = ""
+            return plan
         if not self.cfg["confirm_auto_move"]:
             return None
         plan = None
@@ -2043,29 +2118,26 @@ class Controller:
                 plan = {"title": "접촉 탐색", "purpose": "핀을 내리며 전기로 접촉 높이 찾기", "steps": [
                     "K2450 출력 켬 · 2단자", "Z %.2f mm 에서 %.2f mm 씩 내림 · 최대 %.2f mm(Z %.2f 까지)" % (z, step, dist, z + dist),
                     "닿으면 %.2f mm 올렸다가 다시 내려 확인" % back, "끝나면 출력 끔 · 실패하면 핀 맨 위(Z 0)"]}
-        elif name in ("run_start", "run_resume"):
-            if name == "run_start":
-                todo = [s for s in self.prep.samples if s["use"] and s["xy"] is not None]
-                xy = [s["xy"] for s in todo]
-            else:
-                todo = [i for i in self.runner.order if self.runner.items[i]["status"] == RUN_WAIT]
-                xy = [self.runner.items[i]["xy"] for i in todo]
-            if todo:
-                cool = {"zone": "샘플 아래 구역 쿨러", "all": "쿨러 전부", "none": "쿨러 안 씀"}.get(c["run_cooler_mode"], c["run_cooler_mode"])
-                down = ("Z %.2f mm 까지 내림(접촉 높이)" % c["contact_z_mm"] if c["contact_mode"] == "fixed" or c["contact_z_mm"] is None
-                        else "접촉 높이 %.2f − %.2f mm 에서 전기 탐색" % (c["contact_z_mm"], c["contact_start_above_mm"])) if c["contact_z_mm"] is not None else "접촉 높이까지 내림"
-                plan = {"title": "측정 시작" if name == "run_start" else "측정 재개",
-                        "purpose": "샘플 %d개 차례로 측정 · 첫 샘플 X %.2f · Y %.2f" % (len(todo), xy[0][0], xy[0][1]),
-                        "steps": ["샘플마다: 핀 맨 위(Z 0) → 샘플 위 X · Y 이동", down,
-                                  "냉각(%g °C) → 가열(%g °C) → 냉각(%g °C) · 반복 %d회" % (c["run_start_c"], c["run_heater_off_c"], c["run_cool_end_c"], c["run_repeat"]),
-                                  "핀 맨 위(Z 0) → 다음 샘플"],
-                        "note": "히트건 · %s 사용" % cool}
         if plan is None:
             return None
         plan.setdefault("note", "")
         plan["warn"] = self.MOVE_WARN
         plan["warn_top"] = ""
         return plan
+
+    PHOTO_OLD_S = 3600.0                                           # 측정 시작 창: 사진을 찍은 뒤 이보다 오래면 그 줄을 주의 색으로(막지 않는다)
+
+    def _photo_line(self, n_run):
+        """측정 시작 · 재개 창의 한 줄: "사진 14:41 · 23분 전 · 샘플 9개 중 9개 측정" / "사진 없음". photo_old = 1시간 넘음(주의 색)."""
+        ph = self.prep.photo
+        n_all = len(self.prep.samples)
+        if not ph or not ph.get("t"):
+            return {"photo": "사진 없음", "photo_old": True}
+        age = max(0.0, time.time() - float(ph["t"]))
+        mins = int(age // 60)
+        ago = "방금" if mins < 1 else "%d분 전" % mins if mins < 60 else "%d시간 %d분 전" % (mins // 60, mins % 60)
+        return {"photo": "사진 %s · %s · 샘플 %d개 중 %d개 측정" % (time.strftime("%H:%M", time.localtime(float(ph["t"]))), ago, n_all, n_run),
+                "photo_old": age > self.PHOTO_OLD_S}
 
     def quit_plan(self):
         """창 닫기(X) 확인 창 내용: 닫을 때 하는 일(shutdown 순서) + 측정 · 온도 시험 중이면 맨 위 경고 한 줄."""
@@ -2211,7 +2283,7 @@ COMMANDS = {
     "connect_stage": "connect_stage", "disconnect_stage": "disconnect_stage",
     "connect_meter": "connect_meter", "disconnect_meter": "disconnect_meter", "devices_refresh": "refresh_devices", "pick_folder": "pick_folder",
     "connect_camera": "connect_camera", "disconnect_camera": "disconnect_camera", "monitor": "monitor",
-    "jog": "jog", "goto": "goto", "z_top": "z_top", "set_origin": "set_origin", "motion_stop": "motion_stop",
+    "jog": "jog", "goto": "manual_goto", "z_top": "manual_z_top", "set_origin": "set_origin", "motion_stop": "motion_stop",
     "relay_on": "relay_on", "relay_off": "relay_off", "relays_off": "relays_off",
     "heater_on": "manual_heater_on", "heater_off": "manual_heater_off", "heater_element": "manual_heater_element",
     "heater_power": "manual_heater_power", "heater_off_now": "manual_heater_off_now",
