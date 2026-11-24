@@ -66,8 +66,8 @@ def test_resume_uses_current_position_and_contact_height(ready_ctrl):
     assert it["contact"]["z"] == new_cz and run.cond["contact_z_mm"] == new_cz, "지금 접촉 높이로 내린다"
     assert run.cond["meter_volt"] == volt0, "측정 조건은 시작 때 값 그대로"
     logs = ctrl.logs.recent[n0:]
-    assert any(ln.startswith("재개 · %s 위치 갱신 · X " % it["name"]) for ln in logs), logs
-    assert any("재개 · 접촉 높이 %.3f → %.3f mm" % (old_cz, new_cz) in ln for ln in logs), logs
+    assert any("] 재개 · %s 위치 갱신 · X " % it["name"] in ln for ln in logs), logs     # 로그 줄 앞에 "시각 [등급] " 이 붙는다
+    assert any("] 재개 · 접촉 높이 %.3f → %.3f mm" % (old_cz, new_cz) in ln for ln in logs), logs
     rec = json.loads((run.folder / "run.json").read_text(encoding="utf-8"))
     assert rec["resumes"] and rec["resumes"][0]["moved"] == [it["name"]] and rec["resumes"][0]["contact"]["contact_z_mm"] == [old_cz, new_cz]
     assert rec["cond"]["meter_volt"] == volt0

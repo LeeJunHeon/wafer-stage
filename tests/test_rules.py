@@ -193,13 +193,19 @@ def test_combination_check_at_run_start_and_old_problems_do_not_block_other_chan
         # 예전 설정 파일에 이미 맞지 않는 조합이 들어 있던 경우(저장 검사를 거치지 않고 들어온 값)
         ctrl.cfg.update({"run_interval_s": 5.0})
         ctrl.publish_cfg()
-        slow = "읽기 한 회차 예상 5.90초 · 2.10초 미만 필요 · 측정 간격과 평균 횟수 확인"
+
+        def slow_text(**kw):                                         # 숫자는 공식에서(측정 간격 + 온도 읽기 × 2 + 저항 읽기 예상 · 허용 = temp_stale_s × 사용 비율)
+            v = dict(ctrl.cfg.values, **kw)
+            return "읽기 한 회차 예상 %.2f초 · %.2f초 미만 필요 · 측정 간격과 평균 횟수 확인" % (
+                config_mod.cycle_time_s(v), float(v["temp_stale_s"]) * float(v["stale_use_ratio"]))
+
+        slow = slow_text()
         assert config_mod.problems(ctrl.cfg.values) == [slow]
         assert c.post("/api/cmd/run_start", json={}).json() == {"ok": False, "msg": slow}, "측정 시작도 같은 검사를 한다"
         assert not ctrl.runner.active and ctrl._k2450_user is None
         assert c.put("/api/settings", json={"batch_name": "7"}).json() == {"ok": True}, "이미 있던 문제 때문에 다른 값을 못 고치지 않는다"
         r = c.put("/api/settings", json={"run_interval_s": 4.0})                 # 여전히 맞지 않는 값으로는 못 바꾼다
-        assert r.status_code == 400 and "읽기 한 회차 예상 4.90초" in r.json()["msg"]
+        assert r.status_code == 400 and r.json()["msg"] == slow_text(run_interval_s=4.0)
         assert c.put("/api/settings", json={"run_interval_s": 1.0}).json() == {"ok": True}
         assert c.post("/api/cmd/run_start", json={}).json()["ok"] is True
         ctrl.run_command("run_stop")
@@ -207,11 +213,13 @@ def test_combination_check_at_run_start_and_old_problems_do_not_block_other_chan
         # 재개(이어서 측정)도 검사한다
         ctrl.cfg.update({"temp_stale_s": 1.0})
         r = c.post("/api/cmd/run_resume", json={}).json()
-        assert r["ok"] is False and r["msg"].startswith("읽기 한 회차 예상 1.90초 · 0.70초 미만 필요")
+        assert r["ok"] is False and r["msg"] == slow_text(), r
 
 
 def test_slow_reading_cycle_raises_one_alarm_with_the_cause(ready_ctrl):
-    """측정 중 실제 한 회차가 온도 못 읽음 허용 시간(3 초)을 넘으면 경보 한 번. (설정으로는 맞는데 장비가 느린 경우)"""
+    """측정 중 실제 한 회차가 온도 못 읽음 허용 시간을 넘으면 경보 한 번. (설정으로는 맞는데 장비가 느린 경우)
+    한 점 = 온도 → 저항 → 온도(읽기 세 번). 읽기 한 번을 25 초(측정 시계)로 늦추면 온도 읽기 사이는 약 50 초(허용 60 초 안 - 안전 감시가 히트건을 끄지 않는다)이고
+    한 회차는 75 초 이상(허용 넘음 → run_slow). 예전 40 초는 온도 사이가 80 초라 안전 감시가 먼저 히트건을 꺼 그 회차가 끝나고 경보까지 가지 않을 때가 있었다."""
     ctrl = ready_ctrl(time_scale=FAST, contact_mode="search", temp_stale_s=60.0)     # 허용 시간을 직접 준다(배율 200 에서 실제 0.3 초)
     ctrl.run_command("samples_find")
     for s in [s for s in ctrl.prep.samples if s["use"]][1:]:
@@ -221,8 +229,9 @@ def test_slow_reading_cycle_raises_one_alarm_with_the_cause(ready_ctrl):
     run = ctrl.runner
     assert wait_for(lambda: run.stage == 3, 20), "가열 단계까지"
     assert not ctrl.state.has_alarm("run_slow"), alarm_lines(ctrl)
-    ctrl.lab.read_dt = 40.0                                          # 장비가 느려졌다: 읽기 한 번 40 초(측정 시계) → 온도 + 저항 한 회차가 60 초를 넘는다
-    assert wait_for(lambda: ctrl.state.has_alarm("run_slow"), 10)
+    ctrl.lab.read_dt = 25.0                                          # 장비가 느려졌다: 읽기 한 번 25 초(측정 시계) → 온도 사이 약 50 초(< 60) · 한 회차 75 초 이상(> 60)
+    assert wait_for(lambda: ctrl.state.has_alarm("run_slow") or not run.active, 20), "경보 또는 측정 끝"
+    assert ctrl.state.has_alarm("run_slow"), "한 회차가 허용을 넘었다 · 경보 %s · 히트건 차단 %s" % (alarm_lines(ctrl), ctrl.heater_trips)
     ctrl.lab.read_dt = 0.002
     ctrl.run_command("run_stop")
     assert wait_for(lambda: not run.active, 30)

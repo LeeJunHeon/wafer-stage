@@ -6,7 +6,8 @@
 const ms = { sel: null, pts: {}, key: "", overlay: false, editing: null, prevState: null };
 const ORDER_W = 260, RIGHT_MIN_W = 440;                           // 순서 표 폭 · 오른쪽 패널(그래프) 최소 폭
 const STAGE_NAMES = ["이동", "접촉", "냉각", "가열", "냉각", "저장"];
-const HOLD_NAMES = ["이동", "접촉", "", "기록", "", "저장"];                // 기록 모드(히트건 사용 끔): 서버 단계 6 = 띠의 넷째 칸
+const HOLD_NAMES = ["이동", "접촉", "기록", "저장"];                      // 기록 모드(히트건 사용 끔): 띠 네 칸 · 서버 단계 0 · 1 · 6 · 5 → 칸 0 · 1 · 2 · 3
+const HOLD_CELL = { 0: 0, 1: 1, 6: 2, 5: 3 };
 const stageName = (i) => (i === 6 ? "기록" : STAGE_NAMES[i] || "");
 const R = () => (S && S.run) || { rows: [], gate: [], state: "idle" };
 const rowOf = (id) => R().rows.find((r) => r.id === id);
@@ -242,10 +243,10 @@ function renderSample() {
     setKids(ms.act, ...b);
   }
   const hold = run.mode === "hold";
-  const names = hold ? HOLD_NAMES : STAGE_NAMES;                  // 띠 칸 이름(기록 모드는 냉각 · 가열 · 냉각 칸이 비고 넷째 칸이 "기록")
-  Array.from(ms.band.children).forEach((cell, i) => { if (cell.lastChild.textContent !== names[i]) cell.lastChild.textContent = names[i]; });
+  const names = hold ? HOLD_NAMES : STAGE_NAMES;                  // 띠 칸(기록 모드는 네 칸 · 가열 모드는 여섯 칸) - 방식이 바뀔 때만 다시 그린다
+  if (ms.bandSig !== names.join("|")) { ms.bandSig = names.join("|"); setKids(ms.band, ...names.map((n) => h("div", { class: "cell" }, h("i", {}), h("span", { text: n })))); }
   ms.spacing.textContent = row.hold ? holdText(row.hold) : row.curve ? [curveText(row.curve, "heat"), curveText(row.curve, "cool")].filter(Boolean).join(" / ") : spacingText(row.spacing);
-  if (isNow) { setBand(run.stage === 6 ? 3 : run.stage, run.frac); ms.line.textContent = heatLine(run) || run.line || ""; }
+  if (isNow) { setBand(hold ? (HOLD_CELL[run.stage] != null ? HOLD_CELL[run.stage] : -1) : run.stage, run.frac); ms.line.textContent = heatLine(run) || run.line || ""; }
   else {
     setBand(row.status === "완료" ? 6 : -1, 0);
     ms.line.textContent = [s ? "크기 " + sizeText(s) : "", row.status === "제외" && s ? (s.weak ? "미확인 샘플 · 확인 후 [포함]" : s.small ? "핀보다 작음" : "") : row.notes.join(" · ")].filter(Boolean).join(" · ");

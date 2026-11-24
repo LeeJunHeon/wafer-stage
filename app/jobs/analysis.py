@@ -193,7 +193,8 @@ def hold_summary(rows, open_a=None, n_miss=0):
     out.update(dur_s=round(float(t[-1] - t[0]), 2), r_mean=m, r_sd_pct=float(r.std() / m * 100.0) if m else None, r_min=float(r.min()), r_max=float(r.max()))
     if len(pts) >= 2 and float(t[-1] - t[0]) > 0:
         slope = float(np.polyfit(t / 60.0, r, 1)[0])                # Ω / 분
-        out["drift_pct_min"] = slope / m * 100.0 if m else None
+        d = round(slope / m * 100.0, 6) if m else None             # 반올림해 0 이면 0.0(음수 0 "-0" 이 summary.csv · 화면에 나오지 않게)
+        out["drift_pct_min"] = (d + 0.0) if d is not None and d != 0 else (0.0 if d is not None else None)
     temps = [p[1] for p in pts if p[1] is not None]
     if temps:
         out.update(t_mean=float(sum(temps) / len(temps)), t_min=float(min(temps)), t_max=float(max(temps)))

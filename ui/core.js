@@ -364,12 +364,18 @@ function coolRate(c, iv) {
 /* 보여 줄 목표 점 간격(°C - 서버 config.point_step_c): 점 간격이면 그대로 · 걸리는 시간이면 가열 속도 × 읽기 간격 ÷ 60 */
 function pointStep(c, iv) { return byTime(c) ? heatRate(c, iv) * Number(c[iv || "run_interval_s"]) / 60 : Number(c.run_point_step_c); }
 /* 예상 한 줄(측정 조건 창 · 온도 시험 창): 점 수(가열 · 냉각) · 속도 · 시간. times = 샘플 수 × 반복(자동 측정) · iv = 읽기 간격 키 */
+/* 부호 붙은 % 글: 반올림해서 0 이면 부호 없이 "0.00 %"(음수 0 "-0.00" 을 내지 않는다) */
+function signedPct(v, d) {
+  if (v == null || !isFinite(v)) return "—";
+  const s = Number(v).toFixed(d);
+  return Number(s) === 0 ? (0).toFixed(d) + " %" : (v > 0 ? "+" : "") + s + " %";
+}
 /* 기록 모드(히트건 사용 끔) 요약 한 줄: "912 kΩ ± 0.8 % · 1분당 +0.12 % · 66점" (서버 analysis.hold_summary) */
 function holdText(hd, brief) {
   if (!hd || !hd.n) return "";
   const t = fmtOhm2(hd.r_mean) + (hd.r_sd_pct != null ? " ± " + hd.r_sd_pct.toFixed(1) + " %" : "");
   if (brief) return t;
-  return t + (hd.drift_pct_min != null ? " · 1분당 " + (hd.drift_pct_min >= 0 ? "+" : "") + hd.drift_pct_min.toFixed(2) + " %" : "") + " · " + hd.n + "점"
+  return t + (hd.drift_pct_min != null ? " · 1분당 " + signedPct(hd.drift_pct_min, 2) : "") + " · " + hd.n + "점"
     + (hd.n_open ? " · 접촉 불량 " + hd.n_open + "점" : "") + (hd.n_miss ? " · 못 쓴 읽기 " + hd.n_miss : "");
 }
 function expectText(c, times, iv) {

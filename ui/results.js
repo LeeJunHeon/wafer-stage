@@ -130,7 +130,7 @@ function renderRecord() {
   setKids(rs.tbody, ...rec.samples.map((s) => {
     const a = s.sum || {}, col = pickColor(s.id);
     if (hold) {
-      const hd = a.hold || {}, pc = (v, d) => (v == null ? "—" : (v >= 0 && d ? "+" : "") + v.toFixed(d || 1) + " %");
+      const hd = a.hold || {}, pc = (v, d) => (v == null ? "—" : d ? signedPct(v, d) : v.toFixed(1) + " %");      // 1분당 변화는 부호(0 이면 부호 없음)
       return h("tr", { class: rs.picks.includes(s.id) ? "sel" : "", onclick: () => { if (s.n) togglePick(s.id); } },
         h("td", {}, col ? swatch(col) : null, s.name + (s.status !== "완료" ? " · " + s.status + (s.reason ? " · " + s.reason : "") : "")),
         h("td", { class: "num", text: e2(hd.r_mean) }), h("td", { class: "num", text: pc(hd.r_sd_pct) }), h("td", { class: "num", text: pc(hd.drift_pct_min, 2) }),
