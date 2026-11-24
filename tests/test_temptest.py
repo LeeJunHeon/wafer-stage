@@ -219,7 +219,7 @@ def test_other_jobs_block_the_start(make_ctrl, ready_ctrl):
     with pytest.raises(Rejected, match="온도계 연결 필요"):
         ctrl.run_command("temptest_start")
     # 자동 측정 중
-    rc = ready_ctrl(time_scale=FAST)
+    rc = ready_ctrl(time_scale=FAST, contact_check="off")            # 안 닿는 샘플을 건너뛰어 측정이 먼저 끝나지 않게
     rc.run_command("samples_find")
     rc.run_command("run_start")
     try:

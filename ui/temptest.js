@@ -174,20 +174,23 @@ function renderTempTest() {
   tt.csep.checked = !!c.cool_rate_separate;
   if (document.activeElement !== tt.crate) tt.crate.value = c.run_cool_rate_c_min;
   const lock = act || running();
-  for (const el of [tt.start, tt.off, tt.end, tt.rateBy]) el.disabled = lock;
-  tt.htime.disabled = lock || !tm; tt.ctime.disabled = lock || !tm;                // 잠금 규칙은 측정 조건 창과 같다
-  tt.mode.disabled = lock; tt.step.disabled = lock || tm || c.run_heat_mode !== "ramp"; tt.condBtn.disabled = lock;
-  tt.cmode.disabled = lock; tt.csep.disabled = lock || tm; tt.crate.disabled = lock || tm || c.run_cool_mode !== "ramp" || !c.cool_rate_separate;
+  const lockWhy = act ? "온도 시험 중 변경 불가" : running() ? "측정 중 변경 불가" : "";
+  for (const el of [tt.start, tt.off, tt.end, tt.rateBy, tt.mode, tt.condBtn, tt.cmode]) setOff(el, lockWhy);
+  const byStep = tm ? "" : "속도 정하는 방법 · 점 간격이면 안 씀", byTime = tm ? "속도 정하는 방법 · 걸리는 시간이면 안 씀" : "";   // 잠금 규칙은 측정 조건 창과 같다
+  setOff(tt.htime, lockWhy || byStep); setOff(tt.ctime, lockWhy || byStep);
+  setOff(tt.step, lockWhy || byTime || (c.run_heat_mode !== "ramp" ? "계속 가열이면 안 씀" : ""));
+  setOff(tt.csep, lockWhy || byTime);
+  setOff(tt.crate, lockWhy || byTime || (c.run_cool_mode !== "ramp" ? "자연 냉각이면 안 씀" : !c.cool_rate_separate ? "냉각 속도 따로 꺼짐" : ""));
   tt.expect.textContent = expectText(c, 1, "temp_test_interval_s");
   if (lock && tt.edit) tt.edit = false;
   const sig = JSON.stringify([tt.edit, TT_KEYS.map(([k]) => c[k])]);
   if (sig !== tt.condSig && !(tt.edit && tt.condView.contains(document.activeElement))) ttBuildCond();
   /* 진행 */
   const why = ttWhy();
-  for (const b of [tt.startBtn, tt.envBtn, tt.stepBtn, tt.beatBtn, tt.phaseBtn, tt.trimBtn, tt.maxBtn]) b.disabled = act || !!why;
+  for (const b of [tt.startBtn, tt.envBtn, tt.stepBtn, tt.beatBtn, tt.phaseBtn, tt.trimBtn, tt.maxBtn]) setOff(b, act ? "온도 시험 중" : why);
   setSyncLine(tt.sync, devOk("stage") ? S.heater : null);
-  tt.stopBtn.disabled = !act;
-  tt.folderBtn.disabled = !t.folder;
+  setOff(tt.stopBtn, act ? "" : "시험 중 아님");
+  setOff(tt.folderBtn, t.folder ? "" : "기록 폴더 없음 · 시험 뒤 생김");
   setWhy(tt.why, act ? "" : why);
   if (act) {
     const ht = S.heater || {};

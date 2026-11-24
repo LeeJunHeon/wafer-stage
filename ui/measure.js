@@ -190,10 +190,10 @@ function renderButtons() {
   const kids = [];
   if (run.state !== "running") {
     const findWhy = whyStage(true, true) || whyCamera() || whyHead() || (P().plate ? "" : "판 영역 설정 필요 (초기 설정 3)");
-    if (ms.find) ms.find.disabled = !!findWhy;
-    const block = gate.length > 0 || (n > 0 && used === 0);
-    if (ms.start && n) ms.start.disabled = block;
-    if (ms.resume && run.state === "stopped") ms.resume.disabled = gate.length > 0;
+    if (ms.find) setOff(ms.find, findWhy);
+    const gateWhy = gate.length ? "필요 항목 · " + gate.map((g) => g.text).join(" · ") : "";
+    if (ms.start && n) setOff(ms.start, gateWhy || (n > 0 && used === 0 ? "측정할 샘플 없음 · [포함] 필요" : ""));
+    if (ms.resume && run.state === "stopped") setOff(ms.resume, gateWhy);
     if (gate.length) {
       kids.push("필요 항목: ");
       gate.forEach((m, i) => { kids.push(m.step ? h("a", { href: "#", text: m.text, onclick: (e) => { e.preventDefault(); gotoPrep(m.step - 1); } }) : m.text); if (i < gate.length - 1) kids.push(" · "); });
@@ -320,8 +320,9 @@ function openRunCond() {
   /* 속도 정하는 방법: 걸리는 시간이면 가열 · 냉각 시간만 · 점 간격이면 목표 점 간격 · 냉각 속도 따로 · 냉각 속도만 쓴다(안 쓰는 칸은 잠금) */
   const lockRate = () => {
     const t = f.run_rate_by.value === "time";
-    f.run_heat_time_s.disabled = !t; f.run_cool_time_s.disabled = !t;
-    f.run_point_step_c.disabled = t; f.cool_rate_separate.disabled = t; f.run_cool_rate_c_min.disabled = t;
+    const byStep = t ? "" : "속도 정하는 방법 · 점 간격이면 안 씀", byTime = t ? "속도 정하는 방법 · 걸리는 시간이면 안 씀" : "";
+    setOff(f.run_heat_time_s, byStep); setOff(f.run_cool_time_s, byStep);
+    setOff(f.run_point_step_c, byTime); setOff(f.cool_rate_separate, byTime); setOff(f.run_cool_rate_c_min, byTime);
   };
   const upd = () => { lockRate(); const pt = condPatch(); expect.textContent = expectText(Object.assign({}, c, pt), nUse * (pt.run_repeat || 1)); };
   Object.values(f).forEach((e) => { e.addEventListener("input", upd); e.addEventListener("change", upd); });
@@ -353,7 +354,7 @@ function renderMeasure() {
   ms.info.textContent = find && ph ? "사진 " + fmtClock(find.t) + " · " + n + "개 중 " + used + "개 측정" + (offWarn ? " · 헤드 위치 차이 " + ph.pos_off_mm.toFixed(1) + " mm" : "") : "";
   ms.legend.style.visibility = n ? "" : "hidden";                 // 샘플이 없으면 범례를 숨긴다(자리는 그대로 - 사진이 밀리지 않게)
   if (document.activeElement !== ms.batch) ms.batch.value = S.cfg.batch_name;
-  ms.batch.disabled = run.state === "running";
+  setOff(ms.batch, run.state === "running" ? "측정 중 변경 불가" : "");
   renderButtons(); renderTable(); renderSample(); drawPlate();
 }
 

@@ -103,7 +103,7 @@ function spacingCell(sp) {
 }
 function renderRecord() {
   const rec = rs.rec;
-  rs.save.disabled = !rec || !rs.picks.length;
+  setOff(rs.save, !rec ? "기록 고르기 필요" : !rs.picks.length ? "샘플 고르기 필요" : "");
   rs.note.textContent = "전이 온도 = 저항이 가장 빨리 변하는 온도" + (rec && rec.samples.some((s) => s.cycles > 1) ? " · 반복 측정은 첫 회차 기준" : "");
   if (!rec) {
     setKids(rs.samples, small("기록 선택 시 표시"));
@@ -113,6 +113,7 @@ function renderRecord() {
   }
   setKids(rs.samples, ...rec.samples.map((s) => {
     const c = tk(h("input", { type: "checkbox", checked: rs.picks.includes(s.id), disabled: !s.n, onchange: () => togglePick(s.id) }), "rs.pick"), col = pickColor(s.id);
+    if (!s.n) c._why = "기록된 점 없음";
     return h("label", { class: "chk" }, c, h("span", {}, col ? swatch(col) : null, s.name + (s.status !== "완료" ? " · " + s.status : "") + (s.cycles > 1 ? " · " + s.cycles + "회" : "")));
   }));
   const e2 = (v) => (v == null ? "—" : fmtOhm2(v)), t1 = (v) => (v == null ? "—" : v.toFixed(1) + " °C");

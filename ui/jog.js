@@ -56,10 +56,9 @@ function jogPart() {
     const run = running() ? "측정 중 사용 불가" : touring() ? "순회 중 사용 불가" : "";     // 서버도 거절한다 - 화면은 이유만 미리 보여 준다
     const block = run || (!devOk("stage") ? "스테이지 연결 필요" : "") || (S.estop_locked ? "비상정지 해제 필요" : "");      // 스테이지 없음 · 비상정지 중에는 이동 버튼이 모두 꺼진다
     const xyWhy = block ? "" : xyJogWhy();                       // 핀이 접촉 높이 근처면 X · Y 네 버튼만 끈다(Z 버튼은 그대로 - 서버 safety.reject_xy_jog 와 같은 조건)
-    moveBtns.forEach((b) => { b.disabled = !!block || (!!b.dataset.pos && !!xyWhy); b._why = block || (b.dataset.pos ? xyWhy : ""); if (b.dataset.pos) { const t = padDir(b.dataset.pos).label; if (b.textContent !== t) b.textContent = t; } });
-    stopBtn.disabled = running() || !devOk("stage");             // 스테이지가 연결돼 있으면 항상 누를 수 있다(측정 중에는 꺼진다 · 순회 중에는 순회를 끝낸다)
+    moveBtns.forEach((b) => { setOff(b, block || (b.dataset.pos ? xyWhy : "")); if (b.dataset.pos) { const t = padDir(b.dataset.pos).label; if (b.textContent !== t) b.textContent = t; } });
+    setOff(stopBtn, running() ? "측정 중 · 측정 중지 또는 비상정지 사용" : !devOk("stage") ? "스테이지 연결 필요 (초기 설정 1)" : "");   // 스테이지가 연결돼 있으면 항상(측정 중에는 꺼짐 · 순회 중에는 순회를 끝낸다)
     stopBtn.classList.toggle("moving", !stopBtn.disabled && !!(S && (S.move || touring())));     // 이동 중 · 순회 중에는 빨강 테두리
-    stopBtn._why = running() ? "측정 중 · 측정 중지 또는 비상정지 사용" : !devOk("stage") ? "스테이지 연결 필요 (초기 설정 1)" : "";     // 꺼진 까닭은 말풍선(tips.js)
     const line = block || xyWhy;
     why.textContent = line;
     why.classList.toggle("hidden", !line);

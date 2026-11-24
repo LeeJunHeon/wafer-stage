@@ -48,8 +48,7 @@ async function importFile() {
     p.ignored.length ? small("모르는 설정 무시: " + p.ignored.join(" · ")) : null,
     ...bad.map((t) => h("div", { class: "st-err", text: t })));
   const go = tk(btn("적용", async () => { const a = await api("settings_import_apply", { text, skip_pc: skip }); if (a.ok) { closeDialog(); toast("가져오기 완료 · " + a.result.n + "개"); loadSettingsPage(); } }, "on"), "stg.importApply");
-  go.disabled = !!bad.length || !p.changes.length || running();
-  go._why = bad.length ? "값 오류 · 조합 문제 있음" : !p.changes.length ? "바뀔 항목 없음" : running() ? "측정 중 사용 불가" : "";
+  setOff(go, bad.length ? "값 오류 · 조합 문제 있음" : !p.changes.length ? "바뀔 항목 없음" : running() ? "측정 중 사용 불가" : "");
   openDialog("설정 가져오기", body, [noEnter(btn("취소", closeDialog)), noEnter(go)]);
 }
 async function loadSettingsPage() {
@@ -149,15 +148,15 @@ function renderSettingsPage() {
   }
   const lock = running() || touring() || !!(S.temptest && S.temptest.active);  // 측정 · 순회 · 온도 시험 중에는 설정을 바꾸지 않는다(서버도 거절)
   const why = running() ? "측정 중 사용 불가" : touring() ? "순회 중 사용 불가" : lock ? "온도 시험 중 사용 불가" : "";
-  if (stg.imp) { stg.imp.disabled = lock; stg.imp._why = why; }
+  if (stg.imp) setOff(stg.imp, why);
   for (const r of Object.values(stg.rows)) {
-    r.input.disabled = lock; r.input._why = why;
+    setOff(r.input, why);
     const chg = stgChanged(r.it);
     r.dot.classList.toggle("on", chg);
     r.reset.classList.toggle("hidden", !chg);
-    r.reset.disabled = lock; r.reset._why = why;
+    setOff(r.reset, why);
     if (r.browse) {                                              // [찾아보기] 는 창으로 실행했을 때만 보인다(그때만 입력 칸을 줄여 자리를 낸다)
-      r.browse.disabled = lock; r.browse._why = why;
+      setOff(r.browse, why);
       r.browse.classList.toggle("hidden", !S.can_pick_folder);
       r.input.classList.toggle("withbtn", !!S.can_pick_folder);
     }

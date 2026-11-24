@@ -25,7 +25,7 @@ const prep = { step: 0, pages: [], items: [] };
 /* 버튼 + 못 누르는 이유 한 줄 */
 function gate(text, fn, cls) {
   const b = btn(text, fn, cls), w = h("span", { class: "why" });
-  return { b, w, set(reason) { b.disabled = !!reason; b._why = reason || ""; w.textContent = reason || ""; } };      // 꺼진 까닭은 말풍선에도
+  return { b, w, set(reason) { setOff(b, reason); w.textContent = reason || ""; } };      // 꺼진 까닭은 말풍선에도(setOff)
 }
 /* 누르면 끝날 때까지 잠깐 못 누르게(두 번 눌림 방지) */
 function busyBtn(text, fn, cls) {
@@ -84,11 +84,11 @@ function buildStep1() {
   const rows = DEVS.map((d) => {
     const sel = tk(h("select", { class: "addr", onchange: () => { sel.dataset.pick = sel.value; } }), "prep.addr");      // 사람이 고른 값(연결될 때까지 기억)
     const b = btn("연결", async () => {
-      b.disabled = true;
+      setOff(b, "연결 중");
       const on = S.devices[d.key].state === "연결";
       const r = await (on ? d.off() : d.conn(sel.value));
       if (r.ok && !on) delete sel.dataset.pick;                 // 연결되면 저장된 값을 따라간다
-      b.disabled = false;
+      setOff(b, "");
     });
     const stt = h("span", { class: "stt" }), resp = h("div", { class: "resp" });
     prep[d.key] = { sel, btn: b, stt, resp, sig: "" };
@@ -113,7 +113,7 @@ function renderStep1() {
     setKids(p.stt, h("i", { class: "dot " + dotOf(dev) }), h("span", { class: cls, text: dev.state + (dev.state === "오류" && dev.why ? " · " + dev.why : "") }));
     p.resp.textContent = on ? dev.info : "";
     p.btn.textContent = on ? "끊기" : "연결";
-    p.btn.disabled = going;
+    setOff(p.btn, going ? "연결 중" : "");
     /* 선택 상자: 목록 + 고른 값. 고른 값(없으면 저장된 값)이 목록에 없으면 "COM5 (없음)" 항목으로 보이고 선택된 채로 둔다 */
     const saved = c[d.cfg] == null ? "" : String(c[d.cfg]);
     const want = (on || going) && dev.target ? dev.target : (p.sel.dataset.pick != null ? p.sel.dataset.pick : saved);
@@ -125,10 +125,10 @@ function renderStep1() {
       setKids(p.sel, ...opts.map(([v, t, off]) => h("option", { value: v, text: t, disabled: off })));
       p.sel.value = want;
     }
-    p.sel.disabled = on || going;                              // 연결된 장비는 잠근다(끊어야 바꿀 수 있다)
+    setOff(p.sel, on ? "연결된 동안 변경 불가 · [끊기] 먼저" : going ? "연결 중" : "");     // 연결된 장비는 잠근다(끊어야 바꿀 수 있다)
   }
   prep.refresh.textContent = dl.busy ? "읽는 중" : "새로고침";
-  prep.refresh.disabled = !!dl.busy || running();
+  setOff(prep.refresh, dl.busy ? "목록 읽는 중" : running() ? "측정 중 사용 불가" : "");
   prep.listNote.textContent = dl.note || "";
   prep.auto.checked = !!c.auto_connect;
 }
@@ -168,11 +168,11 @@ function buildStep2() {
       r.when.textContent = ok && o ? (HOW[o.how] || o.how) + " · " + fmtWhen(o.t) : "";
     }
     const why = whyStage(false, false);
-    pg.here.forEach((g) => { g.b.disabled = !!why; });
+    pg.here.forEach((g) => setOff(g.b, why));
     pg.whyHere.textContent = why;
     const whyXY = why || (!S.homed.z ? "Z 원점 필요" : "");
-    pg.end[0].b.disabled = pg.end[1].b.disabled = !!whyXY;
-    pg.end[2].b.disabled = !!why;
+    setOff(pg.end[0].b, whyXY); setOff(pg.end[1].b, whyXY);
+    setOff(pg.end[2].b, why);
     pg.whyEnd.textContent = why || (whyXY ? whyXY : "");
     const mem = S.stage_mem || {};
     pg.mem.textContent = devOk("stage") && mem.text ? mem.text : "";
@@ -344,7 +344,7 @@ function buildStep3() {
       next.textContent = nextText();
       const phn = photo();
       bApply.set(!phn ? "촬영 필요" : pg.pts.length < 4 ? "꼭짓점 " + pg.pts.length + " / 4" : running() ? "측정 중 실행 불가" : "");
-      bRedo.disabled = !pg.pts.length;
+      setOff(bRedo, pg.pts.length ? "" : "고른 꼭짓점 없음");
       z.redraw();
     };
     const close = () => { pg.bigSync = null; closeDialog(); syncAll(); };
@@ -356,7 +356,7 @@ function buildStep3() {
     const ph = photo(), pl = P().plate;
     pg.apply.set(!ph ? "촬영 필요" : pg.pts.length < 4 ? "꼭짓점 " + pg.pts.length + " / 4" : running() ? "측정 중 실행 불가" : "");
     if (pg.pts.length === 4 && pl && !pg.dirty) pg.apply.w.textContent = pl.stale ? "초점 바뀜 · 다시 확정 필요" : "설정 완료 · " + fmtWhen(pl.t);
-    pg.redo.disabled = !pg.pts.length;
+    setOff(pg.redo, pg.pts.length ? "" : "고른 꼭짓점 없음");
   }
   function showMag(p) {
     const now = performance.now();
@@ -414,7 +414,7 @@ function buildStep3() {
     setKids(pg.headTxt, hp ? "X " + f1(hp[0]) + " · Y " + f1(hp[1]) : "미설정",
       hp && seen != null ? h("span", { class: seen ? "st-ok" : "st-warn", text: seen ? " · 마커 보임" : " · 마커 안 보임" }) : "");
     pg.take.set(running() ? "측정 중 실행 불가" : whyCamera());
-    pg.big.disabled = !ph;
+    setOff(pg.big, ph ? "" : "사진 없음 · [촬영] 먼저");
     syncApply();
     renderFocus();
     pg.jog.update();
@@ -536,7 +536,7 @@ function buildStep5() {
     if (srcV !== pg.src) { pg.src = srcV; if (srcV) pg.img.setAttribute("href", srcV); else pg.img.removeAttribute("href"); }     // 없으면 빈 사각형 · 화면 방향(문 기준) 그림
     pg.markerNote.textContent = "4번째 등록 후 촬영 위치로 이동해 헤드 마커 자동 등록 · " + S.cfg.marker_probe_mm + " mm 씩 이동";
     const why = whyStage(true, false);
-    pg.set.forEach((g) => { g.b.disabled = !!why; });
+    pg.set.forEach((g) => setOff(g.b, why));
     pg.whySet.textContent = why || (pl ? "" : "판 영역 설정 필요 (초기 설정 3)");
     const vs = co.view_stage || {}, nReg = Object.keys(vs).length;
     pg.gotoD.b.textContent = (co.guess_name || "D") + " 예상 위치로 이동";      // 남은 꼭짓점(화면 이름)
@@ -558,8 +558,8 @@ function buildStep5() {
         h("span", { class: "grow", text: (i + 1) + ". X " + f1(x.xy[0]) + " Y " + f1(x.xy[1]) + " · 보정 " + (x.err == null ? "—" : x.err.toFixed(2) + " mm") + " · " + fmtWhen(x.t) }),
         tk(btn("지우기", () => api("coord_remove", { index: i }), "sm"), "coord.remove"))) : [small("없음")]));
     }
-    pg.clear.disabled = running() || !Object.keys(co.stage).length;
-    pg.clearEx.disabled = running() || !(co.extra || []).length;
+    setOff(pg.clear, running() ? "측정 중 사용 불가" : !Object.keys(co.stage).length ? "등록된 꼭짓점 없음" : "");
+    setOff(pg.clearEx, running() ? "측정 중 사용 불가" : !(co.extra || []).length ? "보정 점 없음" : "");
     pg.draw();
     pg.jog.update();
   };
@@ -611,7 +611,7 @@ function buildStep6() {
     h("div", { class: "grp" }, pg.saved, pg.mode, pg.floor));
   pg.render = () => {
     const ct = P().contact || {}, c = S.cfg, why = whyStage(false, true);
-    pg.zDown.disabled = pg.zUp.disabled = !!why;
+    setOff(pg.zDown, why); setOff(pg.zUp, why);
     pg.whyFine.textContent = why;
     pg.zNow.textContent = S.pos.z == null ? "" : "현재 Z " + f3(S.pos.z) + " mm";
     pg.saveHere.set(why || (S.move ? "이동 중" : ""));
@@ -701,12 +701,12 @@ function buildStep7() {
     // ---- 켜 보기 ----
     const tt = !!(S.temptest && S.temptest.active);
     const why = whyStage(false, false) || (tt ? "온도 시험 중 실행 불가" : "");
-    for (const [n, b] of Object.entries(pg.relBtns)) { const k = Number(n); b.classList.toggle("on", k === on); b.textContent = "R" + k + (k === on ? " 켜짐" : ""); b.disabled = !!why; }
-    pg.off.disabled = !!why;
+    for (const [n, b] of Object.entries(pg.relBtns)) { const k = Number(n); b.classList.toggle("on", k === on); b.textContent = "R" + k + (k === on ? " 켜짐" : ""); setOff(b, why); }
+    setOff(pg.off, why);
     pg.why.textContent = why;
     // ---- 칸 정하기(스테이지 없이도 됨 · 측정 · 온도 시험 중에는 설정을 바꾸지 않는다 - 서버도 거절) ----
     const cellWhy = running() ? "측정 중 실행 불가" : tt ? "온도 시험 중 실행 불가" : "";
-    pg.pickBtns.forEach((x) => { x.b.classList.toggle("on", x.v === pg.pick); x.b.disabled = !!cellWhy; });
+    pg.pickBtns.forEach((x) => { x.b.classList.toggle("on", x.v === pg.pick); setOff(x.b, cellWhy); });
     const g = S.cfg.cooler_grid, lay = layout(), cv = P().cooler || {};
     const corners = lay ? lay.corners : PHOTO_CORNERS, tagAt = {};
     for (const n of "ABCD") tagAt[corners[n][0] * 3 + corners[n][1]] = n;
@@ -716,7 +716,7 @@ function buildStep7() {
       setKids(b, k ? h("span", { class: "ctag " + pos, text: k }) : null, h("span", { text: n == null ? "—" : "R" + n }));
       b.classList.toggle("on", n != null && n === on);
       b.classList.toggle("empty", n == null);
-      b.disabled = !!cellWhy;
+      setOff(b, cellWhy);
     });
     pg.cellWhy.textContent = cellWhy;
     pg.title.textContent = "판 · 문 기준 (아래 = 문)";

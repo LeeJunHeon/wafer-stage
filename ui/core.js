@@ -22,6 +22,8 @@ function svgEl(tag, attrs, ...kids) { return _fill(document.createElementNS("htt
 /* 안의 내용을 통째로 바꾼다. replaceChildren 을 바로 쓰지 않는다(null 을 넘기면 "null" 글자가 된다). */
 function setKids(el, ...kids) { el.replaceChildren(..._kids(kids)); return el; }
 function btn(text, fn, cls) { return h("button", { class: "btn " + (cls || ""), type: "button", text, onclick: fn }); }
+/* 조작 끄기 · 켜기 한 곳: why(까닭 글)가 있으면 끄고 그 글을 말풍선에(ui/tips.js "꺼짐 · 까닭") · 없으면 켬. 화면 아래 이유 글과 같은 글을 쓴다 */
+function setOff(el, why) { el.disabled = !!why; el._why = why || ""; return el; }
 function small(text) { return h("span", { class: "small", text }); }
 
 let S = null;                       // 서버 상태
@@ -204,6 +206,8 @@ function renderQuit() {
    ui/tips.js 의 표 한 곳에서 찾는다(tipOf - 키 = tk(el, 키) 또는 버튼 글). 마우스 아래 요소를 문서 전체에서 한 번에 본다(요소마다 듣지 않는다 -
    다시 그려도 그대로) · 꺼진 조작은 pointer-events 가 없어(app.css) 그 위치 아래의 꺼진 조작을 직접 찾아 꺼진 까닭과 같이 띄운다. ---------- */
 let tipT = null, tipFor = null, tipRaf = 0, tipEv = null;
+/* 같은 조작인지(다시 그려 요소가 바뀌어도 - 상태 줄 · 측정 표 버튼은 상태가 올 때마다 새로 만든다) */
+const tipSig = (el) => (el ? (el.dataset ? el.dataset.tipk || "" : "") + "|" + (el.tagName === "BUTTON" ? el.textContent.trim() : el.tagName) : "");
 function hideTip() { clearTimeout(tipT); tipT = null; tipFor = null; $("#tip").classList.add("hidden"); }
 function showTip(el) {
   const o = typeof tipOf === "function" ? tipOf(el) : null;
@@ -225,11 +229,10 @@ function tip(el, content) { el._tip = content; el.classList.add("tipped"); retur
 function tipTarget(ev) {
   const t = ev.target;
   if (!t || !t.closest || t.closest("#tip")) return null;
-  if (t.querySelectorAll) {
-    for (const d of t.querySelectorAll("button:disabled, input:disabled, select:disabled")) {
-      const r = d.getBoundingClientRect();
-      if (r.width && ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom && hasTip(d)) return d;
-    }
+  /* 꺼진 조작: 마우스 아래 요소의 자식만 보지 않고 화면 전체에서(감싸는 요소가 아닌 것이 이벤트를 받아도 - 겹친 칸 · 창) */
+  for (const d of document.querySelectorAll("button:disabled, input:disabled, select:disabled")) {
+    const r = d.getBoundingClientRect();
+    if (r.width && ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom && hasTip(d)) return d;
   }
   for (let e = t; e && e !== document.body; e = e.parentElement) {
     if (e.tagName === "LABEL") { const c = e.querySelector("input, select"); if (c && hasTip(c)) return c; }
@@ -244,12 +247,23 @@ document.addEventListener("mousemove", (ev) => {
     tipRaf = 0;
     const el = tipEv ? tipTarget(tipEv) : null;
     if (el === tipFor) return;
+    if (el && tipFor && !tipFor.isConnected && tipSig(el) === tipSig(tipFor)) { tipFor = el; return; }     // 다시 그려진 같은 조작 - 기다림 · 말풍선 그대로
     hideTip();
     if (!el) return;
     tipFor = el;
-    tipT = setTimeout(() => { if (tipFor === el && el.isConnected) showTip(el); }, 300);
+    tipT = setTimeout(tipFire, 300);
   });
 }, true);
+/* 0.3초 뒤: 그사이 다시 그려졌으면(마우스는 그대로) 그 자리의 같은 조작을 다시 찾아 띄운다 */
+function tipFire() {
+  let el = tipFor;
+  if (el && !el.isConnected && tipEv) {
+    const now = tipTarget(tipEv);
+    el = now && tipSig(now) === tipSig(el) ? now : null;
+    tipFor = el;
+  }
+  if (el && el.isConnected) showTip(el);
+}
 document.addEventListener("mouseout", (ev) => { if (!ev.relatedTarget) hideTip(); });     // 창 밖으로 나감
 document.addEventListener("pointerdown", hideTip, true);
 document.addEventListener("scroll", hideTip, true);

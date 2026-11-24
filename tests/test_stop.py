@@ -127,7 +127,8 @@ def test_stop_when_idle_is_ok_and_changes_nothing(make_ctrl):
 
 
 def test_stop_is_refused_during_a_run(ready_ctrl):
-    ctrl = ready_ctrl(time_scale=60.0)
+    # 측정 중 정지 거절을 본다: 첫 샘플이 고정 접촉 높이에서 안 닿아도(시험용 세계 - 두께 0.5 mm) 건너뛰지 않고 가열 단계로 가게 접촉 확인은 끈다
+    ctrl = ready_ctrl(time_scale=60.0, contact_check="off")
     ctrl.run_command("samples_find")
     for s in [s for s in ctrl.prep.samples if s["use"]][1:]:
         ctrl.run_command("sample_use", {"id": s["id"], "use": False})

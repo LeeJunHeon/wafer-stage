@@ -179,7 +179,7 @@ function renderTour(stage, ready, locked, ttOn) {
     : c.contact_z_mm == null ? "접촉 높이 필요 (초기 설정 6)" : !nUse ? "포함 샘플 없음" : "";
   man.tourBtn.textContent = on ? "순회 정지" : "자동 순회";
   man.tourBtn.classList.toggle("on", on);
-  man.tourBtn.disabled = !on && !!why;
+  setOff(man.tourBtn, on ? "" : why);
   man.tourLine.textContent = on ? "순회 " + t.i + "/" + t.n + " · " + (t.name || "") + " · " + (t.step || "") : t.result ? "순회 결과 · " + t.result : "";
   man.tourLine.className = "small" + (on ? " st-warn" : "");
   const rows = t.rows || [], sig = on ? "" : JSON.stringify(rows);
@@ -288,20 +288,20 @@ function openPlateBig(addMode) {
     dist, h("div", { class: "row" }, addBtn, cancel));
   const side = h("div", { class: "col" }, normal, adding);
   const render = () => {
-    go.disabled = man.clickGo.disabled; if (go.disabled) go.checked = false; else go.checked = man.clickGo.checked;
+    setOff(go, man.clickGo.disabled ? man.clickGo._why : ""); if (go.disabled) go.checked = false; else go.checked = man.clickGo.checked;
     const addOff = man.addHere.disabled;
     if (st.add && addOff && !st.busy) { st.add = false; st.pick = null; }      // 동작이 시작되면(측정 · 순회 · 이동 · 끊김) 보통 상태로
     normal.classList.toggle("hidden", st.add);
     adding.classList.toggle("hidden", !st.add);
-    toAdd.disabled = addOff;
+    setOff(toAdd, addOff ? man.addHere._why : "");
     setWhy(why, man.camWhy);                                     // 막는 까닭이 있을 때만(안내 글은 아래 한 줄)
     const n = (((S.prep || {}).coords || {}).extra || []).length;
     nLine.textContent = "보정 점 " + n + "개";
     delLast.classList.toggle("hidden", !n);
-    delLast.disabled = running() || touring();
+    setOff(delLast, running() ? "측정 중 사용 불가" : touring() ? "순회 중 사용 불가" : "");
     const pv = pinView();
     dist.textContent = !st.pick ? "자리 선택 필요" : pv ? "계산 위치와 " + Math.hypot(st.pick[0] - pv[0], st.pick[1] - pv[1]).toFixed(2) + " mm" : "";
-    addBtn.disabled = !st.pick || st.busy || addOff;
+    setOff(addBtn, addOff ? man.addHere._why : st.busy ? "추가 중" : !st.pick ? "사진에서 위치 선택 필요" : "");
     z.redraw();
   };
   const img = new Image();                                       // 판 사진의 실제 크기(보정 사진 · 1 mm = 8 px)를 읽고 연다
@@ -365,37 +365,39 @@ function renderManual() {
 
   /* 이동: 스테이지 연결 필요 */
   const hp = c.photo_head_xy;
-  man.head.disabled = !hp || busy || locked || !stage;
+  setOff(man.head, !hp ? "촬영 위치 없음 · 초기 설정 3 에서 설정" : busy ? busyText : locked ? "비상정지 해제 필요" : !stage ? NEED.stage : "");
   man.headNote.textContent = hp ? "" : "초기 설정 3 에서 설정";
-  man.go.disabled = busy || locked || !stage;
-  man.here.disabled = !stage;
+  setOff(man.go, busy ? busyText : locked ? "비상정지 해제 필요" : !stage ? NEED.stage : "");
+  setOff(man.here, stage ? "" : NEED.stage);
   man.lower.set(busy ? busyText : !stage ? NEED.stage : locked ? "비상정지 해제 필요" : c.contact_z_mm == null ? "접촉 높이 필요 (초기 설정 6)" : !S.homed.z ? "Z 원점 필요 (초기 설정 2)" : "");
   setWhy(man.moveWhy, "");                                        // 이동 패드의 이유 한 줄(jogPart)이 스테이지 · 측정 · 비상정지를 알린다
 
   /* 수동 측정: 온도 1회 = 온도계 · 저항 1회 · 연속 측정 = 저항계 */
-  man.readT.disabled = busy || !tOk;
-  man.readR.disabled = busy || !rOk;
-  man.mon.disabled = busy || (!S.monitor && (locked || !rOk));
-  man.condBtn.disabled = busy;
+  setOff(man.readT, busy ? busyText : tOk ? "" : NEED.k2110);
+  setOff(man.readR, busy ? busyText : rOk ? "" : NEED.k2450);
+  setOff(man.mon, busy ? busyText : S.monitor ? "" : locked ? "비상정지 해제 필요" : rOk ? "" : NEED.k2450);
+  setOff(man.condBtn, busy ? busyText : "");
   const miss = [!tOk ? NEED.k2110 : "", !rOk ? NEED.k2450 : ""].filter(Boolean);
   setWhy(man.measWhy, busy ? busyText : miss.join(" · "));
   const ct = (S.prep && S.prep.contact) || {};
   const search = c.contact_mode === "search";                    // [접촉 탐색] 은 접촉 방식이 전기 탐색일 때만 보인다
   man.contact.b.classList.toggle("hidden", !search);
   man.contactLine.classList.toggle("hidden", !search);
-  man.contact.b.disabled = !!(ct.active || whyContact() || ttOn);
+  setOff(man.contact.b, ct.active ? "접촉 탐색 중" : whyContact() || (ttOn ? "온도 시험 중 사용 불가" : ""));
   man.contactLine.textContent = contactLine(ct) || (whyContact() && !busy ? whyContact() : "");
 
   /* 릴레이 시험: 스테이지 연결 필요. 히트건 줄 · 쿨러 줄(cooler_relays 만) */
   const ht = S.heater || {}, hOn = !!(ht.fan || ht.element);
   const relayBlock = busy ? busyText : ttOn ? "온도 시험 중 · 창의 [정지] 사용" : !stage ? NEED.stage : locked ? "비상정지 해제 필요" : "";
-  man.hOn.disabled = !!relayBlock || !!ht.element;
+  setOff(man.hOn, relayBlock || (ht.element ? "히트건 켜짐" : ""));
   man.hEl.textContent = ht.element ? "열선 끄기" : "열선 켜기";
-  man.hEl.disabled = busy || ttOn || !stage || !ht.fan || (!ht.element && locked);        // 송풍이 켜진 동안만(끄기는 비상정지 중에도)
-  man.hOff.disabled = busy || ttOn || !stage || !hOn;
-  man.hNow.disabled = !stage || !hOn;                                        // 즉시 끄기는 측정 · 온도 시험 중에도 된다(끄기)
+  const offBlock = busy ? busyText : ttOn ? "온도 시험 중 · 창의 [정지] 사용" : !stage ? NEED.stage : "";      // 끄기 쪽(비상정지 중에도 된다)
+  setOff(man.hEl, offBlock || (!ht.fan ? "송풍 꺼짐 · [켜기] 먼저" : !ht.element && locked ? "비상정지 해제 필요" : ""));   // 송풍이 켜진 동안만
+  setOff(man.hOff, offBlock || (hOn ? "" : "히트건 꺼짐"));
+  setOff(man.hNow, !stage ? NEED.stage : hOn ? "" : "히트건 꺼짐");                // 즉시 끄기는 측정 · 온도 시험 중에도 된다(끄기)
   const v12 = !!ht.heat_fw;
-  man.hPct.disabled = man.hPctGo.disabled = !!relayBlock || !ht.fan || !v12;
+  const pctWhy = relayBlock || (!v12 ? "펌웨어 V18 필요" : !ht.fan ? "송풍 꺼짐 · [켜기] 먼저" : "");
+  setOff(man.hPct, pctWhy); setOff(man.hPctGo, pctWhy);
   setSyncLine(man.hSync, stage ? ht : null);
   man.hPctNow.textContent = !stage ? "" : !v12 ? "펌웨어 V18 필요" : bootText(ht) ? bootText(ht) + (ht.boot_pending != null ? " · " + Number(ht.boot_pending).toFixed(1) + " %" : "")
     : !ht.fan ? "송풍 켠 뒤 적용" : "현재 " + (ht.pct == null ? "—" : Number(ht.pct).toFixed(1)) + " %" + (ht.method ? " · " + ht.method : "");
@@ -412,16 +414,16 @@ function renderManual() {
     const on = !!S.relays[n - 1];
     b.classList.toggle("on", on);
     b.textContent = "R" + n + (on ? " 켜짐" : "");
-    b.disabled = busy || ttOn || !stage || (locked && !on);
+    setOff(b, busy ? busyText : ttOn ? "온도 시험 중 사용 불가" : !stage ? NEED.stage : locked && !on ? "비상정지 해제 필요" : "");
   }
-  man.allOff.disabled = busy || !stage;
+  setOff(man.allOff, busy ? busyText : stage ? "" : NEED.stage);
   setWhy(man.relWhy, relayBlock);
   man.tt.classList.toggle("on", ttOn);
   man.ttLine.textContent = ttOn ? "온도 시험 중 · " + (tts.phase || "") : tts.result ? "마지막 결과 · " + tts.result : "히트건 · 쿨러 온도만 측정";
 
   /* 카메라: 판 사진 보기 · 눌러서 이동 · 보정 점 추가 */
   const pr = S.prep || {}, hasPlate = !!pr.plate, ready = !!(pr.coords && pr.coords.ready);
-  man.viewFix.disabled = !hasPlate;
+  setOff(man.viewFix, hasPlate ? "" : "판 영역 필요 (초기 설정 3)");
   if (!hasPlate && man.view === "fix") { man.view = "raw"; man.viewRaw.checked = true; man.pb.show(""); refreshPreview(); }
   const fix = man.view === "fix";
   man.fixPart.classList.toggle("hidden", !fix);
@@ -432,12 +434,12 @@ function renderManual() {
     man.pb.show(has ? "/api/img/plate.jpg?v=" + ph.id + "-" + pr.plate.t : "");
     man.photoInfo.textContent = has ? "사진 " + fmtClock(ph.t) : "사진 없음";
     man.retake.set(whyStage(true, true) || whyCamera() || whyHead());
-    man.bigView.disabled = !has;
+    setOff(man.bigView, has ? "" : "판 사진 없음 · [재촬영] 먼저");
   }
-  man.clickGo.disabled = !hasPlate || !ready || busy || locked || !stage;     // 실시간 보기에서도 켤 수 있다(켜면 판 사진 보기로)
+  setOff(man.clickGo, !hasPlate ? "판 영역 필요 (초기 설정 3)" : !ready ? "좌표 보정 필요 (초기 설정 5)" : busy ? busyText : locked ? "비상정지 해제 필요" : !stage ? NEED.stage : "");   // 실시간 보기에서도 켤 수 있다(켜면 판 사진 보기로)
   if (man.clickGo.disabled) man.clickGo.checked = false;
   const hasPhoto = !!(pr.photo && pr.photo.rect);
-  man.addHere.disabled = busy || !ready || !stage || !hasPhoto || !!S.move;   // 좌표 보정 완료 · 스테이지 연결 · 동작 중 아님 · 판 사진 있음
+  setOff(man.addHere, busy ? busyText : !ready ? "좌표 보정 필요 (초기 설정 5)" : !stage ? NEED.stage : !hasPhoto ? "판 사진 없음" : S.move ? "이동 중" : "");   // 좌표 보정 · 스테이지 · 동작 중 아님 · 판 사진
   man.camWhy = !hasPlate ? "초기 설정 3 · 5 후 사용 가능" : !ready ? "초기 설정 5 후 사용 가능" : !stage ? NEED.stage
     : busy ? busyText : locked ? "비상정지 해제 필요" : "";                  // 막는 까닭만([크게 보기] 옆 칸도 이것만 보인다)
   man.camNote.textContent = man.camWhy || (fix ? "십자 · 사각형 = 핀 · 원 = 선택 위치" : "");
@@ -449,12 +451,12 @@ function renderManual() {
   }
   const ci = curSampleIdx();
   if (document.activeElement !== man.sSel) man.sSel.value = ci < 0 ? "" : String(list[ci].id);
-  const goOff = !ready || !stage || busy || locked || !list.length;
-  man.sSel.disabled = goOff;
-  man.sPrev.disabled = goOff || ci === 0;
-  man.sNext.disabled = goOff || (ci >= 0 && ci === list.length - 1);
+  const goWhy = !ready ? "좌표 보정 필요 (초기 설정 5)" : !stage ? NEED.stage : busy ? busyText : locked ? "비상정지 해제 필요" : !list.length ? "샘플 검출 필요" : "";
+  setOff(man.sSel, goWhy);
+  setOff(man.sPrev, goWhy || (ci === 0 ? "첫 샘플" : ""));
+  setOff(man.sNext, goWhy || (ci >= 0 && ci === list.length - 1 ? "마지막 샘플" : ""));
   const lowWhy = c.contact_z_mm == null ? "내리기 · 접촉 높이 필요" : !S.homed.z ? "내리기 · Z 원점 필요" : "";
-  man.lowerChk.disabled = !!lowWhy || busy || locked || !stage;
+  setOff(man.lowerChk, lowWhy || (busy ? busyText : locked ? "비상정지 해제 필요" : !stage ? NEED.stage : ""));
   if (man.lowerChk.disabled) man.lowerChk.checked = false;
   const tourWhy = renderTour(stage, ready, locked, ttOn);
   man.samplePart.classList.toggle("hidden", !(fix || touring()));

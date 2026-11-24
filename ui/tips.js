@@ -124,10 +124,10 @@ const TIPS = {
   "전체 끄기": "모든 릴레이 끄기 · 히트건은 끄는 순서대로",
   "온도 시험": "온도 시험 창 · 히트건 · 쿨러 온도 거동 재기",
   /* ---- 수동 제어 · 직접 명령 ---- */
-  "man.target": "직접 명령을 보낼 장비",
-  "man.line": "명령 한 줄 · Enter 로 전송 · 읽기 · 조회만",
-  "man.quick": "이 명령 바로 보내기(읽기 · 조회)",
-  "전송": "한 줄 입력 보내기 · 읽기 · 조회만",
+  "man.target": "직접 명령을 보낼 장비 · 저항계 K2450 · 온도계 K2110 · 스테이지",
+  "man.line": "명령 한 줄 · Enter 로 전송 · 스테이지는 st · p · rs · wd · ? · 측정 장비는 …? 조회만",
+  "man.quick": (el) => ({ t: QUICK_TIPS[ctlText(el)] || "이 명령 바로 보내기 · 읽기 · 조회만" }),
+  "전송": "입력한 한 줄 보내기 · 읽기 · 조회만",
   /* ---- 자동 측정 ---- */
   "현재 샘플": "지금 측정 중인 샘플 보기로 돌아감",
   "ms.overlay": "이전 샘플 곡선 겹쳐 보기",
@@ -178,6 +178,16 @@ async function tipsInit() {
 }
 setTimeout(tipsInit, 0);
 
+/* 직접 명령 빠른 버튼(manual.js QUICK)의 뜻 */
+const QUICK_TIPS = {
+  "*IDN?": "*IDN? · 장비 이름 · 일련번호 조회",
+  "SYST:ERR?": "SYST:ERR? · 장비 오류 목록에서 하나 꺼내 보기 · 0 = 오류 없음",
+  ":OUTP?": ":OUTP? · 저항계 출력 켜짐(1) · 꺼짐(0) 조회",
+  "READ?": "READ? · 온도계 온도 한 번 읽기",
+  "st": "st · 스테이지 위치 · 원점 상태 조회",
+  "rs": "rs · 릴레이 10개 켜짐 · 꺼짐 조회",
+  "p": "p · 스테이지 이동 설정(속도 · 가속) 조회",
+};
 const tk = (el, key) => { el.dataset.tipk = key; return el; };
 const ctlText = (el) => (el.tagName === "BUTTON" ? el.textContent.replace(/\s+/g, " ").trim() : "");
 /* 조작 하나의 설명 키 · 글 */
