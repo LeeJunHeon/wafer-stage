@@ -357,7 +357,7 @@ firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 �
 - 시작 조건(`gate`): 스테이지 · 온도계 · 저항계 연결 · 원점 · 판 영역 · 좌표 보정 · 접촉 높이. **카메라는 요구하지 않는다**(측정 · 재개는 카메라를 쓰지 않는다 -
   촬영 · 샘플 검출 · 헤드 위치 확인만 쓴다). 시작 · 재개 때 K2450 사용권을 얻고(연속 측정을 끈다) 설정 조합 검사를 한다.
 - **설정 조합 검사**(`config.problems` - 저장할 때와 측정 시작 · 재개 때 같은 함수): 값 하나하나는 맞아도 같이 쓰면 안 되는 조합을 이유와 함께 거절한다.
-  - 읽기 시간: 측정 간격 + 온도 읽기(`temp_read_s`) + 저항 읽기 예상(`meters.read_time_s` - 평균 횟수 × NPLC ÷ 전원 주파수 × 변환 배수 + 통신 여유) < `temp_stale_s` × `stale_use_ratio`(0.7).
+  - 읽기 시간: 측정 간격 + 온도 읽기(`temp_read_s`) × 2(저항 앞 · 뒤) + 저항 읽기 예상(`meters.read_time_s` - 평균 횟수 × NPLC ÷ 전원 주파수 × 변환 배수 + 통신 여유) < `temp_stale_s` × `stale_use_ratio`(0.7).
     넘으면 안전 감시가 히트건을 꺼서 모든 샘플이 "가열 끝 온도 미도달" 이 된다. 변환 배수 · 통신 여유 · 온도 읽기 시간은 "실장비 확인 필요"(visa.log 로 맞춘다).
   - 가열 끝 온도 < 차단 온도 · 냉각 끝 온도 < 가열 끝 온도 · 시작 온도 < 가열 끝 온도 · 가열 무반응 시간 < 히트건 최대 켜짐 시간 · 접촉 값들의 크기 관계 ·
     Z 한도 고정 값 · 스테이지 포트가 사용 안 할 포트가 아닌지 ·
@@ -406,7 +406,7 @@ firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 �
     (`Safety.full_on_t` - 출력 % 로 조절하는 긴 가열을 끊지 않게). 차단 온도 · 온도 못 읽음은 출력이 0 보다 큰 동안 그대로.
   - **속도 = 점 수 기준**: 가열 · 냉각 속도 = `run_point_step_c`(목표 점 간격 0.27 °C - LabVIEW 데이터) ÷ 읽기 간격(측정 `run_interval_s` · 온도 시험 `temp_test_interval_s`) × 60
     (`config.heat_rate_c_min` · `cool_rate_c_min`). `cool_rate_separate` 를 켜면 냉각만 `run_cool_rate_c_min`. `run_interval_s` 는 한 점의 주기 -
-    읽기 시간 예상(`config.read_time_s` = 온도 읽기 + 저항 읽기)보다 짧으면 거절(기본 0.9 s = 기본 설정의 예상). 시작 전 화면에 예상 점 수 · 속도 · 시간(`config.expect` · `core.js expectText`).
+    읽기 시간 예상(`config.read_time_s` = 온도 읽기 × 2 + 저항 읽기)보다 짧으면 거절(기본 0.9 s = 기본 설정의 예상). 시작 전 화면에 예상 점 수 · 속도 · 시간(`config.expect` · `core.js expectText`).
   - **속도 정하는 방법**(`run_rate_by` step | time · 기본 step - step 의 동작 · 숫자는 예전 그대로): time = 가열 (가열 끝 − 시작) ÷ `run_heat_time_s` × 60 ·
     냉각 (가열 끝 − 냉각 끝) ÷ `run_cool_time_s` × 60(읽기 간격 · 냉각 속도 따로 · 냉각 속도는 안 씀). 속도는 `config.heat_rate_c_min` · `cool_rate_c_min` 한 곳(화면 `core.js heatRate` · `coolRate` 같은 식) ·
     예상 시간 `heat_time_s` · `cool_time_s` 는 time 이면 그 시간 그대로. 보여 줄 점 간격은 `config.point_step_c`(time = 속도 × 읽기 간격 ÷ 60 · 화면 `pointStep`).
@@ -438,7 +438,12 @@ firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 �
 - **점 간격**(`analysis.spacing` 하나): 가열 · 냉각 각각 "점 n개 · 평균 x.xx °C 마다 1점" = (최고 − 최저) ÷ (점 수 − 1). 측정 화면(행 `spacing`) ·
   run.json 샘플 `sum.spacing` · summary.csv · 측정 결과 탭(점 간격 칸) · 온도 시험(창 · summary.txt). 점 간격(°C) ≈ 속도(°C/분) × 한 점 시간(s) ÷ 60.
 - 예상 시간 한 줄(측정 [조건] · 온도 시험 창 - `core.js expectText`): 가열 (끝 − 시작) ÷ 가열 속도 + 유지 · 냉각 (가열 끝 − 냉각 끝) ÷ 냉각 속도 · 자동 측정은 × 샘플 수 × 반복.
-- 읽는 간격마다 K2110 한 번 · K2450 한 번. 그 온도를 안전 감시에도 넘긴다(`feed_temperature`).
+- **한 점 읽기 순서**(저항을 읽는 점 - `Runner._read_tr`): 온도 T1 → 저항 → 온도 T2 · 기록 온도 = (T1 + T2) ÷ 2(하나가 없으면 남은 값 · 둘 다 없으면 그 점 없음).
+  두 온도 모두 안전 감시에(`feed_temperature`) · 못 읽음 횟수 · 정점 · 정체 · 끝 판정은 평균 · 가열 · 냉각 제어(LineControl)는 가장 최근 온도(T2).
+  저항을 읽지 않는 점(시작 전 냉각 · 켜기 직전)은 한 번. control.csv 끝에 "온도 1(°C)" · "온도 2(°C)"(.dat 형식은 그대로 · 온도 = 평균). 온도 시험은 그대로(저항 없음).
+  까닭(2026-11-23 visa.log): 온도 READ? 172 ms · 저항 READ?(평균 10 · NPLC 1) 383 ms(90 % 422 ms) - 저항이 약 0.3 s 늦은 값이라 23.5 °C/분에서
+  가열 약 0.12 °C 낮게 · 냉각 높게 기록돼 가짜 히스테리시스 약 0.25 °C. 읽기 시간 예상(`config.read_time_s` · `cycle_time_s`)은 온도 × 2 + 저항 ·
+  기본값을 실측에 맞춤(`temp_read_s` 0.3 → 0.2 · `meter_conv_factor` 3 → 2 - DEFAULT_HISTORY) → 기본 0.83 초 < 측정 간격 0.9 초. 넘으면 측정 시작 창에 주의 한 줄.
 - 쿨러: "샘플 아래 구역만"(`cooler_grid`) / "전부" / "안 씀". 가열 장치는 `heater.py RelayHeater` - 하드웨어가 바뀌면 여기만 고친다.
 - 한계(settings `run_*`, v2 값): **열선이 켜져 있던 시간**(온도를 읽은 시각 기준 - 저항 읽기 동안은 다음 온도에 반영)이 45 s 쌓였는데 0.5 °C 도 안 오르면 그 샘플 실패(`ramp` 는 열선이 꺼진 동안 식은 만큼 기준을 낮춘다 ·
   유지 중에는 보지 않는다) · 1 초에 5 °C 넘게 오르면 주의 한 번(열선은 끄지 않는다) · 냉각이 180 s 동안 0.3 °C 도 안 내려가면 그 단계를 정상으로 끝냄 ·
@@ -447,6 +452,11 @@ firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 �
 - 접촉 실패 · 샘플 실패는 그 샘플만 "실패 · 이유"로 두고 다음으로. 장비 오류(연결 끊김 · 온도 3번 연속 못 읽음 · 파일 못 씀)는 전체를 멈추고 경보.
 - 어떤 끝(완료 · 실패 · 건너뛰기 · 중지 · 비상정지 · 오류)에서도 정리: 히트건 끔(열선 바로 · 송풍은 뒤에) → K2450 출력 끔 → 쿨러 끔 → (비상정지가 아니면) 핀 맨 위. 받은 데이터는 파일로 남는다.
 - 명령: `run_start` · `run_resume` · `run_stop` · `run_skip` · `run_pause_after(on)` · `run_requeue(id)` · `sample_rename` · `batch_set`.
+- **[측정 재개]**(`Runner.resume`): 대기 샘플은 지금 `prep.samples` 의 같은 id 의 xy · plate 로 간다(보정 점 · 좌표를 고쳤을 수 있다 - 없어졌거나 이름이 다르면
+  "샘플 1-5 없음 · 재촬영 뒤 새 측정 필요" · xy 가 없으면 "샘플 1-5 위치 계산 실패 · 좌표 보정 확인" 으로 거절 · 0.05 mm 넘게 바뀌면 로그 "재개 · 1-5 위치 갱신 · X … → … · Y … → …").
+  접촉 조건(`run.CONTACT_KEYS` - 접촉 방식 · 저항 기록 · 접촉 높이 · 접촉 확인 · 상한 · 하한)은 지금 설정으로(로그 "재개 · 접촉 높이 21.000 → 21.300 mm") ·
+  측정 조건(전압 · 온도 · 속도 …)은 시작 때 값 그대로(한 측정 안의 데이터 조건이 섞이지 않게). 재개 확인 창에 한 줄 "위치 갱신 2개 · 접촉 높이 … → … mm"(`resume_text`) ·
+  run.json `resumes` = [{t, moved: [이름], contact: {키: [이전, 이후]}}].
 - `runner.active` 는 마지막 파일 저장 · NAS 복사 · 끝난 상태를 화면에 보낸 뒤에야 False 가 된다(그 전에는 새 측정 · 손 조작을 받지 않는다).
 - 상태는 `state.run`(state · rows · cur · stage 0~5 · frac · line · gate · summary · record).
 - **gate 표시는 입력이 바뀐 순간 다시 계산한다**(1초 주기 publish 를 기다리지 않는다). 입력이 바뀌는 길은 `Controller.gate_inputs_changed` 한 곳으로 모은다:

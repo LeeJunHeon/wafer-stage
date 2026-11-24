@@ -166,6 +166,8 @@ function planBody(plan) {
     plan.warn_top ? h("div", { class: "st-err plan-top", text: plan.warn_top }) : null,
     plan.purpose ? h("div", { text: plan.purpose }) : null,
     plan.photo ? h("div", { class: plan.photo_old ? "st-warn" : "small", text: plan.photo + (plan.photo_old && plan.photo !== "사진 없음" ? " · 1시간 넘음" : "") }) : null,   // 측정 시작 · 재개: 사진 시각(1시간 넘으면 주의 색)
+    plan.changes ? h("div", { class: "small", text: plan.changes }) : null,                 // 측정 재개: 바뀐 위치 · 접촉 조건
+    plan.read_warn ? h("div", { class: "st-warn", text: plan.read_warn }) : null,
     h("ol", {}, ...(plan.steps || []).map((s) => h("li", { text: s }))),
     plan.note ? h("div", { class: "small", text: plan.note }) : null,
     plan.warn ? h("div", { class: "st-warn", text: plan.warn }) : null);

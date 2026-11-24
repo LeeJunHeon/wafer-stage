@@ -147,16 +147,17 @@ def test_read_time_estimate_and_default_settings_pass():
     assert abs(read_time_s(0.1, 1, 60, 3.0, 0.1) - 0.105) < 1e-9 and read_time_s(1.0, 10, 50, 3.0, 0.1) > 0.6
     d = config_mod.defaults()
     assert config_mod.problems(d) == []
-    assert abs(config_mod.cycle_time_s(d) - 1.9) < 1e-9              # 측정 간격 1 + 온도 0.3 + 저항 0.6 < 3 초 × 0.7
+    assert abs(config_mod.cycle_time_s(d) - (0.9 + 2 * 0.2 + 10 / 60 * 2.0 + 0.1)) < 1e-9     # 측정 간격 0.9 + 온도 0.2 × 2(저항 앞뒤) + 저항 0.43 < 3 초 × 0.7
+    assert config_mod.read_time_s(d) < d["run_interval_s"], "기본 설정의 읽기 시간 예상(온도 두 번 + 저항)은 기본 측정 간격 안"
     for it in config_mod.ITEMS:                                      # 새로 생긴 값도 모두 설명이 있다(전체 설정 · 말풍선)
         assert it.desc.strip() and it.label, it.key
 
 
 @pytest.mark.parametrize("patch,msg", [
-    ({"run_interval_s": 2.0}, "읽기 한 회차 예상 2.90초 · 2.10초 미만 필요 · 측정 간격과 평균 횟수 확인"),
-    ({"meter_avg_count": 40}, "읽기 한 회차 예상 3.40초 · 2.10초 미만 필요 · 측정 간격과 평균 횟수 확인"),
-    ({"meter_nplc": 5.0}, "읽기 한 회차 예상 3.90초 · 2.10초 미만 필요 · 측정 간격과 평균 횟수 확인"),
-    ({"temp_stale_s": 2.0}, "읽기 한 회차 예상 1.90초 · 1.40초 미만 필요 · 측정 간격과 평균 횟수 확인"),
+    ({"run_interval_s": 2.0}, "읽기 한 회차 예상 2.83초 · 2.10초 미만 필요 · 측정 간격과 평균 횟수 확인"),     # 간격 + 온도 0.2 × 2 + 저항(평균 × NPLC ÷ 60 × 2 + 0.1)
+    ({"meter_avg_count": 40}, "읽기 한 회차 예상 2.73초 · 2.10초 미만 필요 · 측정 간격과 평균 횟수 확인"),
+    ({"meter_nplc": 5.0}, "읽기 한 회차 예상 3.07초 · 2.10초 미만 필요 · 측정 간격과 평균 횟수 확인"),
+    ({"temp_stale_s": 2.0}, "읽기 한 회차 예상 1.73초 · 1.40초 미만 필요 · 측정 간격과 평균 횟수 확인"),
     ({"run_heater_off_c": 110.0}, "가열 끝 온도 110 °C · 차단 온도 110 °C 미만 필요"),
     ({"run_cool_end_c": 85.0}, "냉각 끝 온도 85 °C · 가열 끝 온도 85 °C 미만 필요"),
     ({"run_start_c": 90.0}, "시작 온도 90 °C · 가열 끝 온도 85 °C 미만 필요"),

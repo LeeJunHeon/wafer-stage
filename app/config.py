@@ -399,8 +399,8 @@ ITEMS = (
               common=True, desc="이 온도까지 냉각하면 그 샘플 측정 완료"),
          Item("run_repeat", 1, "int", "반복", "회", 1, 20,
               common=True, desc="샘플마다 가열 · 냉각을 반복하는 횟수\n회차마다 파일 하나"),
-         Item("run_interval_s", 0.9, "float", "측정 간격", "s", 0.05, 60,               # 기본 = 기본 설정의 읽기 시간 예상(온도 0.3 + 저항 0.6)
-              common=True, desc="한 점(온도 · 저항)의 주기 · 읽기 시간 예상보다 짧으면 거절\n가열 · 냉각 속도 = 목표 점 간격 ÷ 이 값 × 60"),
+         Item("run_interval_s", 0.9, "float", "측정 간격", "s", 0.05, 60,               # 기본 설정의 읽기 시간 예상 = 온도 0.2 × 2 + 저항 0.43 = 0.83 초
+              common=True, desc="한 점(온도 → 저항 → 온도)의 주기 · 읽기 시간 예상보다 짧으면 거절\n가열 · 냉각 속도 = 목표 점 간격 ÷ 이 값 × 60"),
          Item("batch_name", "1", "str", "묶음",
               common=True, desc="묶음 이름 · 기록 폴더와 샘플 기본 이름에 사용"))
     + _g("측정 한계",                                                                     # v2 backend/rt.py 에서 쓰던 값
@@ -423,12 +423,12 @@ ITEMS = (
               desc="읽기 한 회차 예상이 온도 못 읽음 허용 시간 × 이 값 미만 필요\n넘으면 히트건이 꺼져 가열 끝 온도 미도달"),
          Item("line_hz", 60, "int", "전원 주파수", "Hz", 50, 60,
               desc="적분 시간 계산의 기준 · 1 PLC = 1 ÷ 전원 주파수\n국내는 60"),
-         Item("meter_conv_factor", 3.0, "float", "저항 읽기 변환 배수", "", 1, 5, verify=True,
-              desc="저항 한 번 읽을 때의 적분 횟수 · 자동 영점 켬은 3번\n읽기 시간 예상에만 사용"),
+         Item("meter_conv_factor", 2.0, "float", "저항 읽기 변환 배수", "", 1, 5, verify=True,
+              desc="저항 한 번 읽을 때의 적분 횟수 · 읽기 시간 예상에만 사용\n2026-11-23 visa.log 저항 READ? 383 ms(90 % 422 ms)에 맞춤"),
          Item("read_overhead_s", 0.1, "float", "저항 읽기 통신 여유", "s", 0, 5, verify=True,
               desc="저항 한 번 읽을 때 통신과 범위 단계에 드는 시간\n읽기 시간 예상에만 사용 · visa.log 로 확인"),
-         Item("temp_read_s", 0.3, "float", "온도 읽기 시간", "s", 0.01, 10, verify=True,
-              desc="온도 한 번 읽는 데 걸리는 시간\n읽기 시간 예상에만 사용 · visa.log 로 확인"))
+         Item("temp_read_s", 0.2, "float", "온도 읽기 시간", "s", 0.01, 10, verify=True,
+              desc="온도 한 번 읽는 데 걸리는 시간 · 저항 점은 앞뒤 두 번\n읽기 시간 예상에만 사용 · 2026-11-23 visa.log 172 ms"))
     + _g("저장",
          Item("nas_dir", "", "str", "NAS 폴더", folder=True,
               common=True, desc="측정 파일(.dat)을 복사할 NAS 폴더\n비우면 PC 에만 저장"),
@@ -456,6 +456,8 @@ DEFAULT_HISTORY = {
     "camera_focus_value": [-1],
     "cooler_grid": [[[2, 2, 2], [3, 3, 3], [4, 4, 4]]],
     "run_interval_s": [1.0],
+    "temp_read_s": [0.3],
+    "meter_conv_factor": [3.0],
     "heater_pwm_period_ms": [1000],
     "temp_step_s": [240.0],
     "heater_slot_ms": [10],
@@ -578,7 +580,7 @@ def problems(v: dict) -> list:
     if not float(v["run_no_rise_s"]) < float(v["heater_max_on_s"]):
         out.append("가열 무반응 시간 %g초 · 열선 연속 최대 시간 %g초 미만 필요" % (v["run_no_rise_s"], v["heater_max_on_s"]))
     # ---- 읽기 시간: 측정 중 온도는 측정 간격마다 읽는다. 한 회차가 온도 못 읽음 허용 시간에 가까우면 안전 감시가 히트건을 꺼서
-    #      모든 샘플이 "가열 끝 온도 미도달" 이 된다 → 측정 간격 + 온도 읽기 + 저항 읽기 예상 < 허용 시간 × 사용 비율 ----
+    #      모든 샘플이 "가열 끝 온도 미도달" 이 된다 → 측정 간격 + 온도 읽기 × 2 + 저항 읽기 예상 < 허용 시간 × 사용 비율 ----
     cycle = cycle_time_s(v)
     limit = float(v["temp_stale_s"]) * float(v["stale_use_ratio"])
     if not cycle < limit:
@@ -819,9 +821,9 @@ def point_step_c(v: dict, interval_key="run_interval_s") -> float:
 
 
 def read_time_s(v: dict) -> float:
-    """측정 한 점의 읽기 시간 예상(초) = 온도 읽기 + 저항 읽기(meters.read_time_s). 측정 간격은 이보다 짧을 수 없다."""
+    """측정 한 점의 읽기 시간 예상(초) = 온도 읽기 × 2(저항 앞 · 뒤 - run.Runner._read_tr) + 저항 읽기(meters.read_time_s). 측정 간격은 이보다 짧을 수 없다."""
     from app.devices.meters import read_time_s as r_s
-    return float(v["temp_read_s"]) + r_s(v["meter_nplc"], v["meter_avg_count"], v["line_hz"], v["meter_conv_factor"], v["read_overhead_s"])
+    return 2.0 * float(v["temp_read_s"]) + r_s(v["meter_nplc"], v["meter_avg_count"], v["line_hz"], v["meter_conv_factor"], v["read_overhead_s"])
 
 
 def expect(v: dict, interval_key="run_interval_s") -> dict:
@@ -852,10 +854,10 @@ def cool_time_s(v: dict, interval_key="run_interval_s") -> float:
 
 
 def cycle_time_s(v: dict) -> float:
-    """측정 한 회차(온도 한 번 + 저항 한 번 + 측정 간격)의 예상 시간(초). 저항 읽기 시간의 근거는 meters.read_time_s."""
+    """측정 한 회차(온도 두 번 + 저항 한 번 + 측정 간격)의 예상 시간(초). 저항 읽기 시간의 근거는 meters.read_time_s."""
     from app.devices.meters import read_time_s
     r = read_time_s(v["meter_nplc"], v["meter_avg_count"], v["line_hz"], v["meter_conv_factor"], v["read_overhead_s"])
-    return float(v["run_interval_s"]) + float(v["temp_read_s"]) + r
+    return float(v["run_interval_s"]) + 2.0 * float(v["temp_read_s"]) + r
 
 
 def port_blocked(port, blocked) -> bool:

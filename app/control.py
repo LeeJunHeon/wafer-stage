@@ -2051,6 +2051,12 @@ class Controller:
                                   "핀 맨 위(Z 0) → 다음 샘플"],
                         "note": "히트건 · %s 사용" % cool}
                 plan.update(self._photo_line(len(todo)))
+                if name == "run_resume":
+                    plan["changes"] = self.runner.resume_text()     # "위치 갱신 2개 · 접촉 높이 21.000 → 21.300 mm"(없으면 "")
+                v = dict(c.values, **(self.runner.cond if name == "run_resume" and self.runner.cond else {}))
+                rt, iv = config_mod.read_time_s(v), float(v["run_interval_s"])
+                if rt > iv + 1e-9:                                  # 읽기가 측정 간격보다 길면 점 간격이 설정보다 넓어진다(주의만)
+                    plan["read_warn"] = "읽기 시간 예상 %.2f초 · 측정 간격 %g초 초과 · 점 간격 넓어짐" % (rt, iv)
                 plan["warn"] = self.MOVE_WARN
                 plan["warn_top"] = ""
             return plan

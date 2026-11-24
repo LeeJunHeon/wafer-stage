@@ -237,8 +237,8 @@ def test_settings_are_checked(make_ctrl):
     ctrl = make_ctrl(connect=False)
     with pytest.raises(Rejected, match="온도 시험 쿨러 R5 · 쿨러 릴레이 아님"):
         ctrl.update_settings({"temp_test_coolers": [2, 5]})
-    with pytest.raises(Rejected, match="온도 읽기 시간 0.3초 이상 필요"):
-        ctrl.update_settings({"temp_test_interval_s": 0.2})
+    with pytest.raises(Rejected, match="온도 읽기 시간 0.2초 이상 필요"):     # 온도 읽기 시간 기본 0.2 초(2026-11-23 visa.log 172 ms)
+        ctrl.update_settings({"temp_test_interval_s": 0.1})
     with pytest.raises(Rejected, match="온도 시험 읽기 간격 3초 · 2.10초 미만 필요"):
         ctrl.update_settings({"temp_test_interval_s": 3.0})
     with pytest.raises(ConfigError):
