@@ -21,12 +21,14 @@
              목표선(가열 · 냉각)은 온도가 heater_lead_c 넘게 뒤처지면 기다린다(heater.LineControl - 온도 시험과 같은 것).
   6. 반복이 2회 이상이면 4~5 를 되풀이(송풍이 켜져 있으면 열선만 다시 켠다).
   7. 저장  : K2450 출력 끔 → 쿨러 끔 → 핀 맨 위 → 파일 닫기 → NAS 복사.
-읽기: 읽는 간격마다 온도(K2110) 한 번 · 저항(K2450) 한 번. 그 온도를 안전 감시에 그대로 넘긴다(온도를 따로 두 번 읽지 않는다).
+읽기(읽기 방식 run_read_mode): 순차(기본) = 측정 간격마다 온도 T1 → 저항 → 온도 T2 · 동시 = 저항을 읽는 동안 온도 일꾼 스레드가 온도를 같이 읽고
+쉬지 않고 이어서(측정 간격 안 씀 - _read_tr_sync). 읽은 온도는 본 스레드가 안전 감시에 그대로 넘긴다(온도를 따로 읽지 않는다).
 어떤 끝(끝남 · 실패 · 건너뛰기 · 중지 · 비상정지 · 오류)에서도: 히트건 끔(열선 바로 · 송풍은 열선 끈 뒤 heater_fan_after_s) → K2450 출력 끔 → 쿨러 끔 →
 (비상정지가 아니면) 핀 맨 위. 받은 데이터는 파일로 남는다.
 점 데이터는 state 에 넣지 않는다(화면은 points() 로 새 점만 받아 간다).
 """
 
+import collections
 import csv
 import json
 import os
@@ -54,10 +56,11 @@ HOLD_STAGE = 6                                      # 기록 모드의 진행 �
 HOLD_COLS = (("n", "기록 점 수"), ("dur_s", "기록 시간(s)"), ("r_mean", "저항 평균(Ω)"), ("r_sd_pct", "저항 흔들림(%)"), ("r_min", "저항 최소(Ω)"),
              ("r_max", "저항 최대(Ω)"), ("drift_pct_min", "1분당 변화(%)"), ("t_mean", "온도 평균(°C)"), ("t_min", "온도 최소(°C)"), ("t_max", "온도 최대(°C)"),
              ("n_open", "접촉 불량 점 수"), ("n_miss", "못 쓴 읽기 수"))     # summary.csv 의 기록 모드 열(analysis.hold_summary)
+SYNC_KEEP = 10                                    # 동시 읽기: 저항 · 온도 읽기 시간을 이 개수만큼 최근 것의 중앙값으로 본다
 T_MISS_N = 3                                      # 온도를 이만큼 연속으로 못 읽으면 측정을 멈춘다(열전대 끊김)
 MAX_POINTS = 200000
 COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "meter_ilim_a", "run_start_c", "run_heater_off_c", "run_cool_end_c",
-             "run_repeat", "run_interval_s", "run_cooler_mode", "run_cooler_during_heat", "contact_mode", "contact_fixed_read", "contact_z_mm",
+             "run_repeat", "run_read_mode", "run_interval_s", "temp_read_s", "line_hz", "meter_conv_factor", "read_overhead_s", "run_cooler_mode", "run_cooler_during_heat", "contact_mode", "contact_fixed_read", "contact_z_mm",
              "contact_check", "contact_max_ohm", "contact_min_ohm", "run_heater_use", "run_hold_s",
              "run_no_rise_s", "run_no_rise_c",
              "run_fast_rise_c_s", "run_stall_s", "run_stall_c", "run_phase_limit_s", "run_open_n", "contact_open_a", "nas_dir", "nas_date_folder",
@@ -110,6 +113,109 @@ class Halt(Exception):
 
 
 class Runner:
+    class _TempWorker:
+        """읽기 방식 동시의 온도 일꾼 스레드(측정마다 하나 - 처음 쓸 때 만들고 Runner._main 이 끝에 close).
+        장비 읽기만 한다(화면 상태 · 안전 감시 · 셈은 본 스레드). 맡은 묶음: 정한 시각까지 기다린 뒤 K2110.read_temp() 를 n 번.
+        n = 저항 읽기 D ÷ 온도 읽기 Td(1~5) · 시작 = 저항 읽기 시작 + (D − n × Td) ÷ 2 → 온도 묶음의 한가운데가 저항 읽기의 한가운데에 온다.
+        D · Td = 이번 측정에서 잰 최근 SYNC_KEEP 개의 중앙값(처음에는 설정의 예상값)."""
+
+        def __init__(self, clock, sleep, d0, td0):
+            self.clock, self.sleep = clock, sleep
+            self.d0, self.td0 = float(d0), float(td0)
+            self.ds = collections.deque(maxlen=SYNC_KEEP)
+            self.tds = collections.deque(maxlen=SYNC_KEEP)
+            self._cv = threading.Condition()
+            self._job = None                        # (온도계, 시작 시각, 횟수) - 아직 시작 안 한 묶음
+            self._res = None                        # 끝난 묶음 {"temps": [(t0, t1, 값 | None)], "err": 예외 | None}
+            self._quit = False
+            self._th = threading.Thread(target=self._run, daemon=True, name="run-temp")
+            self._th.start()
+
+        @staticmethod
+        def _med(q, d):
+            if not q:
+                return d
+            v = sorted(q)
+            m = len(v) // 2
+            return v[m] if len(v) % 2 else (v[m - 1] + v[m]) / 2.0
+
+        def plan(self):
+            """(온도 횟수 n, 저항 읽기 시작부터 기다릴 시간 d)."""
+            D, Td = self._med(self.ds, self.d0), self._med(self.tds, self.td0)
+            n = max(1, min(5, int(D / max(1e-6, Td))))
+            return n, max(0.0, (D - n * Td) / 2.0)
+
+        def submit(self, dev, r0):
+            n, d = self.plan()
+            with self._cv:
+                self._job, self._res = (dev, r0 + d, n), None
+                self._cv.notify_all()
+
+        def wait(self):
+            """맡긴 묶음이 끝날 때까지 기다려 결과를 돌려준다(예외를 올리지 않는다 - 온도계 오류는 err)."""
+            with self._cv:
+                while self._res is None:
+                    self._cv.wait()
+                res, self._res = self._res, None
+            for t0, t1, _v in res["temps"]:
+                self.tds.append(t1 - t0)
+            return res
+
+        def note_r(self, dt):
+            self.ds.append(float(dt))
+
+        def _run(self):
+            while True:
+                with self._cv:
+                    while self._job is None and not self._quit:
+                        self._cv.wait()
+                    if self._job is None:
+                        return
+                    dev, t_at, n = self._job
+                    self._job = None
+                temps, err = [], None
+                try:
+                    left = t_at - self.clock()
+                    if left > 0:
+                        self.sleep(left)
+                    for _ in range(n):
+                        t0 = self.clock()
+                        v = dev.read_temp()
+                        temps.append((t0, self.clock(), v))
+                except Exception as e:                      # noqa: BLE001 - 본 스레드가 err 를 보고 처리한다(온도계 오류)
+                    err = e
+                with self._cv:
+                    self._res = {"temps": temps, "err": err}
+                    self._cv.notify_all()
+
+        def close(self):
+            """일꾼을 없앤다: 읽는 중이면 그 읽기(묶음)가 끝나기를 기다린다(통신 중간에 끊지 않는다)."""
+            with self._cv:
+                self._quit = True
+                self._cv.notify_all()
+            self._th.join()
+
+    class _TempSide:
+        """K2450.read_point 의 side: begin = 시각 + 일꾼에 온도 묶음 맡김 · end = 시각 + 일꾼을 기다려 {r0, r1, temps, err}(예외 없음).
+        한 점의 읽기마다의 end 결과를 all 에 모은다(범위를 바꿔 다시 읽은 점의 앞 읽기 온도도 안전 감시에 넘긴다)."""
+
+        def __init__(self, worker, dev, clock):
+            self.w, self.dev, self.clock = worker, dev, clock
+            self.r0 = None
+            self.all = []
+
+        def begin(self):
+            self.r0 = self.clock()
+            self.w.submit(self.dev, self.r0)
+
+        def end(self):
+            r1 = self.clock()
+            res = self.w.wait()
+            self.w.note_r(r1 - self.r0)
+            out = {"r0": self.r0, "r1": r1, "temps": res["temps"], "err": res["err"]}
+            self.all.append(out)
+            return out
+
     def __init__(self, ctrl):
         self.c = ctrl
         self.heater = RelayHeater(ctrl)
@@ -138,6 +244,8 @@ class Runner:
         self._last_T = None                         # 마지막으로 읽은 온도(냉각 목표선의 시작점 = 가열이 끝난 순간 온도)
         self._T_amb = None                          # 이번 회차 가열 직전 온도(앞먹임의 시작 주위 온도)
         self._pub_lock = threading.RLock()          # state.run 을 쓰는 두 길(publish · refresh_gate)이 서로 앞지르지 않게
+        self._tw = None                             # 읽기 방식 동시의 온도 일꾼(측정마다 하나 · _main 이 끝에 없앤다)
+        self._sync_st = None                        # 동시 읽기 샘플 기록 {"t" 앞 점 시각, "per" 점 주기, "dt" 온도–저항 시각 차, "n" 온도 횟수}
 
     # ------------------------------------------------------------------
     @property
@@ -458,6 +566,7 @@ class Runner:
             c.state.alarm("run", "측정 중지 · 오류 · %s: %s" % (type(e).__name__, str(e)[:60]), ALARM, dismiss=True)
             c.logs.app("측정 멈춤(예상 못 한 오류) · %s: %s" % (type(e).__name__, e), "error")
         finally:
+            self._close_worker()
             self.feeding = False
             self.cur, self.stage = None, None
             left = any(self.items[i]["status"] == WAIT for i in self.order)
@@ -487,6 +596,7 @@ class Runner:
         c = self.c
         it.update(status=NOW, reason="", notes=[], t0=time.time(), t1=None, points=[], cycles=[], contact=None, sum=None, peak=None, element_log=[])
         self.cur, self.cycle, self._t_miss = it["id"], 1, 0
+        self._sync_st = {"t": None, "per": [], "dt": [], "n": []}
         halt = abort = None
         try:
             try:
@@ -530,6 +640,7 @@ class Runner:
                 it["sum"] = analysis.analyze(self._first_cycle(it))
                 it["sum"]["curve"] = curve_summary(it.pop("_tl", []), cd_of(self.cond, c.cfg.values))
                 it["sum"]["jumps"] = [{"phase": ph, "sp": spi, "d": round(j["d"], 1)} for ph, spi, j in it.pop("_jumps", [])]     # 온도 급변(d = 끝난 뒤의 최대 폭)
+            self._sync_summary(it)
             self._save_json()
             self.publish()
         if abort is not None:
@@ -712,7 +823,7 @@ class Runner:
             self._set(HOLD_STAGE, "기록 중 · %d / %d s" % (min(el, hold_s), hold_s), max(0.0, min(1.0, el / max(1e-6, hold_s))))
             if el >= hold_s:
                 return
-            c.sleep(max(0.0, interval - (c.clock() - t_it)))
+            self._pace(interval, t_it)
 
     def _precool(self, it, g, start_c):
         """가열 전: 온도가 시작 온도 이하인지 본다. 아니면 쿨러로 더 식힌다(기록하지 않는다). 정체로 못 닿으면 StartTempAbort(측정 전체를 멈춘다)."""
@@ -761,11 +872,29 @@ class Runner:
             self._last_T = T
         return T
 
+    def _sync(self):
+        """이 측정의 읽기 방식이 동시인가(측정 조건 run_read_mode)."""
+        return self.cond.get("run_read_mode", "seq") == "sync"
+
+    def _pace(self, interval, t_it, with_r=True):
+        """다음 점까지 기다림: 순차는 측정 간격을 채운다 · 동시(저항을 읽는 점)는 쉬지 않고 이어서. 온도만 읽는 점은 언제나 측정 간격."""
+        if with_r and self._sync():
+            return
+        self.c.sleep(max(0.0, interval - (self.c.clock() - t_it)))
+
+    def _close_worker(self):
+        """온도 일꾼을 없앤다(측정이 끝날 때 - 어떤 끝이든). 읽는 중이면 그 읽기가 끝나기를 기다린다."""
+        tw, self._tw = self._tw, None
+        if tw is not None:
+            tw.close()
+
     def _read_tr(self):
-        """저항을 읽는 점: 온도 T1 → 저항 → 온도 T2 · 기록 온도 = (T1 + T2) ÷ 2(하나가 없으면 남은 값 · 둘 다 없으면 None).
+        """저항을 읽는 점: 읽기 방식 동시면 _read_tr_sync · 순차는 온도 T1 → 저항 → 온도 T2 · 기록 온도 = (T1 + T2) ÷ 2(하나가 없으면 남은 값 · 둘 다 없으면 None).
         까닭(2026-11-23 visa.log): 온도 READ? 172 ms · 저항 READ?(평균 10 · NPLC 1) 383 ms - 저항이 온도보다 약 0.3 s 늦은 값이라
         23.5 °C/분에서 가열은 약 0.12 °C 낮게 · 냉각은 높게 기록돼 샘플과 상관없는 히스테리시스 약 0.25 °C 가 생겼다.
         못 읽음 판정 · 정점 · 정체 · 끝 판정은 평균, 가열 제어는 가장 최근 온도(T2 · 없으면 평균)를 쓴다. 반환 (T, T1, T2, 전류, 저항, 한도 걸림)."""
+        if self._sync():
+            return self._read_tr_sync()
         T1 = self._temp_raw()
         cur, R, trip = self._read_r()
         T2 = self._temp_raw()
@@ -776,11 +905,64 @@ class Runner:
             self._last_T = T2 if T2 is not None else T1
         return T, T1, T2, cur, R, trip
 
-    def _read_r(self):
+    def _read_tr_sync(self):
+        """읽기 방식 동시: 저항(K2450.read_point)을 읽는 동안 온도 일꾼이 온도를 같이 읽는다(_TempSide · _TempWorker).
+        온도 = 돌려준 저항 읽기(범위를 바꿔 다시 읽었으면 마지막 읽기 - read_point 의 last_side)와 짝인 온도들의 평균 · T1 = 첫 값 · T2 = 끝 값.
+        안전 감시 · 못 읽음 셈 · 화면 상태는 이 스레드에서(일꾼은 장비 읽기만). 온도계 오류는 _temp_raw 와 같게 측정을 멈춘다. 반환은 _read_tr 과 같은 모양."""
+        c = self.c
+        tdev = c.k2110
+        if tdev is None or not tdev.is_open:
+            raise RunAbort("온도계 연결 안 됨")
+        if self._tw is None:
+            self._tw = Runner._TempWorker(c.clock, c.sleep, config_mod.meter_read_s(self.cond), float(self.cond["temp_read_s"]))
+        side = Runner._TempSide(self._tw, tdev, c.clock)
+        t_pt = c.clock()
+        cur, R, trip = self._read_r(side)
+        err = next((s["err"] for s in side.all if s["err"] is not None), None)
+        if err is not None:
+            if not isinstance(err, meters.VisaError):
+                raise err
+            c.state.set_device("k2110", "오류", str(err), tdev.addr)
+            raise RunAbort("온도계 오류 · %s" % str(err)[:50])
+        for s in side.all:                                          # 읽은 순서대로 안전 감시에(다시 읽은 점의 앞 읽기 온도도 - 감시가 끊기지 않게)
+            for _t0, _t1, v in s["temps"]:
+                c.feed_temperature(v)
+        got = c.k2450.last_side or (side.all[-1] if side.all else None)
+        temps = got["temps"] if got else []
+        vals = [v for _t0, _t1, v in temps]
+        ok = [v for v in vals if v is not None]
+        T = sum(ok) / len(ok) if ok else None
+        self._count_temp(T)
+        if ok:
+            self._last_T = ok[-1]
+        st = self._sync_st
+        if st is not None:
+            if st["t"] is not None:
+                st["per"].append(t_pt - st["t"])
+            st["t"] = t_pt
+            if temps:
+                st["n"].append(len(temps))
+                st["dt"].append((temps[0][0] + temps[-1][1]) / 2.0 - (got["r0"] + got["r1"]) / 2.0)     # 온도 묶음 한가운데 − 저항 읽기 한가운데
+        return T, (vals[0] if vals else None), (vals[-1] if vals else None), cur, R, trip
+
+    def _sync_summary(self, it):
+        """동시 읽기 샘플 요약 it["sum"]["sync"] = {temp_n, period_s(점 주기 중앙값), dt_mean_s · dt_max_s(온도–저항 시각 차 절댓값)} + app.log 한 줄."""
+        st = self._sync_st
+        if not self._sync() or not st or not st["n"] or it.get("sum") is None:
+            return
+        med = Runner._TempWorker._med
+        d = [abs(x) for x in st["dt"]]
+        out = {"temp_n": int(round(med(st["n"], 0))), "period_s": None if not st["per"] else round(med(st["per"], 0.0), 3),
+               "dt_mean_s": round(sum(d) / len(d), 3), "dt_max_s": round(max(d), 3)}
+        it["sum"]["sync"] = out
+        self.c.logs.app("샘플 %s · 동시 읽기 · 점 주기 %s s · 온도 %d번 · 온도–저항 시각 차 평균 %.2f s · 최대 %.2f s" % (
+            it["name"], "-" if out["period_s"] is None else "%.2f" % out["period_s"], out["temp_n"], out["dt_mean_s"], out["dt_max_s"]))
+
+    def _read_r(self, side=None):
         c = self.c
         dev = c.k2450
         try:
-            cur, trip = dev.read_point()
+            cur, trip = dev.read_point() if side is None else dev.read_point(side=side)
         except meters.VisaError as e:
             c.state.set_device("k2450", "오류", str(e), dev.addr)
             raise RunAbort("저항계 오류 · %s" % str(e)[:50])
@@ -937,7 +1119,7 @@ class Runner:
             if now - t0 > float(cd["run_phase_limit_s"]):
                 raise SampleFail("가열 %g초 초과" % cd["run_phase_limit_s"])
             self.publish()
-            c.sleep(max(0.0, interval - (c.clock() - t_it)))
+            self._pace(interval, t_it)
 
     def _loop(self, it, g, phase, with_r, done, stall, frac, what, peak=None, ctl=None):
         """냉각(시작 전 · 가열 뒤): done(온도, 지금) 이 참이 되거나, 한동안 더 안 내려가면(정체) 끝낸다. 반환 (마지막 온도, 정체였나).
@@ -991,7 +1173,7 @@ class Runner:
             if now - t0 > float(cd["run_phase_limit_s"]):
                 raise SampleFail("%s %g초 초과" % (what, cd["run_phase_limit_s"]))
             self.publish()
-            c.sleep(max(0.0, interval - (c.clock() - t_it)))
+            self._pace(interval, t_it, with_r)
 
     def _note_jumps(self, it, ctl, phase):
         """제어기에 새로 생긴 온도 급변: 샘플 메모(같은 글은 한 번) · 로그 · 요약용으로 모음(it["_jumps"]). 측정은 멈추지 않는다."""
@@ -1219,7 +1401,9 @@ class Runner:
                             "가열 목표선 차이 최대(°C)", "냉각 목표선 차이 최대(°C)",
                             "가열 흔들림(°C)", "냉각 흔들림(°C)", "가열 흔들림 폭(°C)", "냉각 흔들림 폭(°C)",
                             "가열 흔들림 주기(s)", "냉각 흔들림 주기(s)", "가열 흔들림 진폭(°C)", "냉각 흔들림 진폭(°C)"]
-                           + [x[1] for x in HOLD_COLS])
+                           + [x[1] for x in HOLD_COLS] + ["읽기 방식", "점 주기(s)"])
+                sync = self._sync()
+                mode_txt = "동시" if sync else "순차"                 # 점 주기: 동시 = 샘플의 점 주기 중앙값 · 순차 = 측정 간격
                 for n, i in enumerate(self.order):
                     it = self.items[i]
                     s = it.get("sum") or {}
@@ -1232,7 +1416,8 @@ class Runner:
                                + [e(((s.get("curve") or {}).get(ph) or {}).get(k)) for k in ("n", "rate_c_min", "step_sd", "rev_n", "rev_max", "sp_err_mean", "sp_err_max",
                                                                                             "rip_sd", "rip_pp", "rip_period_s", "rip_amp")
                                   for ph in ("heat", "cool")]
-                               + [e(((s.get("hold") or {}).get(k))) for k, _name in HOLD_COLS])      # 기록 모드 요약(가열 측정은 빈 칸)
+                               + [e(((s.get("hold") or {}).get(k))) for k, _name in HOLD_COLS]      # 기록 모드 요약(가열 측정은 빈 칸)
+                               + [mode_txt, e((s.get("sync") or {}).get("period_s")) if sync else e(float(self.cond["run_interval_s"]))])
         except OSError as e:
             self.c.logs.app("summary.csv 저장 실패 · %s" % e, "error")
 

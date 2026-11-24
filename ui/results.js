@@ -81,7 +81,7 @@ function resultTitle() {                                          // 그림으�
   return [fmtDate(rec.started), "묶음 " + rec.batch, c.meter_volt != null ? Number(c.meter_volt).toFixed(2) + " V" : null, c.meter_four_wire == null ? null : c.meter_four_wire ? "4단자" : "2단자"].filter(Boolean).join(" · ");
 }
 const COND_ROWS = [["meter_volt", "측정 전압", "V"], ["meter_four_wire", "4단자", ""], ["meter_avg_count", "평균", "회"], ["meter_nplc", "NPLC", ""], ["meter_ilim_a", "전류 한도", "A"],
-  ["run_start_c", "시작 온도", "°C"], ["run_heater_off_c", "가열 끝 온도", "°C"], ["run_cool_end_c", "냉각 끝 온도", "°C"], ["run_repeat", "반복", "회"], ["run_interval_s", "측정 간격", "s"],
+  ["run_start_c", "시작 온도", "°C"], ["run_heater_off_c", "가열 끝 온도", "°C"], ["run_cool_end_c", "냉각 끝 온도", "°C"], ["run_repeat", "반복", "회"], ["run_read_mode", "읽기 방식", ""], ["run_interval_s", "측정 간격", "s"],
   ["run_heat_mode", "가열 방식", ""], ["run_rate_by", "속도 정하는 방법", ""], ["run_heat_time_s", "가열 시간", "s"], ["run_cool_time_s", "냉각 시간", "s"],
   ["run_point_step_c", "목표 점 간격", "°C"], ["run_heat_rate_c_min", "가열 속도", "°C/분"], ["run_cool_mode", "냉각 방식", ""],
   ["cool_rate_separate", "냉각 속도 따로", ""], ["run_cool_rate_c_min", "냉각 속도", "°C/분"],
@@ -93,6 +93,7 @@ const CONTACT_NAMES = { fixed: "고정 높이", search: "전기 탐색" };
 const HEAT_NAMES = { ramp: "가열 속도 제어", full: "계속 가열" };
 const COOL_NAMES = { ramp: "냉각 속도 제어", free: "자연 냉각" };
 const RATE_BY_NAMES = { step: "점 간격", time: "걸리는 시간" };
+const READ_MODE_NAMES = { seq: "순차", sync: "동시" };
 /* 점 간격 칸: "0.15 · 0.16 °C" (가열 · 냉각 평균 몇 °C 마다 1점). 말풍선에 점 수까지 */
 function spacingCell(sp) {
   const v = (x) => (x && x.dc != null ? x.dc.toFixed(2) : "—");
@@ -157,6 +158,7 @@ function renderRecord() {
     else if (k === "run_heat_mode") v = HEAT_NAMES[v] || v;
     else if (k === "run_cool_mode") v = COOL_NAMES[v] || v;
     else if (k === "run_rate_by") v = RATE_BY_NAMES[v] || v;
+    else if (k === "run_read_mode") v = READ_MODE_NAMES[v] || v;
     return [h("span", { class: "small", text: name }), h("span", { text: v + (unit ? " " + unit : "") })];
   })));
   drawResultGraph();

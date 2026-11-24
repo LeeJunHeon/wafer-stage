@@ -403,8 +403,11 @@ ITEMS = (
               common=True, desc="끄면 가열 · 냉각 없이 기록 시간 동안 그 자리 온도에서 저항 기록\n쿨러 · 시작 온도 · 반복은 쓰지 않음"),
          Item("run_hold_s", 60.0, "float", "기록 시간", "s", 1, 3600,
               common=True, desc="히트건 사용을 끄면 샘플마다 이 시간 동안 측정 간격마다 기록\n파일은 LabVIEW 형식 그대로(.dat 하나)"),
+         Item("run_read_mode", "seq", "choice", "읽기 방식",
+              choices=(("seq", "순차 · 측정 간격마다"), ("sync", "동시 · 쉬지 않고 연속")), common=True,
+              desc="순차 = 온도 → 저항 → 온도를 측정 간격마다\n동시 = 저항을 읽는 동안 온도를 같이 읽고 쉬지 않고 이어서(측정 간격 안 씀)"),
          Item("run_interval_s", 0.9, "float", "측정 간격", "s", 0.05, 60,               # 기본 설정의 읽기 시간 예상 = 온도 0.2 × 2 + 저항 0.43 = 0.83 초
-              common=True, desc="한 점(온도 → 저항 → 온도)의 주기 · 읽기 시간 예상보다 짧으면 거절\n가열 · 냉각 속도 = 목표 점 간격 ÷ 이 값 × 60"),
+              common=True, desc="한 점(온도 → 저항 → 온도)의 주기 · 읽기 시간 예상보다 짧으면 거절\n가열 · 냉각 속도 = 목표 점 간격 ÷ 이 값 × 60 · 읽기 방식 동시에서는 쓰지 않음"),
          Item("batch_name", "1", "str", "묶음",
               common=True, desc="묶음 이름 · 기록 폴더와 샘플 기본 이름에 사용"))
     + _g("측정 한계",                                                                     # v2 backend/rt.py 에서 쓰던 값
@@ -590,7 +593,7 @@ def problems(v: dict) -> list:
     if not cycle < limit:
         out.append("읽기 한 회차 예상 %.2f초 · %.2f초 미만 필요 · 측정 간격과 평균 횟수 확인" % (cycle, limit))
     rt = read_time_s(v)
-    if float(v["run_interval_s"]) < rt - 1e-9:                  # 측정 간격 = 한 점의 주기 - 읽기가 더 걸리면 점 간격이 설정보다 넓어진다
+    if v.get("run_read_mode", "seq") != "sync" and float(v["run_interval_s"]) < rt - 1e-9:     # 순차: 측정 간격 = 한 점의 주기 - 읽기가 더 걸리면 점 간격이 넓어진다(동시는 측정 간격을 안 씀)
         out.append("측정 간격 %g초 · 읽기 시간 %.2f초 이상 필요" % (v["run_interval_s"], rt))
     out += side_problems(v)
     out += focus_problems(v)
@@ -806,7 +809,7 @@ def heat_rate_c_min(v: dict, interval_key="run_interval_s") -> float:
     "time" = (가열 끝 온도 − 시작 온도) ÷ 가열 시간 × 60(읽기 간격과 무관). 속도는 모두 이 함수와 cool_rate_c_min 에서만 정한다."""
     if v.get("run_rate_by") == "time":
         return (float(v["run_heater_off_c"]) - float(v["run_start_c"])) / max(1e-6, float(v["run_heat_time_s"])) * 60.0
-    return float(v["run_point_step_c"]) / max(1e-6, float(v[interval_key])) * 60.0
+    return float(v["run_point_step_c"]) / max(1e-6, period_s(v, interval_key)) * 60.0
 
 
 def cool_rate_c_min(v: dict, interval_key="run_interval_s") -> float:
@@ -820,19 +823,37 @@ def cool_rate_c_min(v: dict, interval_key="run_interval_s") -> float:
 def point_step_c(v: dict, interval_key="run_interval_s") -> float:
     """보여 줄 목표 점 간격(°C): "step" 이면 run_point_step_c 그대로 · "time" 이면 가열 속도 × 읽기 간격 ÷ 60."""
     if v.get("run_rate_by") == "time":
-        return heat_rate_c_min(v, interval_key) * float(v[interval_key]) / 60.0
+        return heat_rate_c_min(v, interval_key) * period_s(v, interval_key) / 60.0
     return float(v["run_point_step_c"])
+
+
+def meter_read_s(v: dict) -> float:
+    """저항 한 번 읽기 예상(초) = meters.read_time_s(NPLC · 평균 횟수 · 전원 주파수 · 변환 배수 · 통신 여유)."""
+    from app.devices.meters import read_time_s as r_s
+    return r_s(v["meter_nplc"], v["meter_avg_count"], v["line_hz"], v["meter_conv_factor"], v["read_overhead_s"])
+
+
+def sync_temp_n(v: dict) -> int:
+    """읽기 방식 동시: 저항 한 번 읽는 동안 온도를 읽는 횟수 = 저항 읽기 예상 ÷ 온도 읽기 시간(1~5)."""
+    return max(1, min(5, int(meter_read_s(v) / max(1e-6, float(v["temp_read_s"])))))
+
+
+def period_s(v: dict, interval_key="run_interval_s") -> float:
+    """한 점의 주기(초): 측정(run_interval_s)이고 읽기 방식 동시면 max(저항 읽기 예상, 온도 횟수 × 온도 읽기 시간) - 쉬지 않고 연속 ·
+    그 밖에는 읽기 간격(측정 간격 · 온도 시험 temp_test_interval_s) 그대로. 화면 core.js period 와 같은 식."""
+    if interval_key == "run_interval_s" and v.get("run_read_mode", "seq") == "sync":
+        return max(meter_read_s(v), sync_temp_n(v) * float(v["temp_read_s"]))
+    return float(v[interval_key])
 
 
 def read_time_s(v: dict) -> float:
     """측정 한 점의 읽기 시간 예상(초) = 온도 읽기 × 2(저항 앞 · 뒤 - run.Runner._read_tr) + 저항 읽기(meters.read_time_s). 측정 간격은 이보다 짧을 수 없다."""
-    from app.devices.meters import read_time_s as r_s
-    return 2.0 * float(v["temp_read_s"]) + r_s(v["meter_nplc"], v["meter_avg_count"], v["line_hz"], v["meter_conv_factor"], v["read_overhead_s"])
+    return 2.0 * float(v["temp_read_s"]) + meter_read_s(v)
 
 
 def expect(v: dict, interval_key="run_interval_s") -> dict:
     """예상 점 수 · 시간(화면 · 시작 전): 가열 (끝 − 시작) ÷ 점 간격 · 냉각 (가열 끝 − 냉각 끝) ÷ 냉각 점 간격."""
-    iv = float(v[interval_key])
+    iv = period_s(v, interval_key)
     hr, cr = heat_rate_c_min(v, interval_key), cool_rate_c_min(v, interval_key)
     hs = max(0.0, float(v["run_heater_off_c"]) - float(v["run_start_c"]))
     cs = max(0.0, float(v["run_heater_off_c"]) - float(v["run_cool_end_c"]))
@@ -858,10 +879,11 @@ def cool_time_s(v: dict, interval_key="run_interval_s") -> float:
 
 
 def cycle_time_s(v: dict) -> float:
-    """측정 한 회차(온도 두 번 + 저항 한 번 + 측정 간격)의 예상 시간(초). 저항 읽기 시간의 근거는 meters.read_time_s."""
-    from app.devices.meters import read_time_s
-    r = read_time_s(v["meter_nplc"], v["meter_avg_count"], v["line_hz"], v["meter_conv_factor"], v["read_overhead_s"])
-    return float(v["run_interval_s"]) + 2.0 * float(v["temp_read_s"]) + r
+    """측정 한 회차(온도 두 번 + 저항 한 번 + 측정 간격)의 예상 시간(초). 저항 읽기 시간의 근거는 meters.read_time_s.
+    읽기 방식 동시는 쉬지 않고 연속이라 한 점의 주기(period_s) 그대로."""
+    if v.get("run_read_mode", "seq") == "sync":
+        return period_s(v)
+    return float(v["run_interval_s"]) + 2.0 * float(v["temp_read_s"]) + meter_read_s(v)
 
 
 def port_blocked(port, blocked) -> bool:

@@ -304,7 +304,9 @@ function openRunCond() {
     contact_check: h("select", {}, ...[["off", "사용 안 함"], ["skip", "그 샘플 건너뜀"], ["stop", "측정 멈춤"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.contact_check === v }))),
     contact_max_ohm: num("contact_max_ohm"), contact_min_ohm: h("input", { type: "number", step: "any", value: c.contact_min_ohm == null ? "" : c.contact_min_ohm, placeholder: "없음" }),
     meter_volt: num("meter_volt", "0.01"), meter_four_wire: chk("meter_four_wire"), meter_avg_count: num("meter_avg_count", "1"), meter_nplc: num("meter_nplc", "0.01"), meter_ilim_a: num("meter_ilim_a"),
-    run_start_c: num("run_start_c", "1"), run_heater_off_c: num("run_heater_off_c", "1"), run_cool_end_c: num("run_cool_end_c", "1"), run_repeat: num("run_repeat", "1"), run_interval_s: num("run_interval_s", "0.1"),
+    run_start_c: num("run_start_c", "1"), run_heater_off_c: num("run_heater_off_c", "1"), run_cool_end_c: num("run_cool_end_c", "1"), run_repeat: num("run_repeat", "1"),
+    run_read_mode: h("select", {}, ...[["seq", "순차"], ["sync", "동시 · 연속"]].map(([v, t]) => h("option", { value: v, text: t, selected: (c.run_read_mode || "seq") === v }))),
+    run_interval_s: num("run_interval_s", "0.1"),
     run_cooler_mode: h("select", {}, ...[["zone", "샘플 아래 구역"], ["all", "전체"], ["none", "사용 안 함"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_cooler_mode === v }))),
     run_cooler_during_heat: chk("run_cooler_during_heat"),
     run_heat_mode: h("select", {}, ...[["ramp", "가열 속도 제어"], ["full", "계속 가열"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.run_heat_mode === v }))),
@@ -340,6 +342,7 @@ function openRunCond() {
     setOff(f.run_point_step_c, byTime); setOff(f.cool_rate_separate, byTime); setOff(f.run_cool_rate_c_min, byTime);
     if (!heat) for (const k of HEAT_ONLY) setOff(f[k], "히트건 사용 끔이면 안 씀");
     setOff(f.run_hold_s, heat ? "히트건 사용 켬이면 안 씀" : "");
+    setOff(f.run_interval_s, f.run_read_mode.value === "sync" ? "읽기 방식 동시 · 쉬지 않고 연속이라 측정 간격을 쓰지 않음" : "");
   };
   const upd = () => { lockRate(); const pt = condPatch(); expect.textContent = expectText(Object.assign({}, c, pt), pt.run_heater_use === false ? nUse : nUse * (pt.run_repeat || 1)); };
   Object.values(f).forEach((e) => { e.addEventListener("input", upd); e.addEventListener("change", upd); });
@@ -347,7 +350,7 @@ function openRunCond() {
   const left = h("div", { class: "form" },
     h("h4", { text: "저항 측정" }), "측정 전압 (V)", f.meter_volt, "4단자", f.meter_four_wire, "평균 횟수", f.meter_avg_count, "NPLC", f.meter_nplc, "전류 한도 (A)", f.meter_ilim_a,
     h("h4", { text: "온도" }), "히트건 사용", f.run_heater_use, "기록 시간 (s)", f.run_hold_s, "시작 온도 (°C)", f.run_start_c, "가열 끝 온도 (°C)", f.run_heater_off_c,
-    "냉각 끝 온도 (°C)", f.run_cool_end_c, "반복 (회)", f.run_repeat, "측정 간격 (s)", f.run_interval_s);
+    "냉각 끝 온도 (°C)", f.run_cool_end_c, "반복 (회)", f.run_repeat, "읽기 방식", f.run_read_mode, "측정 간격 (s)", f.run_interval_s);
   const right = h("div", { class: "form" },
     h("h4", { text: "가열 · 냉각" }), "속도 정하는 방법", f.run_rate_by, "가열 시간 (s)", f.run_heat_time_s, "냉각 시간 (s)", f.run_cool_time_s,
     "가열 방식", f.run_heat_mode, "목표 점 간격 (°C)", f.run_point_step_c,

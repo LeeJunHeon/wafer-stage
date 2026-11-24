@@ -353,16 +353,25 @@ function spacingText(sp, which) {
 /* 가열 · 냉각 속도(°C/분 - 서버 config.heat_rate_c_min · cool_rate_c_min 과 같은 식). iv = 읽기 간격 키.
    속도 정하는 방법 점 간격 = 목표 점 간격 ÷ 읽기 간격 × 60 · 걸리는 시간 = 온도 차 ÷ 가열 · 냉각 시간 × 60(냉각 속도 따로는 안 씀) */
 function byTime(c) { return c.run_rate_by === "time"; }
+/* 한 점의 주기(s - 서버 config.period_s 와 같은 식): 측정 간격이고 읽기 방식 동시면 max(저항 읽기 예상, 온도 횟수 × 온도 읽기 시간) · 그 밖에는 c[iv]
+   저항 읽기 예상 = 평균 횟수 × NPLC ÷ 전원 주파수 × 변환 배수 + 통신 여유 · 온도 횟수 = 저항 읽기 예상 ÷ 온도 읽기 시간(1~5) */
+function period(c, iv) {
+  iv = iv || "run_interval_s";
+  if (iv !== "run_interval_s" || c.run_read_mode !== "sync") return Number(c[iv]);
+  const r = Math.max(1, Math.floor(Number(c.meter_avg_count))) * Number(c.meter_nplc) / Number(c.line_hz) * Number(c.meter_conv_factor) + Number(c.read_overhead_s);
+  const td = Number(c.temp_read_s), n = Math.max(1, Math.min(5, Math.floor(r / Math.max(1e-6, td))));
+  return Math.max(r, n * td);
+}
 function heatRate(c, iv) {
   if (byTime(c)) return (Number(c.run_heater_off_c) - Number(c.run_start_c)) / Math.max(1e-6, Number(c.run_heat_time_s)) * 60;
-  return Number(c.run_point_step_c) / Number(c[iv || "run_interval_s"]) * 60;
+  return Number(c.run_point_step_c) / Math.max(1e-6, period(c, iv)) * 60;
 }
 function coolRate(c, iv) {
   if (byTime(c)) return (Number(c.run_heater_off_c) - Number(c.run_cool_end_c)) / Math.max(1e-6, Number(c.run_cool_time_s)) * 60;
   return c.cool_rate_separate ? Number(c.run_cool_rate_c_min) : heatRate(c, iv);
 }
 /* 보여 줄 목표 점 간격(°C - 서버 config.point_step_c): 점 간격이면 그대로 · 걸리는 시간이면 가열 속도 × 읽기 간격 ÷ 60 */
-function pointStep(c, iv) { return byTime(c) ? heatRate(c, iv) * Number(c[iv || "run_interval_s"]) / 60 : Number(c.run_point_step_c); }
+function pointStep(c, iv) { return byTime(c) ? heatRate(c, iv) * period(c, iv) / 60 : Number(c.run_point_step_c); }
 /* 예상 한 줄(측정 조건 창 · 온도 시험 창): 점 수(가열 · 냉각) · 속도 · 시간. times = 샘플 수 × 반복(자동 측정) · iv = 읽기 간격 키 */
 /* 부호 붙은 % 글: 반올림해서 0 이면 부호 없이 "0.00 %"(음수 0 "-0.00" 을 내지 않는다) */
 function signedPct(v, d) {
@@ -381,11 +390,11 @@ function holdText(hd, brief) {
 function expectText(c, times, iv) {
   iv = iv || "run_interval_s";
   if (iv === "run_interval_s" && c.run_heater_use === false) {     // 기록 모드: 샘플마다 기록 시간 · 점 수 · 이동 포함(샘플마다 이동 · 접촉 약 30 s 로 본다)
-    const n = Math.max(1, times || 1), hs = Number(c.run_hold_s), dt = Number(c[iv]);
+    const n = Math.max(1, times || 1), hs = Number(c.run_hold_s), dt = period(c, iv);
     if (!(hs > 0) || !(dt > 0)) return "예상 시간 · 값 확인 필요";
     return "샘플 " + n + "개 × 기록 " + hs + " s · 점 약 " + Math.round(hs / dt + 1) + "개씩 · 이동 포함 약 " + fmtDur(n * (hs + 30));
   }
-  const hr = heatRate(c, iv), cr = coolRate(c, iv), dt = Number(c[iv]);
+  const hr = heatRate(c, iv), cr = coolRate(c, iv), dt = period(c, iv);
   const hs = Math.max(0, c.run_heater_off_c - c.run_start_c), cs = Math.max(0, c.run_heater_off_c - c.run_cool_end_c);
   const heat = c.run_heat_mode === "ramp" ? (byTime(c) ? Number(c.run_heat_time_s) : hs / hr * 60) + Number(c.run_heat_hold_s || 0) : null;   // 서버 config.heat_time_s
   const cool = c.run_cool_mode === "ramp" ? (byTime(c) ? Number(c.run_cool_time_s) : cs / cr * 60) : null;                                     // 서버 config.cool_time_s

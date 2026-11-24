@@ -338,6 +338,7 @@ class K2450(_Dev):
     ilim = 0.1
     flag_stuck = False                                  # 한도 표시가 다시 읽어도 서 있었다(이번 설정에서는 표시로 다시 읽지 않음)
     last_reads = 0                                      # 마지막 read_point 가 쓴 읽기 수
+    last_side = None                                    # 마지막 read_point 가 돌려준 읽기와 짝인 side.end() 값(side 없으면 None)
 
     def check_scpi(self):
         """명령 세트가 SCPI 인가. 일부 펌웨어는 *LANG? 가 없다 - 그때는 SCPI 로 본다."""
@@ -398,16 +399,26 @@ class K2450(_Dev):
             for _ in range(SETTLE_READS):
                 self.read()
 
-    def read_point(self):
+    def read_point(self, side=None):
         """한 점 → (전류 | None, 한도 걸림). 판정(judge_read)이 over · down 이면 범위를 바꿔 다시 읽고(그 값은 버림), up 이면 값을 쓰고 다음부터 위 범위.
         한도 걸림 = 전류가 실제로 한도 근처(limit)일 때만. 한도 표시가 선 값은 같은 범위에서 한 번 다시 읽는다 - 다시 읽어도 서 있으면
-        장비가 표시를 유지하는 것으로 보고(flag_stuck) 이번 설정에서는 표시 때문에 다시 읽지 않는다. 쓴 읽기 수 = last_reads."""
+        장비가 표시를 유지하는 것으로 보고(flag_stuck) 이번 설정에서는 표시 때문에 다시 읽지 않는다. 쓴 읽기 수 = last_reads.
+        side(begin() · end() 를 가진 것 - 무엇인지는 모른다)가 있으면 읽기 한 번마다 직전에 begin() · 직후에 end()(읽기가 예외여도) ·
+        돌려주는 읽기(읽기 수를 다 쓰면 마지막 읽기)와 짝인 end() 값 = last_side. side 가 없으면 last_side = None."""
         with self.lock:
             retried = False
             n = 0
+            self.last_side = None
             try:
                 while n < POINT_READS:
-                    cur, flag = self.read()
+                    if side is None:
+                        cur, flag = self.read()
+                    else:
+                        side.begin()
+                        try:
+                            cur, flag = self.read()
+                        finally:
+                            self.last_side = side.end()
                     n += 1
                     kind, new = judge_read(self.range, cur, self.ilim)
                     if kind == "limit":

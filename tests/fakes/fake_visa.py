@@ -7,6 +7,7 @@
     range_flag("" | "once" | "latch" - 출력이 켜진 채 범위를 낮추면 다음 :READ? 의 한도 표시가 1 · 값은 정상 · latch 는 *RST 까지 계속)
   - K2450 실장비 흉내 고르기: lab.over_mode("over" - 고정 범위의 105 % 를 넘으면 9.91E37 | "clamp" - 부호 × 1.05 × 범위 + 한도 표시) ·
     lab.first_gain(출력을 켠 뒤 첫 :READ? 값에 (1 + first_gain) - 기본 0)
+  - 읽기 시간: lab.read_dt(공통) · read_dt_t(온도) · read_dt_r(저항) - 값은 읽기 구간 한가운데의 것 · 읽는 동안 Lab 전체 잠금을 쥐지 않아 두 장비를 동시에 읽는다
   - 핀이 접촉 높이에 있지 않으면 열전대가 공기 온도를 잰다(lab.pin_down() 이 False).
   - 접촉 찾기 흉내(lab.probe · pos_fn): K2450 이 스테이지의 실제 X · Y · Z 를 보고 답한다. 샘플마다 표면 높이 · 크기 · 저항,
     샘플 밖은 알루미늄 판(lab.probe["plate_z"] 아래로 내려가면 단락), 핀 4개 중 FORCE 두 개가 먼저(표면), SENSE 두 개는 lag4 만큼 더 내려가야 닿는다.
@@ -67,6 +68,8 @@ class Lab:
         self.lock = threading.RLock()
         self.dev = {}
         self.read_dt = 0.25            # 읽기 한 번에 걸리는 장비 시간(s)
+        self.read_dt_t = None          # 온도(K2110 READ?) 읽기 시간 - None 이면 read_dt
+        self.read_dt_r = None          # 저항(K2450 :READ?) 읽기 시간 - None 이면 read_dt
         self.tripped = False
         self.cable = "REAR"            # 케이블은 K2450 뒷면 단자에 꽂혀 있다 - 앞면 단자 설정이면 열린 회로
         self.term = "FRON"             # K2450 현재 단자 설정(*RST 뒤 앞면)
@@ -78,6 +81,11 @@ class Lab:
         self.lead_ohm = 20.0           # 2단자로 잴 때 함께 재지는 리드 · 접촉 저항(4단자는 빠진다) - 위치와 무관한 흉내에서도 2단자 > 4단자
         self.heater_log = []           # 시험: 히트건이 켜지고 꺼진 시각 (clock, on)
         self._heat_prev = False
+
+    def dt_of(self, kind):
+        """읽기 한 번의 장비 시간(s): kind "t" 온도 · "r" 저항."""
+        v = self.read_dt_t if kind == "t" else self.read_dt_r
+        return float(self.read_dt if v is None else v)
 
     # ---- 시료 상태 ---------------------------------------------------
     def _cell(self, i):
@@ -266,6 +274,7 @@ class _Res:
     def __init__(self, lab, kind, addr):
         self.lab, self.kind, self.addr = lab, kind, addr
         self.timeout = 5000
+        self.rlock = threading.Lock()                         # 장비마다 한 번에 한 읽기(읽는 동안 Lab 전체 잠금은 쥐지 않는다 - 두 장비를 동시에 읽을 수 있다)
         self.err = []
         self.open_ = True
         self.s = {"range": 1e-3, "auto": False, "func": "CURR", "terminal": "FRON", "rsen": False, "nplc": 1.0, "avg_n": 1, "avg_on": False,
@@ -388,14 +397,20 @@ class _Res:
             return '+0, "No error"\n' if self.kind == "2110" else '0,"No error;0;0"\n'
         if u == "*LANG?":
             return "SCPI\n" if getattr(lab, "lang", "SCPI") == "SCPI" else "TSP\n"
-        if self.kind == "2110" and u == "READ?":
-            lab.sleep(lab.read_dt)
-            if lab.fault.get("tc_open"):
-                return OVER
-            return "%+.8E" % lab.temp()
+        if self.kind == "2110" and u == "READ?":               # 읽은 값 = 읽기 구간 한가운데의 값(실장비는 구간 동안 적분 · 평균한다)
+            with self.rlock:
+                dt = lab.dt_of("t")
+                lab.sleep(dt / 2.0)
+                v = OVER if lab.fault.get("tc_open") else "%+.8E" % lab.temp()
+                lab.sleep(dt / 2.0)
+                return v
         if self.kind == "2450" and u == ":READ?":
-            lab.sleep(lab.read_dt)
-            return lab.read_2450(s["range"], s["auto"], s["rsen"])
+            with self.rlock:
+                dt = lab.dt_of("r")
+                lab.sleep(dt / 2.0)
+                v = lab.read_2450(s["range"], s["auto"], s["rsen"])
+                lab.sleep(dt / 2.0)
+                return v
         if self.kind == "2450" and u == ":SOUR:VOLT:ILIM:TRIP?":
             return "1" if lab.tripped else "0"
         if self.kind == "2450" and u == ":SOUR:VOLT:PROT:TRIP?":

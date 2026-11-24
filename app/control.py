@@ -2053,13 +2053,14 @@ class Controller:
                 cv = dict(c.values, **(self.runner.cond if name == "run_resume" and self.runner.cond else {}))
                 if not cv.get("run_heater_use", True):                # 기록 모드: 냉각 → 가열 → 냉각 줄 대신
                     plan["steps"][2] = "히트건 사용 안 함 · 샘플마다 %g s 기록 · 쿨러 안 씀" % float(cv["run_hold_s"])
-                    plan["note"] = "히트건 · 쿨러 안 씀 · 측정 간격 %g s" % float(cv["run_interval_s"])
+                    plan["note"] = ("히트건 · 쿨러 안 씀 · 동시 읽기 · 점 주기 약 %.2f s" % config_mod.period_s(cv) if cv.get("run_read_mode", "seq") == "sync"
+                                    else "히트건 · 쿨러 안 씀 · 측정 간격 %g s" % float(cv["run_interval_s"]))
                 plan.update(self._photo_line(len(todo)))
                 if name == "run_resume":
                     plan["changes"] = self.runner.resume_text()     # "위치 갱신 2개 · 접촉 높이 21.000 → 21.300 mm"(없으면 "")
                 v = dict(c.values, **(self.runner.cond if name == "run_resume" and self.runner.cond else {}))
                 rt, iv = config_mod.read_time_s(v), float(v["run_interval_s"])
-                if rt > iv + 1e-9:                                  # 읽기가 측정 간격보다 길면 점 간격이 설정보다 넓어진다(주의만)
+                if v.get("run_read_mode", "seq") != "sync" and rt > iv + 1e-9:     # 순차: 읽기가 측정 간격보다 길면 점 간격이 설정보다 넓어진다(주의만 · 동시는 측정 간격을 안 씀)
                     plan["read_warn"] = "읽기 시간 예상 %.2f초 · 측정 간격 %g초 초과 · 점 간격 넓어짐" % (rt, iv)
                 plan["warn"] = self.MOVE_WARN
                 plan["warn_top"] = ""
