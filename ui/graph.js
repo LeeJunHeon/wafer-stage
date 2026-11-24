@@ -17,16 +17,22 @@ function ohmTick(e) {                                            // 10^e Ω → 
   const unit = { "-1": "mΩ", 0: "Ω", 1: "kΩ", 2: "MΩ", 3: "GΩ", 4: "TΩ" }[k];
   return unit ? v + " " + unit : "1E" + e + " Ω";
 }
+function niceStep(raw) {                                         // 1 · 2 · 5 × 10^k 중 raw 이상에서 가장 작은 것(경과 눈금)
+  const p = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1e-9))));
+  for (const m of [1, 2, 5, 10]) if (m * p >= raw - 1e-12) return m * p;
+  return 10 * p;
+}
 function textW(s) { let w = 0; for (const ch of String(s)) w += ch.charCodeAt(0) > 0x2E7F ? 11 : 6.5; return w; }   // 11px 글자의 대략 폭(한글은 넓다)
 
 /* series = [{name, points[[온도, 저항, 단계 0 가열 · 1 냉각]], color?, live?, main?}] (3개까지).
-   main(굵은 선 · 굵은 이름)을 안 주면 첫 번째가 main 이다. */
+   main(굵은 선 · 굵은 이름)을 안 주면 첫 번째가 main 이다.
+   g.set(series, {x: "time"}) = 기록 모드(히트건 사용 끔): points 의 첫 값이 경과(s) · 가로축 "경과 (s)"(0 부터) · 마우스 값도 초. 축 이름 · 이름표는 그대로 축 밖 띠. */
 function rtGraph() {
   const svg = svgEl("svg", { xmlns: "http://www.w3.org/2000/svg" });
   const read = h("div", { class: "g-read" });
   const box = h("div", { class: "g-box" }, svg);
   const el = h("div", { class: "graph" }, read, box);
-  const g = { el, svg, series: [], w: 0, h: 0, hoverT: null, title: "" };
+  const g = { el, svg, series: [], w: 0, h: 0, hoverT: null, title: "", xTime: false };
   let sc = null;                                                 // 지금 눈금(가로 · 세로 변환)
 
   function scales() {
@@ -36,8 +42,9 @@ function rtGraph() {
       if (p[0] < t0) t0 = p[0]; if (p[0] > t1) t1 = p[0];
       if (p[1] < r0) r0 = p[1]; if (p[1] > r1) r1 = p[1];
     }
-    if (t0 === Infinity) { t0 = 20; t1 = 100; r0 = 10; r1 = 1e6; }
-    t0 = Math.floor(Math.min(t0, 20) / 10) * 10; t1 = Math.ceil(Math.max(t1, 90) / 10) * 10;
+    if (t0 === Infinity) { t0 = g.xTime ? 0 : 20; t1 = g.xTime ? 60 : 100; r0 = 10; r1 = 1e6; }
+    if (g.xTime) { t0 = 0; t1 = Math.max(t1, 1); const st = niceStep(t1 / 6); t1 = Math.ceil(t1 / st - 1e-9) * st; }      // 경과: 0 부터 · 눈금 간격에 맞춰 끝
+    else { t0 = Math.floor(Math.min(t0, 20) / 10) * 10; t1 = Math.ceil(Math.max(t1, 90) / 10) * 10; }
     let e0 = Math.floor(Math.log10(r0) + 1e-9), e1 = Math.ceil(Math.log10(r1) - 1e-9);
     if (e1 <= e0) e1 = e0 + 1;
     const top = G_M.t + (g.title ? G_TITLE_H : 0);
@@ -59,7 +66,7 @@ function rtGraph() {
     const txt = (x, y, t, anchor, fill, weight, size) => svgEl("text", { x, y, "font-size": size || 11, "font-family": G_FONT, fill: fill || G_TEXT, "text-anchor": anchor || "middle", "font-weight": weight || 400, text: t });
     if (g.title) kids.push(txt(G_M.l, 14, g.title, "start", G_INK, 600, 12));          // 그림으로 저장할 때만: 위쪽 바깥 제목 한 줄
     /* 격자 · 눈금 */
-    const stepT = (sc.t1 - sc.t0) / sc.pw * 60 > 10 ? 20 : 10;
+    const stepT = g.xTime ? niceStep((sc.t1 - sc.t0) / Math.max(2, Math.floor(sc.pw / 60))) : (sc.t1 - sc.t0) / sc.pw * 60 > 10 ? 20 : 10;
     for (let t = sc.t0; t <= sc.t1 + 1e-9; t += stepT) {
       const x = sc.x(t);
       kids.push(svgEl("line", { x1: x, y1: sc.top, x2: x, y2: sc.top + sc.ph, stroke: G_GRID, "stroke-width": 1 }));
@@ -72,7 +79,7 @@ function rtGraph() {
       if ((e - sc.e0) % every === 0) kids.push(txt(G_M.l - 6, y + 4, ohmTick(e), "end"));
     }
     kids.push(svgEl("path", { d: "M" + G_M.l + " " + sc.top + "V" + (sc.top + sc.ph) + "H" + (G_M.l + sc.pw), fill: "none", stroke: G_AXIS, "stroke-width": 1 }));
-    kids.push(txt(G_M.l + sc.pw / 2, g.h - 4, "온도 (°C)"));
+    kids.push(txt(G_M.l + sc.pw / 2, g.h - 4, g.xTime ? "경과 (s)" : "온도 (°C)"));
     /* 선: 가열 실선 · 냉각 점선(단계가 바뀌는 점은 두 선이 같이 쓴다 - 끊기지 않게). 반복 측정은 모든 회차가 같은 색으로 이어진다. */
     const tags = [], lines = [], dots = [];
     g.series.forEach((s, si) => {
@@ -114,14 +121,15 @@ function rtGraph() {
   };
 
   function nearest(pts, ph, t) {
-    let best = null, bd = 2.0;                                   // 2 °C 안에서 가장 가까운 점
+    let best = null, bd = g.xTime && sc ? (sc.t1 - sc.t0) / 50 : 2.0;     // 2 °C(기록 모드는 가로 폭의 1/50) 안에서 가장 가까운 점
     for (const p of pts) { if (p[2] !== ph || p[0] == null) continue; const d = Math.abs(p[0] - t); if (d < bd) { bd = d; best = p; } }
     return best;
   }
   function readout() {
     if (g.hoverT == null) { read.textContent = ""; return; }      // 마우스를 올렸을 때만 값이 보인다(줄 높이는 CSS 가 잡아 둔다)
-    const parts = [g.hoverT.toFixed(1) + " °C"];
+    const parts = [g.hoverT.toFixed(1) + (g.xTime ? " s" : " °C")];
     for (const s of g.series) {
+      if (g.xTime) { const c = nearest(s.points, 2, g.hoverT); if (c) parts.push(s.name + " " + fmtOhm2(c[1])); continue; }
       const a = nearest(s.points, 0, g.hoverT), b = nearest(s.points, 1, g.hoverT);
       if (a || b) parts.push(s.name + " " + (a ? "가열 " + fmtOhm2(a[1]) : "") + (a && b ? " / " : "") + (b ? "냉각 " + fmtOhm2(b[1]) : ""));
     }
@@ -141,7 +149,7 @@ function rtGraph() {
     g.w = w; g.h = hh; g.draw();
   }).observe(box);
 
-  g.set = (series) => { g.series = series.slice(0, 3); readout(); g.draw(); };
+  g.set = (series, opts) => { g.xTime = !!(opts && opts.x === "time"); g.series = series.slice(0, 3); readout(); g.draw(); };
 
   /* 지금 그림을 PNG 로(가로 2배 해상도). title 을 주면 그래프 위쪽 바깥에 제목 한 줄을 넣는다. Promise<Blob | null> */
   g.toPng = (title) => new Promise((resolve) => {

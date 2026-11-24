@@ -176,3 +176,27 @@ def curve_stats(rows, lo, hi, sign, reversal_c):
         out["sp_err_mean"] = round(sum(err) / len(err), 3)
         out["sp_err_max"] = round(max(err), 3)
     return out
+
+
+def hold_summary(rows, open_a=None, n_miss=0):
+    """기록 모드(히트건 사용 끔 - 일정 시간 그 자리 온도에서 저항 기록)의 요약. rows = [(경과 s, 온도 °C, 저항 Ω, 전류 A | None)] 기록한 점.
+    반환 {n, dur_s, r_mean, r_sd_pct(평균 대비 %), r_min, r_max, drift_pct_min(선형 맞춤 기울기 ÷ 평균 · 1 분당 %), t_mean, t_min, t_max,
+    n_open(전류 < open_a 인 점), n_miss(못 쓴 읽기 - 전류 한도 걸림 · 값 없음)}. 점이 없으면 n 0 과 None 들."""
+    pts = [(float(t), None if T is None else float(T), float(R), cur) for t, T, R, cur in rows if R is not None and R > 0]
+    out = {"n": len(pts), "dur_s": None, "r_mean": None, "r_sd_pct": None, "r_min": None, "r_max": None, "drift_pct_min": None,
+           "t_mean": None, "t_min": None, "t_max": None, "n_open": 0, "n_miss": int(n_miss)}
+    if not pts:
+        return out
+    t = np.array([p[0] for p in pts])
+    r = np.array([p[2] for p in pts])
+    m = float(r.mean())
+    out.update(dur_s=round(float(t[-1] - t[0]), 2), r_mean=m, r_sd_pct=float(r.std() / m * 100.0) if m else None, r_min=float(r.min()), r_max=float(r.max()))
+    if len(pts) >= 2 and float(t[-1] - t[0]) > 0:
+        slope = float(np.polyfit(t / 60.0, r, 1)[0])                # Ω / 분
+        out["drift_pct_min"] = slope / m * 100.0 if m else None
+    temps = [p[1] for p in pts if p[1] is not None]
+    if temps:
+        out.update(t_mean=float(sum(temps) / len(temps)), t_min=float(min(temps)), t_max=float(max(temps)))
+    if open_a is not None:
+        out["n_open"] = sum(1 for p in pts if p[3] is not None and abs(float(p[3])) < float(open_a))
+    return out

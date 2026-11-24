@@ -49,11 +49,16 @@ from app.state import ALARM, NOTICE
 
 STAGES = ("이동", "접촉", "냉각", "가열", "냉각", "저장")
 WAIT, NOW, DONE, FAIL, SKIPPED, STOPPED, OUT = "대기", "측정 중", "완료", "실패", "건너뜀", "중지", "제외"
+PHASE_NAME = {0: "가열", 1: "냉각", 2: "기록"}          # 점의 단계(control.csv 단계 칸) - 2 = 기록 모드(히트건 사용 끔)
+HOLD_STAGE = 6                                      # 기록 모드의 진행 단계 번호(화면 STAGE_NAMES[6] "기록")
+HOLD_COLS = (("n", "기록 점 수"), ("dur_s", "기록 시간(s)"), ("r_mean", "저항 평균(Ω)"), ("r_sd_pct", "저항 흔들림(%)"), ("r_min", "저항 최소(Ω)"),
+             ("r_max", "저항 최대(Ω)"), ("drift_pct_min", "1분당 변화(%)"), ("t_mean", "온도 평균(°C)"), ("t_min", "온도 최소(°C)"), ("t_max", "온도 최대(°C)"),
+             ("n_open", "접촉 불량 점 수"), ("n_miss", "못 쓴 읽기 수"))     # summary.csv 의 기록 모드 열(analysis.hold_summary)
 T_MISS_N = 3                                      # 온도를 이만큼 연속으로 못 읽으면 측정을 멈춘다(열전대 끊김)
 MAX_POINTS = 200000
 COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "meter_ilim_a", "run_start_c", "run_heater_off_c", "run_cool_end_c",
              "run_repeat", "run_interval_s", "run_cooler_mode", "run_cooler_during_heat", "contact_mode", "contact_fixed_read", "contact_z_mm",
-             "contact_check", "contact_max_ohm", "contact_min_ohm",
+             "contact_check", "contact_max_ohm", "contact_min_ohm", "run_heater_use", "run_hold_s",
              "run_no_rise_s", "run_no_rise_c",
              "run_fast_rise_c_s", "run_stall_s", "run_stall_c", "run_phase_limit_s", "run_open_n", "contact_open_a", "nas_dir", "nas_date_folder",
              "heater_max_c", "heater_max_on_s", "plate_size_mm", "cooler_grid", "cooler_relays", "heater_fan_relay", "heater_element_relay",
@@ -140,8 +145,9 @@ class Runner:
         """측정 스레드가 도는 중(마지막 파일 저장 · NAS 복사 · 끝난 상태를 화면에 보내기까지). 이것이 False 가 된 뒤에야 다음 측정 · 손 조작을 받는다."""
         return self._busy
 
-    def gate(self):
+    def gate(self, heater=None):
         """측정을 시작하려면 필요한 것 중 빠진 것 [{"text", "step"(초기 설정 단계 번호)}]. 빈 판 사진은 없어도 된다.
+        heater = 히트건을 쓰는 측정인가(없으면 지금 설정 run_heater_use) - 끄면 쿨러 배치 빈 칸을 보지 않는다(쿨러를 안 쓴다).
         카메라는 요구하지 않는다 - 측정 · 재개는 카메라를 쓰지 않는다(촬영 · 샘플 검출 · 헤드 위치 확인만 쓴다)."""
         c, st, out = self.c, self.c.state, []
         for key, name in (("stage", "스테이지 연결"), ("k2110", "온도계 연결"), ("k2450", "저항계 연결")):
@@ -162,7 +168,8 @@ class Runner:
             out.append({"text": "접촉 높이", "step": 6})
         if c.prep.pos_block:
             out.append({"text": "헤드 위치 확인", "step": 2})
-        if self.empty_cell_names(c.cfg.values, [s for s in c.prep.samples if s["use"]]):
+        heater = bool(c.cfg["run_heater_use"]) if heater is None else bool(heater)
+        if heater and self.empty_cell_names(c.cfg.values, [s for s in c.prep.samples if s["use"]]):
             out.append({"text": "쿨러 배치 빈 칸", "step": 7})
         return out
 
@@ -184,12 +191,13 @@ class Runner:
                 raise Rejected("이미 측정 중")
             if c.temptest.active:                                   # 온도 시험이 히트건 · 쿨러를 쓰는 중(온도 시험 시작도 이 잠금 안에서 측정을 본다)
                 raise Rejected("온도 시험 중 실행 불가")
-            if c.stage.connected and not c.stage.heat_capable:      # 열선 출력 % 제어가 필요하다
+            heater = bool(c.cfg["run_heater_use"])                 # 끄면 기록 모드: 히트건에만 필요한 조건(펌웨어 열선 출력 · 전원 맞춤 · 쿨러 배치)은 보지 않는다
+            if heater and c.stage.connected and not c.stage.heat_capable:      # 열선 출력 % 제어가 필요하다
                 raise Rejected(FW_NEED)
-            why = c.sync_problem()                                  # 전원 맞춤 기준을 골랐는데 잠기지 않았다
+            why = c.sync_problem() if heater else ""               # 전원 맞춤 기준을 골랐는데 잠기지 않았다
             if why:
                 raise Rejected(why)
-            miss = self.gate()
+            miss = self.gate(heater)
             if miss:
                 raise Rejected("필요 항목: " + " · ".join(m["text"] for m in miss))
             used = [s for s in c.prep.samples if s["use"]]
@@ -206,9 +214,10 @@ class Runner:
             c.k2450_begin_run()                                     # 연속 측정을 끄고 K2450 사용권을 얻는다(측정이 끝나면 _main 이 놓는다)
             try:
                 self.cond = {k: c.cfg[k] for k in COND_KEYS}
-                if c.stage.heat_capable:
+                if heater and c.stage.heat_capable:
                     c.heater_method_restore()                       # 설정의 열선 출력 방식으로(맞추기 · 수동이 바꿨을 수 있다)
-                heat_notices(c, self.cond, "run_interval_s", "측정")
+                if heater:
+                    heat_notices(c, self.cond, "run_interval_s", "측정")
                 self.batch = str(c.cfg["batch_name"])
                 self.t0 = time.time()
                 lt = time.localtime(self.t0)
@@ -239,12 +248,13 @@ class Runner:
                 raise Rejected("재개할 측정 없음")
             if self.c.temptest.active:
                 raise Rejected("온도 시험 중 실행 불가")
-            if self.c.stage.connected and not self.c.stage.heat_capable:
+            heater = bool(self.cond.get("run_heater_use", True))     # 재개는 이 측정의 방식(기록 모드면 히트건 조건을 보지 않는다)
+            if heater and self.c.stage.connected and not self.c.stage.heat_capable:
                 raise Rejected(FW_NEED)
-            why = self.c.sync_problem()
+            why = self.c.sync_problem() if heater else ""
             if why:
                 raise Rejected(why)
-            miss = self.gate()
+            miss = self.gate(heater)
             if miss:
                 raise Rejected("필요 항목: " + " · ".join(m["text"] for m in miss))
             ch = self.resume_changes()                              # 대기 샘플의 지금 좌표 · 지금 접촉 설정(못 구하면 거절)
@@ -255,7 +265,7 @@ class Runner:
                     self.order.append(s["id"])
             if not any(self.items[i]["status"] == WAIT for i in self.order):
                 raise Rejected("남은 샘플 없음")
-            if self.empty_cell_names(self.cond, [self.items[i] for i in self.order if self.items[i]["status"] == WAIT]):
+            if heater and self.empty_cell_names(self.cond, [self.items[i] for i in self.order if self.items[i]["status"] == WAIT]):
                 raise Rejected("쿨러 배치 빈 칸 · 초기 설정 7")              # 재개는 이 측정의 조건(cond)의 배치를 쓴다
             bad = config_mod.problems(dict(self.c.cfg.values, **self.cond))    # 이 측정이 쓰는 조건(cond) + 지금의 안전 설정으로 다시 검사한다
             if bad:
@@ -512,9 +522,14 @@ class Runner:
             self._cleanup(estop=bool(halt and halt.kind == "estop") or c.safety.locked)
             it["t1"] = time.time()
             self._close_files(it)
-            it["sum"] = analysis.analyze(self._first_cycle(it))
-            it["sum"]["curve"] = curve_summary(it.pop("_tl", []), cd_of(self.cond, c.cfg.values))
-            it["sum"]["jumps"] = [{"phase": ph, "sp": spi, "d": round(j["d"], 1)} for ph, spi, j in it.pop("_jumps", [])]     # 온도 급변(d = 끝난 뒤의 최대 폭)
+            if not self.cond.get("run_heater_use", True):          # 기록 모드: 저항–시간 요약(가열 · 냉각 요약은 없음)
+                it["sum"] = {"hold": analysis.hold_summary(it.pop("_hold", []), self.cond.get("contact_open_a"), it.pop("_hold_miss", 0))}
+                it.pop("_tl", None)
+                it.pop("_jumps", None)
+            else:
+                it["sum"] = analysis.analyze(self._first_cycle(it))
+                it["sum"]["curve"] = curve_summary(it.pop("_tl", []), cd_of(self.cond, c.cfg.values))
+                it["sum"]["jumps"] = [{"phase": ph, "sp": spi, "d": round(j["d"], 1)} for ph, spi, j in it.pop("_jumps", [])]     # 온도 급변(d = 끝난 뒤의 최대 폭)
             self._save_json()
             self.publish()
         if abort is not None:
@@ -562,6 +577,9 @@ class Runner:
             self._set(1, "접촉 높이로 하강")
             it["contact"] = c.contact_fixed(cd["contact_z_mm"], g, read=bool(cd.get("contact_fixed_read", True)), meter=cd)
             self._contact_check(it, cd)                             # 접촉 확인(가열 · 저항계 출력 · 쿨러 켜기 전)
+        if not cd.get("run_heater_use", True):                      # ---- 기록 모드(히트건 사용 끔): 쿨러 · 시작 온도 · 가열 · 냉각 · 반복 없이 ----
+            self._hold_measure(it, g, fname, volt)
+            return
         # ---- 3 냉각(시작 전) ----
         self._check(g)
         self._coolers = self._coolers_for(it)
@@ -647,6 +665,55 @@ class Runner:
             raise ContactStop(it["name"], j[0], j[1])
         raise ContactSkip(j[1])
 
+    def _hold_measure(self, it, g, fname, volt):
+        """기록 모드(run_heater_use 끔): 이동 · 접촉 · 접촉 확인 뒤 K2450 을 LabVIEW 와 같은 방식(configure · read_step)으로 켜고
+        run_hold_s 동안 측정 간격마다 한 점(온도 T1 → 저항 → 온도 T2 평균)을 기록한다. 히트건 · 쿨러는 켜지 않는다(반복 1 회 · .dat 하나).
+        파일 · 정리 · NAS 복사는 가열 측정과 같다."""
+        c, cd = self.c, self.cond
+        self._coolers = []
+        self.cycle = 1
+        self._check(g)
+        dev = c.k2450
+        if dev is None or not dev.is_open:
+            raise RunAbort("저항계 연결 안 됨")
+        self.feeding = True
+        self._open_cycle(it, fname, volt, 1)
+        try:
+            dev.configure(volt, cd["meter_ilim_a"], cd["meter_four_wire"], cd["meter_nplc"], cd["meter_avg_count"])
+            dev.output(True)
+        except meters.VisaError as e:
+            raise RunAbort("저항계 설정 오류 · %s" % str(e)[:50])
+        self._hold(it, g, float(cd.get("run_hold_s", 60.0)))
+        self._close_cycle(it)
+        self._set(5, "저장 중", 0.5)
+
+    def _hold(self, it, g, hold_s):
+        """기록: hold_s 동안 측정 간격마다 한 점(단계 2). 전류 한도 걸림 · 값 없음은 쓰지 않는다(못 쓴 읽기로 셈) · 접촉 불량 주의는 같다."""
+        c, cd = self.c, self.cond
+        interval = float(cd["run_interval_s"])
+        st = it.setdefault("_st", {"low": 0, "open_warned": False, "trip_warned": False, "fast_warned": False})
+        rows = it.setdefault("_hold", [])                           # 요약용 [(경과, 온도, 저항, 전류)]
+        it["_hold_miss"] = 0
+        t0 = c.clock()
+        t_prev = None
+        while True:
+            self._check(g)
+            t_it = c.clock()
+            self._note_cycle(it, t_prev, t_it)
+            t_prev = t_it
+            T, T1, T2, cur, R, trip = self._read_tr()
+            self._note_reading(it, cur, trip, st)
+            el = c.clock() - t0
+            if T is not None and R is not None and not trip:
+                self._row(it, T, R, 2, None, T1, T2)
+                rows.append((round(c.clock() - (self._t_rec or t0), 3), T, R, cur))
+            else:
+                it["_hold_miss"] += 1
+            self._set(HOLD_STAGE, "기록 중 · %d / %d s" % (min(el, hold_s), hold_s), max(0.0, min(1.0, el / max(1e-6, hold_s))))
+            if el >= hold_s:
+                return
+            c.sleep(max(0.0, interval - (c.clock() - t_it)))
+
     def _precool(self, it, g, start_c):
         """가열 전: 온도가 시작 온도 이하인지 본다. 아니면 쿨러로 더 식힌다(기록하지 않는다). 정체로 못 닿으면 StartTempAbort(측정 전체를 멈춘다)."""
         T = self._read_temp()
@@ -728,9 +795,10 @@ class Runner:
         c = self.c
         t_rel = c.clock() - (self._t_rec or c.clock())
         f3 = lambda v: "" if v is None else "%.3f" % v                             # noqa: E731
-        ctl = "%d,%s,%.2f,%s,%s,%s,%.1f,%d,%s,%s\r\n" % (self.cycle, "가열" if phase == 0 else "냉각", t_rel, files.fmt_e(T), files.fmt_e(R),
-                                                    f3(sp), c.heater_pct(), 1 if c._fan_on() else 0, f3(T1), f3(T2))
-        if len(it.setdefault("_tl", [])) < MAX_POINTS:
+        pct = "" if phase == 2 else "%.1f" % c.heater_pct()          # 기록 모드: 목표 온도 · 열선 칸은 비움
+        ctl = "%d,%s,%.2f,%s,%s,%s,%s,%d,%s,%s\r\n" % (self.cycle, PHASE_NAME.get(phase, "냉각"), t_rel, files.fmt_e(T), files.fmt_e(R),
+                                                    f3(sp), pct, 1 if c._fan_on() else 0, f3(T1), f3(T2))
+        if phase != 2 and len(it.setdefault("_tl", [])) < MAX_POINTS:
             it["_tl"].append((round(t_rel, 3), float(T), None if sp is None else float(sp), phase, self.cycle))     # 요약(점 수 · 속도 · 역전 · 목표선 차이)용
         try:
             for f in (self._fc, self._fm):
@@ -742,7 +810,10 @@ class Runner:
         except OSError as e:
             raise RunAbort("파일 쓰기 실패 · %s" % str(e)[:50])
         if len(it["points"]) < MAX_POINTS:
-            it["points"].append([float(files.fmt_e(T)), float(files.fmt_e(R)), phase])    # 파일에 쓴 값 그대로 - 측정 때 낸 요약 · 그래프가 파일에서 다시 낸 것과 똑같다
+            pt = [float(files.fmt_e(T)), float(files.fmt_e(R)), phase]    # 파일에 쓴 값 그대로 - 측정 때 낸 요약 · 그래프가 파일에서 다시 낸 것과 똑같다
+            if phase == 2:
+                pt.append(round(t_rel, 2))                          # 기록 모드: 경과(s) - 화면 그래프의 가로축(저항–시간)
+            it["points"].append(pt)
         cy = it["cycles"][-1]
         cy["rows"] += 1
         if phase == 0:
@@ -1122,7 +1193,8 @@ class Runner:
             nas = {"dir": files.nas_target(self.cond.get("nas_dir"), self.cond.get("nas_date_folder"), self.batch, self.t0), "ok": None, "pending": [], "done": []}
         return {"batch": self.batch, "started": self.t0, "saved": time.time(), "state": state or self.state, "msg": self.msg, "cond": self.cond, "nas": nas,
                 "resumes": list(getattr(self, "resumes", [])),
-                "samples": [{k: v for k, v in self.items[i].items() if k not in ("points", "_st", "_tl", "_jumps")} | {"order": n + 1} for n, i in enumerate(self.order)]}
+                "samples": [{k: v for k, v in self.items[i].items() if k not in ("points", "_st", "_tl", "_jumps", "_hold", "_hold_miss")} | {"order": n + 1}
+                            for n, i in enumerate(self.order)]}
 
     def _save_json(self, state=None):
         if self.folder is None:
@@ -1146,7 +1218,8 @@ class Runner:
                             "가열 역전(회)", "냉각 역전(회)", "가열 역전 최대(°C)", "냉각 역전 최대(°C)", "가열 목표선 차이 평균(°C)", "냉각 목표선 차이 평균(°C)",
                             "가열 목표선 차이 최대(°C)", "냉각 목표선 차이 최대(°C)",
                             "가열 흔들림(°C)", "냉각 흔들림(°C)", "가열 흔들림 폭(°C)", "냉각 흔들림 폭(°C)",
-                            "가열 흔들림 주기(s)", "냉각 흔들림 주기(s)", "가열 흔들림 진폭(°C)", "냉각 흔들림 진폭(°C)"])
+                            "가열 흔들림 주기(s)", "냉각 흔들림 주기(s)", "가열 흔들림 진폭(°C)", "냉각 흔들림 진폭(°C)"]
+                           + [x[1] for x in HOLD_COLS])
                 for n, i in enumerate(self.order):
                     it = self.items[i]
                     s = it.get("sum") or {}
@@ -1158,7 +1231,8 @@ class Runner:
                                 e(((s.get("spacing") or {}).get("heat") or {}).get("dc")), e(((s.get("spacing") or {}).get("cool") or {}).get("dc"))]
                                + [e(((s.get("curve") or {}).get(ph) or {}).get(k)) for k in ("n", "rate_c_min", "step_sd", "rev_n", "rev_max", "sp_err_mean", "sp_err_max",
                                                                                             "rip_sd", "rip_pp", "rip_period_s", "rip_amp")
-                                  for ph in ("heat", "cool")])
+                                  for ph in ("heat", "cool")]
+                               + [e(((s.get("hold") or {}).get(k))) for k, _name in HOLD_COLS])      # 기록 모드 요약(가열 측정은 빈 칸)
         except OSError as e:
             self.c.logs.app("summary.csv 저장 실패 · %s" % e, "error")
 
@@ -1182,8 +1256,8 @@ class Runner:
             if it is not None:
                 row.update(order=self.order.index(s["id"]) + 1, status=it["status"], reason=it["reason"], notes=list(it["notes"]), n=len(it["points"]), t0=it["t0"],
                            dur=None if not (it["t0"] and it["t1"]) else round(it["t1"] - it["t0"], 1), name=it["name"],
-                           spacing=analysis.point_spacing(self._first_cycle(it)) if it["points"] else None,      # 점 간격(가열 · 냉각) - 첫 회차
-                           curve=(it.get("sum") or {}).get("curve"))
+                           spacing=analysis.point_spacing(self._first_cycle(it)) if it["points"] and self._heater_run() else None,      # 점 간격(가열 · 냉각) - 첫 회차
+                           curve=(it.get("sum") or {}).get("curve"), hold=(it.get("sum") or {}).get("hold"))
             elif s["use"]:
                 k += 1
                 row.update(order=(k if idle else None), status=WAIT if idle or self.state != "running" else OUT)
@@ -1201,7 +1275,12 @@ class Runner:
                 "record": rec, "cur": self.cur, "stage": self.stage, "frac": round(self.frac, 3), "line": self.line, "cycle": self.cycle,
                 "repeat": int(self.cond.get("run_repeat", c.cfg["run_repeat"])), "pause_after": self.pause_after, "rows": rows, "total": total,
                 "summary": summary, "msg": self.msg, "gate": [] if self.state == "running" else self.gate(), "volt": float(self.cond.get("meter_volt", c.cfg["meter_volt"])),
-                "heat": None if self.heat is None else dict(self.heat)}
+                "heat": None if self.heat is None else dict(self.heat),
+                "mode": "rt" if self._heater_run() else "hold", "hold_s": float(self.cond.get("run_hold_s", c.cfg["run_hold_s"]))}
+
+    def _heater_run(self):
+        """히트건을 쓰는 측정인가(지금 기록의 조건 · 기록이 없으면 지금 설정)."""
+        return bool(self.cond.get("run_heater_use", self.c.cfg["run_heater_use"])) if self.cond else bool(self.c.cfg["run_heater_use"])
 
     def publish(self):
         with self._pub_lock:

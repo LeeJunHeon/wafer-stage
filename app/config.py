@@ -399,6 +399,10 @@ ITEMS = (
               common=True, desc="이 온도까지 냉각하면 그 샘플 측정 완료"),
          Item("run_repeat", 1, "int", "반복", "회", 1, 20,
               common=True, desc="샘플마다 가열 · 냉각을 반복하는 횟수\n회차마다 파일 하나"),
+         Item("run_heater_use", True, "bool", "히트건 사용",
+              common=True, desc="끄면 가열 · 냉각 없이 기록 시간 동안 그 자리 온도에서 저항 기록\n쿨러 · 시작 온도 · 반복은 쓰지 않음"),
+         Item("run_hold_s", 60.0, "float", "기록 시간", "s", 1, 3600,
+              common=True, desc="히트건 사용을 끄면 샘플마다 이 시간 동안 측정 간격마다 기록\n파일은 LabVIEW 형식 그대로(.dat 하나)"),
          Item("run_interval_s", 0.9, "float", "측정 간격", "s", 0.05, 60,               # 기본 설정의 읽기 시간 예상 = 온도 0.2 × 2 + 저항 0.43 = 0.83 초
               common=True, desc="한 점(온도 → 저항 → 온도)의 주기 · 읽기 시간 예상보다 짧으면 거절\n가열 · 냉각 속도 = 목표 점 간격 ÷ 이 값 × 60"),
          Item("batch_name", "1", "str", "묶음",
@@ -576,7 +580,7 @@ def hint(item: Item) -> str:
 def problems(v: dict) -> list:
     """설정 조합 검사: 값 하나하나는 맞아도 같이 쓰면 안 되는 조합을 찾는다. 문제마다 사람이 읽는 한 줄. 없으면 [].
     설정 저장(PUT)과 측정 시작 · 재개가 이 함수 하나를 쓴다(app/control.py update_settings · app/jobs/run.py start · resume)."""
-    out = heat_problems(v)
+    out = heat_problems(v) if v.get("run_heater_use", True) else []     # 기록 모드(히트건 끔)는 가열 · 냉각 속도 · 단계 시간 검사가 필요 없다(그 값으로 하는 일이 없다)
     if not float(v["run_no_rise_s"]) < float(v["heater_max_on_s"]):
         out.append("가열 무반응 시간 %g초 · 열선 연속 최대 시간 %g초 미만 필요" % (v["run_no_rise_s"], v["heater_max_on_s"]))
     # ---- 읽기 시간: 측정 중 온도는 측정 간격마다 읽는다. 한 회차가 온도 못 읽음 허용 시간에 가까우면 안전 감시가 히트건을 꺼서

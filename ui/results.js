@@ -15,12 +15,9 @@ function buildResults() {
   rs.save = busyBtn("이미지 저장", saveResultPng);
   rs.saved = h("span", { class: "small nowrap grow" });
   const mid = h("div", { class: "panel fill", id: "rs-mid" },
-    h("div", { class: "row" }, h("h3", { text: "온도별 저항" }), h("span", { class: "sp" }), rs.saved, rs.save),
+    h("div", { class: "row" }, rs.gtitle = h("h3", { text: "온도별 저항" }), h("span", { class: "sp" }), rs.saved, rs.save),
     h("div", { class: "fill gwrap" }, rs.graph.el),
-    h("div", { class: "tscroll rtable" }, h("table", { class: "tb" }, h("thead", {}, h("tr", {},
-      h("th", { text: "샘플" }), h("th", { class: "num", text: "시작 온도 저항" }), h("th", { class: "num", text: "최고 온도 저항" }), h("th", { class: "num", text: "저항비" }),
-      h("th", { class: "num", text: "가열 전이 온도" }), h("th", { class: "num", text: "냉각 전이 온도" }), h("th", { class: "num", text: "차이" }),
-      h("th", { class: "num", text: "점 간격 가열 · 냉각" }))), rs.tbody)),
+    h("div", { class: "tscroll rtable" }, h("table", { class: "tb" }, rs.thead = h("thead", {}), rs.tbody)),
     rs.note = h("div", { class: "small" }));
   rs.files = h("div", { class: "grp" });
   rs.nas = h("div", { class: "grp" });
@@ -76,7 +73,8 @@ const pickColor = (sid) => { const i = rs.picks.indexOf(sid); return i < 0 ? nul
 function drawResultGraph() {
   const rec = rs.rec;
   if (!rec) { rs.graph.set([]); return; }
-  rs.graph.set(rs.picks.map((sid) => { const s = rec.samples.find((x) => x.id === sid); return { name: s ? s.name : String(sid), points: rs.pts[sid] || [], color: pickColor(sid), main: false }; }));
+  rs.graph.set(rs.picks.map((sid) => { const s = rec.samples.find((x) => x.id === sid); return { name: s ? s.name : String(sid), points: rs.pts[sid] || [], color: pickColor(sid), main: false }; }),
+    rec.mode === "hold" ? { x: "time" } : null);                 // 기록 모드(히트건 사용 끔): 저항–시간
 }
 function resultTitle() {                                          // 그림으로 저장할 때 그래프 위에 넣는 한 줄
   const rec = rs.rec, c = rec.cond || {};
@@ -88,7 +86,8 @@ const COND_ROWS = [["meter_volt", "측정 전압", "V"], ["meter_four_wire", "4�
   ["run_point_step_c", "목표 점 간격", "°C"], ["run_heat_rate_c_min", "가열 속도", "°C/분"], ["run_cool_mode", "냉각 방식", ""],
   ["cool_rate_separate", "냉각 속도 따로", ""], ["run_cool_rate_c_min", "냉각 속도", "°C/분"],
   ["heater_lead_c", "목표선 기다림 폭", "°C"], ["run_fan_during_cool", "냉각 중 송풍", ""],
-  ["run_cooler_mode", "쿨러", ""], ["run_cooler_during_heat", "가열 중 쿨러", ""], ["contact_mode", "접촉 방식", ""], ["contact_z_mm", "접촉 높이", "mm"]];
+  ["run_cooler_mode", "쿨러", ""], ["run_cooler_during_heat", "가열 중 쿨러", ""], ["contact_mode", "접촉 방식", ""], ["contact_z_mm", "접촉 높이", "mm"],
+  ["run_heater_use", "히트건 사용", ""], ["run_hold_s", "기록 시간", "s"], ["contact_check", "접촉 확인", ""], ["contact_max_ohm", "접촉 판정 상한", "Ω"], ["contact_min_ohm", "금속 판 판정 하한", "Ω"]];
 const COOLER_NAMES = { zone: "샘플 아래 구역", all: "전체", none: "사용 안 함" };
 const CONTACT_NAMES = { fixed: "고정 높이", search: "전기 탐색" };
 const HEAT_NAMES = { ramp: "가열 속도 제어", full: "계속 가열" };
@@ -104,7 +103,18 @@ function spacingCell(sp) {
 function renderRecord() {
   const rec = rs.rec;
   setOff(rs.save, !rec ? "기록 고르기 필요" : !rs.picks.length ? "샘플 고르기 필요" : "");
-  rs.note.textContent = "전이 온도 = 저항이 가장 빨리 변하는 온도" + (rec && rec.samples.some((s) => s.cycles > 1) ? " · 반복 측정은 첫 회차 기준" : "");
+  const hold = !!(rec && rec.mode === "hold");                   // 기록 모드: 그래프 저항–시간 · 표는 평균 · ± % · 1분당 변화 · 온도 · 끊긴 읽기
+  rs.gtitle.textContent = hold ? "시간별 저항" : "온도별 저항";
+  const hsig = hold ? "hold" : "rt";
+  if (rs.hsig !== hsig) {
+    rs.hsig = hsig;
+    const th = (t, num) => h("th", { class: num ? "num" : null, text: t });
+    setKids(rs.thead, h("tr", {}, ...(hold
+      ? [th("샘플"), th("저항 평균", 1), th("흔들림", 1), th("1분당 변화", 1), th("최소 · 최대", 1), th("온도 평균", 1), th("점 · 끊긴 읽기", 1)]
+      : [th("샘플"), th("시작 온도 저항", 1), th("최고 온도 저항", 1), th("저항비", 1), th("가열 전이 온도", 1), th("냉각 전이 온도", 1), th("차이", 1), th("점 간격 가열 · 냉각", 1)])));
+  }
+  rs.note.textContent = hold ? "히트건 사용 안 함 · 그 자리 온도에서 기록 시간 동안 저항 기록 · 흔들림 = 표준편차 ÷ 평균"
+    : "전이 온도 = 저항이 가장 빨리 변하는 온도" + (rec && rec.samples.some((s) => s.cycles > 1) ? " · 반복 측정은 첫 회차 기준" : "");
   if (!rec) {
     setKids(rs.samples, small("기록 선택 시 표시"));
     setKids(rs.tbody); setKids(rs.files, small("—")); setKids(rs.nas, small("—")); setKids(rs.cond, small("—"));
@@ -119,6 +129,14 @@ function renderRecord() {
   const e2 = (v) => (v == null ? "—" : fmtOhm2(v)), t1 = (v) => (v == null ? "—" : v.toFixed(1) + " °C");
   setKids(rs.tbody, ...rec.samples.map((s) => {
     const a = s.sum || {}, col = pickColor(s.id);
+    if (hold) {
+      const hd = a.hold || {}, pc = (v, d) => (v == null ? "—" : (v >= 0 && d ? "+" : "") + v.toFixed(d || 1) + " %");
+      return h("tr", { class: rs.picks.includes(s.id) ? "sel" : "", onclick: () => { if (s.n) togglePick(s.id); } },
+        h("td", {}, col ? swatch(col) : null, s.name + (s.status !== "완료" ? " · " + s.status + (s.reason ? " · " + s.reason : "") : "")),
+        h("td", { class: "num", text: e2(hd.r_mean) }), h("td", { class: "num", text: pc(hd.r_sd_pct) }), h("td", { class: "num", text: pc(hd.drift_pct_min, 2) }),
+        h("td", { class: "num", text: e2(hd.r_min) + " · " + e2(hd.r_max) }), h("td", { class: "num", text: t1(hd.t_mean) }),
+        h("td", { class: "num", text: (hd.n == null ? "—" : hd.n) + " · " + ((hd.n_open || 0) + (hd.n_miss || 0)) }));
+    }
     return h("tr", { class: rs.picks.includes(s.id) ? "sel" : "", onclick: () => { if (s.n) togglePick(s.id); } }, h("td", {}, col ? swatch(col) : null, s.name + (s.status !== "완료" ? " · " + s.status + (s.reason ? " · " + s.reason : "") : "")),
       h("td", { class: "num", text: e2(a.r_start) }), h("td", { class: "num", text: e2(a.r_peak) }), h("td", { class: "num", text: a.ratio == null ? "—" : a.ratio >= 100 ? Math.round(a.ratio).toLocaleString() : a.ratio.toFixed(1) }),
       h("td", { class: "num", text: t1(a.t_heat) }), h("td", { class: "num", text: t1(a.t_cool) }), h("td", { class: "num", text: t1(a.hyst) }), spacingCell(a.spacing));

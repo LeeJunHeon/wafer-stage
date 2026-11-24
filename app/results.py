@@ -89,6 +89,31 @@ def cycle_points(folder, cyc):
     return [[t, r, 0 if i < k else 1] for i, (t, r) in enumerate(raw)]
 
 
+def hold_points(folder, cyc):
+    """기록 모드 회차의 점 [[경과 s, 저항, 2]] - control.csv(같은 줄 순서 · 단계 "기록")에서 읽는다(.dat 에는 시간이 없다 - LabVIEW 형식 그대로)."""
+    if not cyc:
+        return []
+    stem = str(cyc["file"]).rsplit("_", 1)[0]                     # <이름>_<전압>V_0.dat → <이름>_<전압>V
+    try:
+        lines = (folder / (stem + "_control.csv")).read_text(encoding="utf-8-sig").splitlines()[1:]
+    except OSError:
+        return []
+    out = []
+    for ln in lines:
+        a = ln.split(",")
+        if len(a) < 5 or a[1] != "기록":
+            continue
+        try:
+            out.append([float(a[2]), float(a[4]), 2])
+        except ValueError:
+            continue
+    return out
+
+
+def _hold_mode(meta):
+    return (meta.get("cond") or {}).get("run_heater_use") is False
+
+
 def sample_points(folder, sample):
     """샘플의 첫 회차 점 - 표(전이 온도 · 저항 비)는 첫 회차로 계산한다."""
     return cycle_points(folder, (sample.get("cycles") or [None])[0])
@@ -107,15 +132,17 @@ def load_record(data_dir, rec_id):
     folder = _folder(data_dir, rec_id)
     m = _meta(folder)
     rows = []
+    hold = _hold_mode(m)
     for s in m.get("samples") or []:
         pts = sample_points(folder, s)
-        a = analysis.analyze(pts)
+        a = {"hold": (s.get("sum") or {}).get("hold")} if hold else analysis.analyze(pts)     # 기록 모드: 측정 때 낸 저항–시간 요약(run.json)
         rows.append({"id": s.get("id"), "name": s.get("name"), "order": s.get("order"), "status": s.get("status"), "reason": s.get("reason", ""), "notes": s.get("notes") or [],
                      "n": len(pts), "cycles": len(s.get("cycles") or []), "sum": a, "files": s.get("files") or [], "moved": s.get("moved") or []})
     names = sorted(p.name for p in folder.iterdir() if p.is_file())
     for d in sorted(p for p in folder.iterdir() if p.is_dir() and p.name.startswith("이전_")):      # 다시 재기 전의 파일을 옮겨 둔 폴더
         names.append("%s\\ · 예전 파일 %d개" % (d.name, sum(1 for x in d.iterdir() if x.is_file())))
     return {"id": rec_id, "folder": str(folder), "started": m.get("started"), "batch": m.get("batch", ""), "state": m.get("state", ""), "cond": m.get("cond") or {},
+            "mode": "hold" if hold else "rt",
             "nas": m.get("nas"), "samples": rows, "files": names}
 
 
@@ -124,7 +151,8 @@ def load_points(data_dir, rec_id, sample_id):
     m = _meta(folder)
     for s in m.get("samples") or []:
         if str(s.get("id")) == str(sample_id):
-            return {"name": s.get("name"), "cycles": len(s.get("cycles") or []), "points": sample_all_points(folder, s)}
+            pts = hold_points(folder, (s.get("cycles") or [None])[0]) if _hold_mode(m) else sample_all_points(folder, s)     # 기록 모드 = [경과, 저항, 2]
+            return {"name": s.get("name"), "cycles": len(s.get("cycles") or []), "points": pts}
     raise Rejected("해당 샘플 없음")
 
 

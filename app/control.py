@@ -2050,6 +2050,10 @@ class Controller:
                                   "냉각(%g °C) → 가열(%g °C) → 냉각(%g °C) · 반복 %d회" % (c["run_start_c"], c["run_heater_off_c"], c["run_cool_end_c"], c["run_repeat"]),
                                   "핀 맨 위(Z 0) → 다음 샘플"],
                         "note": "히트건 · %s 사용" % cool}
+                cv = dict(c.values, **(self.runner.cond if name == "run_resume" and self.runner.cond else {}))
+                if not cv.get("run_heater_use", True):                # 기록 모드: 냉각 → 가열 → 냉각 줄 대신
+                    plan["steps"][2] = "히트건 사용 안 함 · 샘플마다 %g s 기록 · 쿨러 안 씀" % float(cv["run_hold_s"])
+                    plan["note"] = "히트건 · 쿨러 안 씀 · 측정 간격 %g s" % float(cv["run_interval_s"])
                 plan.update(self._photo_line(len(todo)))
                 if name == "run_resume":
                     plan["changes"] = self.runner.resume_text()     # "위치 갱신 2개 · 접촉 높이 21.000 → 21.300 mm"(없으면 "")
