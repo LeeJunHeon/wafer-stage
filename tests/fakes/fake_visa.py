@@ -3,7 +3,10 @@
   - K2110 · K2450 의 SCPI 명령을 흉내 낸다(매뉴얼 문법 그대로 - 모르는 명령은 오류 큐에 쌓고 응답하지 않는다).
   - 열 모델(Lab): 히트건 켜짐/꺼짐 · 쿨러 켜짐 · 지연(열전대 1차 지연). 시간은 clock() 으로 받는다(시뮬레이션 배율 적용).
   - VO2 저항 모델: 가열 약 66 °C · 냉각 약 58 °C 에서 3e5 ↔ 2e2 Ω 로 바뀌는 고리(히스테리시스).
-  - 오류 조작(lab.fault): tc_open(열전대 끊김) · disconnect(연결 끊김) · ilim(전류 한도 걸림) · slow(느린 응답 s)
+  - 오류 조작(lab.fault): tc_open(열전대 끊김) · disconnect(연결 끊김) · ilim(전류 한도 걸림) · slow(느린 응답 s) ·
+    range_flag("" | "once" | "latch" - 출력이 켜진 채 범위를 낮추면 다음 :READ? 의 한도 표시가 1 · 값은 정상 · latch 는 *RST 까지 계속)
+  - K2450 실장비 흉내 고르기: lab.over_mode("over" - 고정 범위의 105 % 를 넘으면 9.91E37 | "clamp" - 부호 × 1.05 × 범위 + 한도 표시) ·
+    lab.first_gain(출력을 켠 뒤 첫 :READ? 값에 (1 + first_gain) - 기본 0)
   - 핀이 접촉 높이에 있지 않으면 열전대가 공기 온도를 잰다(lab.pin_down() 이 False).
   - 접촉 찾기 흉내(lab.probe · pos_fn): K2450 이 스테이지의 실제 X · Y · Z 를 보고 답한다. 샘플마다 표면 높이 · 크기 · 저항,
     샘플 밖은 알루미늄 판(lab.probe["plate_z"] 아래로 내려가면 단락), 핀 4개 중 FORCE 두 개가 먼저(표면), SENSE 두 개는 lag4 만큼 더 내려가야 닿는다.
@@ -53,7 +56,11 @@ class Lab:
         self.t_up, self.t_down, self.width = 66.0, 58.0, 1.6
         self.r_hi, self.r_lo = 3.0e5, 2.0e2
         self.t_last = self.clock()
-        self.fault = {"tc_open": False, "disconnect": False, "ilim": False, "slow": 0.0}
+        self.fault = {"tc_open": False, "disconnect": False, "ilim": False, "slow": 0.0, "range_flag": ""}
+        self.over_mode = "over"        # 고정 범위 105 % 넘음: over = 9.91E37 · clamp = 1.05 × 범위 값 + 한도 표시
+        self.first_gain = 0.0          # 출력을 켠 뒤 첫 :READ? 값의 어긋남 비율
+        self._rflag = False            # range_flag: 다음 :READ? 의 한도 표시
+        self._first = False            # 출력을 켠 뒤 아직 안 읽음
         self.out_on = False
         self.volt = 1.0
         self.ilim = 0.01
@@ -193,9 +200,29 @@ class Lab:
         if i > self.ilim:
             self.tripped = True
             i = self.ilim
+        return self._over(i, rng, auto)
+
+    def _over(self, i, rng, auto):
+        """고정 범위에서 범위의 105 % 를 넘으면: over_mode over = 9.91E37 · clamp = 부호 × 1.05 × 범위 + 한도 표시."""
         if not auto and abs(i) > rng * 1.05:
+            if self.over_mode == "clamp":
+                self.tripped = True
+                return "%+.8E" % math.copysign(1.05 * rng, i)
             return OVER
         return "%+.8E" % i
+
+    def read_2450(self, rng, auto, rsen):
+        """:READ? 한 번: first_gain(켠 뒤 첫 읽기) · range_flag(범위를 낮춘 뒤 한도 표시)를 얹는다."""
+        txt = self.read_current(rng, auto, rsen=rsen)
+        if self._first:
+            self._first = False
+            if self.first_gain and txt != OVER:
+                txt = "%+.8E" % (float(txt) * (1.0 + float(self.first_gain)))
+        if self._rflag:
+            self.tripped = True
+            if self.fault.get("range_flag") != "latch":
+                self._rflag = False
+        return txt
 
     def _read_probe(self, pt, rng, auto, rsen):
         n, ohm, short = pt
@@ -221,9 +248,7 @@ class Lab:
         if self.fault["ilim"] or abs(i) > self.ilim:
             self.tripped = True
             i = self.ilim
-        if not auto and abs(i) > rng * 1.05:
-            return OVER
-        return "%+.8E" % i
+        return self._over(i, rng, auto)
 
 
 def _sig(x):
@@ -283,6 +308,7 @@ class _Res:
             lab.term = "FRON"
             lab.prot_v = None                                 # 공장값: 과전압 보호 없음
             lab.ovp_tripped = False
+            lab._rflag = lab._first = False
         elif u.startswith(":ROUT:TERM"):
             arg = u.split("TERM", 1)[1]
             if arg.startswith(("FRON", "REAR")):
@@ -313,7 +339,10 @@ class _Res:
         elif u.startswith(":SENS:CURR:RANG:AUTO"):
             s["auto"] = u.endswith("ON")
         elif u.startswith(":SENS:CURR:RANG"):
-            s["range"] = float(u.split("RANG", 1)[1])
+            new = float(u.split("RANG", 1)[1])
+            if lab.out_on and new < s["range"] * (1 - 1e-9) and lab.fault.get("range_flag"):
+                lab._rflag = True                             # 출력이 켜진 채 범위를 낮춤 → 다음 읽기의 한도 표시
+            s["range"] = new
         elif u.startswith(":SENS:CURR:NPLC"):
             s["nplc"] = float(u.split("NPLC", 1)[1])
         elif u.startswith(":SENS:CURR:AVER:TCON"):
@@ -325,7 +354,9 @@ class _Res:
         elif u == ":SENS:AZER:ONCE":
             pass
         elif u.startswith(":OUTP"):
-            lab.out_on = u.endswith("ON")
+            on = u.endswith("ON")
+            lab._first = on and (lab._first or not lab.out_on)
+            lab.out_on = on
         else:
             self.err.append("unknown: " + c)
 
@@ -364,7 +395,7 @@ class _Res:
             return "%+.8E" % lab.temp()
         if self.kind == "2450" and u == ":READ?":
             lab.sleep(lab.read_dt)
-            return lab.read_current(s["range"], s["auto"], rsen=s["rsen"])
+            return lab.read_2450(s["range"], s["auto"], s["rsen"])
         if self.kind == "2450" and u == ":SOUR:VOLT:ILIM:TRIP?":
             return "1" if lab.tripped else "0"
         if self.kind == "2450" and u == ":SOUR:VOLT:PROT:TRIP?":

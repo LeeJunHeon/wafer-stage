@@ -600,7 +600,7 @@ class Runner:
             if cyc == 1:
                 try:
                     dev.configure(volt, cd["meter_ilim_a"], cd["meter_four_wire"], cd["meter_nplc"], cd["meter_avg_count"])
-                    dev.output(True)
+                    dev.start()
                 except meters.VisaError as e:
                     raise RunAbort("저항계 설정 오류 · %s" % str(e)[:50])
             if not cd["run_cooler_during_heat"]:
@@ -666,7 +666,7 @@ class Runner:
         raise ContactSkip(j[1])
 
     def _hold_measure(self, it, g, fname, volt):
-        """기록 모드(run_heater_use 끔): 이동 · 접촉 · 접촉 확인 뒤 K2450 을 LabVIEW 와 같은 방식(configure · read_step)으로 켜고
+        """기록 모드(run_heater_use 끔): 이동 · 접촉 · 접촉 확인 뒤 K2450 을 가열 측정과 같은 방식(configure · start · read_point)으로 켜고
         run_hold_s 동안 측정 간격마다 한 점(온도 T1 → 저항 → 온도 T2 평균)을 기록한다. 히트건 · 쿨러는 켜지 않는다(반복 1 회 · .dat 하나).
         파일 · 정리 · NAS 복사는 가열 측정과 같다."""
         c, cd = self.c, self.cond
@@ -680,7 +680,7 @@ class Runner:
         self._open_cycle(it, fname, volt, 1)
         try:
             dev.configure(volt, cd["meter_ilim_a"], cd["meter_four_wire"], cd["meter_nplc"], cd["meter_avg_count"])
-            dev.output(True)
+            dev.start()
         except meters.VisaError as e:
             raise RunAbort("저항계 설정 오류 · %s" % str(e)[:50])
         self._hold(it, g, float(cd.get("run_hold_s", 60.0)))
@@ -780,7 +780,7 @@ class Runner:
         c = self.c
         dev = c.k2450
         try:
-            cur, trip = dev.read_step()
+            cur, trip = dev.read_point()
         except meters.VisaError as e:
             c.state.set_device("k2450", "오류", str(e), dev.addr)
             raise RunAbort("저항계 오류 · %s" % str(e)[:50])

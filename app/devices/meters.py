@@ -41,7 +41,8 @@ def _rm():
 
 
 def read_time_s(nplc, avg_count, line_hz=60.0, conv_factor=3.0, overhead_s=0.1):
-    """K2450 저항 한 번 읽기(read_step: :READ? + 한도 걸림 조회)의 예상 시간(초). 설정 조합 검사(config.problems)가 쓴다.
+    """K2450 저항 한 번 읽기(:READ? + 한도 걸림 조회)의 예상 시간(초). 설정 조합 검사(config.problems)가 쓴다.
+    범위가 바뀌는 점(read_point)은 읽기가 1~2번 더 든다.
     근거 - K2450.configure 가 거는 설정 기준:
       · 적분 시간 = NPLC ÷ 전원 주파수. 60 Hz 에서 1 PLC = 16.7 ms.
       · 평균은 반복 평균(:SENS:CURR:AVER:TCON REP)이라 읽기 한 번에 변환을 평균 횟수만큼 한다.
@@ -129,7 +130,7 @@ def resistance(volt, current):
 
 
 RANGES = [1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0]          # 2450 전류 측정 범위(10 nA ~ 1 A)
-START_RANGE = 1e-3                     # 범위 단계 방식의 시작 범위(1 mA) - v2 의 실장비 값
+START_RANGE = 1e-3                     # 시작 범위(1 mA) - v2 의 실장비 값
 LIMIT_FRAC = 0.106                     # 매뉴얼: 고정 범위에서 전압 소스의 전류 한도는 측정 범위의 10.6 % 이상이어야 한다
 
 
@@ -147,32 +148,55 @@ def clamp_range(rng, ilim):
     return best if best >= float(ilim) * 0.999 else r
 
 
-def next_range(cur_range, current, up=1.05, down=0.95):
-    """전류 범위 단계 변경(기존 LabVIEW 하위 VI 방식 - v2 에서 그대로).
-    전류 크기가 범위 끝 근처(up 배 넘음)면 10배 올리고, 한 단계 아래 범위의 끝(0.95 × 범위/10) 안쪽으로 떨어지면 10배 내린다."""
-    try:
-        a = abs(float(current))
-    except (TypeError, ValueError):
-        return cur_range
-    r = float(cur_range)
-    idx = min(range(len(RANGES)), key=lambda k: abs(math.log10(RANGES[k] / r)))
-    if a > up * RANGES[idx] and idx < len(RANGES) - 1:
-        while idx < len(RANGES) - 1 and a > up * RANGES[idx]:
-            idx += 1
-    elif idx > 0 and a < down * RANGES[idx - 1]:
-        while idx > 0 and a < down * RANGES[idx - 1]:
+# ---- 범위 규칙(K2450.read_point) - 근거: 2026-11-23 실장비 visa.log ----
+# · 2450 은 고정 범위에서 범위의 105 % 까지만 읽는다(사양 Overrange 105 %). 넘으면 9.9E+37 이거나 105 % 에 멈춘 값(+ 한도 표시)일 수 있다
+#   (실장비가 어느 쪽인지 아직 모름) → 범위의 100 % 이상(RANGE_OVER)은 "이 범위로 못 잰 값" 으로 버리고 한 단계 올려 다시 읽는다.
+#   그 전에 70 %(RANGE_UP)를 넘으면 값은 쓰고 다음 읽기부터 한 단계 올린다. 내림은 5 %(RANGE_DOWN) 아래 - 올린 뒤 · 내린 뒤 되돌아가지 않는 폭.
+# · 1 mA → 1 µA 이하로 범위를 내린 직후의 첫 읽기에 :SOUR:VOLT:ILIM:TRIP? 이 1 이었다(24번 중 7번 · 전류 3.9e-11 ~ 8.4e-7 A - 한도와 거리가 멂).
+#   → 한도 걸림은 표시가 아니라 전류가 실제로 한도 근처인가(LIMIT_NEAR)로 본다. 표시가 선 값은 한 번 다시 읽는다.
+# · 출력을 켠 직후 1 mA 범위의 첫 값은 맞는 범위에서 다시 읽은 값과 -61 ~ +182 % 달랐다 → 켠 뒤 SETTLE_READS 번 읽어 버린다(K2450.start).
+RANGE_UP = 0.7
+RANGE_DOWN = 0.05
+RANGE_OVER = 1.0
+LIMIT_NEAR = 0.95
+SETTLE_READS = 1
+POINT_READS = 6                        # 한 점에 쓰는 읽기 수 한도
+
+
+def _range_idx(rng):
+    r = float(rng)
+    return min(range(len(RANGES)), key=lambda k: abs(math.log10(RANGES[k] / r)))
+
+
+def top_range(ilim):
+    """한도 전류를 덮는 가장 낮은 범위(한도 규칙 clamp_range 적용). 이보다 높은 범위는 쓰지 않는다."""
+    need = float(ilim)
+    r = next((x for x in RANGES if x >= need * 0.999), RANGES[-1])
+    return clamp_range(r, need)
+
+
+def judge_read(rng, current, ilim):
+    """읽은 전류 하나의 판정 → (kind, 다음 범위). current None = 범위 넘음.
+    limit(진짜 전류 한도 · 범위 그대로) · over(이 범위로 못 잰 값 · 한 단계 위) · up(값은 맞음 · 다음 읽기부터 한 단계 위) ·
+    down(5 % 아래가 아닌 범위까지 한 번에 내림) · ok. 한도 표시(TRIP)는 쓰지 않는다."""
+    r = float(rng)
+    top = top_range(ilim)
+    idx = _range_idx(r)
+    over = current is None
+    a = 0.0 if over else abs(float(current))
+    over = over or a >= RANGE_OVER * r
+    if a >= LIMIT_NEAR * float(ilim) or (over and r >= top * (1 - 1e-9)):
+        return "limit", r
+    up = min(RANGES[min(idx + 1, len(RANGES) - 1)], top)
+    if over:
+        return "over", up
+    if a > RANGE_UP * r and r < top * (1 - 1e-9):
+        return "up", up
+    if a < RANGE_DOWN * r and idx > 0:
+        while idx > 0 and a < RANGE_DOWN * RANGES[idx]:
             idx -= 1
-    return RANGES[idx]
-
-
-def step_range(cur_range, current, ilim):
-    """읽은 전류로 다음 범위를 정한다. 범위 넘음(None)이면 한도 전류를 덮는 범위까지 한 번에 올린다(전이 구간 점을 잃지 않게)."""
-    if current is None:
-        need = float(ilim)
-        new = next((r for r in RANGES if r >= need * 0.999 and r > cur_range), RANGES[-1])
-    else:
-        new = next_range(cur_range, current)
-    return clamp_range(new, float(ilim))
+        return "down", RANGES[idx]
+    return "ok", r
 
 
 def is_open_circuit(current, floor_a):
@@ -310,8 +334,10 @@ class K2450(_Dev):
     NAME = "K2450"
     MODEL = "2450"
     out_state = False
-    range = START_RANGE                                 # 지금 전류 측정 범위(범위 단계 방식)
+    range = START_RANGE                                 # 지금 전류 측정 범위(read_point 가 맞춘다)
     ilim = 0.1
+    flag_stuck = False                                  # 한도 표시가 다시 읽어도 서 있었다(이번 설정에서는 표시로 다시 읽지 않음)
+    last_reads = 0                                      # 마지막 read_point 가 쓴 읽기 수
 
     def check_scpi(self):
         """명령 세트가 SCPI 인가. 일부 펌웨어는 *LANG? 가 없다 - 그때는 SCPI 로 본다."""
@@ -332,8 +358,9 @@ class K2450(_Dev):
 
     def configure(self, volt, ilim_a, four_wire=True, nplc=1.0, avg_count=10, terminal="REAR", start_range=START_RANGE):
         """v2 의 실장비 순서 그대로: *RST → 단자 → 4단자 → 전압 소스(한도 · 수준) → 전류 측정(자동 범위 끔 · 시작 범위) → 적분 → 평균 → 자동 영점.
-        범위는 단계 방식(read_step 이 읽을 때마다 올리고 내린다). 출력은 켜지 않는다."""
+        범위는 read_point 가 점마다 맞춘다. 출력은 켜지 않는다(start)."""
         with self.lock:
+            self.flag_stuck = False
             if self.out_state:                                      # 출력이 켜진 채로는 단자를 바꾸지 않는다(매뉴얼: 바꾸면 출력이 꺼짐)
                 self.output(False)
             self.write("*RST")
@@ -364,13 +391,42 @@ class K2450(_Dev):
         self.write(":SENS:CURR:RANG %.6g" % float(r))
         self.range = float(r)
 
-    def read_step(self):
-        """한 번 읽고(전류 | None, 한도 걸림) 다음 읽기를 위해 범위를 한 단계 맞춘다(범위 단계 방식)."""
-        cur, trip = self.read()
-        new = step_range(self.range, cur, self.ilim)
-        if abs(new - self.range) > 1e-15:
-            self.set_range(new)
-        return cur, trip
+    def start(self):
+        """출력 켜기 → SETTLE_READS 번 읽어 버린다(켠 직후 1 mA 범위의 첫 값은 맞는 범위에서 다시 읽은 값과 크게 다르다)."""
+        with self.lock:
+            self.output(True)
+            for _ in range(SETTLE_READS):
+                self.read()
+
+    def read_point(self):
+        """한 점 → (전류 | None, 한도 걸림). 판정(judge_read)이 over · down 이면 범위를 바꿔 다시 읽고(그 값은 버림), up 이면 값을 쓰고 다음부터 위 범위.
+        한도 걸림 = 전류가 실제로 한도 근처(limit)일 때만. 한도 표시가 선 값은 같은 범위에서 한 번 다시 읽는다 - 다시 읽어도 서 있으면
+        장비가 표시를 유지하는 것으로 보고(flag_stuck) 이번 설정에서는 표시 때문에 다시 읽지 않는다. 쓴 읽기 수 = last_reads."""
+        with self.lock:
+            retried = False
+            n = 0
+            try:
+                while n < POINT_READS:
+                    cur, flag = self.read()
+                    n += 1
+                    kind, new = judge_read(self.range, cur, self.ilim)
+                    if kind == "limit":
+                        return cur, True
+                    if kind in ("over", "down"):
+                        self.set_range(new)
+                        retried = False                             # 새 범위의 첫 읽기 - 표시는 범위를 바꾼 순간의 것일 수 있다
+                        continue
+                    if flag and not self.flag_stuck:
+                        if not retried:
+                            retried = True
+                            continue
+                        self.flag_stuck = True
+                    if kind == "up":
+                        self.set_range(new)
+                    return cur, False
+                return None, False
+            finally:
+                self.last_reads = n
 
     # ---- 접촉 확인(app/contact.py): 아주 약한 전압 · 낮은 전류 한도 · 2단자 → (닿은 뒤) 4단자. v2 에서 그대로 ----
     OVP_MIN = "PROT2"                                   # 과전압 보호의 가장 낮은 단계(2 V)
@@ -445,17 +501,13 @@ class K2450(_Dev):
                 self.lock.release()
 
     def measure_once(self, volt, ilim_a, four_wire=True, nplc=1.0, avg_count=10):
-        """저항 한 번: 설정 → 출력 켜기 → 범위가 맞을 때까지 읽기 → (무슨 일이 있어도) 출력 끄기. dict(current, ohm, tripped, volt, four_wire)."""
+        """저항 한 번: 설정 → 출력 켜기(start) → 한 점(read_point) → (무슨 일이 있어도) 출력 끄기. dict(current, ohm, tripped, volt, four_wire).
+        tripped = read_point 의 한도 걸림(전류가 실제로 한도 근처)만."""
         with self.lock:
             try:
                 self.configure(volt, ilim_a, four_wire, nplc, avg_count)
-                self.output(True)
-                cur, trip = None, False
-                for _ in range(len(RANGES)):                        # 범위 단계 방식: 범위가 더 안 바뀔 때의 값이 그 범위에서 잰 값이다
-                    before = self.range
-                    cur, trip = self.read_step()
-                    if abs(self.range - before) < 1e-15:
-                        break
+                self.start()
+                cur, trip = self.read_point()
             finally:
                 self._off_quiet()
         return {"current": cur, "ohm": resistance(volt, cur), "tripped": trip, "volt": float(volt), "four_wire": bool(four_wire)}
