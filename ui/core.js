@@ -165,8 +165,11 @@ function planBody(plan) {
   return h("div", { class: "plan" },
     plan.warn_top ? h("div", { class: "st-err plan-top", text: plan.warn_top }) : null,
     plan.purpose ? h("div", { text: plan.purpose }) : null,
+    plan.samples ? h("div", { text: plan.samples }) : null,                                  // 측정: 잴 샘플 이름 · 저장 위치 · 이전 데이터 옮김
+    plan.where ? h("div", { class: "small", text: "저장 · " + plan.where }) : null,
+    plan.redo ? h("div", { class: "small", text: plan.redo }) : null,
     plan.photo ? h("div", { class: plan.photo_old ? "st-warn" : "small", text: plan.photo + (plan.photo_old && plan.photo !== "사진 없음" ? " · 1시간 넘음" : "") }) : null,   // 측정 시작 · 재개: 사진 시각(1시간 넘으면 주의 색)
-    plan.changes ? h("div", { class: "small", text: plan.changes }) : null,                 // 측정 재개: 바뀐 위치 · 접촉 조건
+    plan.changes ? h("div", { class: "small", text: plan.changes }) : null,                 // 이어서 잴 때: 바뀐 위치 · 접촉 조건
     plan.read_warn ? h("div", { class: "st-warn", text: plan.read_warn }) : null,
     h("ol", {}, ...(plan.steps || []).map((s) => h("li", { text: s }))),
     plan.note ? h("div", { class: "small", text: plan.note }) : null,

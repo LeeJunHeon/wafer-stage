@@ -22,7 +22,7 @@ from app.devices.camera import Camera, CameraError
 from app.devices import stage as stage_mod
 from app.devices.stage import PPMM, Stage, StageError
 from app.logs import Logs
-from app.jobs.run import WAIT as RUN_WAIT, Runner
+from app.jobs.run import DONE as RUN_DONE, FAIL as RUN_FAIL, SKIPPED as RUN_SKIPPED, STOPPED as RUN_STOPPED, Runner
 from app.heaterlog import HeaterLog
 from app.jobs.temptest import TempTest
 from app.jobs.tour import Tour
@@ -2032,33 +2032,47 @@ class Controller:
                     "steps": ["핀 맨 위(Z 0) → 샘플 위 X · Y 이동", "위치 확인(0.05 mm 안) 후 Z %.2f mm 까지 내림" % float(c["contact_z_mm"])],
                     "note": "샘플 선택 · 판 사진의 샘플 클릭 때 · 저항은 재지 않음", "warn": self.MOVE_WARN, "warn_top": ""}
             return plan
-        if name in ("run_start", "run_resume"):                     # 측정 시작 · 재개 창은 "자동 이동 전 확인" 설정과 상관없이 늘 띄운다(사진 시각 · 샘플 수를 보게)
+        if name in ("run_start", "run_resume", "run_one"):          # 측정 시작 · 나머지 · 이 샘플 창은 "자동 이동 전 확인" 설정과 상관없이 늘 띄운다(사진 시각 · 샘플 수를 보게)
             plan = None
+            run = self.runner
+            rec = run.state in ("stopped", "done") and run.folder is not None      # 이어서 잴 측정 기록이 있다
+            now = {s["id"]: s for s in self.prep.samples}
             if name == "run_start":
-                todo = [s for s in self.prep.samples if s["use"] and s["xy"] is not None]
-                xy = [s["xy"] for s in todo]
+                ids = [s["id"] for s in self.prep.samples if s["use"] and s["xy"] is not None]
+                title, same = ("새로 측정" if rec else "측정 시작"), False
+            elif name == "run_resume":
+                ids, title, same = run.rest_ids(), "나머지 측정", True
             else:
-                todo = self.runner.todo()                            # 체크한 "대기" 샘플(재개가 잴 것)
-                xy = [self.runner.items[i]["xy"] for i in todo]
+                sid = int(a.get("id", -1))
+                ids = [sid] if sid in now or sid in run.items else []
+                done = rec and sid in run.items and run.items[sid]["status"] in (RUN_DONE, RUN_FAIL, RUN_SKIPPED, RUN_STOPPED)
+                title, same = ("이 샘플 다시 측정" if done else "이 샘플만 측정"), rec
+            todo = [i for i in ids if (now.get(i) or {}).get("xy") is not None or i in run.items]
+            xy = [(now[i]["xy"] if i in now and now[i]["xy"] is not None else run.items[i]["xy"]) for i in todo]       # 이어서 재면 지금 좌표(재개 때 갱신)
+            nm = [(run.items[i]["name"] if i in run.items else now[i]["name"]) for i in todo]
             if todo:
                 cool = {"zone": "샘플 아래 구역 쿨러", "all": "쿨러 전부", "none": "쿨러 안 씀"}.get(c["run_cooler_mode"], c["run_cooler_mode"])
                 down = ("Z %.2f mm 까지 내림(접촉 높이)" % c["contact_z_mm"] if c["contact_mode"] == "fixed" or c["contact_z_mm"] is None
                         else "접촉 높이 %.2f − %.2f mm 에서 전기 탐색" % (c["contact_z_mm"], c["contact_start_above_mm"])) if c["contact_z_mm"] is not None else "접촉 높이까지 내림"
-                plan = {"title": "측정 시작" if name == "run_start" else "측정 재개",
+                plan = {"title": title,
                         "purpose": "샘플 %d개 차례로 측정 · 첫 샘플 X %.2f · Y %.2f" % (len(todo), xy[0][0], xy[0][1]),
                         "steps": ["샘플마다: 핀 맨 위(Z 0) → 샘플 위 X · Y 이동", down,
                                   "냉각(%g °C) → 가열(%g °C) → 냉각(%g °C) · 반복 %d회" % (c["run_start_c"], c["run_heater_off_c"], c["run_cool_end_c"], c["run_repeat"]),
                                   "핀 맨 위(Z 0) → 다음 샘플"],
                         "note": "히트건 · %s 사용" % cool}
-                cv = dict(c.values, **(self.runner.cond if name == "run_resume" and self.runner.cond else {}))
+                cv = dict(c.values, **(self.runner.cond if same and self.runner.cond else {}))
                 if not cv.get("run_heater_use", True):                # 기록 모드: 냉각 → 가열 → 냉각 줄 대신
                     plan["steps"][2] = "히트건 사용 안 함 · 샘플마다 %g s 기록 · 쿨러 안 씀" % float(cv["run_hold_s"])
                     plan["note"] = ("히트건 · 쿨러 안 씀 · 동시 읽기 · 점 주기 약 %.2f s" % config_mod.period_s(cv) if cv.get("run_read_mode", "seq") == "sync"
                                     else "히트건 · 쿨러 안 씀 · 측정 간격 %g s" % float(cv["run_interval_s"]))
                 plan.update(self._photo_line(len(todo)))
-                if name == "run_resume":
-                    plan["changes"] = self.runner.resume_text()     # "위치 갱신 2개 · 접촉 높이 21.000 → 21.300 mm"(없으면 "")
-                v = dict(c.values, **(self.runner.cond if name == "run_resume" and self.runner.cond else {}))
+                plan["samples"] = "잴 샘플 %d개 · %s" % (len(nm), " → ".join(nm[:8]) + (" 외 %d개" % (len(nm) - 8) if len(nm) > 8 else ""))
+                plan["where"] = ("같은 폴더 · %s/%s" % (run.folder.parent.name, run.folder.name)) if same else "새 폴더"
+                if same and run.redo_ids(todo):
+                    plan["redo"] = "다시 재는 샘플의 이전 데이터 → '이전_시각' 폴더로 옮김"
+                if same:
+                    plan["changes"] = run.resume_text(todo)         # "위치 갱신 2개 · 접촉 높이 21.000 → 21.300 mm"(없으면 "")
+                v = dict(c.values, **(self.runner.cond if same and self.runner.cond else {}))
                 rt, iv = config_mod.read_time_s(v), float(v["run_interval_s"])
                 if v.get("run_read_mode", "seq") != "sync" and rt > iv + 1e-9:     # 순차: 읽기가 측정 간격보다 길면 점 간격이 설정보다 넓어진다(주의만 · 동시는 측정 간격을 안 씀)
                     plan["read_warn"] = "읽기 시간 예상 %.2f초 · 측정 간격 %g초 초과 · 점 간격 넓어짐" % (rt, iv)
@@ -2313,7 +2327,7 @@ COMMANDS = {
     "cooler_only": "prep.cooler_only", "cooler_save": "prep.cooler_save", "cooler_cell": "prep.cooler_cell",
     "sample_rename": "prep.sample_rename", "batch_set": "prep.batch_set",
     # 측정(app/jobs/run.py)
-    "run_start": "runner.start", "run_resume": "runner.resume", "run_stop": "runner.stop", "run_skip": "runner.skip",
+    "run_start": "runner.start", "run_resume": "runner.resume", "run_one": "runner.run_one", "run_stop": "runner.stop", "run_skip": "runner.skip",
     "run_pause_after": "runner.set_pause_after", "run_requeue": "runner.requeue",
     "result_open_folder": "result_open_folder", "result_nas_copy": "result_nas_copy",
     # 온도 시험(app/jobs/temptest.py)
@@ -2322,12 +2336,12 @@ COMMANDS = {
 
 # 온도 시험 중에 거절하는 명령: 자동 측정 · 접촉 탐색 · 쿨러 [켜 보기] · 히트건 수동 버튼 · 개별 릴레이 버튼(시험이 히트건 · 쿨러를 쓴다).
 # [전체 끄기] 는 시험을 [정지] 한 뒤 끈다(끄기는 언제나 된다). 비상정지는 명령 줄을 거치지 않는다.
-TEMPTEST_BLOCKED = {"run_start", "run_resume", "contact_find", "cooler_only", "heater_on", "heater_off", "heater_element", "heater_power",
+TEMPTEST_BLOCKED = {"run_start", "run_resume", "run_one", "contact_find", "cooler_only", "heater_on", "heater_off", "heater_element", "heater_power",
                     "relay_on", "relay_off"}
 
 
 # 측정 중에도 되는 명령(읽기 · 측정 조작 · 경보 지우기). 그 밖의 명령은 측정 중에 거절한다. 비상정지는 명령 줄을 거치지 않는다.
-RUN_ALLOWED = {"heater_off_now", "move_plan", "quit_plan", "app_quit", "estop_release", "alarm_clear", "motion_stop", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_requeue",
+RUN_ALLOWED = {"heater_off_now", "move_plan", "quit_plan", "app_quit", "estop_release", "alarm_clear", "motion_stop", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_one", "run_requeue",
                "sample_rename", "batch_set", "result_open_folder", "result_nas_copy"}
 
 # 자동 순회 중에도 되는 명령(읽기 · 순회 정지 · 이동 정지 · 경보 지우기 · 확인 창). 손으로 하는 이동 · 릴레이 · 측정 · 설정은 막는다(측정 중과 같은 방식).

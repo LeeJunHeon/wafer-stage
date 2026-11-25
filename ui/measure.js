@@ -77,10 +77,17 @@ function layoutPlate() {
 function selectSample(id) { ms.sel = id; renderMeasure(); syncPoints(); }
 const pickable = () => (S.samples || []).filter((s) => !s.small && !s.weak);     // 전체 선택이 체크하는 샘플
 function allPicked() { const p = pickable(); return p.length > 0 && p.every((s) => s.use); }
-function lastMeasured() {                                         // 마지막으로 잰 샘플(가장 늦게 시작한 것)
-  let best = null;
-  for (const r of R().rows) if (r.t0 != null && r.order != null && (best == null || r.t0 > best.t0)) best = r;
+function lastMeasured() {                                         // 마지막으로 잰 샘플(가장 늦게 시작한 것) - 점이 있는 샘플을 먼저(마지막이 건너뜀이면 빈 그래프가 남았다)
+  const pick = (withPts) => { let best = null; for (const r of R().rows) if (r.t0 != null && r.order != null && (!withPts || r.n > 0) && (best == null || r.t0 > best.t0)) best = r; return best; };
+  const best = pick(true) || pick(false);
   return best ? best.id : null;
+}
+const REDO = "이 샘플 다시 측정", ONLY = "이 샘플만 측정";
+/* 건너뜀 · 실패 · 중지 샘플의 한 줄: 까닭 · 다음 할 일 - 예) "안 닿음 · 9.54 GΩ · 접촉 높이 · 샘플 위치 확인 뒤 [이 샘플 다시 측정]" */
+function nextText(row) {
+  const r = row.reason || "";
+  const todo = /안 닿음|금속 판|접촉/.test(r) ? "접촉 높이 · 샘플 위치 확인 뒤" : /시작 온도/.test(r) ? "쿨러 · 주위 온도 확인 뒤" : r ? "원인 확인 뒤" : "다시 재려면";
+  return (r ? r + " · " : "") + todo + " [" + REDO + "]";
 }
 /* 오른쪽 패널에 보일 샘플: 고른 샘플 → (안 골랐으면) 지금 측정 중인 샘플 → 측정 중인데 샘플이 없으면(샘플 사이 · 마지막 샘플 뒤 정리 중) ·
    측정이 끝났거나 멈췄으면 마지막으로 잰 샘플. 정리 중에 null 을 주면 그래프가 비고 끝난 뒤 다시 그려지지 않았다 */
@@ -185,10 +192,12 @@ function renderTable() {
 /* ---- 위쪽 버튼 ---- */
 function renderButtons() {
   const run = R(), n = (S.samples || []).length, used = (S.samples || []).filter((s) => s.use).length;
-  const sig = [run.state, n > 0, run.pause_after, run.record].join("|");
+  const rec = run.state === "stopped" || run.state === "done", rest = run.rest || 0;     // 측정 기록이 있다 · [나머지 측정] 이 잴 수(서버 rest_ids)
+  const sig = [run.state, n > 0, run.pause_after, run.record, used, rest].join("|");
   if (sig !== ms.bsig) {
     ms.bsig = sig;
     const b = [];
+    ms.start = ms.resume = null;
     if (run.state === "running") {
       b.push(busyBtn("건너뛰기", () => api("run_skip")));
       b.push(btn("완료 후 정지", () => api("run_pause_after", { on: !R().pause_after }), run.pause_after ? "on" : ""));
@@ -196,9 +205,9 @@ function renderButtons() {
     } else if (!n) {
       ms.find = busyBtn("촬영 · 샘플 검출", () => apiMove("samples_find"), "on"); b.push(ms.find);
     } else {
-      if (run.state === "stopped") { ms.resume = busyBtn("측정 재개", () => apiMove("run_resume"), "on"); b.push(ms.resume); }
-      if (run.state === "done") b.push(btn("결과 보기", () => { if (typeof openResult === "function") openResult(R().record); }, "on"));
-      ms.start = busyBtn(run.state === "idle" ? "측정 시작" : "전체 재측정", () => apiMove("run_start"), run.state === "idle" ? "on" : ""); b.push(ms.start);
+      /* 기록 없음: [측정 시작 (n개)] = 체크한 샘플 · 새 폴더 / 기록 있음: [나머지 측정 (n개)] = 체크한 샘플 중 완료 아닌 것 · 같은 폴더 · [새로 측정 (m개)] = 체크한 샘플 전부 · 새 폴더 */
+      if (rec) { ms.resume = tk(busyBtn("나머지 측정 (" + rest + "개)", () => apiMove("run_resume"), rest > 0 ? "on" : ""), "ms.rest"); b.push(ms.resume); }
+      ms.start = tk(busyBtn((rec ? "새로 측정" : "측정 시작") + " (" + used + "개)", () => apiMove("run_start"), rec ? "" : "on"), rec ? "ms.new" : "ms.start"); b.push(ms.start);
       ms.find = busyBtn("재촬영", () => apiMove("samples_find")); b.push(ms.find);
       b.push(tk(btn("조건", openRunCond), "ms.cond"));
     }
@@ -212,7 +221,7 @@ function renderButtons() {
     if (ms.find) setOff(ms.find, findWhy);
     const gateWhy = gate.length ? "필요 항목 · " + gate.map((g) => g.text).join(" · ") : "";
     if (ms.start && n) setOff(ms.start, gateWhy || (n > 0 && used === 0 ? "측정할 샘플 없음 · 샘플 체크 필요" : ""));
-    if (ms.resume && run.state === "stopped") setOff(ms.resume, gateWhy);
+    if (ms.resume) setOff(ms.resume, gateWhy || (rest ? "" : used ? "체크한 샘플이 모두 완료" : "측정할 샘플 없음 · 샘플 체크 필요"));
     if (gate.length) {
       kids.push("필요 항목: ");
       gate.forEach((m, i) => { kids.push(m.step ? h("a", { href: "#", text: m.text, onclick: (e) => { e.preventDefault(); gotoPrep(m.step - 1); } }) : m.text); if (i < gate.length - 1) kids.push(" · "); });
@@ -220,8 +229,15 @@ function renderButtons() {
     else if (n && used === 0) kids.push("측정할 샘플 없음");
     else if (run.summary) kids.push(run.summary + (run.msg ? " · " + run.msg : ""));
   }                                                               // 측정 중에는 비워 둔다([끝나면 멈춤] 은 버튼이 켜진 모양으로 보인다)
-  setKids(ms.gate, ...kids);
-  ms.gate.title = ms.gate.textContent;                            // 한 줄로만 보인다(길면 줄임) - 전체 글은 마우스를 올리면
+  /* 요약 줄 오른쪽 끝에 [결과 보기](끝난 측정) - 버튼 줄에는 두지 않는다(한 줄에 들어가게) */
+  const showRes = run.state === "done" && !gate.length && run.record;
+  const gsig = JSON.stringify([kids.map((k) => (typeof k === "string" ? k : k.textContent)), !!showRes]);
+  if (gsig !== ms.gateSig) {                                      // 같은 글이면 다시 그리지 않는다(결과 보기 버튼을 누르는 중에 바뀌지 않게)
+    ms.gateSig = gsig;
+    ms.gateTxt = h("span", { class: "gtxt" }, ...kids);
+    setKids(ms.gate, ms.gateTxt, showRes ? btn("결과 보기", () => { if (typeof openResult === "function") openResult(R().record); }, "sm") : null);
+    ms.gate.title = ms.gateTxt.textContent;                       // 한 줄로만 보인다(길면 줄임) - 전체 글은 마우스를 올리면
+  }
 }
 
 /* ---- 오른쪽 패널 ---- */
@@ -250,11 +266,14 @@ function renderSample() {
   ms.sub.textContent = (row.order != null ? "순서 " + row.order + " / " + (run.total || run.rows.filter((r) => r.order != null).length) + " · " : "")
     + (isNow ? fmtDur(el) + " 경과" + (run.repeat > 1 ? " · " + run.cycle + " / " + run.repeat + "회" : "") : progText(row, s, true));
   /* 고른 샘플에 할 수 있는 일 */
-  const asig = id + "|" + row.status + "|" + run.state;
+  const asig = id + "|" + row.status + "|" + run.state + "|" + !!s;
   if (asig !== ms.asig) {
     ms.asig = asig;
-    const b = [];                                                 // 잴지 말지는 순서 표의 체크로 고른다
-    if (run.state !== "running" && ["완료", "실패", "건너뜀", "중지"].includes(row.status)) b.push(btn("재측정", () => api("run_requeue", { id })));
+    const b = [];                                                 // 잴지 말지는 순서 표의 체크로 고른다 · 여기 버튼은 그 샘플 하나만 바로 잰다(확인 창 → 진행)
+    if (run.state !== "running" && s) {
+      if (["완료", "실패", "건너뜀", "중지"].includes(row.status)) b.push(tk(busyBtn(REDO, () => apiMove("run_one", { id })), "ms.redo"));
+      else if (row.status === "대기" || row.status === "제외") b.push(tk(busyBtn(ONLY, () => apiMove("run_one", { id })), "ms.only"));
+    }
     setKids(ms.act, ...b);
   }
   const hold = run.mode === "hold";
@@ -264,7 +283,8 @@ function renderSample() {
   if (isNow) { setBand(hold ? (HOLD_CELL[run.stage] != null ? HOLD_CELL[run.stage] : -1) : run.stage, run.frac); ms.line.textContent = heatLine(run) || run.line || ""; }
   else {
     setBand(row.status === "완료" ? 6 : -1, 0);
-    ms.line.textContent = [s ? "크기 " + sizeText(s) : "", row.status === "제외" && s ? (s.weak ? "미확인 샘플 · 확인 후 체크" : s.small ? "핀보다 작음" : "") : row.notes.join(" · ")].filter(Boolean).join(" · ");
+    ms.line.textContent = ["건너뜀", "실패", "중지"].includes(row.status) ? nextText(row)
+      : [s ? "크기 " + sizeText(s) : "", row.status === "제외" && s ? (s.weak ? "미확인 샘플 · 확인 후 체크" : s.small ? "핀보다 작음" : "") : row.notes.join(" · ")].filter(Boolean).join(" · ");
   }
   /* 그래프: 고른 샘플(진한 색) + 겹쳐 보기면 바로 앞에 끝난 두 샘플 */
   const pv = (pid) => (hold ? ptsOf(pid).filter((p) => p.length > 3).map((p) => [p[3], p[1], 2]) : ptsOf(pid));   // 기록 모드: [경과, 저항] - 저항–시간

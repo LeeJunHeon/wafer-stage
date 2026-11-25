@@ -8,7 +8,7 @@
                                판정은 가열 · 저항계 출력 · 쿨러 켜기 전.
              전기 탐색(선택) - 저장한 접촉 높이 − 0.3 mm 까지 내린 뒤 전기로 확인하며 내린다. 실패(안 닿음 · 금속 판 · 4단자)면 핀을 올리고 이 샘플은 "실패".
   3. 냉각  : 쿨러를 켠다. 온도가 시작 온도보다 높으면 내려갈 때까지 기다린다(기록하지 않는다). 회차마다 가열 전에 같은 조건을 본다.
-             정체로 시작 온도에 못 닿으면 가열하지 않고 측정 전체를 멈춘다 - 그 샘플은 "대기" 로 남아 [측정 재개] 로 다시 시작한다.
+             정체로 시작 온도에 못 닿으면 가열하지 않고 측정 전체를 멈춘다 - 그 샘플은 "대기" 로 남아 [나머지 측정] 으로 다시 시작한다.
   4. 가열  : K2450 출력을 켜고 기록 시작. 히트건을 켠다(열선 → 송풍 · 송풍이 켜져 있으면 열선만).
 가열 방식(run_heat_mode) "ramp"(기본) - 송풍을 켜 둔 채 열선 출력 %(heater.LineControl - PI + 앞먹임 · 펌웨어 V13 hp)로 목표선(시작 온도 + 가열 속도 × 경과)을 따른다.
                                         가열 끝 온도에 닿으면 유지 시간(run_heat_hold_s) 동안 같은 방식으로 유지한 뒤 끝.
@@ -72,7 +72,7 @@ COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "
              "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "heat_curve", "heater_tc_s", "heater_pi_filter_s", "heater_jump_c", "heater_turn_s", "reversal_c")
 CONTROL_HEADER = ("회차", "단계", "경과(s)", "온도(°C)", "저항(Ω)", "목표 온도(°C)", "열선 출력(%)", "송풍", "온도 1(°C)", "온도 2(°C)")
 # <이름>_<전압>V_control.csv 의 첫 줄 · 온도 = (온도 1 + 온도 2) ÷ 2(저항 앞 · 뒤에 잰 온도 - 읽기 시점 맞추기)
-CONTACT_KEYS = ("contact_mode", "contact_fixed_read", "contact_z_mm", "contact_check", "contact_max_ohm", "contact_min_ohm")   # [측정 재개] 가 지금 설정으로 바꾸는 조건
+CONTACT_KEYS = ("contact_mode", "contact_fixed_read", "contact_z_mm", "contact_check", "contact_max_ohm", "contact_min_ohm")   # [나머지 측정] 이 지금 설정으로 바꾸는 조건
 MOVE_NOTE_MM = 0.05                                 # 재개 때 샘플 X · Y 가 이보다 많이 바뀌면 로그 한 줄
 
 
@@ -89,7 +89,7 @@ class ContactSkip(Exception):
 
 
 class ContactStop(RunAbort):
-    """접촉 확인(고정 높이) · 안 닿음 - 측정 전체를 멈춘다. 그 샘플은 "대기" 로 남아 [측정 재개] 가 그 샘플부터 한다."""
+    """접촉 확인(고정 높이) · 안 닿음 - 측정 전체를 멈춘다. 그 샘플은 "대기" 로 남아 [나머지 측정] 이 그 샘플부터 한다."""
 
     def __init__(self, name, code, text):
         super().__init__("%s %s" % (name, contact_mod.JUDGE_WORD.get(code, text) + ("" if code == "none" else " · " + text.split(" · ")[-1])))
@@ -236,6 +236,7 @@ class Runner:
         self._lock = threading.RLock()
         self._th = None
         self._busy = False                          # 측정 스레드가 도는 중(active)
+        self._plan = None                           # 측정 스레드가 잴 샘플 id(순서대로) - start · _continue 가 정한다(그 밖의 대기 샘플은 재지 않는다)
         self.state = "idle"                         # idle(측정 전) · running · stopped(멈춤 - 이어서 할 수 있다) · done
         self.items = {}                             # 샘플 id → 진행 기록
         self.order = []                             # 측정 순서(샘플 id)
@@ -267,9 +268,10 @@ class Runner:
         """측정 스레드가 도는 중(마지막 파일 저장 · NAS 복사 · 끝난 상태를 화면에 보내기까지). 이것이 False 가 된 뒤에야 다음 측정 · 손 조작을 받는다."""
         return self._busy
 
-    def gate(self, heater=None):
+    def gate(self, heater=None, samples=None):
         """측정을 시작하려면 필요한 것 중 빠진 것 [{"text", "step"(초기 설정 단계 번호)}]. 빈 판 사진은 없어도 된다.
         heater = 히트건을 쓰는 측정인가(없으면 지금 설정 run_heater_use) - 끄면 쿨러 배치 빈 칸을 보지 않는다(쿨러를 안 쓴다).
+        samples = 쿨러 빈 칸을 볼 샘플(없으면 체크한 샘플 - 화면 · [측정 시작] · [새로 측정] · 이 샘플만이면 그 샘플 · 이어서 재면 [] - 측정 조건(cond)으로 따로 본다).
         카메라는 요구하지 않는다 - 측정 · 재개는 카메라를 쓰지 않는다(촬영 · 샘플 검출 · 헤드 위치 확인만 쓴다)."""
         c, st, out = self.c, self.c.state, []
         for key, name in (("stage", "스테이지 연결"), ("k2110", "온도계 연결"), ("k2450", "저항계 연결")):
@@ -291,7 +293,7 @@ class Runner:
         if c.prep.pos_block:
             out.append({"text": "헤드 위치 확인", "step": 2})
         heater = bool(c.cfg["run_heater_use"]) if heater is None else bool(heater)
-        if heater and self.empty_cell_names(c.cfg.values, [s for s in c.prep.samples if s["use"]]):
+        if heater and self.empty_cell_names(c.cfg.values, [s for s in c.prep.samples if s["use"]] if samples is None else samples):
             out.append({"text": "쿨러 배치 빈 칸", "step": 7})
         return out
 
@@ -305,24 +307,30 @@ class Runner:
     # ------------------------------------------------------------------
     # 명령
     # ------------------------------------------------------------------
-    def start(self):
-        """[측정 시작]: 고른 샘플 전부를 처음부터. 새 저장 폴더를 만든다."""
+    def start(self, only=None):
+        """[측정 시작] · [새로 측정]: 체크한 샘플 전부를 처음부터 새 폴더에.
+        only(샘플 id) = [이 샘플만 측정] 을 측정 기록이 없을 때 누름(run_one): 그 샘플 하나로 새 측정(체크는 바꾸지 않는다)."""
         c = self.c
         with self._lock:
             if self.active:
                 raise Rejected("이미 측정 중")
             if c.temptest.active:                                   # 온도 시험이 히트건 · 쿨러를 쓰는 중(온도 시험 시작도 이 잠금 안에서 측정을 본다)
                 raise Rejected("온도 시험 중 실행 불가")
+            if only is None:
+                used = [s for s in c.prep.samples if s["use"]]
+            else:
+                used = [s for s in c.prep.samples if s["id"] == int(only)]
+                if not used:
+                    raise Rejected("해당 샘플 없음")
             heater = bool(c.cfg["run_heater_use"])                 # 끄면 기록 모드: 히트건에만 필요한 조건(펌웨어 열선 출력 · 전원 맞춤 · 쿨러 배치)은 보지 않는다
             if heater and c.stage.connected and not c.stage.heat_capable:      # 열선 출력 % 제어가 필요하다
                 raise Rejected(FW_NEED)
             why = c.sync_problem() if heater else ""               # 전원 맞춤 기준을 골랐는데 잠기지 않았다
             if why:
                 raise Rejected(why)
-            miss = self.gate(heater)
+            miss = self.gate(heater, used)
             if miss:
                 raise Rejected("필요 항목: " + " · ".join(m["text"] for m in miss))
-            used = [s for s in c.prep.samples if s["use"]]
             if not used:
                 raise Rejected("측정할 샘플 없음")
             if any(s["xy"] is None for s in used):
@@ -353,7 +361,8 @@ class Runner:
                     raise Rejected("저장 폴더 생성 실패 · %s" % str(e)[:50])
                 self.items = {s["id"]: self._new_item(s) for s in used}
                 self.order = [s["id"] for s in used]
-                self.resumes = []                                   # run.json resumes - [측정 재개] 때마다 바꾼 위치 · 접촉 조건
+                self._plan = list(self.order)
+                self.resumes = []                                   # run.json resumes - [나머지 측정] · 이 샘플 때마다 바꾼 위치 · 접촉 조건
                 self._start_nas()
                 self._launch()
             except BaseException:
@@ -362,60 +371,107 @@ class Runner:
         return {"folder": str(self.folder), "n": len(self.order)}
 
     def resume(self):
-        """[이어서 측정]: 남은 "대기"부터 같은 폴더에 이어서. 멈춘 뒤 새로 고른 샘플은 맨 뒤에 붙는다."""
+        """[나머지 측정]: 체크한 샘플 중 "완료" 가 아닌 것(대기 · 실패 · 건너뜀 · 중지 + 측정 뒤 새로 체크한 샘플)을 같은 폴더에(rest_ids).
+        검사를 모두 통과한 뒤에만 실패 · 건너뜀 · 중지를 대기로 되돌린다(requeue 와 같다 - 예전 파일은 쓰기 직전에 "이전_<HHMMSS>" 로).
+        거절되면 어떤 샘플의 상태도 바꾸지 않는다 · 체크를 푼 샘플은 상태 그대로."""
+        with self._lock:
+            return self._continue(self.rest_ids(), "남은 샘플 없음")
+
+    def run_one(self, id):
+        """[이 샘플 다시 측정] · [이 샘플만 측정]: 그 샘플 하나만 바로 잰다(체크 여부와 상관없이 · 체크는 바꾸지 않는다).
+        측정 기록이 있으면 같은 폴더에(완료 · 실패 · 건너뜀 · 중지면 다시 · 이 측정에 없으면 맨 뒤에 붙임) · 다른 대기 샘플은 재지 않고 대기로 남는다
+        (측정 스레드는 _plan 의 샘플만 잰다). 기록이 없으면 그 샘플 하나로 새 측정(start(only))."""
+        sid = int(id)
         with self._lock:
             if self.active:
                 raise Rejected("이미 측정 중")
             if self.state not in ("stopped", "done") or self.folder is None:
-                raise Rejected("재개할 측정 없음")
-            if self.c.temptest.active:
-                raise Rejected("온도 시험 중 실행 불가")
-            heater = bool(self.cond.get("run_heater_use", True))     # 재개는 이 측정의 방식(기록 모드면 히트건 조건을 보지 않는다)
-            if heater and self.c.stage.connected and not self.c.stage.heat_capable:
-                raise Rejected(FW_NEED)
-            why = self.c.sync_problem() if heater else ""
-            if why:
-                raise Rejected(why)
-            miss = self.gate(heater)
-            if miss:
-                raise Rejected("필요 항목: " + " · ".join(m["text"] for m in miss))
-            ch = self.resume_changes()                              # 대기 샘플의 지금 좌표 · 지금 접촉 설정(못 구하면 거절)
+                return self.start(only=sid)
+            if self.items.get(sid) is None and not any(s["id"] == sid for s in self.c.prep.samples):
+                raise Rejected("해당 샘플 없음")
+            return self._continue([sid], "해당 샘플 없음")
+
+    def _continue(self, plan, empty):
+        """같은 폴더에 이어서 plan(샘플 id 순서)만 잰다 - [나머지 측정] · 기록이 있을 때의 [이 샘플 …]. 검사(필요 항목 · 펌웨어 · 전원 맞춤 · 좌표 ·
+        쿨러 빈 칸 · 설정 조합)를 모두 지난 뒤에만 상태를 바꾼다: 위치 · 접촉 조건 갱신 → 끝난 샘플은 대기로 → 이 측정에 없던 샘플은 맨 뒤에 붙임 → 시작."""
+        c = self.c
+        if self.active:
+            raise Rejected("이미 측정 중")
+        if self.state not in ("stopped", "done") or self.folder is None:
+            raise Rejected("재개할 측정 없음")
+        if c.temptest.active:
+            raise Rejected("온도 시험 중 실행 불가")
+        if not plan:
+            raise Rejected(empty)
+        now = {s["id"]: s for s in c.prep.samples}
+        heater = bool(self.cond.get("run_heater_use", True))         # 이어서 재는 것은 이 측정의 방식(기록 모드면 히트건 조건을 보지 않는다)
+        if heater and c.stage.connected and not c.stage.heat_capable:
+            raise Rejected(FW_NEED)
+        why = c.sync_problem() if heater else ""
+        if why:
+            raise Rejected(why)
+        miss = self.gate(heater, [])                                # 쿨러 빈 칸은 아래에서 이 측정의 조건(cond)으로 본다
+        if miss:
+            raise Rejected("필요 항목: " + " · ".join(m["text"] for m in miss))
+        ch = self.resume_changes([i for i in plan if i in self.items])     # 지금 좌표 · 지금 접촉 설정(못 구하면 거절)
+        new = [i for i in plan if i not in self.items]
+        for i in new:
+            s = now.get(i)
+            if s is None:
+                raise Rejected(empty)
+            if s["xy"] is None:
+                raise Rejected("샘플 %s 위치 계산 실패 · 좌표 보정 확인" % s["name"])
+        names = [it["name"] for it in self.items.values()] + [now[i]["name"] for i in new]
+        if len(set(names)) != len(names):
+            raise Rejected("샘플 이름 중복 · 이름 수정 필요")
+        spots = [dict(self.items[i], plate=ch["xy"][i][1]) if i in ch["xy"] else (self.items[i] if i in self.items else now[i]) for i in plan]
+        if heater and self.empty_cell_names(self.cond, spots):
+            raise Rejected("쿨러 배치 빈 칸 · 초기 설정 7")                  # 이 측정의 조건(cond)의 배치를 쓴다
+        bad = config_mod.problems(dict(c.cfg.values, **self.cond))    # 이 측정이 쓰는 조건(cond) + 지금의 안전 설정으로 다시 검사한다
+        if bad:
+            raise Rejected(bad[0])
+        c.k2450_begin_run()
+        try:
             self._apply_resume(ch)
-            for s in self.c.prep.samples:
-                if s["use"] and s["id"] not in self.items and s["xy"] is not None:
-                    self.items[s["id"]] = self._new_item(s)
-                    self.order.append(s["id"])
-            if not self.todo():                                     # 체크한 "대기" 가 없다(체크를 푼 대기는 "대기" 로 남는다)
-                raise Rejected("남은 샘플 없음")
-            if heater and self.empty_cell_names(self.cond, [self.items[i] for i in self.todo()]):
-                raise Rejected("쿨러 배치 빈 칸 · 초기 설정 7")              # 재개는 이 측정의 조건(cond)의 배치를 쓴다
-            bad = config_mod.problems(dict(self.c.cfg.values, **self.cond))    # 이 측정이 쓰는 조건(cond) + 지금의 안전 설정으로 다시 검사한다
-            if bad:
-                raise Rejected(bad[0])
-            self.c.k2450_begin_run()
-            try:
-                if self.nas is None or not self.nas.is_alive():
-                    self._start_nas(keep=True)
-                self._launch()
-            except BaseException:
-                self.c.k2450_end_run()
-                raise
-        return {"n": len(self.todo())}
+            for i in plan:                                          # 여기부터 상태를 바꾼다(검사를 모두 지났다)
+                it = self.items.get(i)
+                if it is None:
+                    self.items[i] = self._new_item(now[i])
+                    self.order.append(i)
+                elif it["status"] != WAIT:
+                    it.update(status=WAIT, reason="", notes=[])     # requeue 와 같다 - 예전 파일은 쓰기 직전에 "이전_<HHMMSS>" 로(_retire_old)
+            self._plan = list(plan)
+            if self.nas is None or not self.nas.is_alive():
+                self._start_nas(keep=True)
+            self._launch()
+        except BaseException:
+            c.k2450_end_run()
+            raise
+        return {"n": len(plan)}
 
-    def todo(self):
-        """이번에 잴 샘플 id(순서대로): "대기" 이고 지금 샘플 목록에서 체크(use)된 것. 체크를 푼 "대기" 는 남겨 둔다(다시 체크하고 재개하면 잰다).
-        측정 중에는 체크를 못 바꾼다(sample_use · sample_use_all 이 거절) - 측정 스레드가 보는 동안 바뀌지 않는다."""
+    def rest_ids(self):
+        """[나머지 측정] 이 잴 샘플 id(순서대로) - 서버 동작 · 화면 개수(view rest) · 확인 창이 같이 쓴다.
+        이 측정의 샘플 중 체크했고 "완료" 가 아닌 것(대기 · 실패 · 건너뜀 · 중지 - 순서 그대로) + 이 측정에 없고 체크했고 위치가 있는 샘플(샘플 목록 순서로 맨 뒤).
+        측정 중에는 체크를 못 바꾼다(sample_use · sample_use_all 이 거절)."""
+        if self.folder is None or self.state not in ("stopped", "done"):
+            return []
         use = {s["id"]: bool(s["use"]) for s in self.c.prep.samples}
-        return [i for i in self.order if self.items[i]["status"] == WAIT and use.get(i, False)]
+        out = [i for i in self.order if use.get(i, False) and self.items[i]["status"] in (WAIT, FAIL, SKIPPED, STOPPED)]
+        out += [s["id"] for s in self.c.prep.samples if s["use"] and s["id"] not in self.items and s["xy"] is not None]
+        return out
 
-    def resume_changes(self):
-        """[측정 재개] 가 바꿀 것: 대기 샘플마다 지금 prep.samples 의 같은 id 의 xy · plate(보정 점 · 좌표를 고쳤을 수 있다) ·
+    def redo_ids(self, plan):
+        """plan 중 다시 재는 샘플(이미 끝난 상태 - 예전 데이터를 "이전_<HHMMSS>" 로 옮긴다)."""
+        return [i for i in plan if i in self.items and self.items[i]["status"] in (DONE, FAIL, SKIPPED, STOPPED)]
+
+    def resume_changes(self, ids):
+        """[나머지 측정] 이 바꿀 것: 대기 샘플마다 지금 prep.samples 의 같은 id 의 xy · plate(보정 점 · 좌표를 고쳤을 수 있다) ·
         접촉 조건(CONTACT_KEYS)의 지금 설정. 측정 조건(전압 · 온도 · 속도 …)은 시작 때 값 그대로(한 측정 안의 데이터 조건이 섞이지 않게).
         반환 {"xy": {id: (xy, plate)}, "moved": [(이름, 이전 xy, 새 xy)], "contact": {키: [이전, 이후]}}. 그 샘플이 없어졌거나 이름이 다르거나 xy 가 없으면 Rejected.
-        대상은 체크한 "대기"(todo) - 체크를 푼 대기는 이번에 재지 않으므로 보지 않는다."""
+        대상은 이번에 잴 샘플 중 이 측정에 있는 것(ids) - 체크를 푼 샘플 · 다른 대기 샘플은 이번에 재지 않으므로 보지 않는다."""
         now = {s["id"]: s for s in self.c.prep.samples}
         xy, moved = {}, []
-        for i in self.todo():
+        for i in ids:
             it = self.items[i]
             s = now.get(i)
             if s is None or s["name"] != it["name"]:
@@ -445,10 +501,10 @@ class Runner:
         f = lambda v: config_mod._show(it, v)                                     # noqa: E731
         return "%s %s → %s" % (lab, f(a), f(b))
 
-    def resume_text(self):
+    def resume_text(self, ids):
         """재개 확인 창 한 줄: "위치 갱신 2개 · 접촉 높이 21.000 → 21.300 mm"(바뀐 것이 없으면 "") · 재개가 거절될 까닭이면 그 글."""
         try:
-            ch = self.resume_changes()
+            ch = self.resume_changes([i for i in ids if i in self.items])
         except Rejected as e:
             return str(e)
         parts = (["위치 갱신 %d개" % len(ch["moved"])] if ch["moved"] else []) + [self.contact_text(k, a, b) for k, (a, b) in ch["contact"].items()]
@@ -485,7 +541,7 @@ class Runner:
         return {"pause_after": self.pause_after}
 
     def requeue(self, id):
-        """끝난(또는 실패 · 건너뜀 · 멈춤) 샘플을 다시 측정 목록에 넣는다. [이어서 측정] 이 다시 잰다.
+        """끝난(또는 실패 · 건너뜀 · 멈춤) 샘플을 다시 측정 목록에 넣는다. [나머지 측정] 이 다시 잰다(화면은 안 쓴다 - run_one · _continue).
         새 데이터를 쓰기 직전에 예전 파일을 "이전_<HHMMSS>" 폴더로 옮기고 원래 이름으로 쓴다(_retire_old)."""
         with self._lock:
             if self.active:
@@ -553,7 +609,7 @@ class Runner:
     def _main(self):
         c = self.c
         g = c.safety.generation
-        todo = self.todo()                                          # 체크한 "대기" 만 잰다(체크를 푼 대기는 "대기" 로 남는다)
+        todo = list(self._plan or [])                               # 시작 · 이어서 · 이 샘플만이 정한 샘플만 잰다(다른 대기 샘플은 대기로 남는다)
         c.logs.app("측정 시작 · 묶음 %s · %d개 · %s" % (self.batch, len(todo), self.folder))
         halted = False                                              # 중지 · 비상정지 · 오류로 멈췄다(남은 샘플이 없어도 "끝남"이 아니다)
         try:
@@ -564,7 +620,7 @@ class Runner:
                 if self._stop:
                     raise Halt("stop")
                 self._one(it, g)
-                if self.pause_after and self.todo():
+                if self.pause_after and any(self.items[i]["status"] == WAIT for i in todo):
                     self.msg = "샘플 완료 후 정지"
                     break
         except Halt as h:
@@ -631,11 +687,11 @@ class Runner:
             c.logs.app("샘플 %s 실패 · %s" % (it["name"], e), "warn")
         except ContactSkip as e:                                    # 접촉 확인 · 건너뜀: 가열 전이다 - 다음 샘플로
             it.update(status=SKIPPED, reason=str(e))
-        except ContactStop as e:                                    # 접촉 확인 · 측정 멈춤: 끝나지 않은 채 남긴다 - [측정 재개] 가 이 샘플부터
+        except ContactStop as e:                                    # 접촉 확인 · 측정 멈춤: 끝나지 않은 채 남긴다 - [나머지 측정] 이 이 샘플부터
             it.update(status=WAIT, reason=e.text)
             abort = e
         except StartTempAbort as e:
-            it.update(status=WAIT, reason="시작 온도 미도달")          # 끝나지 않은 채 남긴다 - [측정 재개] 가 이 샘플부터 다시 한다
+            it.update(status=WAIT, reason="시작 온도 미도달")          # 끝나지 않은 채 남긴다 - [나머지 측정] 이 이 샘플부터 다시 한다
             c.logs.app("샘플 %s · %s · %.1f °C" % (it["name"], e, self._last_T if self._last_T is not None else float("nan")), "warn")
             abort = e
         except Halt as h:
@@ -1481,7 +1537,7 @@ class Runner:
         return {"state": self.state, "active": self.state == "running", "batch": self.batch or str(c.cfg["batch_name"]), "folder": None if self.folder is None else str(self.folder),
                 "record": rec, "cur": self.cur, "stage": self.stage, "frac": round(self.frac, 3), "line": self.line, "cycle": self.cycle,
                 "repeat": int(self.cond.get("run_repeat", c.cfg["run_repeat"])), "pause_after": self.pause_after, "rows": rows, "total": total,
-                "summary": summary, "msg": self.msg, "gate": [] if self.state == "running" else self.gate(), "volt": float(self.cond.get("meter_volt", c.cfg["meter_volt"])),
+                "summary": summary, "msg": self.msg, "rest": len(self.rest_ids()), "gate": [] if self.state == "running" else self.gate(), "volt": float(self.cond.get("meter_volt", c.cfg["meter_volt"])),
                 "heat": None if self.heat is None else dict(self.heat),
                 "mode": "rt" if self._heater_run() else "hold", "hold_s": float(self.cond.get("run_hold_s", c.cfg["run_hold_s"]))}
 
@@ -1501,6 +1557,7 @@ class Runner:
             if self.c.state.get("run") is None:
                 return
             self.c.state.set("run", "gate", [] if self.state == "running" else self.gate())
+            self.c.state.set("run", "rest", len(self.rest_ids()))     # [나머지 측정 (n개)] - 체크가 바뀌면 같이(샘플 고르기가 이 길을 지난다)
 
 
 def _frac_down(t_from, t_to):

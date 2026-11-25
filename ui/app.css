@@ -240,7 +240,9 @@ table.ctab tr:hover td { background: none; }
 .plate-body { display: flex; gap: 12px; align-items: flex-start; min-width: 0; overflow: hidden; }
 .plate-photo { flex: none; cursor: pointer; }
 .order { flex: none; width: 288px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-.gate { line-height: 16px; min-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }      /* 글이 없어도 한 줄 높이(사진이 밀리지 않게) */
+.gate { line-height: 16px; min-height: 16px; height: 16px; display: flex; align-items: center; gap: 8px; }      /* 글이 없어도 한 줄 높이(사진이 밀리지 않게) */
+.gate .gtxt { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gate button { flex: none; height: 16px; min-height: 16px; line-height: 14px; padding: 0 8px; font-size: 12px; }      /* 요약 줄 끝 [결과 보기] - 줄 높이 그대로 */
 .order > .fill { flex: 1 1 0; min-height: 0; }
 .tscroll { overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; }
 table.tb { width: 100%; border-collapse: collapse; font-size: 13px; }

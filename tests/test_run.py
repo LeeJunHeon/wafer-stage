@@ -222,12 +222,13 @@ def test_skip_pause_resume_stop_requeue(ready_ctrl):
     assert run.folder == folder and run.state == "stopped" and run.items[ids[2]]["status"] == STOPPED
     _all_off(ctrl)
     assert ctrl.state.get("pos", "z") == 0.0, "중지하면 핀을 맨 위로"
-    with pytest.raises(Rejected):
-        ctrl.run_command("run_resume")                               # 남은 "할 차례"가 없다
-    ctrl.run_command("run_requeue", {"id": ids[0]})                  # 끝난(건너뛴) 샘플을 다시 측정 목록에
+    assert ctrl.state.get("run", "rest") == 2, "[나머지 측정] = 체크한 샘플 중 완료 아닌 것(건너뜀 · 중지)"
+    ctrl.run_command("sample_use", {"id": ids[2], "use": False})     # 체크를 푼 중지 샘플은 다시 재지 않는다
     ctrl.run_command("run_resume")
     _finish(ctrl, 60)
-    assert run.items[ids[0]]["status"] == DONE and run.state == "done", "남은 '대기'가 없으면 끝(멈춘 샘플은 요약에 남는다)"
+    assert run.items[ids[0]]["status"] == DONE and run.items[ids[2]]["status"] == STOPPED, "건너뛴 샘플만 다시 · 체크를 푼 중지는 그대로"
+    with pytest.raises(Rejected, match="남은 샘플 없음"):
+        ctrl.run_command("run_resume")                               # 체크한 샘플이 모두 완료
     name = run.items[ids[0]]["name"]
     assert sorted(p.name for p in folder.glob(name + "_*.dat")) == [name + "_0.10V_0.dat", name + "_0.10V_merged.dat"], "다시 잰 파일도 원래 이름으로"
     old = [p for p in folder.iterdir() if p.is_dir() and p.name.startswith("이전_")]
@@ -259,9 +260,9 @@ def test_estop_during_run(ready_ctrl):
     assert not run.active and run.state == "stopped" and run.items[ids[0]]["status"] == STOPPED and run.items[ids[1]]["status"] == WAIT
     _all_off(ctrl)
     assert ctrl.state.get("pos", "z") == z, "핀도 그 자리"
-    ctrl.run_command("run_resume")
-    _finish(ctrl, 40)
-    assert run.items[ids[1]]["status"] == DONE
+    ctrl.run_command("run_resume")                                   # [나머지 측정]: 중지된 샘플(비상정지)도 다시 · 대기 샘플까지
+    _finish(ctrl, 80)
+    assert run.items[ids[0]]["status"] == DONE and run.items[ids[1]]["status"] == DONE
 
 
 def _burn(stop):
@@ -492,8 +493,7 @@ def test_remeasure_moves_old_files_and_keeps_labview_names(ready_ctrl, tmp_path)
 
     for s in ctrl.world.samples:                                     # 두 번째 측정은 곡선이 달라야 예전 것과 구분된다
         s["t_up"] += 3.0
-    ctrl.run_command("run_requeue", {"id": ids[0]})
-    ctrl.run_command("run_resume")
+    ctrl.run_command("run_one", {"id": ids[0]})                      # [이 샘플 다시 측정]
     _finish(ctrl)
     assert run.folder == folder and run.items[ids[0]]["status"] == DONE
 

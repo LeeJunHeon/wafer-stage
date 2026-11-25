@@ -1,6 +1,7 @@
 /* graph.js - 온도별 저항 그래프(자동 측정 탭 · 측정 결과 탭이 같이 쓴다).
    가로 = 온도(°C), 세로 = 저항(로그 눈금). 가열 = 실선, 냉각 = 점선, 지금 점 = 동그라미.
-   세로 눈금: 데이터 폭이 10배 이상이면 10배마다 · 좁으면 1 · 2 · 5 × 10^k(눈금 3개 미만이면 1 · 1.5 · 2 · 3 · 5 · 7 × 10^k)로 3~6개 · 범위를 눈금에 맞춤.
+   세로 눈금(보이는 곡선 전체의 최대 ÷ 최소): 10배 이상 = 로그 · 10배마다 / 2 ~ 10배 = 로그 · 1 · 2 · 5 × 10^k(눈금 3개 미만이면 1 · 1.5 · 2 · 3 · 5 · 7 × 10^k)로 3~6개 /
+   2배 미만 = 선형 · 간격 1 · 2 · 5 × 10^k 로 눈금 4~6개 · 데이터가 높이의 60 % 이상(기록 모드의 흔들림이 보이게 · 폭 0 이면 ±5 %). 범위는 눈금에 맞춤.
    눈금 글자 두 줄(위 "1E+6" · 아래 "1 MΩ" 작고 옅게) · 겹치면 건너뜀(두 줄 높이). 축 제목 "저항 (Ω)"(왼쪽 바깥 세로) · "온도 (°C)" / "경과 (s)"(아래)는 점이 없어도 늘 그린다.
    이름표는 축 밖 오른쪽 띠에 둔다: "그 샘플 색의 짧은 선(12px) + 검은 글자". 지시선(회색 1px)은 그 곡선의 온도가 가장 높은 점에서
    오른쪽으로만 나가 띠에서 이름표로 꺾인다(그래프 안에서 다른 곡선을 가로지르지 않는다). 이름표끼리는 14px 이상 벌린다.
@@ -15,15 +16,37 @@ const G_YT_W = 18, G_YL_GAP = 10, G_YL_H = 24;                   // 세로 축 �
 const G_TITLE_H = 20;                                            // PNG 로 저장할 때 위쪽 바깥에 넣는 제목 한 줄의 높이
 const G_TAG_GAP = 14, G_KEY_W = 12;                              // 이름표 사이 · 이름표의 색 선 길이
 
-/* 세로 눈금 m × 10^k Ω(m = 1 ~ 9.x) 의 두 줄 글자: ["1.5E+6", "1.5 MΩ"] */
-function ohmTick(m, k) {
-  const ms = String(Number(m.toPrecision(3)));
+/* 세로 눈금 m × 10^k Ω(m = 1 ~ 9.x) 의 두 줄 글자: ["1.5E+6", "1.5 MΩ"] · sig = 유효 숫자(선형 눈금은 간격에 맞춰 늘린다) */
+function ohmTick(m, k, sig) {
+  const ms = String(Number(m.toPrecision(sig || 3)));
   const ex = ms + "E" + (k < 0 ? "-" : "+") + Math.abs(k);
   const g = Math.floor(k / 3), unit = { "-1": "mΩ", 0: "Ω", 1: "kΩ", 2: "MΩ", 3: "GΩ", 4: "TΩ" }[g];
-  return [ex, unit ? String(Number((m * Math.pow(10, k - 3 * g)).toPrecision(3))) + " " + unit : ex + " Ω"];
+  return [ex, unit ? String(Number((m * Math.pow(10, k - 3 * g)).toPrecision(sig || 3))) + " " + unit : ex + " Ω"];
+}
+/* 선형 눈금(최대 ÷ 최소 < 2): 간격 1 · 2 · 5 × 10^k 중 눈금 4~6개 · 데이터가 범위의 60 % 이상인 가장 촘촘한 것(없으면 4~7개 중 데이터 비율이 가장 큰 것) */
+function linTicks(r0, r1) {
+  if (!(r1 > r0)) { r0 *= 0.95; r1 *= 1.05; }                    // 값이 전부 같다: 위아래 ±5 %
+  const span = r1 - r0;
+  let best = null, alt = null;
+  for (let k = Math.floor(Math.log10(span / 20)) - 1; k <= Math.ceil(Math.log10(span)) + 1 && !best; k++) for (const m of [1, 2, 5]) {
+    const st = m * Math.pow(10, k), lo = Math.floor(r0 / st + 1e-9) * st, hi = Math.ceil(r1 / st - 1e-9) * st;
+    const n = Math.round((hi - lo) / st) + 1, frac = span / (hi - lo);
+    if (n >= 4 && n <= 6 && frac >= 0.6) { best = { st, lo, hi, n }; break; }
+    if (n >= 4 && n <= 7 && (!alt || frac > alt.frac)) alt = { st, lo, hi, n, frac };
+  }
+  const p = best || alt;
+  const ticks = [];
+  for (let i = 0; i < p.n; i++) {
+    const v = p.lo + i * p.st;
+    if (v <= 0) continue;
+    const k = Math.floor(Math.log10(v) + 1e-9);
+    ticks.push({ v, m: v / Math.pow(10, k), k, sig: Math.min(6, Math.max(2, k - Math.floor(Math.log10(p.st) + 1e-9) + 1)) });
+  }
+  return { ticks, lo: Math.max(0, p.lo), hi: p.hi, lin: true };
 }
 /* 세로 눈금 [{v, m, k}] 와 범위 [lo, hi](Ω): 폭 10배 이상 = 10배마다 · 좁으면 1 · 2 · 5 → (3개 미만) 1 · 1.5 · 2 · 3 · 5 · 7 × 10^k(그래도 모자라면 다음 눈금까지 넓힘) */
 function ohmTicks(r0, r1) {
+  if (r1 / r0 < 2) return linTicks(r0, r1);
   if (r1 / r0 >= 10 - 1e-9) {
     const e0 = Math.floor(Math.log10(r0) + 1e-9), e1 = Math.max(e0 + 1, Math.ceil(Math.log10(r1) - 1e-9)), ticks = [];
     for (let e = e0; e <= e1; e++) ticks.push({ v: Math.pow(10, e), m: 1, k: e });
@@ -74,8 +97,8 @@ function rtGraph() {
     if (t0 === Infinity) { t0 = g.xTime ? 0 : 20; t1 = g.xTime ? 60 : 100; r0 = 10; r1 = 1e6; }
     if (g.xTime) { t0 = 0; t1 = Math.max(t1, 1); const st = niceStep(t1 / 6); t1 = Math.ceil(t1 / st - 1e-9) * st; }      // 경과: 0 부터 · 눈금 간격에 맞춰 끝
     else { t0 = Math.floor(Math.min(t0, 20) / 10) * 10; t1 = Math.ceil(Math.max(t1, 90) / 10) * 10; }
-    const yt = ohmTicks(r0, r1), L0 = Math.log10(yt.lo), L1 = Math.log10(yt.hi);
-    const labels = yt.ticks.map((t) => ohmTick(t.m, t.k));
+    const yt = ohmTicks(r0, r1), L0 = yt.lin ? yt.lo : Math.log10(yt.lo), L1 = yt.lin ? yt.hi : Math.log10(yt.hi);
+    const labels = yt.ticks.map((t) => ohmTick(t.m, t.k, t.sig));
     const lw = Math.max(0, ...labels.map(([a, b]) => Math.max(textW(a), textW(b) * 10 / 11)));       // 눈금 글자 폭(윗줄 11px · 아랫줄 10px)
     const l = Math.max(G_M.l, Math.ceil(G_YT_W + lw + G_YL_GAP + 2));                                // 왼쪽 여백 = 축 제목 띠 + 눈금 글자 + 사이
     const top = G_M.t + (g.title ? G_TITLE_H : 0);
@@ -83,7 +106,7 @@ function rtGraph() {
     const pw = Math.max(10, g.w - l - right), ph = Math.max(10, g.h - top - G_M.b);
     return { t0, t1, l, pw, ph, top, yticks: yt.ticks, ylabels: labels,
       x: (t) => l + (t - t0) / (t1 - t0) * pw,
-      y: (r) => top + (L1 - Math.log10(r)) / (L1 - L0) * ph,
+      y: (r) => top + (L1 - (yt.lin ? r : Math.log10(r))) / (L1 - L0) * ph,      // 선형(좁은 범위) · 로그
       tAt: (px) => t0 + (px - l) / pw * (t1 - t0) };
   }
 
