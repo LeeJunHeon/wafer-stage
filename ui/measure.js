@@ -27,7 +27,7 @@ function buildMeasure() {
   ms.btns = h("div", { class: "row wrap" });
   ms.gate = h("div", { class: "why gate" });
   ms.batch = tk(h("input", { type: "text", class: "name", spellcheck: "false", onchange: async () => { const r = await api("batch_set", { name: ms.batch.value }); if (!r.ok) ms.batch.value = S.cfg.batch_name; } }), "cfg:batch_name");
-  ms.legend = h("div", { class: "small", text: "✓ 완료 · ✕ 실패 · 흐림 = 제외 · 점선 = 미확인" });      // 샘플이 없으면 숨긴다(자리는 그대로)
+  ms.legend = h("div", { class: "small", text: "✓ 완료 · ✕ 실패 · 흐림 = 체크 안 함 ·점선 = 미확인" });      // 샘플이 없으면 숨긴다(자리는 그대로)
   ms.info = h("div", { class: "small" });
   ms.tbody = h("tbody", {});
   /* 머리줄 체크 = 전체 선택 / 전체 해제(고를 수 있는 샘플 = "핀보다 작음" · "미확인" 이 아닌 것이 모두 체크면 체크 · 일부면 가운데 줄) */
@@ -106,22 +106,24 @@ function drawPlate() {
   for (const s of S.samples || []) {
     const row = rowOf(s.id) || { status: s.use ? "대기" : "제외" };
     const st = row.status, pts = s.voutline.map((p) => p.join(",")).join(" ");        // 화면(문 기준) 판 mm
-    const out = st === "제외", now = st === "측정 중";
-    const g = svgEl("g", { opacity: out ? 0.4 : 1 });
+    const now = st === "측정 중";
+    const dim = !s.use && !now && s.id !== shown;                  // 진하게 = 체크한 샘플 · 측정 중 · 보고 있는 샘플(기록에 든 샘플이어도 체크를 풀면 흐림)
+    const box = svgEl("g"), g = svgEl("g", { opacity: dim ? 0.4 : 1 });     // 상태 표시(✓ · ✕)는 흐리게 하지 않는다(box 에 따로)
+    box.append(g);
     g.append(svgEl("polygon", { points: pts, fill: "none", stroke: "#FFFFFF", "stroke-width": (now ? 5 : 3.5) * k, "stroke-linejoin": "round" }));
     g.append(svgEl("polygon", { points: pts, fill: "none", stroke: "#1F2329", "stroke-width": (now ? 3 : 1.5) * k, "stroke-linejoin": "round", "stroke-dasharray": s.weak ? 4 * k + " " + 3 * k : null }));
     const [cx, cy] = s.vplate;
     if (now) { const r = 7 * k; g.append(svgEl("path", { d: "M" + (cx - r) + " " + cy + "H" + (cx + r) + "M" + cx + " " + (cy - r) + "V" + (cy + r), stroke: "#FFFFFF", "stroke-width": 3.5 * k, fill: "none" }));
       g.append(svgEl("path", { d: "M" + (cx - r) + " " + cy + "H" + (cx + r) + "M" + cx + " " + (cy - r) + "V" + (cy + r), stroke: "#1F2329", "stroke-width": 1.5 * k, fill: "none" })); }
     const mark = st === "완료" ? "✓" : st === "실패" ? "✕" : "";
-    if (mark) g.append(svgEl("text", { x: cx, y: cy + 5 * k, "font-size": 15 * k, "font-weight": 700, "text-anchor": "middle", fill: "#1F2329", stroke: "#FFFFFF", "stroke-width": 3 * k, "paint-order": "stroke", text: mark }));
+    if (mark) box.append(svgEl("text", { x: cx, y: cy + 5 * k, "font-size": 15 * k, "font-weight": 700, "text-anchor": "middle", fill: "#1F2329", stroke: "#FFFFFF", "stroke-width": 3 * k, "paint-order": "stroke", text: mark }));
     const top = Math.min(...s.voutline.map((p) => p[1]));
     g.append(svgEl("text", { x: cx, y: top - 4 * k, "font-size": 12 * k, "font-weight": s.id === shown ? 700 : 400, "text-anchor": "middle", fill: "#1F2329", stroke: "#FFFFFF", "stroke-width": 3 * k, "paint-order": "stroke", text: row.name || s.name }));
     if (s.id === shown) {
       const xs = s.voutline.map((p) => p[0]), ys = s.voutline.map((p) => p[1]), m = 3 * k;
       g.append(svgEl("rect", { x: Math.min(...xs) - m, y: Math.min(...ys) - m, width: Math.max(...xs) - Math.min(...xs) + 2 * m, height: Math.max(...ys) - Math.min(...ys) + 2 * m, fill: "none", stroke: "#1F2329", "stroke-width": 1 * k, "stroke-dasharray": 2 * k + " " + 2 * k }));
     }
-    kids.push(g);
+    kids.push(box);
   }
   setKids(ms.ov, ...kids);
 }

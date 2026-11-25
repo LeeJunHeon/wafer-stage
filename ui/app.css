@@ -251,7 +251,8 @@ table.tb td { padding: 4px 8px; border-bottom: 1px solid #ECEEF0; white-space: n
 table.tb td.num, table.tb th.num { text-align: right; }
 table.tb tr { cursor: pointer; }
 table.tb tr:hover td { background: #F7F8F9; }
-table.tb tr.sel td { background: #E9EDF1; font-weight: 600; }
+table.tb tr.sel td, table.tb tr.sel:hover td { background: #D3DEEA; font-weight: 600; }      /* 고른 줄 - 마우스를 올린 줄(#F7F8F9)과 확실히 다르게 · 올려도 그대로 */
+table.tb tr.sel td:first-child { box-shadow: inset 3px 0 0 #1F2329; }                          /* 줄 왼쪽 끝 3 px 띠(테두리는 border-collapse 로 열 폭이 바뀌어 그림자로) */
 table.tb tr.out td { color: #9AA1A9; }
 table.tb td.ord { width: 40px; color: var(--ink2); }
 table.tb td.chk, table.tb th.chk { width: 28px; padding: 4px 4px 4px 8px; }     /* 순서 표 체크 열(측정할 샘플 고르기) */
