@@ -1196,6 +1196,20 @@ class Prep:
                 return {"id": s["id"], "use": s["use"]}
         raise Rejected("해당 샘플 없음")
 
+    def sample_use_all(self, use):
+        """순서 표 머리줄 체크(전체 선택 · 전체 해제): True = "핀보다 작음"(small) · "미확인"(weak)이 아닌 샘플을 모두 체크(small · weak 는 지금 값 그대로) ·
+        False = 전부 해제. 반환 {n: 체크한 샘플 수}."""
+        self.c._no_run("샘플 고르기")
+        on = bool(use)
+        for s in self.samples:
+            if not on:
+                s["use"] = False
+            elif not s.get("small") and not s.get("weak"):
+                s["use"] = True
+        self.publish()
+        self.c.gate_inputs_changed()                                 # 측정 시작 조건이 고른 샘플을 본다(쿨러 배치 빈 칸)
+        return {"n": sum(1 for s in self.samples if s["use"])}
+
     # ------------------------------------------------------------------
     # 7 · 쿨러 구역
     # ------------------------------------------------------------------

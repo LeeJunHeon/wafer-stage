@@ -4,7 +4,7 @@
 "use strict";
 
 const ms = { sel: null, pts: {}, key: "", overlay: false, editing: null, prevState: null };
-const ORDER_W = 260, RIGHT_MIN_W = 440;                           // 순서 표 폭 · 오른쪽 패널(그래프) 최소 폭
+const ORDER_W = 288, RIGHT_MIN_W = 440;                           // 순서 표 폭(체크 열 28 + 순서 · 샘플 · 진행 260 - app.css .order 와 같게) · 오른쪽 패널(그래프) 최소 폭
 const STAGE_NAMES = ["이동", "접촉", "냉각", "가열", "냉각", "저장"];
 const HOLD_NAMES = ["이동", "접촉", "기록", "저장"];                      // 기록 모드(히트건 사용 끔): 띠 네 칸 · 서버 단계 0 · 1 · 6 · 5 → 칸 0 · 1 · 2 · 3
 const HOLD_CELL = { 0: 0, 1: 1, 6: 2, 5: 3 };
@@ -30,8 +30,10 @@ function buildMeasure() {
   ms.legend = h("div", { class: "small", text: "✓ 완료 · ✕ 실패 · 흐림 = 제외 · 점선 = 미확인" });      // 샘플이 없으면 숨긴다(자리는 그대로)
   ms.info = h("div", { class: "small" });
   ms.tbody = h("tbody", {});
+  /* 머리줄 체크 = 전체 선택 / 전체 해제(고를 수 있는 샘플 = "핀보다 작음" · "미확인" 이 아닌 것이 모두 체크면 체크 · 일부면 가운데 줄) */
+  ms.allChk = tk(h("input", { type: "checkbox", onclick: (e) => { e.stopPropagation(); api("sample_use_all", { use: !allPicked() }); } }), "ms.useAll");
   ms.table = h("div", { class: "order" }, h("div", { class: "row" }, small("묶음"), ms.batch),
-    h("div", { class: "tscroll fill" }, h("table", { class: "tb" }, h("thead", {}, h("tr", {}, h("th", { text: "순서" }), h("th", { text: "샘플" }), h("th", { text: "진행" }))), ms.tbody)),
+    h("div", { class: "tscroll fill" }, h("table", { class: "tb" }, h("thead", {}, h("tr", {}, h("th", { class: "chk" }, ms.allChk), h("th", { text: "순서" }), h("th", { text: "샘플" }), h("th", { text: "진행" }))), ms.tbody)),
     small("이름 수정: 더블클릭"));
   ms.body = h("div", { class: "plate-body fill" }, ms.pb.box, ms.table);
   const left = ms.left = h("div", { class: "panel fill", id: "ms-left" },
@@ -73,17 +75,20 @@ function layoutPlate() {
   ms.pb.fit();
 }
 function selectSample(id) { ms.sel = id; renderMeasure(); syncPoints(); }
+const pickable = () => (S.samples || []).filter((s) => !s.small && !s.weak);     // 전체 선택이 체크하는 샘플
+function allPicked() { const p = pickable(); return p.length > 0 && p.every((s) => s.use); }
 function lastMeasured() {                                         // 마지막으로 잰 샘플(가장 늦게 시작한 것)
   let best = null;
   for (const r of R().rows) if (r.t0 != null && r.order != null && (best == null || r.t0 > best.t0)) best = r;
   return best ? best.id : null;
 }
-/* 오른쪽 패널에 보일 샘플: 고른 샘플 → (안 골랐으면) 지금 측정 중인 샘플 → 측정이 끝났거나 멈췄으면 마지막으로 잰 샘플 */
+/* 오른쪽 패널에 보일 샘플: 고른 샘플 → (안 골랐으면) 지금 측정 중인 샘플 → 측정 중인데 샘플이 없으면(샘플 사이 · 마지막 샘플 뒤 정리 중) ·
+   측정이 끝났거나 멈췄으면 마지막으로 잰 샘플. 정리 중에 null 을 주면 그래프가 비고 끝난 뒤 다시 그려지지 않았다 */
 function shownId() {
   if (ms.sel != null && rowOf(ms.sel)) return ms.sel;
   const run = R();
   if (run.cur != null) return run.cur;
-  return run.state === "stopped" || run.state === "done" ? lastMeasured() : null;
+  return run.state === "running" || run.state === "stopped" || run.state === "done" ? lastMeasured() : null;
 }
 
 /* ---- 판 사진 위 표시: 상태는 색만이 아니라 모양으로 ---- */
@@ -145,7 +150,8 @@ function progText(row, s, brief) {                               // brief: 덧�
 function renderTable() {
   const run = R();
   const rows = run.rows.slice().sort((a, b) => (a.order == null ? 1e9 : a.order) - (b.order == null ? 1e9 : b.order) || a.id - b.id);
-  const sig = JSON.stringify(rows.map((r) => [r.id, r.name, r.order, r.status])) + "|" + shownId() + "|" + ms.editing;
+  const running = run.state === "running";
+  const sig = JSON.stringify(rows.map((r) => { const s = sampleOf(r.id); return [r.id, r.name, r.order, r.status, !!(s && s.use)]; })) + "|" + shownId() + "|" + ms.editing + "|" + running;
   if (sig !== ms.tsig) {
     ms.tsig = sig;
     ms.cells = {};
@@ -161,10 +167,19 @@ function renderTable() {
       } else nameEl = h("td", { text: r.name, ondblclick: (e) => { e.stopPropagation(); if (r.status === "대기" || r.status === "제외") { ms.editing = r.id; ms.tsig = ""; renderTable(); } else toast("측정한 샘플은 이름 수정 불가"); } });
       const prog = h("td", { class: "prog" });
       ms.cells[r.id] = prog;
-      return h("tr", { class: (r.id === shownId() ? "sel " : "") + (r.status === "제외" ? "out" : ""), onclick: () => selectSample(r.id) }, h("td", { class: "ord", text: r.order == null ? "" : r.order }), nameEl, prog);
+      /* 체크 = 그 샘플을 잴지(use) · 누르면 sample_use - 줄 클릭(그 샘플 보기)으로 번지지 않게 */
+      const s = sampleOf(r.id);
+      const ck = tk(h("input", { type: "checkbox", checked: !!(s && s.use), onclick: async (e) => { e.stopPropagation(); const el = e.target, r0 = await api("sample_use", { id: r.id, use: el.checked }); if (!r0.ok) el.checked = !el.checked; } }), "ms.use");     // 거절되면 되돌림
+      setOff(ck, running ? "측정 중 변경 불가" : !s ? "샘플 없음" : "");
+      const ckTd = h("td", { class: "chk", onclick: (e) => e.stopPropagation() }, ck);
+      return h("tr", { class: (r.id === shownId() ? "sel " : "") + (r.status === "제외" ? "out" : ""), onclick: () => selectSample(r.id) }, ckTd, h("td", { class: "ord", text: r.order == null ? "" : r.order }), nameEl, prog);
     }));
   }
   for (const r of rows) { const c = ms.cells[r.id]; if (c) { const t = progText(r, sampleOf(r.id)); if (c.textContent !== t) { c.textContent = t; c.title = t; } } }
+  const all = S.samples || [], nUse = all.filter((s) => s.use).length;
+  ms.allChk.checked = allPicked();
+  ms.allChk.indeterminate = !ms.allChk.checked && nUse > 0;
+  setOff(ms.allChk, running ? "측정 중 변경 불가" : !all.length ? "샘플 없음" : "");
 }
 
 /* ---- 위쪽 버튼 ---- */
@@ -196,7 +211,7 @@ function renderButtons() {
     const findWhy = whyStage(true, true) || whyCamera() || whyHead() || (P().plate ? "" : "판 영역 설정 필요 (초기 설정 3)");
     if (ms.find) setOff(ms.find, findWhy);
     const gateWhy = gate.length ? "필요 항목 · " + gate.map((g) => g.text).join(" · ") : "";
-    if (ms.start && n) setOff(ms.start, gateWhy || (n > 0 && used === 0 ? "측정할 샘플 없음 · [포함] 필요" : ""));
+    if (ms.start && n) setOff(ms.start, gateWhy || (n > 0 && used === 0 ? "측정할 샘플 없음 · 샘플 체크 필요" : ""));
     if (ms.resume && run.state === "stopped") setOff(ms.resume, gateWhy);
     if (gate.length) {
       kids.push("필요 항목: ");
@@ -226,6 +241,7 @@ function renderSample() {
     setKids(ms.act); ms.line.textContent = ""; ms.spacing.textContent = "";
     setBand(-1, 0);
     ms.graph.set([]);
+    ms.gsig = "";                                                 // 비운 것을 기억하지 않는다 - 다음에 샘플이 보이면 반드시 다시 그린다
     return;
   }
   ms.title.textContent = "샘플 " + row.name;
@@ -234,11 +250,10 @@ function renderSample() {
   ms.sub.textContent = (row.order != null ? "순서 " + row.order + " / " + (run.total || run.rows.filter((r) => r.order != null).length) + " · " : "")
     + (isNow ? fmtDur(el) + " 경과" + (run.repeat > 1 ? " · " + run.cycle + " / " + run.repeat + "회" : "") : progText(row, s, true));
   /* 고른 샘플에 할 수 있는 일 */
-  const asig = id + "|" + row.status + "|" + run.state + "|" + (s && s.use);
+  const asig = id + "|" + row.status + "|" + run.state;
   if (asig !== ms.asig) {
     ms.asig = asig;
-    const b = [];
-    if (run.state !== "running" && s && (run.state === "idle" || !row.order)) b.push(btn(s.use ? "제외" : "포함", () => api("sample_use", { id, use: !s.use })));
+    const b = [];                                                 // 잴지 말지는 순서 표의 체크로 고른다
     if (run.state !== "running" && ["완료", "실패", "건너뜀", "중지"].includes(row.status)) b.push(btn("재측정", () => api("run_requeue", { id })));
     setKids(ms.act, ...b);
   }
@@ -249,7 +264,7 @@ function renderSample() {
   if (isNow) { setBand(hold ? (HOLD_CELL[run.stage] != null ? HOLD_CELL[run.stage] : -1) : run.stage, run.frac); ms.line.textContent = heatLine(run) || run.line || ""; }
   else {
     setBand(row.status === "완료" ? 6 : -1, 0);
-    ms.line.textContent = [s ? "크기 " + sizeText(s) : "", row.status === "제외" && s ? (s.weak ? "미확인 샘플 · 확인 후 [포함]" : s.small ? "핀보다 작음" : "") : row.notes.join(" · ")].filter(Boolean).join(" · ");
+    ms.line.textContent = [s ? "크기 " + sizeText(s) : "", row.status === "제외" && s ? (s.weak ? "미확인 샘플 · 확인 후 체크" : s.small ? "핀보다 작음" : "") : row.notes.join(" · ")].filter(Boolean).join(" · ");
   }
   /* 그래프: 고른 샘플(진한 색) + 겹쳐 보기면 바로 앞에 끝난 두 샘플 */
   const pv = (pid) => (hold ? ptsOf(pid).filter((p) => p.length > 3).map((p) => [p[3], p[1], 2]) : ptsOf(pid));   // 기록 모드: [경과, 저항] - 저항–시간

@@ -6,7 +6,7 @@
    히트건 = 송풍 + 열선. [켜기] 는 서버가 열선 → 송풍 순서로 켠다 · [끄기] 는 열선을 끄고 송풍은 heater_fan_after_s 뒤에 끈다.
    [온도 시험] 은 큰 창(ui/temptest.js)을 연다. 온도 시험 중에는 히트건 · 쿨러 버튼 · 접촉 탐색을 끈다([전체 끄기] 는 시험을 정지하고 끈다).
    판 사진 보기 아래 샘플 줄: [◀ 이전] [샘플 선택] [다음 ▶] = sample_goto(핀 놓을 자리로 · 핀 맨 위 확인) · "이동 후 내리기"(화면 값 · 시작 때 끔 · 켤 때 확인 창) =
-   샘플로 간 뒤 접촉 높이까지(판 사진 · [크게 보기] 에서 샘플을 눌러도) · [자동 순회] = 포함 샘플을 차례로 이동 → 접촉 높이 → 머묾(app/jobs/tour.py) · 순회 중 [순회 정지]. */
+   샘플로 간 뒤 접촉 높이까지(판 사진 · [크게 보기] 에서 샘플을 눌러도) · [자동 순회] = 체크한 샘플을 차례로 이동 → 접촉 높이 → 머묾(app/jobs/tour.py) · 순회 중 [순회 정지]. */
 "use strict";
 
 const man = {};
@@ -176,7 +176,7 @@ function renderTour(stage, ready, locked, ttOn) {
   const nUse = (S.samples || []).filter((s) => s.use && s.xy).length;
   const why = on ? "" : running() ? "측정 중 사용 불가" : ttOn ? "온도 시험 중 사용 불가" : !stage ? NEED.stage : locked ? "비상정지 해제 필요"
     : (ht.fan || ht.element) ? "히트건 끈 뒤 순회" : !(S.homed.x && S.homed.y && S.homed.z) ? "원점 필요 (초기 설정 2)" : !ready ? "초기 설정 5 후 사용 가능"
-    : c.contact_z_mm == null ? "접촉 높이 필요 (초기 설정 6)" : !nUse ? "포함 샘플 없음" : "";
+    : c.contact_z_mm == null ? "접촉 높이 필요 (초기 설정 6)" : !nUse ? "체크한 샘플 없음" : "";
   man.tourBtn.textContent = on ? "순회 정지" : "자동 순회";
   man.tourBtn.classList.toggle("on", on);
   setOff(man.tourBtn, on ? "" : why);

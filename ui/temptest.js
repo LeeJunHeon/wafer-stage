@@ -315,7 +315,7 @@ function ttDraw() {
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, W, H);
   g.font = "12px Pretendard, 'Malgun Gothic', sans-serif";
-  const L = 48, R = 104, T = 8, B = 84;
+  const L = 64, R = 104, T = 8, B = 84;                         // 왼쪽 = 세로 축 제목 띠(약 18) + 눈금 글자 + 6
   const x0 = L, x1 = W - R, y0 = T, y1 = H - B, by0 = y1 + 36, by1 = y1 + 72;
   const P = tt.pts, c = ttCondSrc();
   const tMax = Math.max(60, ...P.map((p) => p[0]));
@@ -332,8 +332,11 @@ function ttDraw() {
   g.textAlign = "right";
   for (let v = Math.ceil(lo / sc) * sc; v <= hi + 1e-9; v += sc) { g.beginPath(); g.moveTo(x0, Y(v) + .5); g.lineTo(x1, Y(v) + .5); g.stroke(); g.fillText(String(v), x0 - 6, Y(v) + 4); }
   g.fillText("100", x0 - 6, by0 + 10); g.fillText("0", x0 - 6, by1);
+  g.save();                                                       // 세로 축 제목 "온도 (°C)": 왼쪽 바깥 띠에 세로로(아래 → 위로 읽음 · 눈금 글자와 안 겹치게)
+  g.translate(14, (y0 + y1) / 2); g.rotate(-Math.PI / 2);
+  g.textAlign = "center"; g.fillText("온도 (°C)", 0, 0);
+  g.restore();
   g.textAlign = "left";
-  g.fillText("°C", 4, y0 + 10);
   g.strokeStyle = TT_COLORS.axis; g.strokeRect(x0 + .5, y0 + .5, x1 - x0, y1 - y0);
   /* 열선 출력 % 띠(높이 = 출력) */
   g.strokeRect(x0 + .5, by0 + .5, x1 - x0, by1 - by0);

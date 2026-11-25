@@ -185,8 +185,8 @@ function buildStep2() {
 }
 
 /* ---------- 초점 찾기 결과 그래프(canvas): 가로 초점 값 · 세로 선명도 · 고른 값 ----------
-   글자는 축 밖 띠에만(왼쪽 = 선명도 · 아래 = 초점 값 · 위 = 고른 값) - 그래프 선과 겹치지 않는다. 고른 값은 위 띠의 글자에서 점까지 점선(지시선)으로 잇는다. */
-const FG = { W: 380, H: 150, L: 48, R: 12, T: 20, B: 20 };
+   글자는 축 밖 띠에만(왼쪽 = 축 제목 "선명도"(세로) + 선명도 눈금 · 아래 = 초점 값 · 위 = 고른 값) - 그래프 선과 겹치지 않는다. 고른 값은 위 띠의 글자에서 점까지 점선(지시선)으로 잇는다. */
+const FG = { W: 380, H: 150, L: 62, R: 12, T: 20, B: 20 };      // L = 세로 축 제목 띠(약 16) + 눈금 글자
 function focusGraph() {
   const cv = h("canvas", { class: "fgraph", width: FG.W, height: FG.H });
   const draw = (pts, best, lo, hi) => {
@@ -201,6 +201,8 @@ function focusGraph() {
     g.textBaseline = "top"; g.textAlign = "left"; g.fillText(String(lo), x0, y1 + 4);
     g.textAlign = "right"; g.fillText(String(hi), x1, y1 + 4);
     g.textAlign = "center"; g.fillText("초점 값", (x0 + x1) / 2, y1 + 4);
+    g.save(); g.translate(4, (y0 + y1) / 2); g.rotate(-Math.PI / 2);          // 세로 축 제목(아래 → 위로 읽음 · 점이 없어도)
+    g.textBaseline = "top"; g.fillText("선명도", 0, 0); g.restore();
     if (!pts || !pts.length) return;
     const smax = Math.max(...pts.map((p) => p[1])), smin = Math.min(...pts.map((p) => p[1]));
     const span = Math.max(1e-9, smax - smin);

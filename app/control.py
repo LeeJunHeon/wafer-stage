@@ -2038,7 +2038,7 @@ class Controller:
                 todo = [s for s in self.prep.samples if s["use"] and s["xy"] is not None]
                 xy = [s["xy"] for s in todo]
             else:
-                todo = [i for i in self.runner.order if self.runner.items[i]["status"] == RUN_WAIT]
+                todo = self.runner.todo()                            # 체크한 "대기" 샘플(재개가 잴 것)
                 xy = [self.runner.items[i]["xy"] for i in todo]
             if todo:
                 cool = {"zone": "샘플 아래 구역 쿨러", "all": "쿨러 전부", "none": "쿨러 안 씀"}.get(c["run_cooler_mode"], c["run_cooler_mode"])
@@ -2305,7 +2305,7 @@ COMMANDS = {
     "photo_head_set": "prep.photo_head_set", "marker_check": "prep.marker_check", "photo_take": "prep.photo_take", "plate_set": "prep.plate_set",
     "empty_take": "prep.empty_take", "coord_set": "prep.coord_set", "coord_goto_d": "prep.coord_goto_d", "coord_clear": "prep.coord_clear", "coord_extra_clear": "prep.coord_extra_clear",
     "marker_learn": "prep.marker_learn", "plate_goto": "prep.plate_goto", "coord_add_at": "prep.coord_add_at", "coord_remove": "prep.coord_remove",
-    "samples_find": "prep.samples_find", "sample_use": "prep.sample_use", "sample_goto": "prep.sample_goto",
+    "samples_find": "prep.samples_find", "sample_use": "prep.sample_use", "sample_use_all": "prep.sample_use_all", "sample_goto": "prep.sample_goto",
     "tour_start": "tour.start", "tour_stop": "tour.stop",
     "settings_export": "settings_export", "settings_import_preview": "settings_import_preview", "settings_import_apply": "settings_import_apply",
     "move_plan": "move_plan", "quit_plan": "quit_plan", "app_quit": "app_quit",

@@ -239,7 +239,7 @@ table.ctab tr:hover td { background: none; }
 #ms-left { width: 786px; }
 .plate-body { display: flex; gap: 12px; align-items: flex-start; min-width: 0; overflow: hidden; }
 .plate-photo { flex: none; cursor: pointer; }
-.order { flex: none; width: 260px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.order { flex: none; width: 288px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .gate { line-height: 16px; min-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }      /* 글이 없어도 한 줄 높이(사진이 밀리지 않게) */
 .order > .fill { flex: 1 1 0; min-height: 0; }
 .tscroll { overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; }
@@ -252,6 +252,8 @@ table.tb tr:hover td { background: #F7F8F9; }
 table.tb tr.sel td { background: #E9EDF1; font-weight: 600; }
 table.tb tr.out td { color: #9AA1A9; }
 table.tb td.ord { width: 40px; color: var(--ink2); }
+table.tb td.chk, table.tb th.chk { width: 28px; padding: 4px 4px 4px 8px; }     /* 순서 표 체크 열(측정할 샘플 고르기) */
+table.tb td.chk input, table.tb th.chk input { margin: 0; vertical-align: middle; }
 table.tb td input.name { height: 24px; width: 96px; }
 .gate a { color: var(--ink); font-weight: 600; }
 .band { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }

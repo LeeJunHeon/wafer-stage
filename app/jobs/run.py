@@ -385,9 +385,9 @@ class Runner:
                 if s["use"] and s["id"] not in self.items and s["xy"] is not None:
                     self.items[s["id"]] = self._new_item(s)
                     self.order.append(s["id"])
-            if not any(self.items[i]["status"] == WAIT for i in self.order):
+            if not self.todo():                                     # 체크한 "대기" 가 없다(체크를 푼 대기는 "대기" 로 남는다)
                 raise Rejected("남은 샘플 없음")
-            if heater and self.empty_cell_names(self.cond, [self.items[i] for i in self.order if self.items[i]["status"] == WAIT]):
+            if heater and self.empty_cell_names(self.cond, [self.items[i] for i in self.todo()]):
                 raise Rejected("쿨러 배치 빈 칸 · 초기 설정 7")              # 재개는 이 측정의 조건(cond)의 배치를 쓴다
             bad = config_mod.problems(dict(self.c.cfg.values, **self.cond))    # 이 측정이 쓰는 조건(cond) + 지금의 안전 설정으로 다시 검사한다
             if bad:
@@ -400,18 +400,23 @@ class Runner:
             except BaseException:
                 self.c.k2450_end_run()
                 raise
-        return {"n": sum(1 for i in self.order if self.items[i]["status"] == WAIT)}
+        return {"n": len(self.todo())}
+
+    def todo(self):
+        """이번에 잴 샘플 id(순서대로): "대기" 이고 지금 샘플 목록에서 체크(use)된 것. 체크를 푼 "대기" 는 남겨 둔다(다시 체크하고 재개하면 잰다).
+        측정 중에는 체크를 못 바꾼다(sample_use · sample_use_all 이 거절) - 측정 스레드가 보는 동안 바뀌지 않는다."""
+        use = {s["id"]: bool(s["use"]) for s in self.c.prep.samples}
+        return [i for i in self.order if self.items[i]["status"] == WAIT and use.get(i, False)]
 
     def resume_changes(self):
         """[측정 재개] 가 바꿀 것: 대기 샘플마다 지금 prep.samples 의 같은 id 의 xy · plate(보정 점 · 좌표를 고쳤을 수 있다) ·
         접촉 조건(CONTACT_KEYS)의 지금 설정. 측정 조건(전압 · 온도 · 속도 …)은 시작 때 값 그대로(한 측정 안의 데이터 조건이 섞이지 않게).
-        반환 {"xy": {id: (xy, plate)}, "moved": [(이름, 이전 xy, 새 xy)], "contact": {키: [이전, 이후]}}. 그 샘플이 없어졌거나 이름이 다르거나 xy 가 없으면 Rejected."""
+        반환 {"xy": {id: (xy, plate)}, "moved": [(이름, 이전 xy, 새 xy)], "contact": {키: [이전, 이후]}}. 그 샘플이 없어졌거나 이름이 다르거나 xy 가 없으면 Rejected.
+        대상은 체크한 "대기"(todo) - 체크를 푼 대기는 이번에 재지 않으므로 보지 않는다."""
         now = {s["id"]: s for s in self.c.prep.samples}
         xy, moved = {}, []
-        for i in self.order:
+        for i in self.todo():
             it = self.items[i]
-            if it["status"] != WAIT:
-                continue
             s = now.get(i)
             if s is None or s["name"] != it["name"]:
                 raise Rejected("샘플 %s 없음 · 재촬영 뒤 새 측정 필요" % it["name"])
@@ -548,17 +553,18 @@ class Runner:
     def _main(self):
         c = self.c
         g = c.safety.generation
-        c.logs.app("측정 시작 · 묶음 %s · %d개 · %s" % (self.batch, sum(1 for i in self.order if self.items[i]["status"] == WAIT), self.folder))
+        todo = self.todo()                                          # 체크한 "대기" 만 잰다(체크를 푼 대기는 "대기" 로 남는다)
+        c.logs.app("측정 시작 · 묶음 %s · %d개 · %s" % (self.batch, len(todo), self.folder))
         halted = False                                              # 중지 · 비상정지 · 오류로 멈췄다(남은 샘플이 없어도 "끝남"이 아니다)
         try:
-            for sid in list(self.order):
+            for sid in todo:
                 it = self.items[sid]
                 if it["status"] != WAIT:
                     continue
                 if self._stop:
                     raise Halt("stop")
                 self._one(it, g)
-                if self.pause_after and any(self.items[i]["status"] == WAIT for i in self.order):
+                if self.pause_after and self.todo():
                     self.msg = "샘플 완료 후 정지"
                     break
         except Halt as h:
