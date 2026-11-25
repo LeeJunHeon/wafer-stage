@@ -463,7 +463,7 @@ firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 �
   까닭(2026-11-23 visa.log): 온도 READ? 172 ms · 저항 READ?(평균 10 · NPLC 1) 383 ms(90 % 422 ms) - 저항이 약 0.3 s 늦은 값이라 23.5 °C/분에서
   가열 약 0.12 °C 낮게 · 냉각 높게 기록돼 가짜 히스테리시스 약 0.25 °C. 읽기 시간 예상(`config.read_time_s` · `cycle_time_s`)은 온도 × 2 + 저항 ·
   기본값을 실측에 맞춤(`temp_read_s` 0.3 → 0.2 · `meter_conv_factor` 3 → 2 - DEFAULT_HISTORY) → 기본 0.83 초 < 측정 간격 0.9 초. 넘으면 측정 시작 창에 주의 한 줄.
-- **읽기 방식**(측정 조건 `run_read_mode` · 기본 seq - 실장비 확인 뒤 기본값을 바꾼다 · `COND_KEYS` 라 재개 때도 시작 때 값): **순차**(seq) = 위 순서를 측정 간격마다 ·
+- **읽기 방식**(측정 조건 `run_read_mode` · 기본 seq - 실장비 확인 뒤 기본값을 바꾼다 · `COND_KEYS` 라 재개 때도 시작 때 값): **순차**(seq) = 위 순서를 측정 간격마다(저항을 다시 읽으면 온도도 그 직전에 다시 읽는다 - T1 = 돌려준 저항 읽기 직전 온도 · `Runner._SeqSide`) ·
   **동시**(sync - `Runner._read_tr_sync`) = 저항을 읽는 동안 온도를 같이 읽고 쉬지 않고 이어서(측정 간격 안 씀 - `_pace` · 온도만 읽는 점(시작 전 냉각)은 측정 간격 그대로).
   - **점 주기**(`config.period_s` · 화면 `core.js period` 같은 식): 동시 = max(저항 읽기 예상 `config.meter_read_s`, 온도 횟수 `sync_temp_n`(저항 ÷ 온도 읽기 1~5) × 온도 읽기) - 기본 0.43 s · 온도 2번.
     가열 · 냉각 속도 · 점 간격 · 예상(`heat_rate_c_min` · `point_step_c` · `expect` · `cycle_time_s`)은 이 주기로. "측정 간격 … 읽기 시간 … 이상 필요" 검사 · 시작 창 read_warn 은 순차만.

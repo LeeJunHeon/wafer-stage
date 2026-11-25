@@ -216,6 +216,20 @@ class Runner:
             self.all.append(out)
             return out
 
+    class _SeqSide:
+        """읽기 방식 순차의 read_point side: begin = 저항 읽기 직전에 이 스레드에서 온도 한 번(_temp_raw - 스레드 없음 · 오류는 그대로 올라간다) · end = 그 값."""
+
+        def __init__(self, read):
+            self.read = read
+            self.v = None
+
+        def begin(self):
+            self.v = None
+            self.v = self.read()
+
+        def end(self):
+            return self.v
+
     def __init__(self, ctrl):
         self.c = ctrl
         self.heater = RelayHeater(ctrl)
@@ -892,11 +906,13 @@ class Runner:
         """저항을 읽는 점: 읽기 방식 동시면 _read_tr_sync · 순차는 온도 T1 → 저항 → 온도 T2 · 기록 온도 = (T1 + T2) ÷ 2(하나가 없으면 남은 값 · 둘 다 없으면 None).
         까닭(2026-11-23 visa.log): 온도 READ? 172 ms · 저항 READ?(평균 10 · NPLC 1) 383 ms - 저항이 온도보다 약 0.3 s 늦은 값이라
         23.5 °C/분에서 가열은 약 0.12 °C 낮게 · 냉각은 높게 기록돼 샘플과 상관없는 히스테리시스 약 0.25 °C 가 생겼다.
+        T1 은 저항 읽기마다 그 직전에 읽고(_SeqSide) 돌려준 저항 읽기와 짝인 값을 쓴다 - 범위를 바꿔 다시 읽은 점에서 T1 을 읽기들 전체 앞에서 한 번만 읽으면
+        채택한 저항(마지막 읽기)보다 이른 온도가 돼 0.4 °C/s 에서 다시 읽기 1번 약 0.08 °C · 2번 약 0.15 °C 어긋났다(다시 읽지 않는 점은 온도 → 저항 → 온도 그대로).
         못 읽음 판정 · 정점 · 정체 · 끝 판정은 평균, 가열 제어는 가장 최근 온도(T2 · 없으면 평균)를 쓴다. 반환 (T, T1, T2, 전류, 저항, 한도 걸림)."""
         if self._sync():
             return self._read_tr_sync()
-        T1 = self._temp_raw()
-        cur, R, trip = self._read_r()
+        cur, R, trip = self._read_r(Runner._SeqSide(self._temp_raw))
+        T1 = self.c.k2450.last_side
         T2 = self._temp_raw()
         got = [t for t in (T1, T2) if t is not None]
         T = sum(got) / len(got) if got else None

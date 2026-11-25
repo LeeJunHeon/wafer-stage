@@ -159,10 +159,73 @@ def test_temperature_matches_resistance_time(ready_ctrl, mode):
     assert wait_for(lambda: not ctrl.runner.active, 90)
     it = ctrl.runner.items[sid]
     assert it["status"] == DONE, (it["status"], it["reason"])
-    pts = it["points"][2:]                                          # 첫 점은 범위를 내려 다시 읽는다(순차는 앞 온도가 이르다)
-    assert len(pts) >= 6, len(it["points"])
+    pts = it["points"]                                              # 첫 점(범위를 내려 다시 읽음)까지 모든 점
+    assert len(pts) >= 8, len(pts)
     off = [abs(T - (30.0 - 100.0 * math.log10(R / 1e5))) for T, R, *_ in pts]
     assert max(off) < 0.03, (mode, max(off), off[:5])
+
+
+def test_seq_reread_reads_temperature_before_each_read(ready_ctrl):
+    """순차 · 범위를 내린 뒤 한도 표시(range_flag once)로 다시 읽는 점: T1 = 마지막(돌려준) 저항 읽기 바로 앞에서 읽은 온도.
+    다시 읽지 않는 점은 온도 READ? 2번(저항 앞 · 뒤) 그대로."""
+    ctrl, sid = _hold(ready_ctrl, "seq", hold_s=4.0, t_rd=0.017, r_rd=0.038)
+    ctrl.lab.fault["range_flag"] = "once"
+    k10, k24, run = ctrl.k2110, ctrl.k2450, ctrl.runner
+    ev, got, on = [], [], [False]                                   # 기록은 _read_tr 안에서만(접촉 확인의 read_point 는 빼고)
+    o_t, o_r, o_p, o_tr = k10.read_temp, k24.read, k24.read_point, run._read_tr
+
+    def read_temp():
+        v = o_t()
+        if on[0]:
+            ev.append(("t", v))
+        return v
+
+    def read():
+        out = o_r()
+        if on[0]:
+            ev.append(("r",))
+        return out
+
+    def read_point(*a, **kw):
+        if on[0]:
+            ev.append(("p",))
+        out = o_p(*a, **kw)
+        if on[0]:
+            ev.append(("P", k24.last_reads))
+        return out
+
+    def read_tr():
+        on[0] = True
+        try:
+            out = o_tr()
+        finally:
+            on[0] = False
+        got.append(out)
+        return out
+
+    k10.read_temp, k24.read, k24.read_point, run._read_tr = read_temp, read, read_point, read_tr
+    ctrl.run_command("run_start")
+    assert wait_for(lambda: not run.active, 60)
+    it = run.items[sid]
+    assert it["status"] == DONE, (it["status"], it["reason"])
+    starts = [i for i, e in enumerate(ev) if e[0] == "p"]
+    assert len(starts) == len(got) >= 3, (len(starts), len(got))
+    reread = 0
+    for k, i in enumerate(starts):
+        j = next(j for j in range(i, len(ev)) if ev[j][0] == "P")
+        n = ev[j][1]
+        seg = ev[i + 1:j]
+        assert [e[0] for e in seg] == ["t", "r"] * n, (k, seg)        # 저항 읽기마다 그 직전에 온도
+        assert ev[j + 1][0] == "t", (k, ev[j:j + 2])                   # T2 = 저항 뒤 한 번
+        T, T1, T2 = got[k][:3]
+        assert T1 == seg[-2][1], (k, T1, seg)
+        assert T2 == ev[j + 1][1], (k, T2, ev[j + 1])
+        if n == 1:
+            assert sum(1 for e in seg if e[0] == "t") + 1 == 2, "다시 읽지 않는 점: 온도 READ? 2번"
+        else:
+            reread += 1
+    assert reread >= 1, "범위를 내린 점이 다시 읽혀야 한다(시험 조건)"
+    assert any(ev[j][1] == 1 for j in range(len(ev)) if ev[j][0] == "P"), "다시 읽지 않는 점도 있어야 한다"
 
 
 def test_sync_temp_meter_error_stops(ready_ctrl):

@@ -94,7 +94,12 @@ def test_resume_refused_when_position_cannot_be_computed(ready_ctrl):
 def test_read_tr_averages_and_falls_back(ready_ctrl):
     ctrl = ready_ctrl()
     run = ctrl.runner
-    run._read_r = lambda: (1e-6, 1e5, False)
+    def one_read(side):                                             # 다시 읽지 않는 점: 저항 읽기 한 번 - 그 직전 온도(side.begin) = T1
+        side.begin()
+        ctrl.k2450.last_side = side.end()
+        return 1e-6, 1e5, False
+
+    run._read_r = one_read
     for seq, want in (([30.0, 31.0], 30.5), ([30.0, None], 30.0), ([None, 31.0], 31.0)):
         vals = list(seq)
         run._temp_raw = lambda: vals.pop(0)
