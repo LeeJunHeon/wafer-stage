@@ -5,7 +5,11 @@
   - VO2 저항 모델: 가열 약 66 °C · 냉각 약 58 °C 에서 3e5 ↔ 2e2 Ω 로 바뀌는 고리(히스테리시스).
   - 오류 조작(lab.fault): tc_open(열전대 끊김) · disconnect(연결 끊김) · ilim(전류 한도 걸림) · slow(느린 응답 s) ·
     range_flag("" | "once" | "latch" - 출력이 켜진 채 범위를 낮추면 다음 :READ? 의 한도 표시가 1 · 값은 정상 · latch 는 *RST 까지 계속)
-  - K2450 실장비 흉내 고르기: lab.over_mode("over" - 고정 범위의 105 % 를 넘으면 9.91E37 | "clamp" - 부호 × 1.05 × 범위 + 한도 표시) ·
+  - K2450 전류 한도(실측 2026-11-25): 고정 범위 R 에서 한도는 1.06 × R 이하 - :SENS:CURR:RANG 을 받으면 한도가 1.06 × R 보다 크면 낮추고(올려도 되돌리지 않음) ·
+    :SOUR:VOLT:ILIM 도 1.06 × R 보다 큰 값은 낮춰 받는다 · 자동 범위에서는 범위가 한도를 바꾸지 않는다 · *RST = 자동 범위 · 한도 0.1 A ·
+    전류가 지금 한도를 넘으면 한도 값 + 한도 표시 · :SOUR:VOLT:ILIM? · :SENS:CURR:RANG? 에 지금 값.
+  - K2450 실장비 흉내 고르기: lab.over_mode("limit"(기본 · 실장비) - 한도에 묶인 값 그대로 | "over" - 고정 범위의 105 % 를 넘으면 9.91E37 |
+    "clamp" - 부호 × 1.05 × 범위 + 한도 표시 - 둘은 시험용) ·
     lab.first_gain(출력을 켠 뒤 첫 :READ? 값에 (1 + first_gain) - 기본 0)
   - 읽기 시간: lab.read_dt(공통) · read_dt_t(온도) · read_dt_r(저항) - 값은 읽기 구간 한가운데의 것 · 읽는 동안 Lab 전체 잠금을 쥐지 않아 두 장비를 동시에 읽는다
   - 핀이 접촉 높이에 있지 않으면 열전대가 공기 온도를 잰다(lab.pin_down() 이 False).
@@ -24,6 +28,7 @@ from app.devices import meters as inst
 
 T_AMB = 25.0
 OVER = "+9.91000000E+37"
+TOP_FRAC = 1.06                                               # 2450 고정 범위의 가장 큰 전류 한도 = 범위의 106 %(실측 2026-11-25)
 
 
 class Lab:
@@ -58,7 +63,7 @@ class Lab:
         self.r_hi, self.r_lo = 3.0e5, 2.0e2
         self.t_last = self.clock()
         self.fault = {"tc_open": False, "disconnect": False, "ilim": False, "slow": 0.0, "range_flag": ""}
-        self.over_mode = "over"        # 고정 범위 105 % 넘음: over = 9.91E37 · clamp = 1.05 × 범위 값 + 한도 표시
+        self.over_mode = "limit"       # 고정 범위 넘음: limit = 한도(≤ 1.06 × 범위)에 묶인 값(실장비) · over = 105 % 넘으면 9.91E37 · clamp = 1.05 × 범위 값 + 한도 표시
         self.first_gain = 0.0          # 출력을 켠 뒤 첫 :READ? 값의 어긋남 비율
         self._rflag = False            # range_flag: 다음 :READ? 의 한도 표시
         self._first = False            # 출력을 켠 뒤 아직 안 읽음
@@ -211,8 +216,9 @@ class Lab:
         return self._over(i, rng, auto)
 
     def _over(self, i, rng, auto):
-        """고정 범위에서 범위의 105 % 를 넘으면: over_mode over = 9.91E37 · clamp = 부호 × 1.05 × 범위 + 한도 표시."""
-        if not auto and abs(i) > rng * 1.05:
+        """고정 범위에서 범위의 105 % 를 넘으면: over_mode over = 9.91E37 · clamp = 부호 × 1.05 × 범위 + 한도 표시 ·
+        limit(실장비) = 그대로(전류는 이미 한도 ≤ 1.06 × 범위에 묶였다)."""
+        if not auto and abs(i) > rng * 1.05 and self.over_mode != "limit":
             if self.over_mode == "clamp":
                 self.tripped = True
                 return "%+.8E" % math.copysign(1.05 * rng, i)
@@ -311,7 +317,7 @@ class _Res:
     def _w2450(self, c, u):
         lab, s = self.lab, self.s
         if u == "*RST":
-            s.update(range=1e-3, auto=False, avg_on=False, avg_n=1, terminal="FRON", rsen=False)
+            s.update(range=1e-3, auto=True, avg_on=False, avg_n=1, terminal="FRON", rsen=False)     # 2450 공장값: 전류 측정 자동 범위
             lab.out_on = False
             lab.ilim, lab.volt = 0.1, 0.0
             lab.term = "FRON"
@@ -340,7 +346,10 @@ class _Res:
             else:
                 self.err.append("bad protection: " + c)
         elif u.startswith(":SOUR:VOLT:ILIM"):
-            lab.ilim = float(u.split("ILIM", 1)[1])
+            x = float(u.split("ILIM", 1)[1])
+            if not s["auto"]:
+                x = min(x, TOP_FRAC * s["range"])               # 고정 범위: 1.06 × 범위보다 큰 한도는 낮춰 받는다
+            lab.ilim = x
         elif u.startswith(":SOUR:VOLT") and not u.endswith("?"):
             lab.volt = float(u.split(":SOUR:VOLT", 1)[1])
         elif u.startswith(":SENS:FUNC"):
@@ -352,6 +361,8 @@ class _Res:
             if lab.out_on and new < s["range"] * (1 - 1e-9) and lab.fault.get("range_flag"):
                 lab._rflag = True                             # 출력이 켜진 채 범위를 낮춤 → 다음 읽기의 한도 표시
             s["range"] = new
+            if not s["auto"] and lab.ilim > TOP_FRAC * new:
+                lab.ilim = TOP_FRAC * new                     # 고정 범위: 한도를 1.06 × 범위로 낮춘다(범위를 올려도 되돌리지 않는다)
         elif u.startswith(":SENS:CURR:NPLC"):
             s["nplc"] = float(u.split("NPLC", 1)[1])
         elif u.startswith(":SENS:CURR:AVER:TCON"):
@@ -413,6 +424,10 @@ class _Res:
                 return v
         if self.kind == "2450" and u == ":SOUR:VOLT:ILIM:TRIP?":
             return "1" if lab.tripped else "0"
+        if self.kind == "2450" and u == ":SOUR:VOLT:ILIM?":
+            return "%.6E" % lab.ilim
+        if self.kind == "2450" and u == ":SENS:CURR:RANG?":
+            return "%.6E" % s["range"]
         if self.kind == "2450" and u == ":SOUR:VOLT:PROT:TRIP?":
             return "1" if lab.ovp_tripped else "0"
         if self.kind == "2450" and u == ":ROUT:TERM?":

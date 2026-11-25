@@ -48,7 +48,7 @@ def read_time_s(nplc, avg_count, line_hz=60.0, conv_factor=3.0, overhead_s=0.1):
       · 평균은 반복 평균(:SENS:CURR:AVER:TCON REP)이라 읽기 한 번에 변환을 평균 횟수만큼 한다.
       · 자동 영점은 *RST 뒤 켜져 있다(configure 는 :SENS:AZER:ONCE 로 한 번 새로 잡을 뿐 끄지 않는다)
         → 변환마다 신호 · 기준 · 영점을 재는 것으로 보고 conv_factor = 3 (넉넉하게 잡은 값).
-      · overhead_s = :READ? 와 :SOUR:VOLT:ILIM:TRIP? 두 번의 통신 + 범위 단계가 바뀔 때의 :SENS:CURR:RANG 쓰기.
+      · overhead_s = :READ? 와 :SOUR:VOLT:ILIM:TRIP? 두 번의 통신 + 범위 단계가 바뀔 때의 :SENS:CURR:RANG · :SOUR:VOLT:ILIM 쓰기.
     conv_factor · overhead_s 는 실장비에서 재 보지 않은 값이다(설정에 "실장비 확인 필요") - visa.log 의 읽기 시간으로 맞춘다.
     기본값: 10 × 1 ÷ 60 × 3 + 0.1 = 0.6 초."""
     return max(1, int(avg_count)) * float(nplc) / float(line_hz) * float(conv_factor) + float(overhead_s)
@@ -132,10 +132,17 @@ def resistance(volt, current):
 RANGES = [1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0]          # 2450 전류 측정 범위(10 nA ~ 1 A)
 START_RANGE = 1e-3                     # 시작 범위(1 mA) - v2 의 실장비 값
 LIMIT_FRAC = 0.106                     # 매뉴얼: 고정 범위에서 전압 소스의 전류 한도는 측정 범위의 10.6 % 이상이어야 한다
+LIMIT_TOP_FRAC = 1.06                  # 고정 범위에서 걸 수 있는 가장 큰 한도 = 범위의 106 %(실측 2026-11-25: ILIM 0.1 을 보낸 뒤 RANG 0.001 → ILIM? 0.00106 ·
+                                       # 범위를 0.01 로 올려도 0.00106 그대로 - 금속 판이 94.35 Ω(0.1 V ÷ 1.06 mA)으로 읽혔다). 한도는 [0.106 R, 1.06 R] 안
 
 
 def limit_ok(rng, ilim):
     return float(ilim) >= LIMIT_FRAC * float(rng) * (1 - 1e-9)
+
+
+def eff_limit(rng, ilim):
+    """범위 rng 에서 실제로 걸 한도 = min(사용자 한도, 1.06 × 범위). 장비가 이보다 큰 한도를 받지 않는다."""
+    return min(float(ilim), LIMIT_TOP_FRAC * float(rng))
 
 
 def clamp_range(rng, ilim):
@@ -153,7 +160,11 @@ def clamp_range(rng, ilim):
 #   (실장비가 어느 쪽인지 아직 모름) → 범위의 100 % 이상(RANGE_OVER)은 "이 범위로 못 잰 값" 으로 버리고 한 단계 올려 다시 읽는다.
 #   그 전에 70 %(RANGE_UP)를 넘으면 값은 쓰고 다음 읽기부터 한 단계 올린다. 내림은 5 %(RANGE_DOWN) 아래 - 올린 뒤 · 내린 뒤 되돌아가지 않는 폭.
 # · 1 mA → 1 µA 이하로 범위를 내린 직후의 첫 읽기에 :SOUR:VOLT:ILIM:TRIP? 이 1 이었다(24번 중 7번 · 전류 3.9e-11 ~ 8.4e-7 A - 한도와 거리가 멂).
-#   → 한도 걸림은 표시가 아니라 전류가 실제로 한도 근처인가(LIMIT_NEAR)로 본다. 표시가 선 값은 한 번 다시 읽는다.
+#   까닭(실측 2026-11-25): 범위를 내리면 장비가 한도도 1.06 × 새 범위로 내리고, 바꾸는 순간의 전류가 그 한도를 넘는다.
+#   → 한도 걸림은 표시가 아니라 전류가 실제로 한도 근처인가(LIMIT_NEAR)로 본다. 표시가 선 값은 한 번 다시 읽고, 그래도 서 있으면
+#   장비에 걸린 한도(:SOUR:VOLT:ILIM?)를 물어 값이 거기 묶였는지 본다(묶였으면 한도를 다시 걸고 다시 읽음 - 묶인 값은 돌려주지 않는다).
+# · 고정 범위에서 한도는 1.06 × 범위 이하로 묶이고 범위를 올려도 되돌아오지 않는다 → 범위를 바꿀 때마다 RANG 다음에 ILIM(eff_limit)을 보낸다(set_range).
+#   그러면 범위 R 에서 묶인 값은 1.06 R ≥ RANGE_OVER × R → over → 한 단계 위 · 맨 위 범위에서는 한도 = 사용자 한도 → limit.
 # · 출력을 켠 직후 1 mA 범위의 첫 값은 맞는 범위에서 다시 읽은 값과 -61 ~ +182 % 달랐다 → 켠 뒤 SETTLE_READS 번 읽어 버린다(K2450.start).
 RANGE_UP = 0.7
 RANGE_DOWN = 0.05
@@ -185,8 +196,8 @@ def judge_read(rng, current, ilim):
     over = current is None
     a = 0.0 if over else abs(float(current))
     over = over or a >= RANGE_OVER * r
-    if a >= LIMIT_NEAR * float(ilim) or (over and r >= top * (1 - 1e-9)):
-        return "limit", r
+    if (a >= LIMIT_NEAR * float(ilim) and not over) or (over and r >= top * (1 - 1e-9)):
+        return "limit", r                                           # 아래 범위에서 넘친 값(1.06 × 범위에 묶임)은 한도가 아니라 over - 사용자 한도가 범위 바로 위일 때
     up = min(RANGES[min(idx + 1, len(RANGES) - 1)], top)
     if over:
         return "over", up
@@ -197,6 +208,12 @@ def judge_read(rng, current, ilim):
             idx -= 1
         return "down", RANGES[idx]
     return "ok", r
+
+
+def _up_range(rng, top):
+    """한 단계 위 범위(top 을 넘지 않음)."""
+    idx = _range_idx(rng)
+    return min(RANGES[min(idx + 1, len(RANGES) - 1)], top)
 
 
 def is_open_circuit(current, floor_a):
@@ -335,8 +352,9 @@ class K2450(_Dev):
     MODEL = "2450"
     out_state = False
     range = START_RANGE                                 # 지금 전류 측정 범위(read_point 가 맞춘다)
-    ilim = 0.1
-    flag_stuck = False                                  # 한도 표시가 다시 읽어도 서 있었다(이번 설정에서는 표시로 다시 읽지 않음)
+    ilim = 0.1                                          # 사용자가 정한 전류 한도(configure)
+    ilim_now = 0.1                                      # 장비에 지금 건 한도 = eff_limit(범위, ilim)(set_range)
+    flag_stuck = False                                  # 한도 표시가 다시 읽어도 서 있었고 값은 한도에 묶이지 않았다(표시만 남음 - 이번 설정에서는 표시로 다시 읽지 않음)
     last_reads = 0                                      # 마지막 read_point 가 쓴 읽기 수
     last_side = None                                    # 마지막 read_point 가 돌려준 읽기와 짝인 side.end() 값(side 없으면 None)
 
@@ -376,9 +394,8 @@ class K2450(_Dev):
             self.write(":SOUR:VOLT %.6g" % float(volt))
             self.write(':SENS:FUNC "CURR"')
             self.write(":SENS:CURR:RANG:AUTO OFF")
-            self.range = clamp_range(float(start_range), float(ilim_a))
-            self.ilim = float(ilim_a)
-            self.write(":SENS:CURR:RANG %.6g" % self.range)
+            self.ilim = self.ilim_now = float(ilim_a)
+            self.set_range(clamp_range(float(start_range), float(ilim_a)))     # 범위 → 한도(고정 범위로 바꾸는 순간 장비가 한도를 1.06 × 범위로 낮춘다)
             self.write(":SENS:CURR:NPLC %.6g" % float(nplc))
             self.write(":SENS:CURR:AVER:TCON REP")
             self.write(":SENS:CURR:AVER:COUN %d" % max(1, int(avg_count)))
@@ -389,8 +406,19 @@ class K2450(_Dev):
                 raise VisaError("K2450 설정 오류 · " + errs[0][:40])
 
     def set_range(self, r):
+        """범위 먼저 → 한도 다음(eff_limit). 올릴 때: 남은 한도(1.06 × 이전 범위 = 새 범위의 10.6 %)가 규칙의 아래 끝이라 범위가 받아들여지고 그다음 한도를 올린다.
+        내릴 때: 장비가 한도를 스스로 낮추고 같은 값을 다시 보낸다(해 없음)."""
         self.write(":SENS:CURR:RANG %.6g" % float(r))
         self.range = float(r)
+        self.set_limit()
+
+    def set_limit(self):
+        self.ilim_now = eff_limit(self.range, self.ilim)
+        self.write(":SOUR:VOLT:ILIM %.6g" % self.ilim_now)
+
+    def limit_now(self):
+        """장비에 실제로 걸린 한도(:SOUR:VOLT:ILIM?) - 못 읽으면 None."""
+        return parse_float(self.query(":SOUR:VOLT:ILIM?"))
 
     def start(self):
         """출력 켜기 → SETTLE_READS 번 읽어 버린다(켠 직후 1 mA 범위의 첫 값은 맞는 범위에서 다시 읽은 값과 크게 다르다)."""
@@ -402,11 +430,15 @@ class K2450(_Dev):
     def read_point(self, side=None):
         """한 점 → (전류 | None, 한도 걸림). 판정(judge_read)이 over · down 이면 범위를 바꿔 다시 읽고(그 값은 버림), up 이면 값을 쓰고 다음부터 위 범위.
         한도 걸림 = 전류가 실제로 한도 근처(limit)일 때만. 한도 표시가 선 값은 같은 범위에서 한 번 다시 읽는다 - 다시 읽어도 서 있으면
-        장비가 표시를 유지하는 것으로 보고(flag_stuck) 이번 설정에서는 표시 때문에 다시 읽지 않는다. 쓴 읽기 수 = last_reads.
+        장비에 걸린 한도를 묻는다: 값이 그 한도의 95 % 이상이면 묶인 것 → 한도를 다시 걸고 다시 읽음 · 그래도 묶이면 범위를 한 단계 올려 다시 읽음 ·
+        맨 위 범위면 한도 걸림. 한도보다 충분히 작으면 표시만 남은 것으로 보고(flag_stuck) 이번 설정에서는 표시 때문에 다시 읽지 않는다
+        (한도 조회는 표시가 선 점마다 한다).
+        묶인 값을 정상 값으로 돌려주지 않는다(읽기 수를 다 쓰면 None). 쓴 읽기 수 = last_reads.
         side(begin() · end() 를 가진 것 - 무엇인지는 모른다)가 있으면 읽기 한 번마다 직전에 begin() · 직후에 end()(읽기가 예외여도) ·
         돌려주는 읽기(읽기 수를 다 쓰면 마지막 읽기)와 짝인 end() 값 = last_side. side 가 없으면 last_side = None."""
         with self.lock:
             retried = False
+            relimited = False                                       # 이 범위에서 한도를 다시 걸었다
             n = 0
             self.last_side = None
             try:
@@ -425,12 +457,24 @@ class K2450(_Dev):
                         return cur, True
                     if kind in ("over", "down"):
                         self.set_range(new)
-                        retried = False                             # 새 범위의 첫 읽기 - 표시는 범위를 바꾼 순간의 것일 수 있다
+                        retried = relimited = False                 # 새 범위의 첫 읽기 - 표시는 범위를 바꾼 순간의 것일 수 있다
                         continue
-                    if flag and not self.flag_stuck:
-                        if not retried:
+                    if flag:
+                        if not retried and not self.flag_stuck:
                             retried = True
                             continue
+                        lim = self.limit_now()                      # 표시가 남는 장비(flag_stuck)여도 묻는다 - 묶인 값을 정상 값으로 돌려주는 길이 없게
+                        if lim is None or cur is None or abs(cur) >= LIMIT_NEAR * lim:     # 값이 장비 한도에 묶였다(못 읽으면 묶인 것으로 본다)
+                            if not relimited:
+                                relimited = True                    # 한도를 다시 걸고 다시 읽는다(다음 읽기도 표시면 바로 여기로 - retried 그대로)
+                                self.set_limit()
+                                continue
+                            top = top_range(self.ilim)
+                            if self.range < top * (1 - 1e-9):
+                                self.set_range(_up_range(self.range, top))
+                                relimited = False
+                                continue
+                            return cur, True
                         self.flag_stuck = True
                     if kind == "up":
                         self.set_range(new)
