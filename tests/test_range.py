@@ -4,15 +4,17 @@
   - 출력을 켠 직후의 첫 값은 버린다(start).
   - 고정 범위 105 % 넘음은 장비가 9.91E37(over) 또는 105 % 에 멈춘 값 + 한도 표시(clamp) - 둘 다에서 값이 맞아야 한다.
   - 고정 범위에서 한도는 1.06 × 범위 이하로 묶이고 범위를 올려도 되돌아오지 않는다(limit - 시험용 장비 기본 · 실측 2026-11-25) →
-    범위를 바꿀 때마다 RANG 다음에 ILIM 을 다시 보낸다 · 묶인 값을 정상 값으로 돌려주지 않는다.
+    범위를 바꿀 때마다 RANG 다음에 ILIM 을 다시 보낸다(meter_relimit 켬 · 끔이면 RANG 만 · 장비가 낮춘 한도를 따라 계산) ·
+    묶인 값을 정상 값으로 돌려주지 않는다 - 한도 걸림 표시와 함께 돌려준다.
 """
 
 import pytest
 
 from app import contact as contact_mod
 from app.devices import meters
+from app.jobs import run as run_mod
 from app.jobs.run import DONE
-from tests.conftest import wait_for
+from tests.conftest import alarm_lines, wait_for
 from tests.fakes import fake_visa
 
 VOLT, ILIM = 0.1, 0.1
@@ -248,6 +250,90 @@ def test_bound_value_is_never_returned(monkeypatch, flag):
 
 
 # ---------------------------------------------------------------------------
+# 범위 바꿀 때 한도 다시 걸기(meter_relimit) 끔: RANG 만 · 장비가 낮춘 한도(ilim_now)를 따라 계산 · ILIM? 로 확인
+# ---------------------------------------------------------------------------
+def test_relimit_off_sends_range_only(monkeypatch):
+    lab, dev, _box = _meter(monkeypatch)
+    sent = _spy(monkeypatch, dev)
+    dev.configure(VOLT, ILIM, True, 1.0, 1, relimit=False)
+    ilims = [k for k, c in enumerate(sent) if c.startswith(":SOUR:VOLT:ILIM ")]
+    auto = sent.index(":SENS:CURR:RANG:AUTO OFF")
+    rang = [k for k, c in enumerate(sent) if c.startswith(":SENS:CURR:RANG ")]
+    assert len(ilims) == 1 and len(rang) == 1 and ilims[0] < auto < rang[0], sent
+    assert dev.relimit is False and dev.ilim_now == pytest.approx(1.06e-3) and lab.ilim == pytest.approx(1.06e-3)
+    n0 = len(sent)
+    dev.set_range(1e-2)
+    assert [c for c in sent[n0:] if c.startswith(":SOUR:VOLT:ILIM ")] == [], sent[n0:]
+    assert dev.ilim_now == pytest.approx(1.06e-3) and lab.ilim == pytest.approx(1.06e-3), "올려도 장비는 한도를 되돌리지 않는다 - 계산도 같게"
+    dev.set_range(1e-4)
+    assert dev.ilim_now == pytest.approx(1.06e-4) and lab.ilim == pytest.approx(1.06e-4), "내리면 장비가 낮춘다"
+
+
+def test_relimit_off_low_resistance_is_limit(monkeypatch):
+    lab, dev, box = _meter(monkeypatch)
+    box["ohm"] = 50.0
+    dev.configure(VOLT, ILIM, True, 1.0, 1, relimit=False)
+    dev.start()
+    cur, trip = dev.read_point()
+    assert trip is True and cur == pytest.approx(1.06e-3, rel=1e-6), (cur, trip, dev.range, lab.ilim)
+    assert dev.last_reads <= 3 and dev.range < meters.top_range(ILIM) * (1 - 1e-9), (dev.last_reads, dev.range)
+    assert dev.ilim_now == pytest.approx(1.06e-3)
+    dev.output(False)
+    r = dev.measure_once(VOLT, ILIM, True, 1.0, 1, relimit=False)
+    assert r["tripped"] is True and r["current"] == pytest.approx(1.06e-3, rel=1e-6), r
+
+
+@pytest.mark.parametrize("flag", ["", "latch"])
+@pytest.mark.parametrize("ohm", [4.5e3, 1.36e6])
+def test_relimit_off_normal_samples_same_as_on(monkeypatch, ohm, flag):
+    got = {}
+    for relimit in (True, False):
+        _lab, dev, box = _meter(monkeypatch, flag=flag)
+        box["ohm"] = ohm
+        dev.configure(VOLT, ILIM, True, 1.0, 1, relimit=relimit)
+        dev.start()
+        got[relimit] = [dev.read_point() for _ in range(3)]
+        dev.output(False)
+    for cur, trip in got[False]:
+        assert trip is False and cur == pytest.approx(VOLT / ohm, rel=1e-6), got
+    assert [c for c, _ in got[False]] == pytest.approx([c for c, _ in got[True]], rel=1e-9)
+
+
+@pytest.mark.parametrize("relimit", [True, False])
+def test_current_rises_after_range_down(monkeypatch, relimit):
+    """범위를 내린 뒤(한도도 1.06 × 범위로 내려감) 전류가 늘어나면: 끔 = 묶인 값을 한도 걸림으로 · 켬 = 바른 값."""
+    lab, dev, box = _meter(monkeypatch)
+    dev.configure(VOLT, ILIM, True, 1.0, 1, relimit=relimit)
+    dev.start()
+    box["ohm"] = VOLT / 1e-5
+    cur, trip = dev.read_point()
+    assert cur == pytest.approx(1e-5, rel=1e-6) and not trip and dev.range == pytest.approx(1e-4)
+    box["ohm"] = VOLT / 5e-3
+    cur, trip = dev.read_point()
+    if relimit:
+        assert cur == pytest.approx(5e-3, rel=1e-6) and trip is False, (cur, trip, dev.range, lab.ilim)
+    else:
+        assert cur == pytest.approx(1.06e-4, rel=1e-6) and trip is True, (cur, trip, dev.range, lab.ilim)
+        assert dev.ilim_now == pytest.approx(lab.ilim)
+    assert dev.last_reads <= meters.POINT_READS
+    dev.output(False)
+
+
+def test_bound_until_reads_run_out_returns_limit(monkeypatch):
+    """켬이어도 한도를 다시 걸 수 없어(장비가 ILIM 을 안 받음) 읽기 수를 다 쓸 때까지 묶이면 None 이 아니라 (그 전류, True)."""
+    lab, dev, box = _meter(monkeypatch)
+    dev.configure(VOLT, ILIM, True, 1.0, 1)
+    dev.start()
+    monkeypatch.setattr(dev, "set_limit", lambda: None)
+    lab.ilim = 2e-4
+    box["ohm"] = VOLT / 5e-3
+    cur, trip = dev.read_point()
+    assert trip is True and cur == pytest.approx(2e-4, rel=1e-6), (cur, trip, dev.range, lab.ilim, dev.last_reads)
+    assert dev.last_reads == meters.POINT_READS
+    dev.output(False)
+
+
+# ---------------------------------------------------------------------------
 # 기록 모드 한 번: 범위를 내린 직후의 한도 표시 · 켠 직후의 어긋난 값이 있어도 첫 점부터 같은 저항
 # ---------------------------------------------------------------------------
 def test_hold_run_first_point_true_with_flag_and_first_gain(ready_ctrl):
@@ -272,3 +358,65 @@ def test_hold_run_first_point_true_with_flag_and_first_gain(ready_ctrl):
     assert len(rs) >= 5 and rs[0] == pytest.approx(true, rel=1e-6), (rs[:3], true)
     assert all(r == pytest.approx(rs[0], rel=1e-6) for r in rs), rs
     assert it["sum"]["hold"]["n_miss"] == 0 and it["sum"]["hold"]["n"] == len(rs)
+
+
+# ---------------------------------------------------------------------------
+# 측정: 전류 한도에 닿은 점도 기록(control.csv 한도 칸 · 비고 n점 · 알림 한 번) · 예전 조건(meter_relimit 없음) = 켬
+# ---------------------------------------------------------------------------
+def _hold_one(ctrl):
+    w = ctrl.world
+    ctrl.run_command("samples_find")
+    x0, y0 = w.sample_stage(1)
+    sid = min(ctrl.prep.samples, key=lambda s: abs(s["xy"][0] - x0) + abs(s["xy"][1] - y0))["id"]
+    for s in ctrl.prep.samples:
+        if s["use"] != (s["id"] == sid):
+            ctrl.run_command("sample_use", {"id": s["id"], "use": s["id"] == sid})
+    ctrl.run_command("run_start")
+    assert wait_for(lambda: not ctrl.runner.active, 60)
+    return ctrl.runner.items[sid]
+
+
+HOLD_KW = dict(time_scale=200.0, run_heater_use=False, run_hold_s=5.0, run_interval_s=0.5, temp_read_s=0.1, meter_avg_count=1, meter_nplc=0.1)
+
+
+def test_trip_points_are_recorded(ready_ctrl):
+    ctrl = ready_ctrl(contact_check="off", **HOLD_KW)
+    ctrl.lab.fault["ilim"] = True                                   # 읽을 때마다 전류 한도에 닿음
+    it = _hold_one(ctrl)
+    run = ctrl.runner
+    assert it["status"] == DONE, (it["status"], it["reason"])
+    n = len(it["points"])
+    assert n >= 5
+    dat = (run.folder / (it["name"] + "_0.10V_0.dat")).read_bytes().decode("ascii").split("\r\n")
+    assert len([x for x in dat[1:] if x]) == n, "한도 점도 .dat 에(LabVIEW 형식 그대로)"
+    lines = (run.folder / (it["name"] + "_0.10V_control.csv")).read_text(encoding="utf-8-sig").splitlines()
+    assert lines[0].split(",")[-1] == "한도"
+    rows = [r.split(",") for r in lines[1:]]
+    assert len(rows) == n and all(r[-1] == "1" for r in rows), rows[:3]
+    trip_notes = [x for x in it["notes"] if x.startswith("전류 한도 도달")]
+    assert trip_notes == ["전류 한도 도달 · %d점" % n], it["notes"]
+    assert it["sum"]["hold"]["n"] == n and it["sum"]["hold"]["n_miss"] == 0
+    assert any("전류 한도 도달 · 값은 그대로 기록" in a for a in alarm_lines(ctrl)), alarm_lines(ctrl)
+    with open(run.folder / "summary.csv", encoding="utf-8-sig", newline="") as f:
+        assert "전류 한도 도달 · %d점" % n in f.read()
+
+
+def test_normal_points_have_limit_column_zero(ready_ctrl):
+    ctrl = ready_ctrl(**HOLD_KW)
+    it = _hold_one(ctrl)
+    assert it["status"] == DONE, (it["status"], it["reason"])
+    lines = (ctrl.runner.folder / (it["name"] + "_0.10V_control.csv")).read_text(encoding="utf-8-sig").splitlines()
+    assert lines[1:] and all(r.split(",")[-1] == "0" for r in lines[1:])
+    assert not any(x.startswith("전류 한도 도달") for x in it["notes"])
+
+
+@pytest.mark.parametrize("keep_key, cfg_val, expect", [(True, False, False), (True, True, True), (False, False, True)])
+def test_relimit_from_cond_default_on(ready_ctrl, monkeypatch, keep_key, cfg_val, expect):
+    """측정 조건에 meter_relimit 이 없으면(예전 조건) 켬으로 - KeyError 없이."""
+    if not keep_key:
+        monkeypatch.setattr(run_mod, "COND_KEYS", tuple(k for k in run_mod.COND_KEYS if k != "meter_relimit"))
+    ctrl = ready_ctrl(meter_relimit=cfg_val, **HOLD_KW)
+    it = _hold_one(ctrl)
+    assert it["status"] == DONE, (it["status"], it["reason"])
+    assert ("meter_relimit" in ctrl.runner.cond) == keep_key
+    assert ctrl.k2450.relimit is expect

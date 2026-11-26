@@ -340,7 +340,7 @@ function openRunCond() {
   const f = { run_heater_use: chk("run_heater_use"), run_hold_s: num("run_hold_s", "1"),
     contact_check: h("select", {}, ...[["off", "사용 안 함"], ["skip", "그 샘플 건너뜀"], ["stop", "측정 멈춤"]].map(([v, t]) => h("option", { value: v, text: t, selected: c.contact_check === v }))),
     contact_max_ohm: num("contact_max_ohm"), contact_min_ohm: h("input", { type: "number", step: "any", value: c.contact_min_ohm == null ? "" : c.contact_min_ohm, placeholder: "없음" }),
-    meter_volt: num("meter_volt", "0.01"), meter_four_wire: chk("meter_four_wire"), meter_avg_count: num("meter_avg_count", "1"), meter_nplc: num("meter_nplc", "0.01"), meter_ilim_a: num("meter_ilim_a"),
+    meter_volt: num("meter_volt", "0.01"), meter_four_wire: chk("meter_four_wire"), meter_avg_count: num("meter_avg_count", "1"), meter_nplc: num("meter_nplc", "0.01"), meter_ilim_a: num("meter_ilim_a"), meter_relimit: chk("meter_relimit"),
     run_start_c: num("run_start_c", "1"), run_heater_off_c: num("run_heater_off_c", "1"), run_cool_end_c: num("run_cool_end_c", "1"), run_repeat: num("run_repeat", "1"),
     run_read_mode: h("select", {}, ...[["seq", "순차"], ["sync", "동시 · 연속"]].map(([v, t]) => h("option", { value: v, text: t, selected: (c.run_read_mode || "seq") === v }))),
     run_interval_s: num("run_interval_s", "0.1"),
@@ -385,7 +385,7 @@ function openRunCond() {
   Object.values(f).forEach((e) => { e.addEventListener("input", upd); e.addEventListener("change", upd); });
   upd();
   const left = h("div", { class: "form" },
-    h("h4", { text: "저항 측정" }), "측정 전압 (V)", f.meter_volt, "4단자", f.meter_four_wire, "평균 횟수", f.meter_avg_count, "NPLC", f.meter_nplc, "전류 한도 (A)", f.meter_ilim_a,
+    h("h4", { text: "저항 측정" }), "측정 전압 (V)", f.meter_volt, "4단자", f.meter_four_wire, "평균 횟수", f.meter_avg_count, "NPLC", f.meter_nplc, "전류 한도 (A)", f.meter_ilim_a, "범위 바꿀 때 한도 다시 걸기", f.meter_relimit,
     h("h4", { text: "온도" }), "히트건 사용", f.run_heater_use, "기록 시간 (s)", f.run_hold_s, "시작 온도 (°C)", f.run_start_c, "가열 끝 온도 (°C)", f.run_heater_off_c,
     "냉각 끝 온도 (°C)", f.run_cool_end_c, "반복 (회)", f.run_repeat, "읽기 방식", f.run_read_mode, "측정 간격 (s)", f.run_interval_s);
   const right = h("div", { class: "form" },

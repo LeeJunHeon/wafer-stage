@@ -59,7 +59,7 @@ HOLD_COLS = (("n", "기록 점 수"), ("dur_s", "기록 시간(s)"), ("r_mean", 
 SYNC_KEEP = 10                                    # 동시 읽기: 저항 · 온도 읽기 시간을 이 개수만큼 최근 것의 중앙값으로 본다
 T_MISS_N = 3                                      # 온도를 이만큼 연속으로 못 읽으면 측정을 멈춘다(열전대 끊김)
 MAX_POINTS = 200000
-COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "meter_ilim_a", "run_start_c", "run_heater_off_c", "run_cool_end_c",
+COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "meter_ilim_a", "meter_relimit", "run_start_c", "run_heater_off_c", "run_cool_end_c",
              "run_repeat", "run_read_mode", "run_interval_s", "temp_read_s", "line_hz", "meter_conv_factor", "read_overhead_s", "run_cooler_mode", "run_cooler_during_heat", "contact_mode", "contact_fixed_read", "contact_z_mm",
              "contact_check", "contact_max_ohm", "contact_min_ohm", "run_heater_use", "run_hold_s",
              "run_no_rise_s", "run_no_rise_c",
@@ -70,8 +70,10 @@ COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "
              "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct", "heater_pwm_period_ms", "heater_timing", "heater_sync", "heater_phase_off", "heater_trim_ppm", "heater_rotate_pm",
              "run_rate_by", "run_heat_time_s", "run_cool_time_s",
              "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "heat_curve", "heater_tc_s", "heater_pi_filter_s", "heater_jump_c", "heater_turn_s", "reversal_c")
-CONTROL_HEADER = ("회차", "단계", "경과(s)", "온도(°C)", "저항(Ω)", "목표 온도(°C)", "열선 출력(%)", "송풍", "온도 1(°C)", "온도 2(°C)")
-# <이름>_<전압>V_control.csv 의 첫 줄 · 온도 = (온도 1 + 온도 2) ÷ 2(저항 앞 · 뒤에 잰 온도 - 읽기 시점 맞추기)
+CONTROL_HEADER = ("회차", "단계", "경과(s)", "온도(°C)", "저항(Ω)", "목표 온도(°C)", "열선 출력(%)", "송풍", "온도 1(°C)", "온도 2(°C)", "한도")
+# <이름>_<전압>V_control.csv 의 첫 줄 · 온도 = (온도 1 + 온도 2) ÷ 2(저항 앞 · 뒤에 잰 온도 - 읽기 시점 맞추기) ·
+# 한도 = 1 이면 그 점의 저항은 전류 한도에 닿은 값(버리지 않고 기록 · .dat 는 LabVIEW 형식 그대로라 표시 없음)
+TRIP_NOTE = "전류 한도 도달"                          # 비고 "전류 한도 도달 · n점"(한도에 닿은 채 기록한 점 수)
 CONTACT_KEYS = ("contact_mode", "contact_fixed_read", "contact_z_mm", "contact_check", "contact_max_ohm", "contact_min_ohm")   # [나머지 측정] 이 지금 설정으로 바꾸는 조건
 MOVE_NOTE_MM = 0.05                                 # 재개 때 샘플 X · Y 가 이보다 많이 바뀌면 로그 한 줄
 
@@ -671,6 +673,7 @@ class Runner:
     def _one(self, it, g):
         c = self.c
         it.update(status=NOW, reason="", notes=[], t0=time.time(), t1=None, points=[], cycles=[], contact=None, sum=None, peak=None, element_log=[])
+        it.pop("_trip_n", None)                                     # 전류 한도 점 수(비고 "전류 한도 도달 · n점")는 샘플을 잴 때마다 새로
         self.cur, self.cycle, self._t_miss = it["id"], 1, 0
         self._sync_st = {"t": None, "per": [], "dt": [], "n": []}
         halt = abort = None
@@ -786,7 +789,7 @@ class Runner:
             self._set(3, "%g °C 까지 가열" % off_c)                  # 진행 글은 지금 하는 일만 쓴다
             if cyc == 1:
                 try:
-                    dev.configure(volt, cd["meter_ilim_a"], cd["meter_four_wire"], cd["meter_nplc"], cd["meter_avg_count"])
+                    dev.configure(volt, cd["meter_ilim_a"], cd["meter_four_wire"], cd["meter_nplc"], cd["meter_avg_count"], relimit=cd.get("meter_relimit", True))
                     dev.start()
                 except meters.VisaError as e:
                     raise RunAbort("저항계 설정 오류 · %s" % str(e)[:50])
@@ -866,7 +869,7 @@ class Runner:
         self.feeding = True
         self._open_cycle(it, fname, volt, 1)
         try:
-            dev.configure(volt, cd["meter_ilim_a"], cd["meter_four_wire"], cd["meter_nplc"], cd["meter_avg_count"])
+            dev.configure(volt, cd["meter_ilim_a"], cd["meter_four_wire"], cd["meter_nplc"], cd["meter_avg_count"], relimit=cd.get("meter_relimit", True))
             dev.start()
         except meters.VisaError as e:
             raise RunAbort("저항계 설정 오류 · %s" % str(e)[:50])
@@ -875,7 +878,7 @@ class Runner:
         self._set(5, "저장 중", 0.5)
 
     def _hold(self, it, g, hold_s):
-        """기록: hold_s 동안 측정 간격마다 한 점(단계 2). 전류 한도 걸림 · 값 없음은 쓰지 않는다(못 쓴 읽기로 셈) · 접촉 불량 주의는 같다."""
+        """기록: hold_s 동안 측정 간격마다 한 점(단계 2). 값 없음은 쓰지 않는다(못 쓴 읽기로 셈) · 전류 한도에 닿은 점은 쓰고 control.csv 한도 칸 1 · 접촉 불량 주의는 같다."""
         c, cd = self.c, self.cond
         interval = float(cd["run_interval_s"])
         st = it.setdefault("_st", {"low": 0, "open_warned": False, "trip_warned": False, "fast_warned": False})
@@ -891,8 +894,8 @@ class Runner:
             T, T1, T2, cur, R, trip = self._read_tr()
             self._note_reading(it, cur, trip, st)
             el = c.clock() - t0
-            if T is not None and R is not None and not trip:
-                self._row(it, T, R, 2, None, T1, T2)
+            if T is not None and R is not None:
+                self._row(it, T, R, 2, None, T1, T2, trip)
                 rows.append((round(c.clock() - (self._t_rec or t0), 3), T, R, cur))
             else:
                 it["_hold_miss"] += 1
@@ -1049,15 +1052,15 @@ class Runner:
         c.state.update("resistance", ohm=R, current=cur, volt=volt, four_wire=bool(self.cond["meter_four_wire"]), time=time.time())
         return cur, R, trip
 
-    def _row(self, it, T, R, phase, sp=None, T1=None, T2=None):
-        """한 점: 회차 .dat · merged(LabVIEW 형식 그대로) + control.csv(경과 · 목표 온도 · 열선 · 송풍 - 가열 제어 값을 맞추는 데 쓴다)."""
+    def _row(self, it, T, R, phase, sp=None, T1=None, T2=None, trip=False):
+        """한 점: 회차 .dat · merged(LabVIEW 형식 그대로) + control.csv(경과 · 목표 온도 · 열선 · 송풍 - 가열 제어 값을 맞추는 데 쓴다 · 한도 = trip)."""
         line = files.data_line(T, R) + files.CRLF
         c = self.c
         t_rel = c.clock() - (self._t_rec or c.clock())
         f3 = lambda v: "" if v is None else "%.3f" % v                             # noqa: E731
         pct = "" if phase == 2 else "%.1f" % c.heater_pct()          # 기록 모드: 목표 온도 · 열선 칸은 비움
-        ctl = "%d,%s,%.2f,%s,%s,%s,%s,%d,%s,%s\r\n" % (self.cycle, PHASE_NAME.get(phase, "냉각"), t_rel, files.fmt_e(T), files.fmt_e(R),
-                                                    f3(sp), pct, 1 if c._fan_on() else 0, f3(T1), f3(T2))
+        ctl = "%d,%s,%.2f,%s,%s,%s,%s,%d,%s,%s,%d\r\n" % (self.cycle, PHASE_NAME.get(phase, "냉각"), t_rel, files.fmt_e(T), files.fmt_e(R),
+                                                       f3(sp), pct, 1 if c._fan_on() else 0, f3(T1), f3(T2), 1 if trip else 0)
         if phase != 2 and len(it.setdefault("_tl", [])) < MAX_POINTS:
             it["_tl"].append((round(t_rel, 3), float(T), None if sp is None else float(sp), phase, self.cycle))     # 요약(점 수 · 속도 · 역전 · 목표선 차이)용
         try:
@@ -1074,13 +1077,15 @@ class Runner:
             if phase == 2:
                 pt.append(round(t_rel, 2))                          # 기록 모드: 경과(s) - 화면 그래프의 가로축(저항–시간)
             it["points"].append(pt)
+        if trip:
+            self._count_trip(it)
         cy = it["cycles"][-1]
         cy["rows"] += 1
         if phase == 0:
             cy["heat_rows"] += 1
 
     def _note_reading(self, it, cur, trip, st):
-        """전류가 하한 아래인 읽기가 이어지면 주의(측정은 계속) · 전류 한도 걸림은 한 번 알린다."""
+        """전류가 하한 아래인 읽기가 이어지면 주의(측정은 계속) · 전류 한도 걸림은 샘플마다 한 번 알린다(점은 그대로 기록 - 점 수는 _count_trip)."""
         c, cd = self.c, self.cond
         if cur is not None:
             st["low"] = st["low"] + 1 if abs(cur) < float(cd["contact_open_a"]) else 0
@@ -1090,8 +1095,19 @@ class Runner:
                 c.state.alarm("pin_open", "%s · 핀 접촉 불량 의심" % it["name"], NOTICE, dismiss=True)
         if trip and not st["trip_warned"]:
             st["trip_warned"] = True
-            it["notes"].append("전류 한도 도달")
-            c.state.alarm("ilim", "%s · 전류 한도 도달" % it["name"], NOTICE, dismiss=True)
+            c.state.alarm("ilim", "%s · 전류 한도 도달 · 값은 그대로 기록" % it["name"], NOTICE, dismiss=True)
+
+    @staticmethod
+    def _count_trip(it):
+        """전류 한도에 닿은 채 기록한 점 수 → 비고 "전류 한도 도달 · n점" 하나(점이 늘면 그 비고를 고친다 - 같은 비고를 쌓지 않는다)."""
+        n = it["_trip_n"] = it.get("_trip_n", 0) + 1
+        notes = it["notes"]
+        old = [k for k, x in enumerate(notes) if str(x).startswith(TRIP_NOTE)]
+        txt = "%s · %d점" % (TRIP_NOTE, n)
+        if old:
+            notes[old[0]] = txt
+        else:
+            notes.append(txt)
 
     def _note_cycle(self, it, t_prev, t_now):
         """실제 한 회차(앞 회차 시작 → 이번 회차 시작: 읽기 + 측정 간격)가 온도 못 읽음 허용 시간을 넘으면 경보 한 번(측정마다).
@@ -1160,8 +1176,8 @@ class Runner:
             self.heat = {"sp": round(sp, 2), "element": el_on, "fan": self.heater.fan_on, "mode": "ramp" if ramp else "full",
                          "wait": bool(ctl is not None and ctl.waiting), "pct": self.heater.pct}
             self._note_reading(it, cur, trip, st)
-            if T is not None and R is not None and not trip:
-                self._row(it, T, R, 0, sp, T1, T2)
+            if T is not None and R is not None:
+                self._row(it, T, R, 0, sp, T1, T2, trip)
             if c.heater_trips != trips0:                            # 안전 규칙이 열선을 껐다(차단 온도 · 열선 연속 최대 시간 · 온도 못 읽음)
                 c.logs.app("샘플 %s · 열선이 %g °C 에 닿기 전에 꺼짐 · %s" % (it["name"], off_c, c.heater_trip or ""), "warn")
                 self._heat_cut = c.heater_trip or "안전 규칙"
@@ -1233,8 +1249,8 @@ class Runner:
                                  "pct": self.heater.pct}
                 if peak is not None and (peak["t"] is None or T > peak["t"]):
                     peak["t"] = T
-                if with_r and R is not None and not trip:
-                    self._row(it, T, R, phase, sp, T1, T2)
+                if with_r and R is not None:
+                    self._row(it, T, R, phase, sp, T1, T2, trip)
                 if done(T, now):
                     return T, False
                 if stall and stall_j.update(T, now):                # 정체: 더 안 내려간다 - 그 단계를 끝낸다(부르는 쪽이 판단)
@@ -1453,7 +1469,7 @@ class Runner:
             nas = {"dir": files.nas_target(self.cond.get("nas_dir"), self.cond.get("nas_date_folder"), self.batch, self.t0), "ok": None, "pending": [], "done": []}
         return {"batch": self.batch, "started": self.t0, "saved": time.time(), "state": state or self.state, "msg": self.msg, "cond": self.cond, "nas": nas,
                 "resumes": list(getattr(self, "resumes", [])),
-                "samples": [{k: v for k, v in self.items[i].items() if k not in ("points", "_st", "_tl", "_jumps", "_hold", "_hold_miss")} | {"order": n + 1}
+                "samples": [{k: v for k, v in self.items[i].items() if k not in ("points", "_st", "_tl", "_jumps", "_hold", "_hold_miss", "_trip_n")} | {"order": n + 1}
                             for n, i in enumerate(self.order)]}
 
     def _save_json(self, state=None):

@@ -1368,9 +1368,10 @@ class Controller:
 
     def _measure_r(self, dev, meter=None):
         """저항 한 번(설정 → 출력 켜기 → 읽기 → 출력 끄기)을 재서 화면 상태에 올린다. 사용권을 가진 쪽만 부른다. meter = 측정 조건(없으면 지금 설정)."""
-        c = meter or self.cfg
+        c = meter or self.cfg.values                                # dict 하나로(예전 측정 조건에 없는 키는 기본값 - meter_relimit)
         try:
-            r = dev.measure_once(c["meter_volt"], c["meter_ilim_a"], c["meter_four_wire"], c["meter_nplc"], c["meter_avg_count"])
+            r = dev.measure_once(c["meter_volt"], c["meter_ilim_a"], c["meter_four_wire"], c["meter_nplc"], c["meter_avg_count"],
+                                 relimit=c.get("meter_relimit", True))
         except meters.VisaError as e:
             self.state.set_device("k2450", "오류", str(e), dev.addr)
             raise Rejected(str(e))
