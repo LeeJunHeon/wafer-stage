@@ -359,7 +359,7 @@ firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 �
   **묶인 값도 버리지 않는다**: 한도 걸림(True)과 함께 돌려준다 - 읽기 수(`POINT_READS`)를 다 쓸 때 마지막 읽기가 묶인 값이면(표시가 서 있으면 ILIM? 로 확인) (그 전류, True) · 범위 넘음이면 None.
   **고정 범위에서 한도는 1.06 × 범위 이하로 묶인다(실측 2026-11-25)**: `LIMIT_TOP_FRAC` · `eff_limit(범위, 한도)` = min(사용자 한도, 1.06 × 범위).
   2450 은 RANG 을 받으면 한도를 1.06 × 범위로 낮추고 올려도 되돌리지 않아, 1 mA → 10 mA 로 올린 뒤에도 전류가 1.06 mA 에 묶여 금속 판이 94.35 Ω 으로 읽혔다(10 mA 범위의 10.6 % 라 정상 값으로 받음).
-  **설정 `meter_relimit`**("범위 바꿀 때 한도 다시 걸기" · 측정 조건 · 기본 켬 · `COND_KEYS` - 이 키가 없는 예전 조건은 켬 · `configure(relimit=)` · `measure_once(relimit=)` · `self.ilim_now` = 장비에 지금 실제로 걸린 한도):
+  **설정 `meter_relimit`**("범위 바꿀 때 한도 다시 걸기" · 측정 조건 · 기본 켬 · `COND_KEYS` - 이 키가 없는 조건은 실행 때 켬으로 본다 · 결과 화면은 키가 없는 예전 기록에 이 줄을 보이지 않는다(그 기록은 범위만 바꾸던 때의 것 - 끔과 같은 방식) · `configure(relimit=)` · `measure_once(relimit=)` · `self.ilim_now` = 장비에 지금 실제로 걸린 한도):
   - 켬: `K2450.set_range` = RANG → ILIM(eff_limit · configure 의 시작 범위도) · 범위 R 에서 묶인 값은 1.06 R → over → 한 단계 위 · 맨 위 범위는 사용자 한도 → limit
     (`judge_read` - 아래 범위에서 넘친 값은 사용자 한도의 95 % 이상이어도 over).
   - 끔: RANG 만(configure 순서 ILIM → RANG:AUTO OFF → RANG 그대로 - fb08d57 과 같은 명령) · ilim_now = min(ilim_now, 1.06 × 새 범위)로 따라 계산 ·

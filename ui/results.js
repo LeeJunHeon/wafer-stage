@@ -149,7 +149,7 @@ function renderRecord() {
     h("div", { class: "small path", text: nas.dir }),
     h("div", {}, h("i", { class: "dot " + (nas.ok ? "ok" : "warn") }), " ", nas.ok ? "완료" : "실패" + (nas.pending && nas.pending.length ? " · " + nas.pending.length + "개 남음" : "")),
     h("div", { class: "row" }, busyBtn("재복사", async () => { const r = await api("result_nas_copy", { id: rec.id }); if (r.ok) toast("NAS 복사 완료 · " + r.result.copied + "개"); pickRecordKeep(rec.id); }))]));
-  const c = Object.assign({ meter_relimit: true }, rec.cond || {});   // 이 설정이 없던 예전 기록 = 켬(그때의 동작)
+  const c = rec.cond || {};
   setKids(rs.cond, h("div", { class: "kv" }, ...COND_ROWS.filter(([k]) => c[k] != null).flatMap(([k, name, unit]) => {
     let v = c[k];
     if (typeof v === "boolean") v = v ? "켬" : "끔";

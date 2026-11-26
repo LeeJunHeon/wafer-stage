@@ -27,7 +27,7 @@ function buildMeasure() {
   ms.btns = h("div", { class: "row wrap" });
   ms.gate = h("div", { class: "why gate" });
   ms.batch = tk(h("input", { type: "text", class: "name", spellcheck: "false", onchange: async () => { const r = await api("batch_set", { name: ms.batch.value }); if (!r.ok) ms.batch.value = S.cfg.batch_name; } }), "cfg:batch_name");
-  ms.legend = h("div", { class: "small", text: "✓ 완료 · ✕ 실패 · 흐림 = 체크 안 함 ·점선 = 미확인" });      // 샘플이 없으면 숨긴다(자리는 그대로)
+  ms.legend = h("div", { class: "small", text: "✓ 완료 · ✕ 실패 · 흐림 = 체크 안 함 · 점선 = 미확인" });      // 샘플이 없으면 숨긴다(자리는 그대로)
   ms.info = h("div", { class: "small" });
   ms.tbody = h("tbody", {});
   /* 머리줄 체크 = 전체 선택 / 전체 해제(고를 수 있는 샘플 = "핀보다 작음" · "미확인" 이 아닌 것이 모두 체크면 체크 · 일부면 가운데 줄) */
