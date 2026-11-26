@@ -8,8 +8,11 @@
   열선 줄(SSR + 스테이션)은 명령한 % 를 그대로 통과시키지 않는다 - 같은 % 라도 고르게 켜기 칸에 따라 들어가는 열이 2~3배 다르고 출력과 온도가 직선이 아니다.
   그래서 출력 % 를 계산하는 제어기 하나(PowerControl - 배율 × 앞먹임 + PI + 적분 포화 방지 + 0 ~ heater_max_pct 제한)를 가열 · 냉각이 같이 쓰고
   (냉각은 목표선이 내려갈 뿐), 앞먹임과 이득은 실제로 잰 출력별 온도 표(heat_curve - [히트건 맞추기]가 고른 칸으로 잰 정지 온도)에서 읽는다:
-  앞먹임 = hold(목표)(그 온도를 유지하는 출력 - 표를 온도 → 출력으로 보간) + τ × 기울기 ÷ gain(목표)(그 온도 구간의 °C/%).
-  계수는 손으로 맞추지 않는다: 열 모델(1차 + 지연 τ · θ - ThermalModel)에서 SIMC 규칙(지연 = θ + 평균 창의 절반 · τc = max(지연, heater_tc_s)) · 이득은 회차마다 gain(목표).
+  표에서 읽는 자리 = 목표 + τ × 목표선 기울기(열 모델 τ dT/dt = Tss(u) − T 를 뒤집은 것 - 목표선을 따라가려면 출력이 향해야 하는 정지 온도) ·
+  앞먹임 = hold(그 자리)(그 온도를 유지하는 출력 - 표를 온도 → 출력으로 보간) · PI 이득 = gain(그 자리)(앞먹임이 놓인 구간의 °C/%).
+  (예전 hold(목표) + τ × 기울기 ÷ gain(목표) 는 gain 이 구간마다 다른 상수라 목표가 표의 점을 넘는 순간 출력이 14.8 → 27.9 % · 33.9 → 58.7 % 로 뛰어
+  온도가 +7 °C 넘게 튀었다 - 2026-11-26 기록. τ × 기울기(6.7 °C)가 표의 구간 폭과 비슷해 직선 근사가 맞지 않았다. hold 는 이어진 함수라 경계에서 뛰지 않는다)
+  계수는 손으로 맞추지 않는다: 열 모델(1차 + 지연 τ · θ - ThermalModel)에서 SIMC 규칙(지연 = θ + 평균 창의 절반 · τc = max(지연, heater_tc_s)) · 이득은 회차마다 gain(그 자리).
   표가 없으면 예전 식(앞먹임 = (목표 − 시작 주위 온도) ÷ K + τ × 기울기 ÷ K · 이득 K · 배율 1). 열 모델도 없으면 보수적인 기본값(DEFAULT_MODEL).
   배율 q(실시간 맞춤): 같은 출력 · 같은 방식인데 히트건이 내는 열이 스스로 1.8~2.3 배 바뀐다(10~17 분에 한 번쯤 · 15 초 안에) → 고정된 표로는 2 배 어긋난다.
     출력 = q × 앞먹임 + Kc e + J(적분 보정 %) · Kc = q × 표의 이득. 앞먹임이 FF_ADAPT 이상이면 J 를 Q_MOVE_S 시정수로 q 에 옮긴다(Q_MIN ~ Q_MAX).
@@ -113,7 +116,8 @@ class ThermalModel:
 
 class PowerControl:
     """열선 출력 % = 배율 q × 앞먹임(표) + Kc e + J, 0 ~ u_max 로 자른다. J = 적분 보정(%) - 출력이 한계에 걸린 채 오차가 그쪽으로 커지면 쌓지 않는다.
-    출력별 온도 표가 있으면: 앞먹임 = hold(목표) + τ × 기울기 ÷ gain(목표) · Kc = q × gains(K=gain(목표)) · 앞먹임이 FF_ADAPT 이상이면 J 를 조금씩 q 로 옮긴다
+    출력별 온도 표가 있으면: 자리 = 목표 + τ × 기울기(at) · 앞먹임 = hold(자리) · Kc = q × gains(K=gain(자리)) · 앞먹임이 FF_ADAPT 이상이면 J 를 조금씩 q 로 옮긴다
+    (예전 hold(목표) + τ × 기울기 ÷ gain(목표) 는 표 구간 경계에서 출력이 14.8 → 27.9 % · 33.9 → 58.7 % 로 뛰어 +7 °C 튀었다 - 2026-11-26 기록)
     (히트건이 내는 열이 표와 몇 배 다르든 q 가 따라가고, 목표가 올라가도 그 비율이 유지된다). 표가 없으면 q = 1 인 예전 PI."""
 
     def __init__(self, cd, T_amb, q=1.0):
@@ -126,10 +130,14 @@ class PowerControl:
         self.t = None
         self.u = 0.0
 
+    def at(self, sp, slope_c_s):
+        """표에서 읽는 자리(°C): 목표선을 따라가려면 출력이 향해야 하는 정지 온도 = 목표 + τ × 목표선 기울기."""
+        return float(sp) + self.m.tau * float(slope_c_s)
+
     def ff(self, sp, slope_c_s):
-        """앞먹임(배율 전): 목표 온도를 유지하는 출력 + 목표선 기울기만큼의 출력."""
+        """앞먹임(배율 전): 표가 있으면 hold(목표 + τ × 기울기) · 없으면 목표 온도를 유지하는 출력 + 목표선 기울기만큼의 출력."""
         if self.m.has_curve:
-            return self.m.hold(sp) + self.m.tau * float(slope_c_s) / self.m.gain(sp)
+            return self.m.hold(self.at(sp, slope_c_s))
         return ((float(sp) - self.T_amb) + self.m.tau * float(slope_c_s)) / self.m.K
 
     def scale(self, f):
@@ -141,7 +149,7 @@ class PowerControl:
         dt = 0.0 if self.t is None else max(0.0, now - self.t)
         self.t = now
         if self.m.has_curve:
-            kc0, self.ti = self.m.gains(K=self.m.gain(sp))
+            kc0, self.ti = self.m.gains(K=self.m.gain(self.at(sp, slope_c_s)))     # 앞먹임이 놓인 구간의 기울기
             self.kc = kc0 * self.q
         e = float(sp) - float(T)
         ff = self.ff(sp, slope_c_s)
