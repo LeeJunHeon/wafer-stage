@@ -16,6 +16,9 @@
     lab.first_gain(출력을 켠 뒤 첫 :READ? 값에 (1 + first_gain) - 기본 0)
   - 읽기 시간: lab.read_dt(공통) · read_dt_t(온도) · read_dt_r(저항) - 값은 읽기 구간 한가운데의 것 · 읽는 동안 Lab 전체 잠금을 쥐지 않아 두 장비를 동시에 읽는다
   - 핀이 접촉 높이에 있지 않으면 열전대가 공기 온도를 잰다(lab.pin_down() 이 False).
+  - 스테이션 켠 직후 튐(lab.kick_c · kick_rise_s · kick_tau_s · kick_fn = 켠 뒤 지난 초 | None - conftest 가 시험용 히트건 since_on 을 꽂는다):
+    열전대 값 + kick_c × 모양(s < kick_rise_s 면 s ÷ kick_rise_s · 그 뒤 exp(−(s − kick_rise_s) ÷ kick_tau_s)) · 스테이션이 꺼져 있으면 0 · 기본 kick_c 0(없음)
+    (2026-11-26 실장비: 켠 뒤 5 초 100 % 유지로 약 8초에 +42 °C)
   - 접촉 찾기 흉내(lab.probe · pos_fn): K2450 이 스테이지의 실제 X · Y · Z 를 보고 답한다. 샘플마다 표면 높이 · 크기 · 저항,
     샘플 밖은 알루미늄 판(lab.probe["plate_z"] 아래로 내려가면 단락), 핀 4개 중 FORCE 두 개가 먼저(표면), SENSE 두 개는 lag4 만큼 더 내려가야 닿는다.
     2단자 = 시료 + 접촉 저항(rc) · 4단자 = 시료(네 핀 모두 닿음) / 감지 핀이 떠 있으면 전압 소스가 출력을 올려 과전압 보호(PROT)에 걸린다.
@@ -90,6 +93,10 @@ class Lab:
         self.prot_v = None             # :SOUR:VOLT:PROT 단계(V) - None = 걸지 않음(공장값 없음)
         self.lead_ohm = 20.0           # 2단자로 잴 때 함께 재지는 리드 · 접촉 저항(4단자는 빠진다) - 위치와 무관한 흉내에서도 2단자 > 4단자
         self.heater_log = []           # 시험: 히트건이 켜지고 꺼진 시각 (clock, on)
+        self.kick_c = 0.0              # 스테이션 켠 직후 튐의 크기(°C) - 0 = 없음
+        self.kick_rise_s = 6.0         # 튐이 꼭대기까지 오르는 시간(s)
+        self.kick_tau_s = 12.0         # 꼭대기 뒤 줄어드는 시정수(s)
+        self.kick_fn = None            # 스테이션을 켠 뒤 지난 초 | None(꺼짐)
         self._heat_prev = False
 
     def dt_of(self, kind):
@@ -174,10 +181,22 @@ class Lab:
                 seen = self._cell(touching)["T"] if touching is not None else self.air
             self.Ts += (seen - self.Ts) * (1.0 - math.exp(-d / self.tau_sensor))
 
+    def _kick(self):
+        """스테이션 켠 직후 튐(°C): 열전대 값에 더한다."""
+        if not self.kick_c or self.kick_fn is None:
+            return 0.0
+        s = self.kick_fn()
+        if s is None:
+            return 0.0
+        s = float(s)
+        if s < self.kick_rise_s:
+            return self.kick_c * s / max(1e-9, self.kick_rise_s)
+        return self.kick_c * math.exp(-(s - self.kick_rise_s) / max(1e-9, self.kick_tau_s))
+
     def temp(self):
         with self.lock:
             self._step()
-            return self.Ts
+            return self.Ts + self._kick()
 
     def resistance(self, i="under"):
         """시료 저항(Ω). i 를 안 주면 헤드 아래 샘플(없으면 시료 하나)."""

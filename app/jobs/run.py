@@ -58,6 +58,8 @@ HOLD_COLS = (("n", "기록 점 수"), ("dur_s", "기록 시간(s)"), ("r_mean", 
              ("n_open", "접촉 불량 점 수"), ("n_miss", "못 쓴 읽기 수"))     # summary.csv 의 기록 모드 열(analysis.hold_summary)
 SYNC_KEEP = 10                                    # 동시 읽기: 저항 · 온도 읽기 시간을 이 개수만큼 최근 것의 중앙값으로 본다
 T_MISS_N = 3                                      # 온도를 이만큼 연속으로 못 읽으면 측정을 멈춘다(열전대 끊김)
+STATION_KICK_C = 60.0                             # 스테이션을 켠 직후 100 % 유지로 핀 온도가 튀는 폭의 여유(°C) - 켜기 전 온도가 차단 온도 − 이 값보다 높으면 먼저 식힌다
+                                                  # (2026-11-26 실장비 temp.csv 15개: 켠 뒤 약 8초에 +42 ~ +76 °C · 최고 105 °C)
 MAX_POINTS = 200000
 COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "meter_ilim_a", "meter_relimit", "run_start_c", "run_heater_off_c", "run_cool_end_c",
              "run_repeat", "run_read_mode", "run_interval_s", "temp_read_s", "line_hz", "meter_conv_factor", "read_overhead_s", "run_cooler_mode", "run_cooler_during_heat", "contact_mode", "contact_fixed_read", "contact_z_mm",
@@ -782,7 +784,8 @@ class Runner:
         for cyc in range(1, repeat + 1):
             self.cycle = cyc
             self._check(g)
-            self._precool(it, g, start_c)                           # 회차마다: 시작 온도 이하가 아니면 쿨러로 더 식힌다(정체면 측정 전체를 멈춘다)
+            self._station_on(it, g)                                 # 스테이션 켜기(켠 직후 100 % 유지의 온도 튐이 가열 기록에 들어가지 않게 냉각보다 먼저)
+            self._precool(it, g, start_c)                           # 회차마다: 시작 온도 이하가 아니면 송풍(출력 0 %) · 쿨러로 더 식힌다(정체면 측정 전체를 멈춘다)
             # ---- 4 가열 ----
             self._check(g)
             self._open_cycle(it, fname, volt, cyc)
@@ -904,8 +907,49 @@ class Runner:
                 return
             self._pace(interval, t_it)
 
+    def _station_on(self, it, g):
+        """스테이션(히트건) 켜기 - 시작 전 냉각보다 먼저(temptest._station_on 과 같은 일). 기록하지 않는다(.dat · control.csv · element_log · 점 · 요약 · 온도 급상승 주의 없음).
+        까닭(2026-11-26 실장비): 스테이션은 켠 직후 heater_boot_hold_s 동안 열선 100 % 를 유지해야 하고(H-E 방지) 그동안 핀 온도가 +42 ~ +76 °C 튄다.
+        예전 순서(시작 전 냉각 → 기록 시작 → 히트건 켜기)는 이 튐이 가열 기록에 들어가 24.5 → 85 °C 가열이 약 33초 만에 끝났다(가열 점 77개 · 0.80 °C 마다 1점).
+        송풍이 켜져 있고 끄기 대기가 아니면 그대로(반복 2회차부터) · 끄기 대기면 열선만 켜서(유지 없음) 대기를 거두고 바로 출력 0 %.
+        송풍이 꺼져 있으면: 온도 > 차단 온도 − STATION_KICK_C 면 히트건을 끈 채 쿨러로 먼저 식힘(정체면 StartTempAbort) → 온도 읽기 → 켜기 → 바로 출력 0 %
+        (유지 중이면 Controller 가 기억했다가 끝날 때 적용) → 유지가 끝날 때까지 측정 간격마다 온도만 읽음 → 출력 0 % 확인."""
+        c, h = self.c, self.heater
+        if h.fan_on:
+            if h.fan_pending:
+                self._check(g)
+                self._read_temp()                                   # 측정 주체의 켜기 판정은 방금 읽은 온도가 있어야 한다
+                h.on()                                              # 송풍이 켜져 있어 열선만(100 % 유지 없음) - 송풍 끄기 대기를 거둔다
+                h.power(0)
+            return
+        lim = float(c.cfg["heater_max_c"]) - STATION_KICK_C
+        T = self._read_temp()
+        if T is not None and T > lim:
+            self._set(2, "스테이션 켜기 전 냉각 · %g °C 까지" % lim)
+            T, stalled = self._loop(it, g, phase=None, with_r=False, done=lambda t, now: t <= lim, stall=True,
+                                    frac=_frac_down(T, lim), what="스테이션 켜기 전 냉각")
+            if stalled:
+                raise StartTempAbort("%s · 현재 %.1f °C" % (START_TEMP_TEXT, T))
+        self._check(g)
+        self._read_temp()
+        h.on()                                                      # 열선 → 송풍 · 송풍을 새로 켜면 Controller 가 heater_boot_hold_s 동안 열선 100 % 유지
+        h.power(0)                                                  # 유지 중이면 기억했다가 끝날 때 적용
+        interval = float(self.cond["run_interval_s"])
+        while c.boot_left() > 0:
+            self._check(g)
+            t_it = c.clock()
+            self._read_temp()                                       # 안전 감시에 온도를 계속 넘긴다(기록은 안 함)
+            c.check_heater()
+            left = c.boot_left()
+            self._set(2, "스테이션 켜는 중 · %.0f초" % left)
+            c.sleep(max(0.0, min(interval - (c.clock() - t_it), left)))
+        c.check_heater()                                            # 유지 끝: 기억한 출력(0 %) 적용
+        self._check(g)
+        if h.pct > 0.05:
+            h.power(0)
+
     def _precool(self, it, g, start_c):
-        """가열 전: 온도가 시작 온도 이하인지 본다. 아니면 쿨러로 더 식힌다(기록하지 않는다). 정체로 못 닿으면 StartTempAbort(측정 전체를 멈춘다)."""
+        """가열 전: 온도가 시작 온도 이하인지 본다. 아니면 송풍(스테이션 켜짐 · 출력 0 %) · 쿨러로 더 식힌다(기록하지 않는다). 정체로 못 닿으면 StartTempAbort(측정 전체를 멈춘다)."""
         T = self._read_temp()
         if T is not None and T <= start_c:
             return

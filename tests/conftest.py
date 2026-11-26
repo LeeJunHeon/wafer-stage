@@ -133,6 +133,7 @@ def build_ctrl(cfg, clock=None, scale=0.05, time_scale=1.0, board=None, keep_boa
                         relays_fn=lambda: [i + 1 for i, r in enumerate(fw().relay) if r] if fw() else [],
                         pos_fn=lambda: (fw().true_xy() + (fw().real["z"] / PPMM,)) if fw() else None)
     lab.read_dt = 0.02                                              # 가짜 읽기 시간(실장비는 길다)
+    lab.kick_fn = gun.since_on                                      # 스테이션 켠 직후 튐(lab.kick_c - 기본 0 = 없음)은 켠 뒤 지난 초를 본다
     lab.addrs = ["ASRL5::INSTR", "ASRL4::INSTR", cfg["k2110_addr"], cfg["k2450_addr"]]
     fake_visa.install(lab)                                          # meters.RM_FACTORY 에 꽂는다
 

@@ -4,6 +4,7 @@
   - 송풍이 열선 없이 먼저 켜진 상태에서 열선이 켜지면 "인터락 오류": 둘 다 꺼질 때까지 가열하지 않는다(errors 에 남는다).
   - 열선을 먼저 켜고 송풍을 켠 뒤에는 송풍을 켜 둔 채 열선만 껐다 켜도 괜찮다.
   - 송풍이 열선 없이 켜진 순간은 fan_alone 에 남는다 - 프로그램에는 그런 길이 없어야 한다(conftest 가 시험마다 끝에 확인한다).
+  - 스테이션을 켠 시각(송풍이 꺼짐 → 켜짐 · 꺼지면 None)을 기억한다 - since_on() = 켠 뒤 지난 초(열 모델의 켠 직후 튐 kick 이 본다).
 가짜 보드(FakeV11)가 릴레이를 바꿀 때마다 update(릴레이 목록) 을 부른다. 시각은 열 모델과 같은 시계(시간 배율 적용)다.
 """
 
@@ -22,6 +23,7 @@ class FakeHeatGun:
         self.fan_alone = []             # 송풍이 열선 없이 켜진 시각들
         self.log = []                   # [(시각, 송풍, 열선)] - 바뀔 때마다
         self.pct = 100                  # 열선 출력 %(V11 보드 · 모르면 100 = 켜짐 그대로)
+        self.fan_on_t = None            # 스테이션(송풍)을 켠 시각 · 꺼져 있으면 None
         self._lock = threading.Lock()
 
     def update(self, relays, pct=None):
@@ -35,8 +37,11 @@ class FakeHeatGun:
             if fan and not self.fan and not el:
                 self.fan_first = True
                 self.fan_alone.append(now)
+            if fan and not self.fan:
+                self.fan_on_t = now
             if not fan:
                 self.fan_first = False
+                self.fan_on_t = None
             if el and not self.element and fan and self.fan_first:
                 self.fault = True
                 self.errors.append((now, "인터락 오류 · 송풍 먼저 켜진 뒤 열선 켬"))
@@ -44,6 +49,11 @@ class FakeHeatGun:
                 self.fault = False
             self.fan, self.element = fan, el
             self.log.append((now, fan, el))
+
+    def since_on(self):
+        """스테이션을 켠 뒤 지난 초 · 꺼져 있으면 None."""
+        t = self.fan_on_t
+        return None if t is None else max(0.0, self.clock() - t)
 
     def heating(self) -> bool:
         return self.fan and self.element and not self.fault
