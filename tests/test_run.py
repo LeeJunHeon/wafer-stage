@@ -91,8 +91,8 @@ def test_run_two_samples_to_the_end(ready_ctrl, tmp_path):
     _all_off(ctrl)
     cmds = _relay_cmds(ctrl, n0)
     assert _heater_on_seqs(cmds) == 2 and cmds.count("r 1 0") == 2
-    # 샘플마다 스테이션 켜기(열선 → 송풍 · 시작 전 냉각보다 먼저)의 열선은 출력 0 %(hp 0)로 끝난다 - r 10 0 이 없다
-    assert cmds.count("r 10 1") > 2 and cmds.count("r 10 0") == cmds.count("r 10 1") - 2, "가열 속도 제어: 송풍을 켜 둔 채 열선만 켜고 끈다"
+    # 가열 속도 제어: 샘플마다 스테이션 켜기(열선 → 송풍 · 시작 전 냉각보다 먼저)의 r 10 1 한 번뿐 - 가열은 송풍을 켜 둔 채 출력 %(hp)로 시작하고 조절한다
+    assert cmds.count("r 10 1") == 2, "가열 시작에 열선 100 %% 를 켜지 않는다(r 10 1): %s" % cmds
     # 쿨러는 샘플 위치에 맞는 릴레이
     grid, cool = ctrl.cfg["cooler_grid"], ctrl.cfg["cooler_relays"]
     on = [c for c in cmds if c.endswith(" 1") and int(c.split()[1]) in cool]
@@ -347,7 +347,7 @@ def test_max_on_time_moves_on_to_cooling(ready_ctrl):
     assert max(p[0] for p in it["points"]) < 85.0 and it["points"][-1][2] == 1, "냉각으로 넘어가 끝까지 기록한다"
     _all_off(ctrl)
     cmds = _relay_cmds(ctrl, n0)
-    # r 10 1 둘 = 스테이션 켜기(시작 전 냉각보다 먼저 · 출력 0 % 로 끝남) + 가열 시작(송풍 켜진 채 열선만)
+    # r 10 1 둘 = 스테이션 켜기(시작 전 냉각보다 먼저 · 출력 0 % 로 끝남) + 가열 시작(계속 가열은 송풍 켜진 채 열선을 켠다)
     assert _heater_on_seqs(cmds) == 1 and cmds.count("r 10 1") == 2 and cmds.count("r 10 0") == 1 and cmds.count("r 1 0") == 1, cmds
     assert any("히트건 끔 · 최대 켜짐 시간" in ln for ln in ctrl.logs.recent)
 

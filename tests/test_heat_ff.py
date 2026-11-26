@@ -104,3 +104,53 @@ def test_closed_loop_follows_line_without_jumps():
     assert max(dus) < 8.0, max(dus)
     assert len(lc.jumps) == 0, lc.jumps
     assert lc.waits == 0, lc.waits
+
+
+# ---------------------------------------------------------------------------
+# 온도 급변: 적분 보정은 배율이 실제로 바뀐 때만 지운다(표가 없거나 배율이 한계면 적분이 계속 쌓여야 한다 - 아니면 출력이 멈춰 "온도 상승 없음")
+# ---------------------------------------------------------------------------
+def _gap_run(cd, q=1.0, gap=8.0, secs=60.0, dt=0.5, T0=40.0):
+    """온도를 목표보다 gap °C 낮게 고정한 채 LineControl 을 secs 초 돌린다. 반환 (heater, lc, 첫 급변 직후 출력 %, [(급변 전 q, 뒤 q, 뒤 J)])."""
+    h = _Heater()
+    h.q = q
+    lc = H.LineControl(h, dict(cd), T0, 85.0, +1, 0.0, 23.53, T_amb=27.8)
+    rec = []
+    orig = lc._jump_step
+
+    def spy(d, now):
+        q0 = lc.pc.q
+        orig(d, now)
+        rec.append((q0, lc.pc.q, lc.pc.J))
+    lc._jump_step = spy
+    p_jump = None
+    t = 0.0
+    while t <= secs + 1e-9:
+        lc.step(lc.sp - gap, t)
+        if p_jump is None and lc.jumps:
+            p_jump = h.pct
+        t += dt
+    return h, lc, p_jump, rec
+
+
+def test_jump_without_table_keeps_integrating():
+    cd = {k: v for k, v in CD.items() if k != "heat_curve"}
+    h, lc, p_jump, rec = _gap_run(cd)
+    assert lc.jumps and rec and p_jump is not None, "급변 판정이 걸려야 한다"
+    assert all(q1 == q0 == 1.0 for q0, q1, _J in rec), "표가 없으면 배율 1 고정"
+    assert all(J != 0.0 for _q0, _q1, J in rec), "배율이 안 바뀌면 적분 보정을 지우지 않는다"
+    assert h.pct >= p_jump + 5.0, "적분이 쌓여 출력이 커진다 · 급변 직후 %.1f %% → 끝 %.1f %%" % (p_jump, h.pct)
+
+
+def test_jump_at_q_max_keeps_integrating():
+    h, lc, p_jump, rec = _gap_run(CD, q=H.Q_MAX)
+    p_ref = p_jump if p_jump is not None else 0.0
+    assert all(q1 == q0 for q0, q1, _J in rec), "배율이 한계면 그대로"
+    assert h.pct >= 100.0 - 0.05 or h.pct >= p_ref + 5.0, "출력이 계속 커진다 · 급변 직후 %.1f %% → 끝 %.1f %%" % (p_ref, h.pct)
+
+
+def test_jump_with_table_scales_q_and_clears_integral():
+    _h, lc, _p, rec = _gap_run(CD, q=1.0)
+    assert rec, "급변 판정이 걸려야 한다"
+    q0, q1, J = rec[0]
+    assert q1 == pytest.approx(min(H.Q_MAX, q0 * H.JUMP_UP)) and q1 > q0, rec[0]
+    assert J == 0.0, "배율이 바뀌면 적분 보정을 지운다(그 몫을 배율이 한다)"

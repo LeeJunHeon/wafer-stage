@@ -18,7 +18,7 @@
     출력 = q × 앞먹임 + Kc e + J(적분 보정 %) · Kc = q × 표의 이득. 앞먹임이 FF_ADAPT 이상이면 J 를 Q_MOVE_S 시정수로 q 에 옮긴다(Q_MIN ~ Q_MAX).
     배운 q 는 RelayHeater.q(= Controller.heat_q · 프로그램을 켜면 1)에 두어 다음 단계 · 샘플 · 작업이 이어받는다.
   PI 는 온도가 아니라 오차(목표 − 온도)의 heater_pi_filter_s 평균으로 계산한다 - 늘 있는 ± 1 °C · 7~10 s 흔들림 한 주기(3 s 평균 온도 PI 는 흔들림을 키웠다).
-  온도 급변: 걸러진 온도(heater_lead_filter_s 평균)가 목표선에서 heater_jump_c 넘게 벗어났는데 출력에 여유가 있었으면 q 를 바로 한 단(× JUMP_DOWN · × JUMP_UP) 바꾸고 J 를 지운다.
+  온도 급변: 걸러진 온도(heater_lead_filter_s 평균)가 목표선에서 heater_jump_c 넘게 벗어났는데 출력에 여유가 있었으면 q 를 바로 한 단(× JUMP_DOWN · × JUMP_UP) 바꾸고 J 를 지운다(q 가 실제로 바뀐 때만 - 표가 없거나 한계면 J 는 그대로 쌓인다).
     같은 쪽으로 JUMP_AGAIN_S 뒤에도 안 나아지면 한 단 더 · 절반 아래로 JUMP_CALM_S 이어지면 끝 · 단계 시작 JUMP_SKIP_S 는 보지 않는다. 급변은 LineControl.jumps 에 남는다
     (온도 시험 · 측정이 "온도 급변" 메모 · 로그로 보인다 - 멈추지 않는다).
 목표선(LineControl): 가열 = 시작 온도 + 속도 × 경과(상한 가열 끝 온도) · 냉각 = 가열 끝 순간 온도 − 속도 × 경과(하한 냉각 끝 온도).
@@ -293,7 +293,7 @@ class LineControl:
 
     def _jump_check(self, T, sp, now):
         """온도 급변: 걸러진 (온도 − 목표)가 jump_c 넘게 벗어났는데 출력에 여유가 있었다(더 줄이거나 더 올릴 수 있었다).
-        배율을 바로 한 단 바꾸고 적분 보정을 지운다. 같은 쪽으로 JUMP_AGAIN_S 뒤에도 나아지지 않았으면(1 °C 도 안 줄었으면) 한 단 더.
+        배율을 바로 한 단 바꾸고 적분 보정을 지운다(배율이 실제로 바뀐 때만 - 표가 없거나 배율이 한계면 적분은 그대로). 같은 쪽으로 JUMP_AGAIN_S 뒤에도 나아지지 않았으면(1 °C 도 안 줄었으면) 한 단 더.
         반대쪽으로 넘어간 것은 PI 에 맡긴다(같은 급변 안에서 배율을 되돌리지 않는다). 벗어난 폭이 절반 아래로 JUMP_CALM_S 이어지면 끝."""
         d = self.dev
         if now - self.t_start < JUMP_SKIP_S + self.turn:          # 방향 전환 직후의 출렁임은 급변이 아니다
@@ -323,8 +323,10 @@ class LineControl:
             self._jump_step(d, now)
 
     def _jump_step(self, d, now):
+        q0 = self.pc.q
         self.pc.scale(JUMP_DOWN if d > 0 else JUMP_UP)
-        self.pc.J = 0.0
+        if self.pc.q != q0:                                        # 배율이 그 몫을 할 때만 적분 보정을 지운다 - 표가 없거나(배율 1 고정) 배율이 한계면
+            self.pc.J = 0.0                                        # 적분이 계속 쌓여야 한다(지우면 출력이 멈춰 "온도 상승 없음" - 06e087b 시험)
         self._jump_step_t, self._jump_d = now, d
         self._calm_t = None
 

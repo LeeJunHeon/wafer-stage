@@ -137,7 +137,7 @@ def test_full_mode_keeps_the_element_on(ready_ctrl):
     heat = [r for r in _rows(ctrl, sid) if r["phase"] == "가열"]
     assert all(r["el"] and r["fan"] for r in heat) and all(r["sp"] == 85.0 for r in heat), "계속 가열: 열선 · 송풍 계속 켜짐 · 목표 = 가열 끝 온도"
     cmds = [x for x in ctrl.fake_fw.log[n0:] if x.startswith("r ")]
-    # r 10 1 둘 = 스테이션 켜기(시작 전 냉각보다 먼저 · 출력 0 % 로 끝남) + 가열 시작(송풍 켜진 채 열선만)
+    # r 10 1 둘 = 스테이션 켜기(시작 전 냉각보다 먼저 · 출력 0 % 로 끝남) + 가열 시작(계속 가열은 송풍 켜진 채 열선을 켠다)
     assert cmds.count("r 10 1") == 2 and cmds.count("r 10 0") == 1 and cmds.index("r 10 1") < cmds.index("r 1 1")
     assert max(r["T"] for r in heat) >= 85.0
 

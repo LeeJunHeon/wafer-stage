@@ -56,8 +56,8 @@ def test_kick_stays_out_of_the_heating_record(ready_ctrl):
     assert len(heat) > 10
     assert heat[0]["T"] <= start_c + 1.0, "가열 첫 줄 %.2f °C · 시작 온도 %.1f °C" % (heat[0]["T"], start_c)
     assert heat[0]["fan"], "가열 첫 줄에 송풍은 이미 켜져 있다(스테이션은 시작 전 냉각보다 먼저 켬)"
-    # 가열 첫 줄은 가열 시작의 열선 켜기(r 10 1 → 펌웨어 100 %) 직후 첫 출력 결정 전에 쓰일 수 있다 - 그 뒤로는 100 % 유지가 없다
-    assert all(r["pct"] is not None and r["pct"] < 100.0 for r in heat[1:]), [r["pct"] for r in heat[:5]]
+    # 가열 속도 제어는 스테이션이 켜진 채 열선을 켜지 않고(r 10 1 → 펌웨어 100 % 없음) 출력 % 로 시작한다 - 첫 줄부터 100 % 가 없다
+    assert all(r["pct"] is not None and r["pct"] < 100.0 for r in heat), [r["pct"] for r in heat[:5]]
     step = max(abs(b["T"] - a["T"]) for a, b in zip(heat, heat[1:]))
     assert step < 5.0, "가열 중 이웃한 두 점 온도 차 %.2f °C(켠 직후 튐이 가열에 들어감)" % step
     assert "fast_rise" not in alarm_codes(ctrl), alarm_lines(ctrl)

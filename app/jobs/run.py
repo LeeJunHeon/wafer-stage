@@ -802,7 +802,10 @@ class Runner:
             T0 = self._read_temp()                                  # 켜기 직전 온도(측정이 켤 때는 방금 읽은 온도가 있어야 한다 · 목표선과 진행률의 시작점)
             self._T_amb = T0 if T0 is not None else start_c         # 앞먹임의 "시작 주위 온도"(가열 · 냉각이 같이 쓴다)
             self._check(g)
-            self.heater.on()                                        # 송풍이 꺼져 있으면 열선 → 송풍, 켜져 있으면 열선만(끈 뒤 기다리는 시간은 없다)
+            if not (cd.get("run_heat_mode", "full") == "ramp" and self.heater.fan_on and not self.heater.fan_pending):
+                self.heater.on()                                    # 계속 가열 · 송풍 꺼짐: 송풍이 꺼져 있으면 열선 → 송풍, 켜져 있으면 열선만
+            # 가열 속도 제어 · 스테이션이 켜진 채: 열선을 켜지 않는다(r 10 1 → 펌웨어 100 % 가 첫 출력 결정까지 한 회차 남는다) -
+            # 열선 출력은 LineControl 의 첫 결정이 heater.power 로 낸다(temptest 와 같다)
             try:
                 reached = self._heat(it, g, T0 if T0 is not None else start_c, off_c)
             finally:
