@@ -357,14 +357,19 @@ firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 �
   한도 표시(TRIP)는 판정에 안 씀 - 선 값은 같은 범위에서 한 번 다시 읽고, 다시 읽어도 서 있으면 장비 한도(`:SOUR:VOLT:ILIM?`)를 물어 값이 그 95 % 이상이면 묶인 것
   (켬: 한도를 다시 걸고 다시 읽음 → 그래도면 범위 한 단계 위 → 맨 위 범위면 한도 걸림 · 끔: 바로 한도 걸림) · 아니면 표시만 남은 것으로 보고(`flag_stuck` · configure 때 지움) 값을 씀.
   **묶인 값도 버리지 않는다**: 한도 걸림(True)과 함께 돌려준다 - 읽기 수(`POINT_READS`)를 다 쓸 때 마지막 읽기가 묶인 값이면(표시가 서 있으면 ILIM? 로 확인) (그 전류, True) · 범위 넘음이면 None.
-  **고정 범위에서 한도는 1.06 × 범위 이하로 묶인다(실측 2026-11-25)**: `LIMIT_TOP_FRAC` · `eff_limit(범위, 한도)` = min(사용자 한도, 1.06 × 범위).
-  2450 은 RANG 을 받으면 한도를 1.06 × 범위로 낮추고 올려도 되돌리지 않아, 1 mA → 10 mA 로 올린 뒤에도 전류가 1.06 mA 에 묶여 금속 판이 94.35 Ω 으로 읽혔다(10 mA 범위의 10.6 % 라 정상 값으로 받음).
+  **고정 범위의 한도(실측 2026-11-25 · 2026-11-26)**: 2450 은 RANG 을 받으면 한도를 스스로 1.06 × 범위로 낮추고(`LIMIT_TOP_FRAC` - 끔의 ilim_now 계산에만) 올려도 되돌리지 않아,
+  1 mA → 10 mA 로 올린 뒤에도 전류가 1.06 mA 에 묶여 금속 판이 94.35 Ω 으로 읽혔다(10 mA 범위의 10.6 % 라 정상 값으로 받음).
+  **보내는 한도** = `eff_limit(범위, 한도)` = min(사용자 한도, 1.05 × 범위)(`LIMIT_SET_FRAC` - 매뉴얼 2450-901-01 "Source limits" 표: 고정 범위에서 보낼 수 있는 한도는 0.106 R ~ 1.05 R).
+  넘는 값은 장비가 받지 않고(한도 그대로) 오류 큐에 5077 "Cannot change source Limit for measure range" - 2026-11-26 실장비에서 1.06 × R 을 보내 configure 가 "K2450 설정 오류 · 5077" 로 멈추고 샘플이 "건너뜀 · 저항 못 읽음" 이었다
+  (시험용 장비가 1.06 × R 을 조용히 받아 시험이 통과했다). 범위를 바꿔 한도가 규칙 밖이 되면 장비가 맞추고 오류 큐에는 안 남는다.
+  `K2450.configure` · `configure_contact` 는 *RST 직후 오류 큐를 읽고(visa.log) `*CLS` 로 비운다 - 끝의 drain_errors 는 이번 설정의 오류만 본다.
   **설정 `meter_relimit`**("범위 바꿀 때 한도 다시 걸기" · 측정 조건 · 기본 켬 · `COND_KEYS` - 이 키가 없는 조건은 실행 때 켬으로 본다 · 결과 화면은 키가 없는 예전 기록에 이 줄을 보이지 않는다(그 기록은 범위만 바꾸던 때의 것 - 끔과 같은 방식) · `configure(relimit=)` · `measure_once(relimit=)` · `self.ilim_now` = 장비에 지금 실제로 걸린 한도):
-  - 켬: `K2450.set_range` = RANG → ILIM(eff_limit · configure 의 시작 범위도) · 범위 R 에서 묶인 값은 1.06 R → over → 한 단계 위 · 맨 위 범위는 사용자 한도 → limit
+  - 켬: `K2450.set_range` = RANG → ILIM(eff_limit · configure 의 시작 범위도) · 범위 R 에서 묶인 값은 1.05 R → over → 한 단계 위 · 맨 위 범위는 사용자 한도 → limit
     (`judge_read` - 아래 범위에서 넘친 값은 사용자 한도의 95 % 이상이어도 over).
   - 끔: RANG 만(configure 순서 ILIM → RANG:AUTO OFF → RANG 그대로 - fb08d57 과 같은 명령) · ilim_now = min(ilim_now, 1.06 × 새 범위)로 따라 계산 ·
     over · down 을 먼저 처리한 뒤 값이 ilim_now(< 사용자 한도)의 95 % 이상이면 ILIM? 로 한 번 확인 → 묶였으면(못 읽어도) 범위를 더 올리지 않고 (전류, True) · 아니면 ilim_now 를 조회값으로 고치고 평소대로.
-  시험용 장비도 같게(`over_mode` 기본 limit · *RST = 자동 범위).
+  시험용 장비도 같게(`over_mode` 기본 limit · *RST = 자동 범위 · 고정 범위 ILIM 은 [0.106 R, 1.05 R] 만 받고 밖이면 5077 · RANG 은 한도를 [0.106 R, 1.06 R] 로 맞춤(오류 없음) ·
+  SYST:ERR? 는 번호로 시작하는 오류를 그대로 · *CLS = 비움 · `fault["ilim_frozen"]` = 한도를 받지 않는 장비 · `tests/test_limit_rule.py`).
   **측정은 한도 점도 기록한다**(`Runner._row(trip=)` - 기록 · 가열 · 냉각 모두 · `.dat` · merged 는 그대로): control.csv 끝 칸 "한도"(1 = 전류 한도에 닿은 값) ·
   알림은 샘플마다 한 번 "1-3 · 전류 한도 도달 · 값은 그대로 기록" · 비고 하나 "전류 한도 도달 · n점"(`_count_trip` - 점이 늘면 고침 · summary.csv 비고) · 기록 모드 요약에도 넣고 못 쓴 읽기로 세지 않는다.
   접촉 확인의 금속 판 판정(`judge_fixed` tripped)은 그대로.

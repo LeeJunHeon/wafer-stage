@@ -3,8 +3,9 @@
   - 범위를 내린 직후의 한도 표시(TRIP 1)는 전류 한도가 아니다 → 한도 걸림은 전류가 실제로 한도 근처일 때만.
   - 출력을 켠 직후의 첫 값은 버린다(start).
   - 고정 범위 105 % 넘음은 장비가 9.91E37(over) 또는 105 % 에 멈춘 값 + 한도 표시(clamp) - 둘 다에서 값이 맞아야 한다.
-  - 고정 범위에서 한도는 1.06 × 범위 이하로 묶이고 범위를 올려도 되돌아오지 않는다(limit - 시험용 장비 기본 · 실측 2026-11-25) →
-    범위를 바꿀 때마다 RANG 다음에 ILIM 을 다시 보낸다(meter_relimit 켬 · 끔이면 RANG 만 · 장비가 낮춘 한도를 따라 계산) ·
+  - 고정 범위에서 RANG 을 받은 장비는 한도를 1.06 × 범위 이하로 낮추고 범위를 올려도 되돌리지 않는다(limit - 시험용 장비 기본 · 실측 2026-11-25) →
+    범위를 바꿀 때마다 RANG 다음에 ILIM(eff_limit = min(한도, 1.05 × 범위) - 보낼 수 있는 가장 큰 값 · 넘으면 5077)을 다시 보낸다
+    (meter_relimit 켬 · 끔이면 RANG 만 · 장비가 낮춘 한도를 따라 계산) ·
     묶인 값을 정상 값으로 돌려주지 않는다 - 한도 걸림 표시와 함께 돌려준다.
 """
 
@@ -149,7 +150,7 @@ def test_first_read_after_output_on_is_dropped(monkeypatch, ohm):
 
 
 # ---------------------------------------------------------------------------
-# 전류 한도: 고정 범위에서 1.06 × 범위에 묶임(실측 2026-11-25) → 범위를 바꿀 때마다 한도를 다시 보낸다
+# 전류 한도: 고정 범위에서 1.06 × 범위에 묶임(실측 2026-11-25) → 범위를 바꿀 때마다 한도를 다시 보낸다(eff_limit = 1.05 × 범위 이하)
 # ---------------------------------------------------------------------------
 def _spy(monkeypatch, dev):
     sent = []
@@ -204,15 +205,15 @@ def test_sweep_resends_limit_after_every_range_change(monkeypatch, f):
 def test_limit_after_range_up(monkeypatch):
     lab, dev, box = _meter(monkeypatch)
     dev.configure(VOLT, ILIM, True, 1.0, 1)
-    assert dev.range == pytest.approx(1e-3) and lab.ilim == pytest.approx(1.06e-3), "시작 범위 1 mA → 한도 1.06 mA"
+    assert dev.range == pytest.approx(1e-3) and lab.ilim == pytest.approx(meters.eff_limit(1e-3, ILIM)), "시작 범위 1 mA → 한도 1.05 mA"
     dev.start()
     box["ohm"] = VOLT / 5e-3
     cur, trip = dev.read_point()
     assert cur == pytest.approx(5e-3, rel=1e-6) and not trip
-    assert dev.range == pytest.approx(1e-2) and lab.ilim == pytest.approx(min(ILIM, 1.06 * 1e-2)) and dev.ilim_now == pytest.approx(lab.ilim)
+    assert dev.range == pytest.approx(1e-2) and lab.ilim == pytest.approx(meters.eff_limit(1e-2, ILIM)) and dev.ilim_now == pytest.approx(lab.ilim)
     box["ohm"] = VOLT / 3e-2
     cur, trip = dev.read_point()
-    assert cur == pytest.approx(3e-2, rel=1e-6) and not trip and lab.ilim == pytest.approx(min(ILIM, 1.06 * 0.1))
+    assert cur == pytest.approx(3e-2, rel=1e-6) and not trip and lab.ilim == pytest.approx(meters.eff_limit(0.1, ILIM))
     dev.output(False)
 
 
@@ -245,7 +246,7 @@ def test_bound_value_is_never_returned(monkeypatch, flag):
         lab.ilim = 2e-4                                             # 장비 한도가 낮게 남아 있다(5e-4 A 가 2e-4 A 에 묶임 · 표시 1)
         cur, trip = dev.read_point()
         assert cur == pytest.approx(5e-4, rel=1e-6) and not trip, (cur, trip, lab.ilim)
-        assert lab.ilim == pytest.approx(1.06e-3) and dev.last_reads <= meters.POINT_READS
+        assert lab.ilim == pytest.approx(meters.eff_limit(1e-3, ILIM)) and dev.last_reads <= meters.POINT_READS
     dev.output(False)
 
 
@@ -324,7 +325,7 @@ def test_bound_until_reads_run_out_returns_limit(monkeypatch):
     lab, dev, box = _meter(monkeypatch)
     dev.configure(VOLT, ILIM, True, 1.0, 1)
     dev.start()
-    monkeypatch.setattr(dev, "set_limit", lambda: None)
+    lab.fault["ilim_frozen"] = True                                  # 장비가 한도를 받지 않는다(ILIM 쓰기 · RANG 의 한도 변경 모두 무시)
     lab.ilim = 2e-4
     box["ohm"] = VOLT / 5e-3
     cur, trip = dev.read_point()

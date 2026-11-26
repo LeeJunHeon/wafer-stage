@@ -5,8 +5,11 @@
   - VO2 저항 모델: 가열 약 66 °C · 냉각 약 58 °C 에서 3e5 ↔ 2e2 Ω 로 바뀌는 고리(히스테리시스).
   - 오류 조작(lab.fault): tc_open(열전대 끊김) · disconnect(연결 끊김) · ilim(전류 한도 걸림) · slow(느린 응답 s) ·
     range_flag("" | "once" | "latch" - 출력이 켜진 채 범위를 낮추면 다음 :READ? 의 한도 표시가 1 · 값은 정상 · latch 는 *RST 까지 계속)
-  - K2450 전류 한도(실측 2026-11-25): 고정 범위 R 에서 한도는 1.06 × R 이하 - :SENS:CURR:RANG 을 받으면 한도가 1.06 × R 보다 크면 낮추고(올려도 되돌리지 않음) ·
-    :SOUR:VOLT:ILIM 도 1.06 × R 보다 큰 값은 낮춰 받는다 · 자동 범위에서는 범위가 한도를 바꾸지 않는다 · *RST = 자동 범위 · 한도 0.1 A ·
+  - K2450 전류 한도(실장비와 같게): 고정 범위 R 에서 :SOUR:VOLT:ILIM x 는 0.106 R ≤ x ≤ 1.05 R 만 받는다(매뉴얼 "Source limits" 표 · 12-80) -
+    밖이면 한도 그대로 + 오류 큐 5077 "Cannot change source Limit for measure range"(2026-11-26 실장비) ·
+    :SENS:CURR:RANG R 을 받으면 한도가 1.06 R 보다 크면 1.06 R 로 낮추고(실측 2026-11-25 · 올려도 되돌리지 않음) 0.106 R 보다 작으면 0.106 R 로 올린다(둘 다 오류 없음) ·
+    자동 범위에서는 범위가 한도를 바꾸지 않고 ILIM 도 그대로 받는다 · *RST = 자동 범위 · 한도 0.1 A · *CLS = 오류 큐 비움 ·
+    lab.fault["ilim_frozen"] = ILIM 쓰기 · RANG 의 한도 변경을 모두 무시(한도를 다시 걸 수 없는 장비) ·
     전류가 지금 한도를 넘으면 한도 값 + 한도 표시 · :SOUR:VOLT:ILIM? · :SENS:CURR:RANG? 에 지금 값.
   - K2450 실장비 흉내 고르기: lab.over_mode("limit"(기본 · 실장비) - 한도에 묶인 값 그대로 | "over" - 고정 범위의 105 % 를 넘으면 9.91E37 |
     "clamp" - 부호 × 1.05 × 범위 + 한도 표시 - 둘은 시험용) ·
@@ -28,7 +31,9 @@ from app.devices import meters as inst
 
 T_AMB = 25.0
 OVER = "+9.91000000E+37"
-TOP_FRAC = 1.06                                               # 2450 고정 범위의 가장 큰 전류 한도 = 범위의 106 %(실측 2026-11-25)
+TOP_FRAC = 1.06                                               # 2450 이 RANG 을 받으면 스스로 낮추는 한도 = 범위의 106 %(실측 2026-11-25)
+SET_FRAC = 1.05                                               # 고정 범위에서 보낼 수 있는 가장 큰 한도 = 범위의 105 %(매뉴얼 표 · 넘으면 5077)
+MIN_FRAC = 0.106                                              # 고정 범위에서 한도는 범위의 10.6 % 이상(매뉴얼 12-80)
 
 
 class Lab:
@@ -316,7 +321,9 @@ class _Res:
     # ---- K2450 ----
     def _w2450(self, c, u):
         lab, s = self.lab, self.s
-        if u == "*RST":
+        if u == "*CLS":
+            self.err.clear()
+        elif u == "*RST":
             s.update(range=1e-3, auto=True, avg_on=False, avg_n=1, terminal="FRON", rsen=False)     # 2450 공장값: 전류 측정 자동 범위
             lab.out_on = False
             lab.ilim, lab.volt = 0.1, 0.0
@@ -347,9 +354,13 @@ class _Res:
                 self.err.append("bad protection: " + c)
         elif u.startswith(":SOUR:VOLT:ILIM"):
             x = float(u.split("ILIM", 1)[1])
-            if not s["auto"]:
-                x = min(x, TOP_FRAC * s["range"])               # 고정 범위: 1.06 × 범위보다 큰 한도는 낮춰 받는다
-            lab.ilim = x
+            r = s["range"]
+            if lab.fault.get("ilim_frozen"):
+                pass                                          # 한도를 받지 않는 장비(시험용)
+            elif not s["auto"] and not (MIN_FRAC * r * (1 - 1e-9) <= x <= SET_FRAC * r * (1 + 1e-9)):
+                self.err.append('5077,"Cannot change source Limit for measure range %g amps;1;0 0"' % r)     # 고정 범위: [0.106 R, 1.05 R] 밖은 거절(한도 그대로)
+            else:
+                lab.ilim = x
         elif u.startswith(":SOUR:VOLT") and not u.endswith("?"):
             lab.volt = float(u.split(":SOUR:VOLT", 1)[1])
         elif u.startswith(":SENS:FUNC"):
@@ -361,8 +372,11 @@ class _Res:
             if lab.out_on and new < s["range"] * (1 - 1e-9) and lab.fault.get("range_flag"):
                 lab._rflag = True                             # 출력이 켜진 채 범위를 낮춤 → 다음 읽기의 한도 표시
             s["range"] = new
-            if not s["auto"] and lab.ilim > TOP_FRAC * new:
-                lab.ilim = TOP_FRAC * new                     # 고정 범위: 한도를 1.06 × 범위로 낮춘다(범위를 올려도 되돌리지 않는다)
+            if not s["auto"] and not lab.fault.get("ilim_frozen"):
+                if lab.ilim > TOP_FRAC * new:
+                    lab.ilim = TOP_FRAC * new                 # 고정 범위: 한도를 1.06 × 범위로 낮춘다(범위를 올려도 되돌리지 않는다)
+                elif lab.ilim < MIN_FRAC * new:
+                    lab.ilim = MIN_FRAC * new                 # 0.106 × 범위보다 작으면 올린다(오류 큐에 안 남김)
         elif u.startswith(":SENS:CURR:NPLC"):
             s["nplc"] = float(u.split("NPLC", 1)[1])
         elif u.startswith(":SENS:CURR:AVER:TCON"):
@@ -383,7 +397,9 @@ class _Res:
     # ---- K2110 ----
     def _w2110(self, c, u):
         s = self.s
-        if u == "*RST":
+        if u == "*CLS":
+            self.err.clear()
+        elif u == "*RST":
             s["unit"] = "?"
         elif u in ('SENS:FUNC"TCO"', 'SENS:FUNC"TCOUPLE"'):
             s["func"] = "TCO"
@@ -404,7 +420,10 @@ class _Res:
             return ("KEITHLEY INSTRUMENTS,MODEL 2450,SIM0001,1.7.0\n" if self.kind == "2450" else "KEITHLEY INSTRUMENTS INC.,MODEL 2110,SIM0002,02.03-02.03-02.02\n")
         if u == "SYST:ERR?":                                 # 실제 장비 응답 형식: 2110 '+0, "No error"' · 2450 '0,"No error;0;0"'
             if self.err:
-                return '-113,"Undefined header; %s"\n' % self.err.pop(0)
+                e = self.err.pop(0)
+                if e[:1].isdigit():
+                    return e + "\n"                           # 장비 오류(번호로 시작) 그대로
+                return '-113,"Undefined header; %s"\n' % e
             return '+0, "No error"\n' if self.kind == "2110" else '0,"No error;0;0"\n'
         if u == "*LANG?":
             return "SCPI\n" if getattr(lab, "lang", "SCPI") == "SCPI" else "TSP\n"

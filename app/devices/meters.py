@@ -132,8 +132,10 @@ def resistance(volt, current):
 RANGES = [1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0]          # 2450 전류 측정 범위(10 nA ~ 1 A)
 START_RANGE = 1e-3                     # 시작 범위(1 mA) - v2 의 실장비 값
 LIMIT_FRAC = 0.106                     # 매뉴얼: 고정 범위에서 전압 소스의 전류 한도는 측정 범위의 10.6 % 이상이어야 한다
-LIMIT_TOP_FRAC = 1.06                  # 고정 범위에서 걸 수 있는 가장 큰 한도 = 범위의 106 %(실측 2026-11-25: ILIM 0.1 을 보낸 뒤 RANG 0.001 → ILIM? 0.00106 ·
-                                       # 범위를 0.01 로 올려도 0.00106 그대로 - 금속 판이 94.35 Ω(0.1 V ÷ 1.06 mA)으로 읽혔다). 한도는 [0.106 R, 1.06 R] 안
+LIMIT_TOP_FRAC = 1.06                  # RANG 을 받은 장비가 스스로 낮춘 한도(실측) - relimit 끔의 ilim_now 계산에만 쓴다
+                                       # (2026-11-25: ILIM 0.1 을 보낸 뒤 RANG 0.001 → ILIM? 0.00106 · 범위를 0.01 로 올려도 0.00106 그대로 - 금속 판이 94.35 Ω 으로 읽혔다)
+LIMIT_SET_FRAC = 1.05                  # 고정 범위에서 보낼 수 있는 가장 큰 한도 = 범위의 105 %(매뉴얼 2450-901-01 "Source limits" 표) · 넘으면 장비가 5077 로 거절
+                                       # (2026-11-26 실장비: ILIM 1.06 × R 을 보내 5077 "Cannot change source Limit for measure range" → 설정 오류 · 저항 못 읽음)
 
 
 def limit_ok(rng, ilim):
@@ -141,8 +143,8 @@ def limit_ok(rng, ilim):
 
 
 def eff_limit(rng, ilim):
-    """범위 rng 에서 실제로 걸 한도 = min(사용자 한도, 1.06 × 범위). 장비가 이보다 큰 한도를 받지 않는다."""
-    return min(float(ilim), LIMIT_TOP_FRAC * float(rng))
+    """범위 rng 에서 보낼 한도 = min(사용자 한도, 1.05 × 범위). 장비가 이보다 큰 한도를 받지 않는다(5077)."""
+    return min(float(ilim), LIMIT_SET_FRAC * float(rng))
 
 
 def clamp_range(rng, ilim):
@@ -163,9 +165,10 @@ def clamp_range(rng, ilim):
 #   까닭(실측 2026-11-25): 범위를 내리면 장비가 한도도 1.06 × 새 범위로 내리고, 바꾸는 순간의 전류가 그 한도를 넘는다.
 #   → 한도 걸림은 표시가 아니라 전류가 실제로 한도 근처인가(LIMIT_NEAR)로 본다. 표시가 선 값은 한 번 다시 읽고, 그래도 서 있으면
 #   장비에 걸린 한도(:SOUR:VOLT:ILIM?)를 물어 값이 거기 묶였는지 본다.
-# · 고정 범위에서 한도는 1.06 × 범위 이하로 묶이고 범위를 올려도 되돌아오지 않는다(실측 2026-11-25).
+# · 고정 범위에서 RANG 을 받은 장비는 한도를 1.06 × 범위 이하로 낮추고 범위를 올려도 되돌리지 않는다(실측 2026-11-25).
+#   보낼 수 있는 한도는 [0.106 R, 1.05 R](매뉴얼 표 · 넘으면 5077 - 2026-11-26 실장비).
 #   relimit 켬(설정 meter_relimit · 기본): 범위를 바꿀 때마다 RANG 다음에 ILIM(eff_limit)을 보낸다(set_range) →
-#   범위 R 에서 묶인 값은 1.06 R ≥ RANGE_OVER × R → over → 한 단계 위 · 맨 위 범위에서는 한도 = 사용자 한도 → limit · 묶였으면 한도를 다시 걸고 다시 읽음.
+#   범위 R 에서 묶인 값은 1.05 R ≥ RANGE_OVER × R → over → 한 단계 위 · 맨 위 범위에서는 한도 = 사용자 한도 → limit · 묶였으면 한도를 다시 걸고 다시 읽음.
 #   relimit 끔: RANG 만 보내고 장비가 낮춘 한도를 따라 계산한다(ilim_now = min(ilim_now, 1.06 × 새 범위)) · 값이 그 한도 근처면 ILIM? 로 확인해
 #   묶였으면 범위를 더 올리지 않고 한도 걸림으로 돌려준다.
 # · 묶인 값도 버리지 않는다: 한도 걸림 표시와 함께 돌려준다(읽기 수를 다 쓸 때까지 묶여 있어도 - 범위 넘음(None)만 None).
@@ -201,7 +204,7 @@ def judge_read(rng, current, ilim):
     a = 0.0 if over else abs(float(current))
     over = over or a >= RANGE_OVER * r
     if (a >= LIMIT_NEAR * float(ilim) and not over) or (over and r >= top * (1 - 1e-9)):
-        return "limit", r                                           # 아래 범위에서 넘친 값(1.06 × 범위에 묶임)은 한도가 아니라 over - 사용자 한도가 범위 바로 위일 때
+        return "limit", r                                           # 아래 범위에서 넘친 값(1.05 · 1.06 × 범위에 묶임)은 한도가 아니라 over - 사용자 한도가 범위 바로 위일 때
     up = min(RANGES[min(idx + 1, len(RANGES) - 1)], top)
     if over:
         return "over", up
@@ -390,6 +393,8 @@ class K2450(_Dev):
             if self.out_state:                                      # 출력이 켜진 채로는 단자를 바꾸지 않는다(매뉴얼: 바꾸면 출력이 꺼짐)
                 self.output(False)
             self.write("*RST")
+            self.drain_errors()                                     # 앞선 작업이 남긴 오류 큐를 읽어(visa.log) 비운다 - 끝의 drain_errors 는 이번 설정의 오류만 본다
+            self.write("*CLS")
             self.out_state = False
             self.write(":ROUT:TERM %s" % terminal)
             got = self.terminal()
@@ -402,7 +407,7 @@ class K2450(_Dev):
             self.write(':SENS:FUNC "CURR"')
             self.write(":SENS:CURR:RANG:AUTO OFF")
             self.ilim = self.ilim_now = float(ilim_a)
-            self.set_range(clamp_range(float(start_range), float(ilim_a)))     # 범위 → 한도(켬 · 고정 범위로 바꾸는 순간 장비가 한도를 1.06 × 범위로 낮춘다)
+            self.set_range(clamp_range(float(start_range), float(ilim_a)))     # 범위 → 한도(켬 · 고정 범위로 바꾸는 순간 장비가 한도를 1.06 × 범위로 낮춘다 · 켬은 그다음 1.05 × 범위 이하를 보낸다)
             self.write(":SENS:CURR:NPLC %.6g" % float(nplc))
             self.write(":SENS:CURR:AVER:TCON REP")
             self.write(":SENS:CURR:AVER:COUN %d" % max(1, int(avg_count)))
@@ -413,8 +418,8 @@ class K2450(_Dev):
                 raise VisaError("K2450 설정 오류 · " + errs[0][:40])
 
     def set_range(self, r):
-        """켬(relimit): 범위 먼저 → 한도 다음(eff_limit). 올릴 때: 남은 한도(1.06 × 이전 범위 = 새 범위의 10.6 %)가 규칙의 아래 끝이라 범위가 받아들여지고
-        그다음 한도를 올린다. 내릴 때: 장비가 한도를 스스로 낮추고 같은 값을 다시 보낸다(해 없음).
+        """켬(relimit): 범위 먼저 → 한도 다음(eff_limit = min(한도, 1.05 × 범위)). 올릴 때: 남은 한도(1.05 × 이전 범위 = 새 범위의 10.5 %)가 규칙의 아래 끝(10.6 %)보다 작으면
+        장비가 스스로 맞추고(오류 없음) 그다음 한도를 올린다. 내릴 때: 장비가 한도를 스스로 낮추고 같은 값을 다시 보낸다(해 없음).
         끔: 범위만 보낸다 - 장비가 한도를 1.06 × 새 범위 이하로 낮추고 올려도 되돌리지 않으므로 ilim_now 를 그렇게 따라 계산한다."""
         self.write(":SENS:CURR:RANG %.6g" % float(r))
         self.range = float(r)
@@ -529,6 +534,8 @@ class K2450(_Dev):
             if self.out_state:
                 self.output(False)
             self.write("*RST")
+            self.drain_errors()                                     # 앞선 작업이 남긴 오류 큐를 읽어(visa.log) 비운다 - 끝의 drain_errors 는 이번 설정의 오류만 본다
+            self.write("*CLS")
             self.out_state = False
             self.write(":ROUT:TERM %s" % terminal)
             got = self.terminal()
