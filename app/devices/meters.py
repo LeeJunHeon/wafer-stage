@@ -16,6 +16,12 @@ VISA_TIMEOUT_MS = 5000
 
 RM_FACTORY: Optional[Callable] = None  # 장비 관리자를 꽂는 자리: callable() -> rm (없으면 pyvisa 의 ResourceManager)
 LOG: Optional[Callable] = None         # (name, addr, op, cmd, resp, dt, exc) - 주고받은 줄 기록
+WARN: Optional[Callable] = None        # (글) - 프로그램 로그 주의 한 줄(Controller 가 꽂는다)
+
+# K2450 읽기: 전류 · 실제 전압(소스 되읽기 - *RST 기본 켬 · 4단자면 감지 단자에서 잰 값) · 상태(해석하지 않음 - visa.log 용) 한 번에.
+# 실장비에서 아직 확인하지 못한 형식이다 - 장비가 받지 않으면(첫 읽기에서 오류 · 시간 초과 · 값 하나뿐) 그 연결 동안 :READ? 로 되돌아간다(전압 없음).
+READ_IV = ':READ? "defbuffer1", READ, SOUR, SOURSTAT'
+OVP_LEVELS = (2, 5, 10, 20, 40, 60, 80, 100, 120, 140, 160, 180)     # :SOUR:VOLT:PROT 단계(V)
 
 
 class VisaError(Exception):
@@ -114,6 +120,20 @@ def parse_float(txt):
     if not math.isfinite(v) or abs(v) >= OVERFLOW:
         return None
     return v
+
+
+def ovp_level(volt):
+    """측정 과전압 보호 단계: 설정 전압 × 2 이상인 가장 낮은 단계(최소 PROT2 · 넘으면 가장 높은 단계)."""
+    need = max(2.0, 2.0 * abs(float(volt)))
+    v = next((x for x in OVP_LEVELS if x >= need - 1e-9), OVP_LEVELS[-1])
+    return "PROT%d" % v
+
+
+def volt_bad(v_meas, v_set, tol, tripped=False):
+    """실제 전압 어긋남: 전압을 읽었고 · 전류 한도에 걸리지 않았고 · |실제 − 설정| > tol × |설정|."""
+    if v_meas is None or tripped:
+        return False
+    return abs(float(v_meas) - float(v_set)) > float(tol) * abs(float(v_set))
 
 
 def resistance(volt, current):
@@ -362,9 +382,16 @@ class K2450(_Dev):
     ilim = 0.1                                          # 사용자가 정한 전류 한도(configure)
     ilim_now = 0.1                                      # 장비에 지금 실제로 걸려 있는 한도(켬 = 보낸 eff_limit · 끔 = 장비가 낮춘 값을 따라 계산 · ILIM? 로 고침)
     relimit = True                                      # 범위를 바꿀 때마다 한도를 다시 건다(설정 meter_relimit · configure)
+    last_volt = None                                    # 마지막 읽기의 실제 전압(read_point 가 돌려준 읽기와 짝 · 못 읽으면 None)
+    _vread = None                                       # 전압 되읽기 형식(READ_IV): None 아직 모름 · True 받음 · False 거절(이 연결 동안 :READ?)
     flag_stuck = False                                  # 한도 표시가 다시 읽어도 서 있었고 값은 한도에 묶이지 않았다(표시만 남음 - 이번 설정에서는 표시로 다시 읽지 않음)
     last_reads = 0                                      # 마지막 read_point 가 쓴 읽기 수
     last_side = None                                    # 마지막 read_point 가 돌려준 읽기와 짝인 side.end() 값(side 없으면 None)
+
+    def open(self):
+        self._vread = None                                  # 연결마다 새로(장비가 바뀌었을 수 있다)
+        self.last_volt = None
+        return super().open()
 
     def check_scpi(self):
         """명령 세트가 SCPI 인가. 일부 펌웨어는 *LANG? 가 없다 - 그때는 SCPI 로 본다."""
@@ -383,8 +410,10 @@ class K2450(_Dev):
             return ""
         return "REAR" if t.startswith("REAR") else "FRON" if t.startswith("FRON") else ""
 
-    def configure(self, volt, ilim_a, four_wire=True, nplc=1.0, avg_count=10, terminal="REAR", start_range=START_RANGE, relimit=True):
-        """v2 의 실장비 순서 그대로: *RST → 단자 → 4단자 → 전압 소스(한도 · 수준) → 전류 측정(자동 범위 끔 · 시작 범위) → 적분 → 평균 → 자동 영점.
+    def configure(self, volt, ilim_a, four_wire=True, nplc=1.0, avg_count=10, terminal="REAR", start_range=START_RANGE, relimit=True, ovp=True):
+        """v2 의 실장비 순서 그대로: *RST → 단자 → 4단자 → 전압 소스(과전압 보호 · 한도 · 수준) → 전류 측정(자동 범위 끔 · 시작 범위) → 적분 → 평균 → 자동 영점.
+        ovp = 측정 과전압 보호(설정 meter_ovp): 출력을 켜기 전에 :SOUR:VOLT:PROT <설정 전압 × 2 이상인 가장 낮은 단계>(configure_contact 와 같은 자리) -
+        4단자 감지 핀이 떠 있으면 장비가 감지 전압을 맞추려고 FORCE 출력을 올린다(2026-11-26: 0.1 V 에서 4단자 전류가 2단자의 약 120배).
         범위는 read_point 가 점마다 맞춘다. 출력은 켜지 않는다(start). relimit = 범위를 바꿀 때마다 한도를 다시 건다(끄면 시작 범위에도 RANG 만 -
         끝의 ilim_now = min(ilim, 1.06 × 시작 범위))."""
         with self.lock:
@@ -402,6 +431,8 @@ class K2450(_Dev):
                 raise VisaError("K2450 단자 설정 실패 · %s 로 읽힘" % (got or "?"))
             self.write(":SENS:CURR:RSEN %s" % ("ON" if four_wire else "OFF"))
             self.write(":SOUR:FUNC VOLT")
+            if ovp:
+                self.write(":SOUR:VOLT:PROT %s" % ovp_level(volt))
             self.write(":SOUR:VOLT:ILIM %.6g" % float(ilim_a))
             self.write(":SOUR:VOLT %.6g" % float(volt))
             self.write(':SENS:FUNC "CURR"')
@@ -571,17 +602,50 @@ class K2450(_Dev):
     def read_strict(self):
         """접촉 확인용 읽기: 전류와 한도 걸림을 **둘 다** 읽어야 한다(한도 걸림을 못 읽으면 단락을 놓칠 수 있다 - 예외)."""
         with self.lock:
-            cur = parse_float(self.query(":READ?"))
+            cur, self.last_volt = self._read_iv()
             trip = self.query(":SOUR:VOLT:ILIM:TRIP?").strip() in ("1", "+1")
         return cur, trip
+
+    def _read_iv(self):
+        """읽기 한 번 → (전류 | None, 실제 전압 | None). READ_IV("전류,전압,상태")를 먼저 쓰고, 장비가 받지 않으면(오류 · 시간 초과 · 값 하나뿐)
+        이 연결 동안 :READ? 로 되돌아간다(오류 큐를 비우고 프로그램 로그에 주의 한 번 · 측정은 멈추지 않는다)."""
+        if self._vread is not False:
+            why = ""
+            try:
+                r = self.query(READ_IV)
+                parts = str(r).split(",")
+                if len(parts) >= 2:
+                    self._vread = True
+                    return parse_float(parts[0]), parse_float(parts[1])
+                if self._vread:                                     # 받던 형식인데 값 하나 - 전류만
+                    return parse_float(parts[0]), None
+                why = "값 %s" % str(r)[:30]
+            except VisaError as e:
+                if self._vread:                                     # 받던 형식 - 진짜 통신 오류
+                    raise
+                why = str(e)[:60]
+            self.drain_errors()
+            try:
+                cur = parse_float(self.query(":READ?"))
+            except VisaError:                                       # :READ? 도 안 된다 - 형식이 아니라 통신 문제(다음 읽기에 다시 본다)
+                self._vread = None
+                raise
+            self._vread = False                                     # 이 연결 동안 :READ?(전압 없음)
+            if WARN is not None:
+                try:
+                    WARN("K2450 전압 되읽기 형식 거절 · 전류만 읽음 · %s" % why)
+                except Exception:                                   # noqa: BLE001 - 로그 실패가 읽기를 막지 않는다
+                    pass
+            return cur, None
+        return parse_float(self.query(":READ?")), None
 
     def output(self, on):
         self.write(":OUTP %s" % ("ON" if on else "OFF"))
         self.out_state = bool(on)
 
     def read(self):
-        """(전류 A | None, 전류 한도 걸림)."""
-        cur = parse_float(self.query(":READ?"))
+        """(전류 A | None, 전류 한도 걸림). 실제 전압은 last_volt(이 읽기와 짝 - read_point 가 돌려주는 읽기는 언제나 마지막 읽기)."""
+        cur, self.last_volt = self._read_iv()
         try:
             trip = self.query(":SOUR:VOLT:ILIM:TRIP?").strip() in ("1", "+1")
         except VisaError:
@@ -597,17 +661,24 @@ class K2450(_Dev):
             if got:
                 self.lock.release()
 
-    def measure_once(self, volt, ilim_a, four_wire=True, nplc=1.0, avg_count=10, relimit=True):
-        """저항 한 번: 설정 → 출력 켜기(start) → 한 점(read_point) → (무슨 일이 있어도) 출력 끄기. dict(current, ohm, tripped, volt, four_wire).
-        tripped = read_point 의 한도 걸림(전류가 실제로 한도 근처 · 장비 한도에 묶인 값)."""
+    def measure_once(self, volt, ilim_a, four_wire=True, nplc=1.0, avg_count=10, relimit=True, ovp=True):
+        """저항 한 번: 설정 → 출력 켜기(start) → 한 점(read_point) → 과전압 보호 걸림 조회 → (무슨 일이 있어도) 출력 끄기.
+        dict(current, ohm, tripped, volt, four_wire, volt_meas, ovp). tripped = read_point 의 한도 걸림(전류가 실제로 한도 근처 · 장비 한도에 묶인 값) ·
+        volt_meas = 그 읽기의 실제 전압(못 읽으면 None) · ovp = 과전압 보호 걸림(못 물으면 None). 저항은 설정 전압 ÷ 전류 그대로(LabVIEW 와 같음)."""
         with self.lock:
             try:
-                self.configure(volt, ilim_a, four_wire, nplc, avg_count, relimit=relimit)
+                self.configure(volt, ilim_a, four_wire, nplc, avg_count, relimit=relimit, ovp=ovp)
                 self.start()
                 cur, trip = self.read_point()
+                vm = self.last_volt
+                try:
+                    prot = self.ovp_tripped()
+                except VisaError:
+                    prot = None
             finally:
                 self._off_quiet()
-        return {"current": cur, "ohm": resistance(volt, cur), "tripped": trip, "volt": float(volt), "four_wire": bool(four_wire)}
+        return {"current": cur, "ohm": resistance(volt, cur), "tripped": trip, "volt": float(volt), "four_wire": bool(four_wire),
+                "volt_meas": vm, "ovp": prot}
 
     def _off_quiet(self):
         """출력 끄기. 실패해도 예외를 올리지 않는다(이미 오류 중일 수 있다) - 실패는 로그에 남는다."""

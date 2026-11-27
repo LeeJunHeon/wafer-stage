@@ -391,9 +391,10 @@ def test_trip_points_are_recorded(ready_ctrl):
     dat = (run.folder / (it["name"] + "_0.10V_0.dat")).read_bytes().decode("ascii").split("\r\n")
     assert len([x for x in dat[1:] if x]) == n, "한도 점도 .dat 에(LabVIEW 형식 그대로)"
     lines = (run.folder / (it["name"] + "_0.10V_control.csv")).read_text(encoding="utf-8-sig").splitlines()
-    assert lines[0].split(",")[-1] == "한도"
+    k = run_mod.CONTROL_HEADER.index("한도")                           # 한도 칸 뒤에 전류 · 전압 칸이 있다
+    assert lines[0].split(",")[k] == "한도"
     rows = [r.split(",") for r in lines[1:]]
-    assert len(rows) == n and all(r[-1] == "1" for r in rows), rows[:3]
+    assert len(rows) == n and all(r[k] == "1" for r in rows), rows[:3]
     trip_notes = [x for x in it["notes"] if x.startswith("전류 한도 도달")]
     assert trip_notes == ["전류 한도 도달 · %d점" % n], it["notes"]
     assert it["sum"]["hold"]["n"] == n and it["sum"]["hold"]["n_miss"] == 0
@@ -407,7 +408,8 @@ def test_normal_points_have_limit_column_zero(ready_ctrl):
     it = _hold_one(ctrl)
     assert it["status"] == DONE, (it["status"], it["reason"])
     lines = (ctrl.runner.folder / (it["name"] + "_0.10V_control.csv")).read_text(encoding="utf-8-sig").splitlines()
-    assert lines[1:] and all(r.split(",")[-1] == "0" for r in lines[1:])
+    k = run_mod.CONTROL_HEADER.index("한도")
+    assert lines[1:] and all(r.split(",")[k] == "0" for r in lines[1:])
     assert not any(x.startswith("전류 한도 도달") for x in it["notes"])
 
 

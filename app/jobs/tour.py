@@ -150,6 +150,9 @@ class Tour:
                     raise
                 x, y = c._mm("x"), c._mm("y")
                 row.update(x=None if x is None else round(x, 3), y=None if y is None else round(y, 3), z=res["z"], ohm=res["ohm"])
+                if res.get("four_ok") is False:                     # 4단자 값이 2단자에 비해 너무 작다(로그는 contact_fixed) - 순회는 멈추지 않는다
+                    rt = res.get("ratio")
+                    row["note"] = "4단자 값 이상 · 2단자의 %s" % ("—" if rt is None else "%.1f %%" % (rt * 100.0))
                 if read and c.cfg["contact_check"] != "off":           # 접촉 확인(측정과 같은 판정) - 순회는 멈추지 않고 결과 줄에 적기만
                     j = contact_mod.judge_fixed(res["ohm"], float(c.cfg["contact_max_ohm"]), c.cfg["contact_min_ohm"], tripped=bool(res.get("tripped")))
                     if j is not None:

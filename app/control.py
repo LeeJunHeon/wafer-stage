@@ -153,6 +153,7 @@ class Controller:
         self.ui_clients = 0                                         # 연결된 화면(WebSocket) 수 - 없으면 창 X 를 확인 없이 닫는다
         self._threads = []
         meters.LOG = self.logs.visa
+        meters.WARN = lambda t: self.logs.app(t, "warn")            # K2450 전압 되읽기 형식 거절 등
         self.logs.on_health = self._log_health                    # 로그 쓰기 실패 → 경보 "로그 저장 실패" (다시 써지면 내림)
         self.logs.start_line(self.cfg.data_path())
         for n in self.cfg.loaded_notes:
@@ -1379,20 +1380,51 @@ class Controller:
         self._no_run("저항 측정")                                   # 측정이 K2450 을 쓰는 중이다(설정을 바꾸면 안 된다)
         with self._use_k2450(USE_ONCE):
             r = self._measure_r(dev)
-        self.logs.app("수동 측정 · 저항 %s · %.2f V · %s · %s" % (contact_mod.ohm_text(r.get("ohm")), float(r.get("volt") or self.cfg["meter_volt"]),
-                                                            "4단자" if r.get("four_wire") else "2단자", self._pos_text()))
+        self.logs.app("수동 측정 · 저항 %s · %.2f V · %s · 전류 %s · 실제 %s%s%s · %s" % (
+            contact_mod.ohm_text(r.get("ohm")), float(r.get("volt") or self.cfg["meter_volt"]), "4단자" if r.get("four_wire") else "2단자",
+            _amp(r.get("current")), _volt(r.get("volt_meas")), " · 설정 전압 못 맞춤" if r.get("volt_bad") else "",
+            " · 과전압 보호 걸림" if r.get("ovp") else "", self._pos_text()), "warn" if r.get("volt_bad") or r.get("ovp") else "info")
         return r
+
+    def read_pair(self):
+        """수동 [2·4단자 비교]: 지금 조건으로 4단자 → 2단자를 이어서 잰다(1회 측정과 같은 거절 규칙 · K2450 사용권 "1회 측정").
+        반환 r4 · r2 · ratio · i4 · i2 · v4 · v2 · ovp · force_v(= i4 × r2 - 4단자 때 FORCE 쪽에 걸렸을 전압) · ok(contact.four_ok)."""
+        dev = self._need_k2450()
+        self._no_run("저항 측정")
+        c = dict(self.cfg.values)
+        with self._use_k2450(USE_ONCE):
+            r4 = self._measure_r(dev, dict(c, meter_four_wire=True))
+            r2 = self._measure_r(dev, dict(c, meter_four_wire=False))
+        out = self._pair(r4, r2)
+        warn = not out["ok"] or out["ovp"]
+        self.logs.app("수동 측정 · 2·4단자 비교 · 4단자 %s(%s · 실제 %s) · 2단자 %s(%s) · 비율 %s · FORCE 쪽 약 %s%s%s · %s" % (
+            contact_mod.ohm_text(out["r4"]), _amp(out["i4"]), _volt(out["v4"]), contact_mod.ohm_text(out["r2"]), _amp(out["i2"]),
+            "—" if out["ratio"] is None else "%.1f %%" % (out["ratio"] * 100.0), _volt(out["force_v"], "%.2g"),
+            "" if out["ok"] else " · 4단자 값 이상 · 감지 핀(SENSE) 접촉 확인", " · 과전압 보호 걸림" if out["ovp"] else "", self._pos_text()),
+            "warn" if warn else "info")
+        return out
+
+    def _pair(self, r4, r2):
+        """4단자 · 2단자 결과 둘 → 비교 dict(r4 · r2 · ratio · i4 · i2 · v4 · v2 · ovp · force_v · ok)."""
+        a, b = r4.get("ohm"), r2.get("ohm")
+        ratio = (a / b) if (a is not None and b) else None
+        ovp = bool(r4.get("ovp"))
+        force = abs(r4["current"]) * b if (r4.get("current") is not None and b is not None) else None
+        return {"r4": a, "r2": b, "ratio": ratio, "i4": r4.get("current"), "i2": r2.get("current"), "v4": r4.get("volt_meas"), "v2": r2.get("volt_meas"),
+                "ovp": ovp, "force_v": force, "ok": contact_mod.four_ok(a, b, ovp, float(self.cfg["contact_four_min_ratio"]))}
 
     def _measure_r(self, dev, meter=None):
         """저항 한 번(설정 → 출력 켜기 → 읽기 → 출력 끄기)을 재서 화면 상태에 올린다. 사용권을 가진 쪽만 부른다. meter = 측정 조건(없으면 지금 설정)."""
-        c = meter or self.cfg.values                                # dict 하나로(예전 측정 조건에 없는 키는 기본값 - meter_relimit)
+        c = meter or self.cfg.values                                # dict 하나로(예전 측정 조건에 없는 키는 기본값 - meter_relimit · meter_ovp · meter_volt_tol)
         try:
             r = dev.measure_once(c["meter_volt"], c["meter_ilim_a"], c["meter_four_wire"], c["meter_nplc"], c["meter_avg_count"],
-                                 relimit=c.get("meter_relimit", True))
+                                 relimit=c.get("meter_relimit", True), ovp=c.get("meter_ovp", True))
         except meters.VisaError as e:
             self.state.set_device("k2450", "오류", str(e), dev.addr)
             raise Rejected(str(e))
-        self.state.update("resistance", ohm=r["ohm"], current=r["current"], volt=r["volt"], four_wire=r["four_wire"], time=time.time())
+        r["volt_bad"] = meters.volt_bad(r.get("volt_meas"), r["volt"], c.get("meter_volt_tol", 0.05), r.get("tripped"))
+        self.state.update("resistance", ohm=r["ohm"], current=r["current"], volt=r["volt"], four_wire=r["four_wire"], time=time.time(),
+                          volt_meas=r.get("volt_meas"), volt_bad=r["volt_bad"])
         return r
 
     # ------------------------------------------------------------------
@@ -1622,15 +1654,36 @@ class Controller:
         with self._moving("접촉 높이로 하강 중", {"x": self._mm("x"), "y": self._mm("y"), "z": round(target_p / PPMM, 3)}, lock=lock):
             with self._approach(g, target_p):
                 pass
-        res = {"mode": "fixed", "z": round(target_p / PPMM, 4), "ohm": None, "current": None, "tripped": None, "four_wire": None, "volt": None}
+        res = {"mode": "fixed", "z": round(target_p / PPMM, 4), "ohm": None, "current": None, "tripped": None, "four_wire": None, "volt": None,
+               "volt_meas": None, "ovp": None}
         dev = self.k2450
+        cm = meter or self.cfg.values
+        pair = None
         if read and dev is not None and dev.is_open:
             try:
                 r = self._measure_r(dev, meter)
-                res.update(ohm=r["ohm"], current=r["current"], tripped=r["tripped"], four_wire=r["four_wire"], volt=r["volt"])
+                res.update(ohm=r["ohm"], current=r["current"], tripped=r["tripped"], four_wire=r["four_wire"], volt=r["volt"],
+                           volt_meas=r.get("volt_meas"), ovp=r.get("ovp"))
+                if r["four_wire"] and cm.get("contact_pair_read", True):     # 4단자 다음 2단자로 한 번 더(같은 조건 · four_wire 만 끔) - 감지 핀 접촉을 본다
+                    try:
+                        r2 = self._measure_r(dev, dict(cm, meter_four_wire=False))
+                        pair = self._pair(r, r2)
+                        res.update(r4=pair["r4"], r2=pair["r2"], ratio=pair["ratio"], i4=pair["i4"], i2=pair["i2"], v4=pair["v4"], v2=pair["v2"],
+                                   four_ok=pair["ok"])
+                    except Rejected as e:                           # 2단자 기록도 기록용 - 못 재도 접촉 단계를 실패로 만들지 않는다
+                        self.logs.app("%s접촉 후 2단자 기록 실패 · %s" % ("샘플 %s · " % name if name else "", e), "warn")
             except Rejected as e:                                   # 기록용 읽기다 - 못 재도 접촉 단계를 실패로 만들지 않는다(장비가 고장이면 가열 단계가 멈춘다)
                 self.logs.app("접촉 후 저항 기록 실패 · %s" % e, "warn")
-        self.logs.app("%s접촉 · 고정 높이 Z %.3f%s" % ("샘플 %s · " % name if name else "", res["z"], " · %s" % _ohm(res["ohm"]) if res["ohm"] else ""))
+        head = "%s접촉 · 고정 높이 Z %.3f" % ("샘플 %s · " % name if name else "", res["z"])
+        if pair is not None:
+            self.logs.app("%s · 4단자 %s(%s · 실제 %s) · 2단자 %s · 비율 %s%s" % (
+                head, contact_mod.ohm_text(pair["r4"]), _amp(pair["i4"]), _volt(pair["v4"]), contact_mod.ohm_text(pair["r2"]),
+                "—" if pair["ratio"] is None else "%.1f %%" % (pair["ratio"] * 100.0), " · 과전압 보호 걸림" if pair["ovp"] else ""))
+            if not pair["ok"]:
+                self.logs.app("%s4단자 값이 2단자의 %s · 감지 핀(SENSE) 접촉 · 배선 확인" % (
+                    "샘플 %s · " % name if name else "", "—" if pair["ratio"] is None else "%.1f %%" % (pair["ratio"] * 100.0)), "warn")
+        else:
+            self.logs.app("%s%s" % (head, " · %s" % _ohm(res["ohm"]) if res["ohm"] else ""))
         return res
 
     def contact_lower(self):
@@ -2442,7 +2495,7 @@ COMMANDS = {
     "relay_on": "relay_on", "relay_off": "relay_off", "relays_off": "relays_off",
     "heater_on": "manual_heater_on", "heater_off": "manual_heater_off", "heater_element": "manual_heater_element",
     "heater_power": "manual_heater_power", "heater_off_now": "manual_heater_off_now",
-    "read_temp": "read_temp", "read_resistance": "read_resistance", "raw": "raw",
+    "read_temp": "read_temp", "read_resistance": "read_resistance", "read_pair": "read_pair", "raw": "raw",
     "estop_release": "estop_release", "alarm_clear": "alarm_clear",
     "contact_find": "contact_find", "contact_save": "contact_save", "contact_save_here": "contact_save_here", "contact_lower": "contact_lower",
     # 초기 설정 단계 · 사진 · 좌표 · 샘플(app/prep.py)
@@ -2479,6 +2532,22 @@ RUN_ALLOWED = {"heater_off_now", "move_plan", "quit_plan", "app_quit", "estop_re
 # 이동 패드 [정지](motion_stop)도 순회를 끝낸다(세대가 바뀌면 남은 단계를 버리고 핀 맨 위). 비상정지는 명령 줄을 거치지 않는다.
 TOUR_ALLOWED = {"tour_stop", "motion_stop", "heater_off_now", "move_plan", "quit_plan", "app_quit", "estop_release", "alarm_clear",
                 "result_open_folder", "result_nas_copy", "temptest_open_folder", "log_bundle"}
+
+
+def _amp(v):
+    """로그용 전류 "15.9 µA"(없으면 —)."""
+    if v is None:
+        return "—"
+    a = abs(float(v))
+    for k, u in ((1.0, "A"), (1e-3, "mA"), (1e-6, "µA"), (1e-9, "nA")):
+        if a >= k:
+            return "%.3g %s" % (v / k, u)
+    return "%.3g pA" % (v / 1e-12)
+
+
+def _volt(v, fmt="%.4f"):
+    """로그용 실제 전압 "0.1000 V"(못 읽었으면 —)."""
+    return "—" if v is None else (fmt % float(v)) + " V"
 
 
 def _ohm(v):

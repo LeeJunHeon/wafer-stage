@@ -102,7 +102,7 @@ def test_fixed_contact_without_reading_and_search_commands_are_off(make_ctrl):
     g = ctrl.safety.generation
     n0 = len(ctrl.fake_fw.log)
     r = ctrl.contact_fixed(13.4, g, read=False)
-    assert r == {"mode": "fixed", "z": 13.4, "ohm": None, "current": None, "tripped": None, "four_wire": None, "volt": None}
+    assert r == {"mode": "fixed", "z": 13.4, "ohm": None, "current": None, "tripped": None, "four_wire": None, "volt": None, "volt_meas": None, "ovp": None}
     assert _gz(ctrl, n0)[-1] == round(13.4 * PPMM) and ctrl.state.get("pos", "z") == 13.4
     assert ctrl.lab.out_on is False and ctrl.fake_fw.v == ctrl.cfg["move_speed_pps"], "저항계를 쓰지 않고, 느린 속도를 되돌린다"
     r = ctrl.contact_fixed(13.4, g, read=True)                       # 이미 그 높이: 움직이지 않고 한 번 잰다

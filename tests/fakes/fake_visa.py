@@ -11,6 +11,11 @@
     자동 범위에서는 범위가 한도를 바꾸지 않고 ILIM 도 그대로 받는다 · *RST = 자동 범위 · 한도 0.1 A · *CLS = 오류 큐 비움 ·
     lab.fault["ilim_frozen"] = ILIM 쓰기 · RANG 의 한도 변경을 모두 무시(한도를 다시 걸 수 없는 장비) ·
     전류가 지금 한도를 넘으면 한도 값 + 한도 표시 · :SOUR:VOLT:ILIM? · :SENS:CURR:RANG? 에 지금 값.
+  - K2450 읽기 :READ? "defbuffer1", READ, SOUR, SOURSTAT → "전류,전압,상태"(전압 = 2단자 설정 전압 · 전류 한도에 걸리면 전류 × 저항 · 4단자는 감지 핀이 본 전압) ·
+    lab.fault["no_vread"] = 그 형식에 응답 없음(시간 초과 - 프로그램이 :READ? 로 되돌아가는지 본다) · :READ? 는 전류만.
+  - 4단자 감지 모델 lab.sense_frac(None = 정상 · 0~1 = 감지 두 핀이 FORCE 전압 중 보는 비율): FORCE 전압 = min(설정 ÷ frac, 한계) ·
+    한계 = 과전압 보호 단계(걸려 있으면) · 없으면 설정 + 10 V(매뉴얼 FORCE–SENSE 선 사이 최대 5 V × 2) · 전류 = FORCE ÷ (시료 + rc) · 읽히는 전압 = FORCE × frac ·
+    보호 단계에 닿으면 PROT:TRIP 1. 감지 핀이 떠 있는 접촉(핀 n < 4)도 frac 0 과 같다.
   - K2450 실장비 흉내 고르기: lab.over_mode("limit"(기본 · 실장비) - 한도에 묶인 값 그대로 | "over" - 고정 범위의 105 % 를 넘으면 9.91E37 |
     "clamp" - 부호 × 1.05 × 범위 + 한도 표시 - 둘은 시험용) ·
     lab.first_gain(출력을 켠 뒤 첫 :READ? 값에 (1 + first_gain) - 기본 0)
@@ -93,6 +98,8 @@ class Lab:
         self.prot_v = None             # :SOUR:VOLT:PROT 단계(V) - None = 걸지 않음(공장값 없음)
         self.lead_ohm = 20.0           # 2단자로 잴 때 함께 재지는 리드 · 접촉 저항(4단자는 빠진다) - 위치와 무관한 흉내에서도 2단자 > 4단자
         self.heater_log = []           # 시험: 히트건이 켜지고 꺼진 시각 (clock, on)
+        self.sense_frac = None         # 4단자 감지 핀이 FORCE 전압 중 보는 비율(None = 정상)
+        self.vmeas = None              # 마지막 읽기의 실제 전압(읽기 형식 "전류,전압,상태" 의 전압)
         self.kick_c = 0.0              # 스테이션 켠 직후 튐의 크기(°C) - 0 = 없음
         self.kick_rise_s = 6.0         # 튐이 꼭대기까지 오르는 시간(s)
         self.kick_tau_s = 12.0         # 꼭대기 뒤 줄어드는 시정수(s)
@@ -227,17 +234,34 @@ class Lab:
         if pt is not None:
             return self._read_probe(pt, rng, auto, rsen)
         r = self.resistance() + (0.0 if rsen else self.lead_ohm)
-        i = self.volt / r if self.out_on else 0.0
+        self.vmeas = self.volt if self.out_on else 0.0
+        self.ovp_tripped = False
+        if rsen and self.sense_frac is not None and self.out_on:   # 4단자 · 감지 핀이 FORCE 전압의 일부만 본다
+            i = self._sense_drive(self.resistance(), float(self.sense_frac))
+        else:
+            i = self.volt / r if self.out_on else 0.0
         if self.term != self.cable[:4]:
             i = 2.0e-12 if self.out_on else 0.0           # 열린 회로: 누설 전류만
         self.tripped = False
         if self.fault["ilim"] and self.out_on:
             self.tripped = True
+            self.vmeas = self.ilim * r
             return "%+.8E" % self.ilim
         if i > self.ilim:
             self.tripped = True
             i = self.ilim
+            self.vmeas = i * r
         return self._over(i, rng, auto)
+
+    def _sense_drive(self, ohm, frac):
+        """4단자 · 감지 핀이 FORCE 전압의 frac 만 본다: FORCE = min(설정 ÷ frac, 한계) · 전류 = FORCE ÷ (시료 + rc) · 읽히는 전압 = FORCE × frac.
+        한계 = 과전압 보호 단계(걸려 있으면 - 닿으면 PROT:TRIP 1) · 없으면 설정 + 10 V."""
+        lim = self.prot_v if self.prot_v else abs(self.volt) + 10.0
+        force = lim if frac <= 0 else min(abs(self.volt) / frac, lim)
+        if self.prot_v and force >= self.prot_v - 1e-12:
+            self.ovp_tripped = True
+        self.vmeas = force * max(0.0, frac)
+        return force / (ohm + float(self.rc))
 
     def _over(self, i, rng, auto):
         """고정 범위에서 범위의 105 % 를 넘으면: over_mode over = 9.91E37 · clamp = 부호 × 1.05 × 범위 + 한도 표시 ·
@@ -267,25 +291,30 @@ class Lab:
         rc = float(self.rc)
         self.tripped = False
         self.ovp_tripped = False
+        self.vmeas = self.volt if self.out_on else 0.0
         if not self.out_on:
             return "%+.8E" % 0.0
         if self.term != self.cable[:4]:
             return "%+.8E" % 2.0e-12                       # 단자 설정이 케이블과 다르다: 열린 회로
+        r_path = None                                         # 전류 한도에 걸렸을 때 실제 전압 = 전류 × 이 저항
         if short:
             i = self.volt / ohm
+            r_path = ohm
         elif n == 0 or ohm is None:
             i = 2.0e-12
         elif not rsen:
             i = self.volt / (ohm + rc)                        # 2단자: FORCE 두 핀(시료 + 접촉 저항)
-        elif n == 4:
+            r_path = ohm + rc
+        elif n == 4 and self.sense_frac is None:
             i = self.volt / ohm                               # 4단자 · 네 핀 모두: 시료 전압을 맞춤
-        else:                                                 # 4단자 · 감지 핀이 떠 있음: 출력이 올라 과전압 보호에 걸린다(없으면 20 V 까지)
-            vmax = self.prot_v if self.prot_v else 20.0
-            self.ovp_tripped = True
-            i = vmax / (ohm + rc)
+            r_path = ohm
+        else:                                                 # 4단자 · 감지 핀이 떠 있음(frac 0) 또는 일부만 봄(sense_frac): 출력이 올라 과전압 보호에 걸린다
+            i = self._sense_drive(ohm, 0.0 if n < 4 else float(self.sense_frac))
         if self.fault["ilim"] or abs(i) > self.ilim:
             self.tripped = True
             i = self.ilim
+            if r_path is not None:
+                self.vmeas = i * r_path
         return self._over(i, rng, auto)
 
 
@@ -460,6 +489,17 @@ class _Res:
                 v = lab.read_2450(s["range"], s["auto"], s["rsen"])
                 lab.sleep(dt / 2.0)
                 return v
+        if self.kind == "2450" and u == ':READ?"DEFBUFFER1",READ,SOUR,SOURSTAT':     # 전류 · 실제 전압 · 상태
+            if lab.fault.get("no_vread"):
+                self.err.append("unknown query: " + cmd)
+                raise TimeoutError("VI_ERROR_TMO (시험: 이 읽기 형식에 응답 없음)")
+            with self.rlock:
+                dt = lab.dt_of("r")
+                lab.sleep(dt / 2.0)
+                v = lab.read_2450(s["range"], s["auto"], s["rsen"])
+                lab.sleep(dt / 2.0)
+                vm = lab.vmeas if lab.vmeas is not None else lab.volt
+                return "%s,%+.8E,%d" % (v.strip(), vm if v != OVER else lab.volt, 0)
         if self.kind == "2450" and u == ":SOUR:VOLT:ILIM:TRIP?":
             return "1" if lab.tripped else "0"
         if self.kind == "2450" and u == ":SOUR:VOLT:ILIM?":

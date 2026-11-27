@@ -134,9 +134,9 @@ def test_recorded_temperature_is_the_mean_of_before_and_after(ready_ctrl):
     it = run.items[a]
     assert it["status"] == DONE, (it["status"], it["reason"])
     lines = (run.folder / (it["name"] + "_0.10V_control.csv")).read_text(encoding="utf-8-sig").splitlines()
-    assert lines[0].split(",") == list(CONTROL_HEADER) and len(CONTROL_HEADER) == 11
+    assert lines[0].split(",") == list(CONTROL_HEADER) and len(CONTROL_HEADER) == 13      # … 한도 · 전류(A) · 전압(V)
     rows = [r.split(",") for r in lines[1:]]
-    assert rows and all(len(r) == 11 for r in rows)
+    assert rows and all(len(r) == 13 for r in rows)
     for r in rows:
         t, t1, t2 = float(r[3]), float(r[8]), float(r[9])
         assert abs(t - (t1 + t2) / 2) < 2e-3, r

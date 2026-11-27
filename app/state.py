@@ -26,7 +26,7 @@ class State:
             "dirty": None,
             "relays": [None] * 10,                                   # True 켜짐 · False 꺼짐 · None 모름
             "temp": {"value": None, "time": None},                   # °C · 읽은 시각(epoch)
-            "resistance": {"ohm": None, "current": None, "volt": None, "four_wire": None, "time": None},
+            "resistance": {"ohm": None, "current": None, "volt": None, "four_wire": None, "time": None, "volt_meas": None, "volt_bad": False},
             "estop_locked": False,
             "estop_hold": False,                                     # 비상정지 직후(2초): 이 동안은 해제를 받지 않는다 - 화면은 해제 버튼을 꺼 둔다
             "heater_on_since": None,                                 # 히트건(송풍 또는 열선)을 켠 시각(epoch) · 꺼져 있으면 None

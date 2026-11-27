@@ -50,7 +50,9 @@ firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 �
     최근 `log_bundle_days`(2)개 날짜마다 logs\<날짜> · 측정 폴더 <날짜>\(하위 포함 · jpg · jpeg · png 제외) · heater_log\<YYYYMMDD>_*.csv · temp_test\<YYYYMMDD>_*(이미지 제외) +
     temp_test\index.csv · settings.json · calib\calib.json · version.txt(버전 · 만든 시각 · PC 이름). zip 안 경로 = 데이터 폴더 기준(밖이면 `_outside/`) ·
     반환 {path, bytes, days} · 로그 "로그 묶음 저장 · 경로 · n MB · n일" · 창 실행이면 탐색기에서 그 파일을 선택한 채로.
-  **수동 조작도 app.log 에**(info · 측정 · 순회의 이동은 남기지 않는다): "수동 측정 · 저항 912 kΩ · 0.10 V · 4단자 · X … · Y … · Z …" · "수동 측정 · 온도 26.7 °C" ·
+  **수동 조작도 app.log 에**(info · 측정 · 순회의 이동은 남기지 않는다): "수동 측정 · 저항 912 kΩ · 0.10 V · 4단자 · 전류 15.9 µA · 실제 0.1000 V · X … · Y … · Z …"
+  (전압을 못 읽으면 "실제 —" · 어긋나면 warn + "설정 전압 못 맞춤") · "수동 측정 · 2·4단자 비교 · 4단자 6.3 kΩ(15.9 µA · 실제 0.100 V) · 2단자 310 kΩ(0.32 µA) · 비율 2.0 % · FORCE 쪽 약 4.9 V · X …"
+  (`read_pair` · 비정상이면 warn) · "수동 측정 · 온도 26.7 °C" ·
   "연속 측정 시작 · 저항 · X …" / "연속 측정 끝 · 23회 · 최소 … · 최대 …"(점마다는 안 남김 · `_monitor_stop` 한 곳) · "조그 · Z 하강 0.10 mm · Z 20.900 → 21.000"(정지로 끝나면 "· 정지") ·
   "좌표 이동 · X 43.0 · Y 37.0 → 끝 X … · Y … · Z …"([이동] · [촬영 위치로 이동] = 명령 goto → `manual_goto` · [핀 상승] = `manual_z_top` · 클릭 이동 · 샘플 이동 · 멈추면 "→ 멈춤 · 까닭").
 - 프로그램에는 실장비 방식 하나뿐이다. 시험용 장비는 `tests/fakes/` 에만 있고, app 에는 "장비를 꽂는 자리"만 둔다(10번).
@@ -388,6 +390,27 @@ firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 �
     over · down 을 먼저 처리한 뒤 값이 ilim_now(< 사용자 한도)의 95 % 이상이면 ILIM? 로 한 번 확인 → 묶였으면(못 읽어도) 범위를 더 올리지 않고 (전류, True) · 아니면 ilim_now 를 조회값으로 고치고 평소대로.
   시험용 장비도 같게(`over_mode` 기본 limit · *RST = 자동 범위 · 고정 범위 ILIM 은 [0.106 R, 1.05 R] 만 받고 밖이면 5077 · RANG 은 한도를 [0.106 R, 1.06 R] 로 맞춤(오류 없음) ·
   SYST:ERR? 는 번호로 시작하는 오류를 그대로 · *CLS = 비움 · `fault["ilim_frozen"]` = 한도를 받지 않는 장비 · `tests/test_limit_rule.py`).
+  **실제 전압 되읽기**(`meters.READ_IV` = `:READ? "defbuffer1", READ, SOUR, SOURSTAT` → "전류,전압,상태" · `K2450._read_iv` - read · read_strict 가 쓰는 한 곳):
+  전류 = 첫 값 · 전압 = 소스 되읽기(*RST 기본 켬 · 4단자면 감지 단자에서 잰 값) · 상태는 해석 안 함(visa.log). **실장비에서 아직 확인하지 못한 형식** -
+  첫 읽기에서 오류 · 시간 초과 · 값 하나뿐이면 그 연결 동안 `:READ?`(전압 None) · 오류 큐 비움 · 주의 "K2450 전압 되읽기 형식 거절 · 전류만 읽음"(`meters.WARN`) · 측정은 계속
+  (`:READ?` 도 안 되면 통신 오류 - 형식을 판정하지 않고 올린다). 돌려준 읽기와 짝인 전압 = `last_volt` · `measure_once` 반환에 volt_meas · ovp(`:SOUR:VOLT:PROT:TRIP?`).
+  까닭(2026-11-26): 같은 샘플 0.1 V 에서 4단자 15.9 µA(6.3 kΩ) / 2단자 0.129 µA(778 kΩ) - 감지 전압을 맞추려고 FORCE 출력을 올린 상태로 보였는데 저항 = 설정 전압 ÷ 전류만 계산해 알 수 없었다.
+  **저항 계산식은 그대로**(설정 전압 ÷ 전류 - LabVIEW 와 같음 · .dat · merged 형식 그대로).
+  **측정 과전압 보호**(`meter_ovp` · 기본 켬): configure 가 출력을 켜기 전 `:SOUR:VOLT:PROT <단계>`(`meters.ovp_level` = 설정 전압 × 2 이상인 가장 낮은 단계 · 최소 PROT2 -
+  0.1 · 1 V → PROT2 · 2 V → PROT5 · 20 V → PROT40) · 끔이면 보내지 않음 · configure_contact 의 PROT2 는 그대로.
+  **실제 전압 어긋남**(`meters.volt_bad` - 전압을 읽었고 · 전류 한도에 안 걸렸고 · |실제 − 설정| > `meter_volt_tol`(0.05) × |설정|):
+  수동 측정은 로그 warn · 반환 · state.resistance 의 volt_meas · volt_bad(화면 수동 측정 패널 조건 줄 아래 "전류 15.9 µA · 실제 0.100 V" · 어긋나면 주의 색 "설정 전압 못 맞춤") /
+  자동 측정은 점을 그대로 기록하고 샘플마다 처음 한 번 warn "샘플 1-2 · 실제 전압 0.004 V (설정 0.10 V) · 저항 값 신뢰 불가 · 4단자 감지 핀 · 배선 확인 · 과전압 보호 걸림"
+  (그때 PROT:TRIP? 한 번) + 경보(run · 지울 수 있음) + 비고 "실제 전압 어긋남 · n점" · 어긋난 점 수 run.json 샘플 `volt_bad_n` · summary.csv 끝 "실제 전압 어긋난 점 수".
+  **접촉 때 2단자도 기록**(`contact_pair_read` · 기본 켬 · 측정 조건이 4단자일 때 · 측정 · 순회의 고정 높이 접촉 `contact_fixed`): 4단자 다음 2단자로 한 번 더(같은 조건 · four_wire 만 끔) →
+  contact 에 r4 · r2 · ratio · i4 · i2 · v4 · v2 · four_ok · 로그 "샘플 1-2 · 접촉 · 고정 높이 Z 21.000 · 4단자 6.34 kΩ(15.9 µA · 실제 0.100 V) · 2단자 310 kΩ · 비율 2.0 %" ·
+  판정 `contact.four_ok(r4, r2, ovp, contact_four_min_ratio)` 그대로 - 안 맞으면 측정은 계속 · warn "샘플 1-2 · 4단자 값이 2단자의 2.0 % · 감지 핀(SENSE) 접촉 · 배선 확인" + 비고 "4단자 값 이상 · 2단자의 2.0 %" + 경보(run).
+  2단자 읽기를 못 해도 접촉 단계를 실패로 만들지 않는다 · 안 닿음 판정(`_contact_check`)은 측정 조건의 값(4단자)으로 그대로.
+  **수동 [2·4단자 비교]**(`read_pair` · 1회 측정과 같은 거절 · 사용권 "1회 측정"): 지금 조건으로 4단자 → 2단자 · 반환 r4 · r2 · ratio · i4 · i2 · v4 · v2 · ovp · force_v(= i4 × r2) · ok.
+  `meter_ovp` · `meter_volt_tol` · `contact_pair_read` 는 측정 조건(`COND_KEYS` · 예전 기록에 없으면 기본값) · [조건] 창에는 없음(전체 설정에만).
+  시험용 장비: 새 읽기 형식("전류,전압,상태" · 2단자 = 설정 전압 · 전류 한도면 전류 × 저항) · `fault["no_vread"]`(그 형식에 응답 없음) ·
+  `lab.sense_frac`(None 정상 · 0~1 = 감지 핀이 FORCE 전압 중 보는 비율 → FORCE = min(설정 ÷ frac, 보호 단계 · 없으면 설정 + 10 V) · 전류 = FORCE ÷ (시료 + rc) ·
+  읽히는 전압 = FORCE × frac · 보호 단계에 닿으면 PROT:TRIP 1 · 감지 핀이 떠 있는 접촉(n < 4)도 frac 0) · `tests/test_volt.py`.
   **측정은 한도 점도 기록한다**(`Runner._row(trip=)` - 기록 · 가열 · 냉각 모두 · `.dat` · merged 는 그대로): control.csv 끝 칸 "한도"(1 = 전류 한도에 닿은 값) ·
   알림은 샘플마다 한 번 "1-3 · 전류 한도 도달 · 값은 그대로 기록" · 비고 하나 "전류 한도 도달 · n점"(`_count_trip` - 점이 늘면 고침 · summary.csv 비고) · 기록 모드 요약에도 넣고 못 쓴 읽기로 세지 않는다.
   접촉 확인의 금속 판 판정(`judge_fixed` tripped)은 그대로.
@@ -654,7 +677,8 @@ firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 �
 - PC: `<데이터 폴더>/<YYYY-MM-DD>/<HHMMSS>_<묶음>/`
   - `<이름>_<전압 2자리>V_<회차−1>.dat` — 첫 줄 `Temp   Resistance   `, 값은 `%.7E`(지수 0 안 채움) · 탭 · CRLF
   - `<이름>_<전압>V_merged.dat` — 머리글 없이 같은 줄
-  - `<이름>_<전압>V_control.csv` — 가열 제어 기록(점마다 회차 · 단계 · 경과 · 온도 · 저항 · 목표 온도 · 열선 · 송풍 · 온도 1 · 온도 2 · 한도, UTF-8 BOM). .dat 와 줄이 하나씩 맞는다.
+  - `<이름>_<전압>V_control.csv` — 가열 제어 기록(점마다 회차 · 단계 · 경과 · 온도 · 저항 · 목표 온도 · 열선 · 송풍 · 온도 1 · 온도 2 · 한도 · 전류(A) · 전압(V - 실제 전압 · 못 읽으면 빈 칸), UTF-8 BOM).
+    .dat 와 줄이 하나씩 맞는다. 예전 파일(열 11개 - 전류 · 전압 없음)도 그대로 읽힌다(읽는 쪽은 앞 열만 쓴다).
     LabVIEW 파일이 아니다 - NAS 에는 보내지 않는다. 다시 잴 때는 .dat 와 같이 `이전_` 으로 옮긴다.
   - `run.json`(조건 · 샘플별 결과 · 열선을 바꾼 기록 `element_log` [경과, 0|1, 회차] · NAS 상태) · `plate.jpg` · `summary.csv` · `graph_<시각>.png`(측정 결과 탭 [이미지 저장])
 - 샘플 이름 기본값 `<묶음>-<번호>`. 번호는 문 기준 화면에서 왼쪽 위(설정 `sample_number_start` - 왼쪽 아래 = 문 쪽)부터 줄마다 왼쪽 → 오른쪽(`Prep._view_order` · 다시 검출하면 새 규칙). 파일 이름 뒤에 `_1` 같은 것을 붙이지 않는다(LabVIEW 규칙에서 벗어난다).

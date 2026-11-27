@@ -89,6 +89,16 @@ function buildManual() {
   man.mon = btn("연속 측정", () => api("monitor", { on: !S.monitor }));
   man.readT = tk(btn("1회 측정", () => api("read_temp")), "man.readT");
   man.readR = tk(btn("1회 측정", () => api("read_resistance")), "man.readR");
+  man.iv = h("div", { class: "small" });                                       // "전류 15.9 µA · 실제 0.100 V"(어긋나면 주의 색 · "설정 전압 못 맞춤")
+  man.pairLine = h("span", { class: "small" });
+  man.pair = btn("2·4단자 비교", async () => {                                 // 지금 조건으로 4단자 → 2단자(약 2초)
+    const r = await api("read_pair");
+    if (!r.ok) return;
+    const x = r.result;
+    man.pairLine.textContent = "4단자 " + fmtOhm(x.r4) + " · 2단자 " + fmtOhm(x.r2) + " · 비율 " + (x.ratio == null ? "—" : (x.ratio * 100).toFixed(1) + " %") +
+      (x.ok ? "" : " · 4단자 값 이상 · 감지 핀 확인") + (x.ovp ? " · 과전압 보호 걸림" : "");
+    man.pairLine.classList.toggle("st-warn", !x.ok || !!x.ovp);
+  });
   man.condBtn = tk(btn("조건", openCond), "man.cond");
   man.measWhy = h("div", { class: "why hidden" });
   man.contact = busyGate("접촉 탐색", () => apiMove("contact_find"));
@@ -96,7 +106,8 @@ function buildManual() {
   const measure = h("div", { class: "panel" }, h("h3", { text: "수동 측정" }),
     h("div", { class: "reading" }, h("span", { class: "lbl", text: "온도 · K2110" }), man.temp, man.readT),
     h("div", { class: "reading" }, h("span", { class: "lbl", text: "저항 · K2450" }), man.ohm, man.readR, man.mon),
-    h("div", { class: "row" }, man.cond, h("span", { class: "sp" }), man.contact.b, man.condBtn), man.contactLine, man.measWhy);
+    h("div", { class: "row" }, man.cond, h("span", { class: "sp" }), man.contact.b, man.condBtn), man.iv,
+    h("div", { class: "row wrap" }, man.pair, man.pairLine), man.contactLine, man.measWhy);
 
   /* ---- 오른쪽: 릴레이 시험(히트건 줄 · 쿨러 줄). 송풍 · 열선 · 미배정 릴레이는 개별 버튼으로 두지 않는다 ---- */
   man.hOn = tk(btn("켜기", () => api("heater_on")), "heater.on");
@@ -352,6 +363,12 @@ function heaterText(ht) {
   if (ht.fan) return ht.fan_off_at ? "열선 꺼짐 · 송풍 " + Math.max(0, Math.ceil(ht.fan_off_at - Date.now() / 1000)) + "초 뒤 끔" : "송풍 켜짐 · 열선 꺼짐";
   return "꺼짐";
 }
+function fmtAmp(v) {                                        // 전류 "15.9 µA"(서버 control._amp 와 같은 단위)
+  if (v == null) return "—";
+  const a = Math.abs(v);
+  for (const [k, u] of [[1, "A"], [1e-3, "mA"], [1e-6, "µA"], [1e-9, "nA"]]) if (a >= k) return Number((v / k).toPrecision(3)) + " " + u;
+  return Number((v / 1e-12).toPrecision(3)) + " pA";
+}
 function renderManual() {
   const c = S.cfg || {};
   const busy = running() || touring(), locked = !!S.estop_locked;      // 측정 중 · 순회 중 · 비상정지 중: 이동 · 릴레이 켜기가 꺼진다(끄기는 된다)
@@ -360,6 +377,10 @@ function renderManual() {
   const stage = devOk("stage"), tOk = devOk("k2110"), rOk = devOk("k2450");
   man.temp.textContent = S.temp.value == null ? "—" : S.temp.value.toFixed(1) + " °C";
   man.ohm.textContent = fmtOhm(S.resistance.ohm);
+  const rs = S.resistance || {};
+  man.iv.textContent = rs.current == null ? "" : "전류 " + fmtAmp(rs.current) + " · 실제 " + (rs.volt_meas == null ? "—" : Number(rs.volt_meas).toFixed(3) + " V") +
+    (rs.volt_bad ? " · 설정 전압 못 맞춤" : "");
+  man.iv.classList.toggle("st-warn", !!rs.volt_bad);
   man.cond.textContent = (c.meter_volt != null ? Number(c.meter_volt).toFixed(2) : "—") + " V · " + (c.meter_four_wire ? "4단자" : "2단자") + " · 평균 " + c.meter_avg_count + "회";
   man.mon.classList.toggle("on", !!S.monitor);
 
@@ -375,6 +396,7 @@ function renderManual() {
   /* 수동 측정: 온도 1회 = 온도계 · 저항 1회 · 연속 측정 = 저항계 */
   setOff(man.readT, busy ? busyText : tOk ? "" : NEED.k2110);
   setOff(man.readR, busy ? busyText : rOk ? "" : NEED.k2450);
+  setOff(man.pair, busy ? busyText : rOk ? "" : NEED.k2450);
   setOff(man.mon, busy ? busyText : S.monitor ? "" : locked ? "비상정지 해제 필요" : rOk ? "" : NEED.k2450);
   setOff(man.condBtn, busy ? busyText : "");
   const miss = [!tOk ? NEED.k2110 : "", !rOk ? NEED.k2450 : ""].filter(Boolean);

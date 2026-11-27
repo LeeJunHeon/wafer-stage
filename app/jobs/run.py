@@ -61,7 +61,7 @@ T_MISS_N = 3                                      # 온도를 이만큼 연속�
 STATION_KICK_C = 60.0                             # 스테이션을 켠 직후 100 % 유지로 핀 온도가 튀는 폭의 여유(°C) - 켜기 전 온도가 차단 온도 − 이 값보다 높으면 먼저 식힌다
                                                   # (2026-11-26 실장비 temp.csv 15개: 켠 뒤 약 8초에 +42 ~ +76 °C · 최고 105 °C)
 MAX_POINTS = 200000
-COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "meter_ilim_a", "meter_relimit", "run_start_c", "run_heater_off_c", "run_cool_end_c",
+COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "meter_ilim_a", "meter_relimit", "meter_ovp", "meter_volt_tol", "contact_pair_read", "run_start_c", "run_heater_off_c", "run_cool_end_c",
              "run_repeat", "run_read_mode", "run_interval_s", "temp_read_s", "line_hz", "meter_conv_factor", "read_overhead_s", "run_cooler_mode", "run_cooler_during_heat", "contact_mode", "contact_fixed_read", "contact_z_mm",
              "contact_check", "contact_max_ohm", "contact_min_ohm", "run_heater_use", "run_hold_s",
              "run_no_rise_s", "run_no_rise_c",
@@ -72,9 +72,12 @@ COND_KEYS = ("meter_volt", "meter_four_wire", "meter_avg_count", "meter_nplc", "
              "heater_lead_filter_s", "heater_lead_hold_s", "heater_max_pct", "heater_full_pct", "heater_pwm_period_ms", "heater_timing", "heater_sync", "heater_phase_off", "heater_trim_ppm", "heater_rotate_pm",
              "run_rate_by", "run_heat_time_s", "run_cool_time_s",
              "heat_model_k", "heat_model_tau_s", "heat_model_theta_s", "heat_curve", "heater_tc_s", "heater_pi_filter_s", "heater_jump_c", "heater_turn_s", "reversal_c")
-CONTROL_HEADER = ("회차", "단계", "경과(s)", "온도(°C)", "저항(Ω)", "목표 온도(°C)", "열선 출력(%)", "송풍", "온도 1(°C)", "온도 2(°C)", "한도")
+CONTROL_HEADER = ("회차", "단계", "경과(s)", "온도(°C)", "저항(Ω)", "목표 온도(°C)", "열선 출력(%)", "송풍", "온도 1(°C)", "온도 2(°C)", "한도", "전류(A)", "전압(V)")
 # <이름>_<전압>V_control.csv 의 첫 줄 · 온도 = (온도 1 + 온도 2) ÷ 2(저항 앞 · 뒤에 잰 온도 - 읽기 시점 맞추기) ·
-# 한도 = 1 이면 그 점의 저항은 전류 한도에 닿은 값(버리지 않고 기록 · .dat 는 LabVIEW 형식 그대로라 표시 없음)
+# 한도 = 1 이면 그 점의 저항은 전류 한도에 닿은 값(버리지 않고 기록 · .dat 는 LabVIEW 형식 그대로라 표시 없음) ·
+# 전류 = 읽은 전류 · 전압 = 장비가 되읽은 실제 전압(못 읽으면 빈 칸 - 저항은 설정 전압 ÷ 전류 그대로). 예전 파일(열 11개)은 앞 열만 읽는 쪽이 그대로 읽는다
+VOLT_NOTE = "실제 전압 어긋남"                       # 비고 "실제 전압 어긋남 · n점"
+FOUR_NOTE = "4단자 값 이상"                          # 비고 "4단자 값 이상 · 2단자의 2.0 %"
 TRIP_NOTE = "전류 한도 도달"                          # 비고 "전류 한도 도달 · n점"(한도에 닿은 채 기록한 점 수)
 CONTACT_KEYS = ("contact_mode", "contact_fixed_read", "contact_z_mm", "contact_check", "contact_max_ohm", "contact_min_ohm")   # [나머지 측정] 이 지금 설정으로 바꾸는 조건
 MOVE_NOTE_MM = 0.05                                 # 재개 때 샘플 X · Y 가 이보다 많이 바뀌면 로그 한 줄
@@ -685,6 +688,8 @@ class Runner:
         c = self.c
         it.update(status=NOW, reason="", notes=[], t0=time.time(), t1=None, points=[], cycles=[], contact=None, sum=None, peak=None, element_log=[])
         it.pop("_trip_n", None)                                     # 전류 한도 점 수(비고 "전류 한도 도달 · n점")는 샘플을 잴 때마다 새로
+        it["volt_bad_n"] = 0                                        # 실제 전압 어긋난 점 수(run.json · summary.csv)
+        self._pt_iv = (None, None)
         self.cur, self.cycle, self._t_miss = it["id"], 1, 0
         self._sync_st = {"t": None, "per": [], "dt": [], "n": []}
         halt = abort = None
@@ -794,6 +799,11 @@ class Runner:
         else:                                                       # 고정 높이(기본): 저장한 접촉 높이까지만 내린다
             self._set(1, "접촉 높이로 하강")
             it["contact"] = c.contact_fixed(cd["contact_z_mm"], g, read=bool(cd.get("contact_fixed_read", True)), meter=cd, name=it["name"])
+            if it["contact"].get("four_ok") is False:               # 4단자 값이 2단자에 비해 너무 작다: 측정은 계속 · 비고 · 경보(로그는 contact_fixed 가 남겼다)
+                rt = it["contact"].get("ratio")
+                note = "%s · 2단자의 %s" % (FOUR_NOTE, "—" if rt is None else "%.1f %%" % (rt * 100.0))
+                it["notes"].append(note)
+                c.state.alarm("run", "%s %s · 감지 핀(SENSE) 접촉 확인" % (it["name"], note), ALARM, dismiss=True)
             self._contact_check(it, cd)                             # 접촉 확인(가열 · 저항계 출력 · 쿨러 켜기 전)
         if not cd.get("run_heater_use", True):                      # ---- 기록 모드(히트건 사용 끔): 쿨러 · 시작 온도 · 가열 · 냉각 · 반복 없이 ----
             self._hold_measure(it, g, fname, volt)
@@ -1121,9 +1131,30 @@ class Runner:
             c.state.set_device("k2450", "오류", str(e), dev.addr)
             raise RunAbort("저항계 오류 · %s" % str(e)[:50])
         volt = float(self.cond["meter_volt"])
-        R = meters.resistance(volt, cur)
-        c.state.update("resistance", ohm=R, current=cur, volt=volt, four_wire=bool(self.cond["meter_four_wire"]), time=time.time())
+        R = meters.resistance(volt, cur)                            # 저항 계산식은 그대로(설정 전압 ÷ 전류 - LabVIEW 와 같음)
+        vm = dev.last_volt                                          # 돌려준 읽기와 짝인 실제 전압
+        bad = cur is not None and meters.volt_bad(vm, volt, self.cond.get("meter_volt_tol", 0.05), trip)
+        self._pt_iv = (cur, vm)                                     # 이 점의 control.csv 전류 · 전압 칸
+        c.state.update("resistance", ohm=R, current=cur, volt=volt, four_wire=bool(self.cond["meter_four_wire"]), time=time.time(), volt_meas=vm, volt_bad=bad)
+        if bad and self.cur is not None and self.cur in self.items:
+            self._note_volt(self.items[self.cur], vm, volt, dev)
         return cur, R, trip
+
+    def _note_volt(self, it, vm, volt, dev):
+        """실제 전압 어긋남: 점은 그대로 기록 · 샘플마다 처음 한 번 주의(로그 · 경보 · 비고 - 과전압 보호 걸림 여부를 한 번 물어 붙인다) · 어긋난 점 수(run.json · summary.csv)."""
+        n = int(it.get("volt_bad_n") or 0) + 1
+        it["volt_bad_n"] = n
+        if n == 1:
+            try:
+                prot = dev.ovp_tripped()
+            except meters.VisaError:
+                prot = None
+            text = "샘플 %s · 실제 전압 %.3g V (설정 %.2f V) · 저항 값 신뢰 불가 · 4단자 감지 핀 · 배선 확인%s" % (
+                it["name"], vm, volt, " · 과전압 보호 걸림" if prot else " · 과전압 보호 안 걸림" if prot is False else "")
+            self.c.logs.app(text, "warn")
+            self.c.state.alarm("run", "%s 실제 전압 %.3g V · 설정 %.2f V · 배선 확인" % (it["name"], vm, volt), ALARM, dismiss=True)
+        note = "%s · %d점" % (VOLT_NOTE, n)
+        it["notes"] = [x for x in it["notes"] if not x.startswith(VOLT_NOTE)] + [note]
 
     def _row(self, it, T, R, phase, sp=None, T1=None, T2=None, trip=False):
         """한 점: 회차 .dat · merged(LabVIEW 형식 그대로) + control.csv(경과 · 목표 온도 · 열선 · 송풍 - 가열 제어 값을 맞추는 데 쓴다 · 한도 = trip)."""
@@ -1132,8 +1163,10 @@ class Runner:
         t_rel = c.clock() - (self._t_rec or c.clock())
         f3 = lambda v: "" if v is None else "%.3f" % v                             # noqa: E731
         pct = "" if phase == 2 else "%.1f" % c.heater_pct()          # 기록 모드: 목표 온도 · 열선 칸은 비움
-        ctl = "%d,%s,%.2f,%s,%s,%s,%s,%d,%s,%s,%d\r\n" % (self.cycle, PHASE_NAME.get(phase, "냉각"), t_rel, files.fmt_e(T), files.fmt_e(R),
-                                                       f3(sp), pct, 1 if c._fan_on() else 0, f3(T1), f3(T2), 1 if trip else 0)
+        cur, vm = getattr(self, "_pt_iv", (None, None))
+        g = lambda v: "" if v is None else "%.6E" % v                               # noqa: E731
+        ctl = "%d,%s,%.2f,%s,%s,%s,%s,%d,%s,%s,%d,%s,%s\r\n" % (self.cycle, PHASE_NAME.get(phase, "냉각"), t_rel, files.fmt_e(T), files.fmt_e(R),
+                                                             f3(sp), pct, 1 if c._fan_on() else 0, f3(T1), f3(T2), 1 if trip else 0, g(cur), g(vm))
         if phase != 2 and len(it.setdefault("_tl", [])) < MAX_POINTS:
             it["_tl"].append((round(t_rel, 3), float(T), None if sp is None else float(sp), phase, self.cycle))     # 요약(점 수 · 속도 · 역전 · 목표선 차이)용
         try:
@@ -1570,7 +1603,7 @@ class Runner:
                             "가열 목표선 차이 최대(°C)", "냉각 목표선 차이 최대(°C)",
                             "가열 흔들림(°C)", "냉각 흔들림(°C)", "가열 흔들림 폭(°C)", "냉각 흔들림 폭(°C)",
                             "가열 흔들림 주기(s)", "냉각 흔들림 주기(s)", "가열 흔들림 진폭(°C)", "냉각 흔들림 진폭(°C)"]
-                           + [x[1] for x in HOLD_COLS] + ["읽기 방식", "점 주기(s)"])
+                           + [x[1] for x in HOLD_COLS] + ["읽기 방식", "점 주기(s)", "실제 전압 어긋난 점 수"])
                 sync = self._sync()
                 mode_txt = "동시" if sync else "순차"                 # 점 주기: 동시 = 샘플의 점 주기 중앙값 · 순차 = 측정 간격
                 for n, i in enumerate(self.order):
@@ -1586,7 +1619,8 @@ class Runner:
                                                                                             "rip_sd", "rip_pp", "rip_period_s", "rip_amp")
                                   for ph in ("heat", "cool")]
                                + [e(((s.get("hold") or {}).get(k))) for k, _name in HOLD_COLS]      # 기록 모드 요약(가열 측정은 빈 칸)
-                               + [mode_txt, e((s.get("sync") or {}).get("period_s")) if sync else e(float(self.cond["run_interval_s"]))])
+                               + [mode_txt, e((s.get("sync") or {}).get("period_s")) if sync else e(float(self.cond["run_interval_s"])),
+                                  int(it.get("volt_bad_n") or 0)])
         except OSError as e:
             self.c.logs.app("summary.csv 저장 실패 · %s" % e, "error")
 
