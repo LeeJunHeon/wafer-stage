@@ -937,6 +937,7 @@ class TempTest:
         except Exception as e:                                      # noqa: BLE001 - 예상 못 한 오류도 정리 · 저장을 거친다
             kind, text = "abort", "오류 · %s: %s" % (type(e).__name__, str(e)[:60])
             c.logs.app("온도 시험 오류 · %s: %s" % (type(e).__name__, e), "error")
+            c.logs.exc("온도 시험")
         finally:
             self.feeding = False
             self._cleanup()
@@ -946,6 +947,7 @@ class TempTest:
             except Exception as e:                                  # noqa: BLE001 - 맞추기 · 표 계산이 실패해도 기록 · 요약은 저장한다
                 self.notes.append("결과 계산 실패 · %s" % str(e)[:60])
                 c.logs.app("%s 결과 계산 실패 · %s: %s" % (MODES[self.mode], type(e).__name__, e), "error")
+                c.logs.exc("온도 시험 · 결과 계산")
             res = self._summary()
             self._finish_files(res)
             self._write_index(res)

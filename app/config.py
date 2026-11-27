@@ -58,6 +58,8 @@ ITEMS = (
             desc="저항계 K2450 의 VISA 주소\n초기 설정 1 에서 선택 · 연결되면 자동 저장"),
        Item("data_dir", "../data_v3", "str", "데이터 폴더", folder=True,
             common=True, desc="측정 기록 · 로그 · 초기 설정 값을 저장하는 폴더\n상대 경로는 프로그램 폴더 기준 · 변경 후 재시작 필요"),
+       Item("log_bundle_days", 2, "int", "로그 묶음 날짜 수", "일", 1, 30,
+            desc="[로그 묶음 저장] 이 넣을 최근 날짜 수\n그 날짜의 로그 · 측정 폴더 · 히트건 기록 · 온도 시험(이미지 제외)"),
        Item("auto_connect", True, "bool", "시작 시 자동 연결",                          # 저장된 포트 · 주소 하나씩만 연다(찾아다니지 않는다)
             desc="시작할 때 저장된 포트 · 주소로 연결\n장비 없이 화면만 볼 때 끔"),
        Item("blocked_ports", ["COM4"], "list", "사용 안 할 포트",                       # COM4 = LabVIEW 용 Uno. 열면 그 장비가 재시작한다

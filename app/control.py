@@ -153,6 +153,8 @@ class Controller:
         self.ui_clients = 0                                         # 연결된 화면(WebSocket) 수 - 없으면 창 X 를 확인 없이 닫는다
         self._threads = []
         meters.LOG = self.logs.visa
+        self.logs.on_health = self._log_health                    # 로그 쓰기 실패 → 경보 "로그 저장 실패" (다시 써지면 내림)
+        self.logs.start_line(self.cfg.data_path())
         for n in self.cfg.loaded_notes:
             self.logs.app(n, "warn")
             self.state.alarm("config", n, NOTICE)
@@ -207,6 +209,7 @@ class Controller:
                 self.state.update("devlist", busy=False, t=time.time(), **self.list_devices())
             except Exception as e:                                  # noqa: BLE001 - 목록을 못 읽어도 프로그램은 계속 돈다
                 self.logs.app("장비 목록 읽기 오류 · %s: %s" % (type(e).__name__, e), "error")
+                self.logs.exc("장비 목록 읽기")
                 self.state.update("devlist", busy=False, note="장비 목록 읽기 실패")
             finally:
                 self._scan_lock.release()
@@ -260,10 +263,13 @@ class Controller:
         self._stop_jobs("연결 끊기")
         if self.stage.connected:
             self._halt_motion("연결 끊기")
+            self._heater_why = "연결 끊기"                           # 릴레이를 끄기 전에 까닭을 정해 둔다(_heater_sync 가 "릴레이 꺼짐 감지" 대신 이 까닭으로 한 번)
             try:
                 self.stage.relays_off(None, prio=0)
             except StageError as e:
                 self.logs.app("연결 끊기 · 릴레이 끄기 실패 · %s" % e, "error")
+            finally:
+                self._heater_why = None
             self._park_pin("연결 끊기")
             self.save_position("연결 끊기")
         self.stage.disconnect()
@@ -1124,12 +1130,13 @@ class Controller:
         fan, el = self._roles()[:2]
         with self._heater_lock:
             was = self._heater_on()
+            if was:
+                self._heater_off_logged = True                      # 릴레이를 끄기 전에(_heater_sync 가 "릴레이 꺼짐 감지" 를 남기지 않게)
             for n in (el, fan):                                     # 열선 먼저(끄는 쪽은 순서 제약이 없지만 켤 때와 거꾸로)
                 if self.stage.relays[n - 1] is not False:
                     self._switch(n, False, None, prio=0)
             self._fan_off_at = self._fan_off_epoch = None
             if was:
-                self._heater_off_logged = True
                 self.logs.app("히트건 즉시 끔 · 수동 · 열선 · 송풍 끔")
             self._publish_heater()
         return self._heater_reply()
@@ -1216,6 +1223,7 @@ class Controller:
         fan, el = self._roles()[:2]
         if not self.stage.connected:
             return
+        self._heater_off_logged = True                              # 릴레이를 끄기 전에(아래 줄이 까닭과 함께 한 번 남긴다)
         for n in (el, fan):
             if self.stage.relays[n - 1] is not False:
                 try:
@@ -1250,6 +1258,9 @@ class Controller:
         fan, el = self._roles()[:2]
         with self._heater_lock:
             was = self._heater_on()
+            mark = was and not self._heater_off_logged
+            if mark:
+                self._heater_off_logged = True                      # 릴레이를 끄기 전에 정한다 - _heater_sync 가 "릴레이 꺼짐 감지" 를 먼저 남기지 않게(까닭은 아래 한 줄)
             if self.stage.relays[el - 1] is not False:
                 self._element_switch(False, by, None, prio=1)
             note = ""
@@ -1264,8 +1275,7 @@ class Controller:
                 elif self._fan_off_at is None:
                     self._set_fan_off(due)
                     note = "송풍 %.0f초 뒤 끔" % (due - self.clock())
-            if was and not self._heater_off_logged:
-                self._heater_off_logged = True
+            if mark:
                 self.logs.app("히트건 끔 · %s%s" % (why or by, " · " + note if note else ""))
             self._publish_heater()
         return self._heater_reply()
@@ -1277,6 +1287,13 @@ class Controller:
     def heater_fan_pending(self) -> bool:
         """송풍을 늦게 끄려고 기다리는 중(열선은 꺼져 있다)."""
         return self._fan_off_at is not None
+
+    def heater_off_state(self):
+        """(켜짐, 꺼짐 예약 중, 꺼질 때까지 남은 초) - _heater_lock 안에서 한 번에 읽는다.
+        감시(_fan_off_due)는 같은 잠금 안에서 예약을 지우고 송풍을 끈다 - 따로 읽으면 "켜짐" 을 읽은 직후 예약이 지워져 "켜짐 · 예약 없음"(끄기 실패)으로 잘못 본다."""
+        with self._heater_lock:
+            due = self._fan_off_at
+            return self._heater_on(), due is not None, (0.0 if due is None else max(0.0, due - self.clock()))
 
     # ------------------------------------------------------------------
     # 히트건 감시 · 온도
@@ -1589,7 +1606,7 @@ class Controller:
                 self.stage.goto("z", np_, g)
                 zp = np_
 
-    def contact_fixed(self, z_mm, g, read: bool = True, meter=None, lock: bool = True):
+    def contact_fixed(self, z_mm, g, read: bool = True, meter=None, lock: bool = True, name: Optional[str] = None):
         """고정 높이 접촉(접촉 방식의 기본): Z 를 저장한 접촉 높이까지 정확히 내리고 끝낸다. 전기 판단으로 더 내리거나 실패시키지 않는다.
         read = 내린 뒤 K2450 으로 저항을 한 번 재서 기록만 한다(판정 없음 - 못 재도 실패로 만들지 않는다). meter = 그때 쓸 측정 조건.
         반환 {mode "fixed", z, ohm, current, tripped, four_wire, volt}. 부르는 쪽(측정 작업)이 K2450 사용권을 갖고 있어야 한다."""
@@ -1613,7 +1630,7 @@ class Controller:
                 res.update(ohm=r["ohm"], current=r["current"], tripped=r["tripped"], four_wire=r["four_wire"], volt=r["volt"])
             except Rejected as e:                                   # 기록용 읽기다 - 못 재도 접촉 단계를 실패로 만들지 않는다(장비가 고장이면 가열 단계가 멈춘다)
                 self.logs.app("접촉 후 저항 기록 실패 · %s" % e, "warn")
-        self.logs.app("접촉 · 고정 높이 Z %.3f%s" % (res["z"], " · %s" % _ohm(res["ohm"]) if res["ohm"] else ""))
+        self.logs.app("%s접촉 · 고정 높이 Z %.3f%s" % ("샘플 %s · " % name if name else "", res["z"], " · %s" % _ohm(res["ohm"]) if res["ohm"] else ""))
         return res
 
     def contact_lower(self):
@@ -1789,6 +1806,7 @@ class Controller:
             path = fn(start)
         except Exception as e:                                      # noqa: BLE001
             self.logs.app("폴더 선택 창 오류 · %s: %s" % (type(e).__name__, e), "error")
+            self.logs.exc("폴더 선택 창")
             raise Rejected("폴더 선택 창 열기 실패")
         return {"path": str(path) if path else None}
 
@@ -1814,6 +1832,7 @@ class Controller:
             raise Rejected(bad[0])
         self.cfg.values.update(new)
         self.cfg.save()
+        self._log_changes(old, new)
         self.publish_cfg()
         self.prep.on_settings()
         if roles_changed:
@@ -1838,6 +1857,31 @@ class Controller:
         self.temptest.publish()                                     # 온도 시험 창의 열 모델 · 예상 줄도 새 설정으로(시험을 시작해야 바뀌던 일)
         return {}
 
+    CHANGE_MAX = 12                                                # 설정 변경 로그: 한 줄에 이만큼(넘으면 "외 n개")
+    CHANGE_CLIP = 60                                               # 긴 값은 이 글자 수에서 자른다
+
+    def _log_changes(self, old, new):
+        """app.log "설정 변경 · 측정 전압 0.1 → 0.2 V · …"(바뀐 항목만 · 가져오기 적용도 이 길)."""
+        ch = [k for k in new if new[k] != old.get(k)]
+        if not ch:
+            return
+        def val(item, v):
+            t = config_mod._show(item, v)
+            return t if len(t) <= self.CHANGE_CLIP else t[:self.CHANGE_CLIP] + "…"
+        parts = []
+        for k in ch[:self.CHANGE_MAX]:
+            it = config_mod.BY_KEY[k]
+            parts.append("%s %s → %s%s" % (it.label, val(it, old.get(k)), val(it, new[k]), " " + it.unit if it.unit else ""))
+        more = " · 외 %d개" % (len(ch) - self.CHANGE_MAX) if len(ch) > self.CHANGE_MAX else ""
+        self.logs.app("설정 변경 · %s%s" % (" · ".join(parts), more))
+
+    def _log_health(self, ok, why):
+        """로그 쓰기 실패가 시작됐다 · 다시 써졌다(Logs.on_health) - 경보 하나(측정 · 제어는 멈추지 않는다)."""
+        if ok:
+            self.state.clear_alarm("log_fail")
+        else:
+            self.state.alarm("log_fail", "로그 저장 실패 · %s" % why, NOTICE)
+
     def _remember(self, **kw):
         """연결에 성공한 포트 · 주소 · 번호를 settings 에 저장한다(자동 연결이 쓴다). 저장 실패는 연결에 영향 없다."""
         try:
@@ -1854,6 +1898,7 @@ class Controller:
             self.runner.refresh_gate()
         except Exception as e:                                      # noqa: BLE001 - 다음 1초 주기 publish 가 다시 계산한다
             self.logs.app("측정 시작 조건 계산 오류 · %s: %s" % (type(e).__name__, e), "error")
+            self.logs.exc("측정 시작 조건 계산")
 
     def publish_cfg(self):
         """설정 값을 state 로 내보낸다(설정이 바뀔 때마다). 화면은 이것만 본다."""
@@ -1872,6 +1917,7 @@ class Controller:
                 self.logs.app("자동 연결 실패 · %s · %s" % (name, e), "warn")
             except Exception as e:                                  # noqa: BLE001 - 한 장비의 예상 밖 오류가 다른 장비 연결을 막지 않는다
                 self.logs.app("자동 연결 오류 · %s · %s: %s" % (name, type(e).__name__, e), "error")
+                self.logs.exc("자동 연결 · %s" % name)
                 self.state.set_device({"스테이지": "stage", "온도계": "k2110", "저항계": "k2450", "카메라": "camera"}[name], "오류", str(e)[:60])
 
     def monitor(self, on: bool):
@@ -1914,6 +1960,7 @@ class Controller:
                 self.runner.publish()
             except Exception as e:                                  # noqa: BLE001 - 화면용 요약이 감시 루프를 죽이지 않는다
                 self.logs.app("초기 설정 요약 오류 · %s: %s" % (type(e).__name__, e), "error")
+                self.logs.exc("감시 · 화면 요약")
             if self._monitor_on:
                 if self.safety.locked:
                     self._monitor_stop("비상정지")
@@ -1948,6 +1995,7 @@ class Controller:
                 self.safety.update_hold()                           # 비상정지 직후의 해제 대기가 끝났는지
             except Exception as e:                                  # noqa: BLE001 - 감시는 죽지 않는다. 기록하고 계속
                 self.logs.app("히트건 감시 오류 · %s" % e, "error")
+                self.logs.exc("히트건 감시")
             time.sleep(0.25)
 
     def _temp_loop(self):
@@ -1964,6 +2012,20 @@ class Controller:
             time.sleep(float(self.cfg["temp_test_interval_s"]) if busy else 1.0)
 
     def run_command(self, name: str, args: Optional[dict] = None):
+        """명령 하나(서버 · 시험이 같은 입구). command.log 에 한 줄: 이름 · 인자 · 결과(완료 / 거절 · 문구 / 오류 · 종류) · 걸린 ms."""
+        t0 = time.monotonic()
+        try:
+            res = self._run_command(name, args)
+        except Rejected as e:
+            self.logs.command(name, args, "거절 · %s" % e, (time.monotonic() - t0) * 1000.0)
+            raise
+        except Exception as e:
+            self.logs.command(name, args, "오류 · %s" % type(e).__name__, (time.monotonic() - t0) * 1000.0)
+            raise
+        self.logs.command(name, args, "완료", (time.monotonic() - t0) * 1000.0)
+        return res
+
+    def _run_command(self, name: str, args: Optional[dict] = None):
         fn = COMMANDS.get(name)
         if fn is None:
             raise Rejected("알 수 없는 명령: %s" % name)
@@ -2255,6 +2317,71 @@ class Controller:
         self.logs.app("설정 가져오기 · %d개 · %s" % (len(patch), " · ".join(sorted(patch))))
         return {"n": len(patch)}
 
+    BUNDLE_SKIP = (".jpg", ".jpeg", ".png")                       # 로그 묶음에서 빼는 이미지
+
+    def log_bundle(self):
+        """[로그 묶음 저장]: <데이터 폴더>/log_bundle/logs_YYYYMMDD_HHMMSS.zip. 최근 log_bundle_days 개 날짜마다 logs/<날짜> ·
+        측정 폴더 <날짜>/ · heater_log/<YYYYMMDD>_*.csv · temp_test/<YYYYMMDD>_*/(이미지 제외) + temp_test/index.csv · settings.json · calib/calib.json · version.txt.
+        측정 중에도 된다(쓰는 중인 파일은 그 순간까지 읽어 넣는다). zip 안 경로는 데이터 폴더 기준."""
+        import platform
+        import zipfile
+        from app import logs as logs_mod
+        root = self.cfg.data_path()
+        days = int(self.cfg["log_bundle_days"])
+        logdir = root / "logs"
+        dates = sorted([p.name for p in logdir.iterdir() if p.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}$", p.name)] if logdir.is_dir() else [])[-days:]
+        out = root / "log_bundle" / time.strftime("logs_%Y%m%d_%H%M%S.zip")
+        files = []
+
+        def add_tree(base):
+            if base.is_dir():
+                for p in sorted(base.rglob("*")):
+                    if p.is_file() and p.suffix.lower() not in self.BUNDLE_SKIP:
+                        files.append(p)
+
+        for d in dates:
+            ymd = d.replace("-", "")
+            add_tree(logdir / d)
+            add_tree(root / d)
+            hl = root / "heater_log"
+            if hl.is_dir():
+                files.extend(sorted(p for p in hl.glob("%s_*.csv" % ymd) if p.is_file()))
+            tt = root / "temp_test"
+            if tt.is_dir():
+                for sub in sorted(tt.glob("%s_*" % ymd)):
+                    add_tree(sub)
+        for p in (root / "temp_test" / "index.csv", self.cfg.path, root / "calib" / "calib.json"):
+            if p is not None and Path(p).is_file():
+                files.append(Path(p))
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+                seen = set()
+                for p in files:
+                    try:
+                        arc = p.resolve().relative_to(root.resolve()).as_posix()
+                    except ValueError:
+                        arc = "_outside/" + p.name                  # 데이터 폴더 밖(settings.json 은 프로그램 폴더)
+                    if arc in seen:
+                        continue
+                    seen.add(arc)
+                    try:
+                        z.writestr(arc, p.read_bytes())             # 쓰는 중인 파일은 그 순간까지 읽은 것
+                    except OSError as e:
+                        self.logs.app("로그 묶음 · %s 읽기 실패 · %s" % (arc, e), "warn")
+                z.writestr("version.txt", "버전 %s\n만든 시각 %s\nPC %s\n" % (logs_mod.version_text(), time.strftime("%Y-%m-%d %H:%M:%S"), platform.node()))
+        except OSError as e:
+            raise Rejected("로그 묶음 저장 실패 · %s" % str(e)[:50])
+        n = out.stat().st_size
+        self.logs.app("로그 묶음 저장 · %s · %.1f MB · %d일" % (out, n / 1e6, len(dates)))
+        if self._folder_picker is not None and os.name == "nt":       # 창 실행: 탐색기에서 그 파일을 고른 채로(실패해도 무시)
+            try:
+                import subprocess
+                subprocess.Popen(["explorer", "/select,", str(out)])
+            except OSError:
+                pass
+        return {"path": str(out), "bytes": n, "days": len(dates)}
+
     def set_quit(self, fn):
         """창으로 실행했을 때 run.py 가 넘기는 "창 닫기" 함수(확인 창 [종료] 가 부른다). --no-window 에는 없다."""
         self._quit_fn = fn
@@ -2290,6 +2417,7 @@ class Controller:
                 self.stage.relays_off(None, prio=0)
         except Exception as e:                                      # noqa: BLE001
             self.logs.app("종료 중 릴레이 끄기 실패 · %s" % e, "error")
+            self.logs.exc("종료 · 릴레이 끄기")
         finally:
             self._heater_why = None
         self._park_pin("종료")
@@ -2297,6 +2425,7 @@ class Controller:
             self.save_position("종료")
         except Exception as e:                                      # noqa: BLE001 - 저장 실패도 닫기는 계속한다(로그에 남긴다)
             self.logs.app("위치 저장 실패 · 종료 · %s: %s" % (type(e).__name__, e), "error")
+            self.logs.exc("종료 · 위치 저장")
         for kind in ("k2450", "k2110"):
             self._close_meter(kind)
         self.camera.close()
@@ -2323,6 +2452,7 @@ COMMANDS = {
     "samples_find": "prep.samples_find", "sample_use": "prep.sample_use", "sample_use_all": "prep.sample_use_all", "sample_goto": "prep.sample_goto",
     "tour_start": "tour.start", "tour_stop": "tour.stop",
     "settings_export": "settings_export", "settings_import_preview": "settings_import_preview", "settings_import_apply": "settings_import_apply",
+    "log_bundle": "log_bundle",
     "move_plan": "move_plan", "quit_plan": "quit_plan", "app_quit": "app_quit",
     "focus_find": "prep.focus_find", "focus_nudge": "prep.focus_nudge", "focus_apply": "prep.focus_apply",
     "cooler_only": "prep.cooler_only", "cooler_save": "prep.cooler_save", "cooler_cell": "prep.cooler_cell",
@@ -2343,12 +2473,12 @@ TEMPTEST_BLOCKED = {"run_start", "run_resume", "run_one", "contact_find", "coole
 
 # 측정 중에도 되는 명령(읽기 · 측정 조작 · 경보 지우기). 그 밖의 명령은 측정 중에 거절한다. 비상정지는 명령 줄을 거치지 않는다.
 RUN_ALLOWED = {"heater_off_now", "move_plan", "quit_plan", "app_quit", "estop_release", "alarm_clear", "motion_stop", "run_start", "run_stop", "run_skip", "run_pause_after", "run_resume", "run_one", "run_requeue",
-               "sample_rename", "batch_set", "result_open_folder", "result_nas_copy"}
+               "sample_rename", "batch_set", "result_open_folder", "result_nas_copy", "log_bundle"}
 
 # 자동 순회 중에도 되는 명령(읽기 · 순회 정지 · 이동 정지 · 경보 지우기 · 확인 창). 손으로 하는 이동 · 릴레이 · 측정 · 설정은 막는다(측정 중과 같은 방식).
 # 이동 패드 [정지](motion_stop)도 순회를 끝낸다(세대가 바뀌면 남은 단계를 버리고 핀 맨 위). 비상정지는 명령 줄을 거치지 않는다.
 TOUR_ALLOWED = {"tour_stop", "motion_stop", "heater_off_now", "move_plan", "quit_plan", "app_quit", "estop_release", "alarm_clear",
-                "result_open_folder", "result_nas_copy", "temptest_open_folder"}
+                "result_open_folder", "result_nas_copy", "temptest_open_folder", "log_bundle"}
 
 
 def _ohm(v):

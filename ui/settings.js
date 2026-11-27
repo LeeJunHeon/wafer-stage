@@ -1,5 +1,5 @@
 /* settings.js - "전체 설정"(초기 설정 탭 왼쪽 목록 맨 아래): settings 전체를 고친다.
-   배치: 위 줄 = 검색 · [설정 내보내기] · [가져오기] · "PC 값 제외" / 아래 = 왼쪽 묶음 목록(이름 · 항목 수 · "바꿈 n") + 오른쪽 그 묶음 항목(오른쪽만 스크롤).
+   배치: 위 줄 = 검색 · [설정 내보내기] · [가져오기] · "PC 값 제외" · [로그 묶음 저장] / 아래 = 왼쪽 묶음 목록(이름 · 항목 수 · "바꿈 n") + 오른쪽 그 묶음 항목(오른쪽만 스크롤).
    맨 위 묶음 "자주 쓰는 설정" = app/config.py Item.common 인 항목만 모은 것(원래 묶음에도 그대로 있다). 고른 묶음은 기억한다(localStorage - 없어도 동작).
    검색: 이름 · 설명 · 키에서(대소문자 · 띄어쓰기 무시) - 검색어가 있으면 모든 묶음의 맞는 항목을 묶음 소제목과 함께 · 지우면 원래 묶음.
    항목 한 줄: 이름(굵게 · 기본값과 다르면 앞에 점) + 회색 요약(설명 첫 줄 · JSON 항목은 고치는 초기 설정 단계) · 값 칸 · [기본값](다를 때만) · 단위.
@@ -16,6 +16,11 @@ function buildSettingsPage() {
   stg.exp = btn("설정 내보내기", async () => { const r = await api("settings_export"); if (r.ok && !r.result.cancelled) toast("내보내기 완료 · " + r.result.n + "개 · " + r.result.path); });
   stg.file = h("input", { type: "file", accept: ".json,application/json", class: "hidden", onchange: () => importFile() });
   stg.imp = btn("가져오기", () => { stg.file.value = ""; stg.file.click(); });
+  /* 로그 묶음 저장: 최근 날짜의 로그 · 측정 폴더 · 히트건 기록 · 온도 시험 · 설정 · 초기 설정 값을 zip 하나로(측정 중에도 됨) */
+  stg.bundle = btn("로그 묶음 저장", async () => {
+    const r = await api("log_bundle");
+    if (r.ok) toast("로그 묶음 저장 · " + String(r.result.path).split(/[\\/]/).pop() + " · " + (r.result.bytes / 1e6).toFixed(1) + " MB");
+  });
   stg.skipPc = tk(h("input", { type: "checkbox", checked: true }), "stg.skipPc");
   stg.search = tk(h("input", { type: "search", class: "set-search", spellcheck: "false", placeholder: "설정 검색 · 이름 · 설명 · 키",
     oninput: () => { stg.q = stg.search.value; showGroup(); } }), "stg.search");
@@ -24,7 +29,7 @@ function buildSettingsPage() {
   try { stg.group = localStorage.getItem(STG_KEY); } catch (e) { stg.group = null; }
   const el = h("div", { class: "panel prep-panel set-panel" },
     h("div", { class: "row" }, h("h3", { text: "전체 설정" }), stg.search, h("span", { class: "sp" }), stg.exp, stg.imp,
-      h("label", { class: "row" }, stg.skipPc, small("PC 값 제외")), stg.file),
+      h("label", { class: "row" }, stg.skipPc, small("PC 값 제외")), stg.bundle, stg.file),
     small("변경 즉시 저장 · 기본값과 다른 값만 저장"),
     h("div", { class: "set-main" }, stg.list, stg.body));
   return { el, render: renderSettingsPage, show: loadSettingsPage };

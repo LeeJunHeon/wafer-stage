@@ -578,7 +578,7 @@ def test_fast_rise_is_only_a_notice_and_changed_limits_apply_to_the_next_run(rea
         _all_off(ctrl)
 
     # 로그: 프로그램 · 시리얼 · VISA 가 모두 파일로 남는다(끄는 설정은 없다). 히트건을 켜고 끈 것과 주체가 프로그램 로그에 있다
-    assert not any("log" in k for k in BY_KEY)
+    assert not any("log" in k for k in BY_KEY if k != "log_bundle_days"), "로그를 끄는 설정은 없다(로그 묶음 날짜 수만)"
     day = next(p for p in (ctrl.cfg.data_path() / "logs").iterdir() if p.is_dir())
     for name in ("app", "serial", "visa"):
         assert (day / (name + ".log")).stat().st_size > 0, name

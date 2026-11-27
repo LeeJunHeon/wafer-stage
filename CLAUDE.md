@@ -10,7 +10,7 @@ v3 는 v2 코드를 가져오지 않고 새로 만들었다(펌웨어 · 시험�
 run.py                  python run.py (창) / --no-window (서버만) / --port (서버 포트)
 app/__init__.py         cv2 를 import 하기 전에 OPENCV_LOG_LEVEL=OFF (없는 카메라 번호를 열어 볼 때 나오는 콘솔 경고를 숨긴다)
 app/config.py           설정 표 ITEMS 한 곳(이름 · 단위 · 범위 · 묶음 · 설명 · "실장비 확인 필요") · settings.json 읽기 · 쓰기 · 검증
-app/logs.py             <데이터 폴더>\logs\YYYY-MM-DD\{app,serial,visa}.log
+app/logs.py             <데이터 폴더>\logs\YYYY-MM-DD\{app,serial,visa,command,error}.log
 app/state.py            화면에 보낼 상태 한 덩어리 + 경보 목록(alarms 한 곳)
 app/safety.py           안전 규칙의 판정(한 곳)
 app/control.py          명령 → 안전 규칙 → 장비. 서버 · 시험이 같이 쓰는 입구 run_command(name, args)
@@ -31,7 +31,25 @@ tests/fakes/            시험용 장비(시험만 쓴다): world.py(세계 하�
 firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 돌리기 hpr). firmware/stage_v11/ ~ stage_v17/ 은 예전 것 그대로 둔다(고치지 않는다)
 ```
 - 데이터 폴더 기본값 `..\data_v3`. 경로는 pathlib. 측정 PC 는 Windows 11 + Python 3.12.
-- 로그 세 가지(프로그램 app · 시리얼 serial · VISA visa)는 설정과 상관없이 항상 저장한다(끄는 설정을 만들지 않는다).
+- 로그 다섯 가지는 설정과 상관없이 항상 저장한다(끄는 설정을 만들지 않는다): 프로그램 app · 시리얼 serial · VISA visa ·
+  **command**(`run_command` 를 지난 모든 명령 한 줄 - 이름 · 인자(240자) · 완료 / 거절 · 문구 / 오류 · 종류 · 걸린 ms · PUT /api/settings 도) ·
+  **error**(예상 못 한 예외의 traceback 전체 - `Logs.exc(어디서)` 한 곳 · 측정 · 순회 · 온도 시험 스레드 · 서버 명령 · 감시 · 장비 목록 · 자동 연결 ·
+  `sys.excepthook` · `threading.excepthook`(run.py `install_hooks`) · app.log 의 한 줄은 그대로).
+  - 저장 방식(`app/logs.py`): 시각은 잠금 안에서(줄 순서 = 시각 순서) · 20 MB 넘으면 비어 있는 다음 번호 `<이름>.1.log` · `.2.log` …로 옮김(덮어쓰지 않음) ·
+    쓰기 실패는 측정을 멈추지 않고 횟수 · 까닭을 기억 → 경보 "로그 저장 실패 · 까닭"(`log_fail` · 다시 써지면 내림 · `Logs.on_health`).
+  - 프로그램 버전(`logs.version_text` - git 짧은 해시 · 커밋 날짜 · "고친 파일 있음" · git(2초 · 창 없음) → .git 직접 읽기 → "버전 모름" · 한 번 구함):
+    시작 때 "프로그램 시작 · 버전 … · Python … · OS · 데이터 폴더 …" · app.log 를 새로 만들 때(그날 첫 줄 · 번호 넘김 뒤) 첫 줄 "프로그램 버전 · …".
+  - app.log 에 더 남는 것: "설정 변경 · <라벨> <이전> → <새 값> <단위> · …"(`update_settings` · 12개 넘으면 "외 n개" · 값 60자 · 가져오기도) ·
+    "측정 시작 · <측정 시작 | 새로 측정 | 나머지 측정 | 이 샘플 다시 측정 | 이 샘플만 측정> · 묶음 · n개 · 이름들 · 조건 <지금 설정 | 기록의 조건> · 폴더" +
+    "측정 조건 · 시작 · 가열 끝 · 냉각 끝 · 가열 · 냉각 시간과 속도 · 반복 · 전압 · 단자 · 평균 · NPLC · 한도 · 쿨러 · 히트건 · 접촉 높이"(`run.cond_text`) ·
+    "샘플 1-2 끝 · 완료|실패(까닭) · 점 n(가열 n) · 온도 최저~최고 · 저항 처음 → 최소 → 끝 · 한도 걸림 n점 · 걸린 시간"(`Runner._sample_line`) ·
+    "샘플 1-2 · 접촉 · 고정 높이 Z …"(측정 · 순회).
+  - "히트건 끔 · 릴레이 꺼짐 감지" 는 프로그램이 끄지 않았는데 꺼졌을 때만: 끄는 쪽(`heater_off` · `manual_heater_off_now` · `_heater_abort` · [연결 끊기])이
+    릴레이를 끄기 **전에** 까닭을 정해 둔다(`_heater_off_logged` · `_heater_why`) - 예전엔 `_heater_sync` 가 먼저 불려 "감지" 줄 뒤에 까닭 줄이 또 찍혔다(6일 13번).
+  - **로그 묶음**(`log_bundle` · 전체 설정 [로그 묶음 저장] · 측정 · 순회 중에도 됨): `<데이터 폴더>\log_bundle\logs_YYYYMMDD_HHMMSS.zip` -
+    최근 `log_bundle_days`(2)개 날짜마다 logs\<날짜> · 측정 폴더 <날짜>\(하위 포함 · jpg · jpeg · png 제외) · heater_log\<YYYYMMDD>_*.csv · temp_test\<YYYYMMDD>_*(이미지 제외) +
+    temp_test\index.csv · settings.json · calib\calib.json · version.txt(버전 · 만든 시각 · PC 이름). zip 안 경로 = 데이터 폴더 기준(밖이면 `_outside/`) ·
+    반환 {path, bytes, days} · 로그 "로그 묶음 저장 · 경로 · n MB · n일" · 창 실행이면 탐색기에서 그 파일을 선택한 채로.
   **수동 조작도 app.log 에**(info · 측정 · 순회의 이동은 남기지 않는다): "수동 측정 · 저항 912 kΩ · 0.10 V · 4단자 · X … · Y … · Z …" · "수동 측정 · 온도 26.7 °C" ·
   "연속 측정 시작 · 저항 · X …" / "연속 측정 끝 · 23회 · 최소 … · 최대 …"(점마다는 안 남김 · `_monitor_stop` 한 곳) · "조그 · Z 하강 0.10 mm · Z 20.900 → 21.000"(정지로 끝나면 "· 정지") ·
   "좌표 이동 · X 43.0 · Y 37.0 → 끝 X … · Y … · Z …"([이동] · [촬영 위치로 이동] = 명령 goto → `manual_goto` · [핀 상승] = `manual_z_top` · 클릭 이동 · 샘플 이동 · 멈추면 "→ 멈춤 · 까닭").
@@ -470,6 +488,9 @@ firmware/stage_v18/     펌웨어 V18(지금 쓰는 것 - V17 + 켜는 순간 �
   - **`free`**: 자연 냉각(예전 동작). 냉각 중 송풍 `run_fan_during_cool`(free 에만): 켬이면 냉각 동안 유지, 끔이면 `heater_fan_after_s` 뒤 끔.
   - 냉각 끝: 온도 < 냉각 끝 온도(또는 정체 → "냉각 끝 온도 미도달" 주의 · 기록 유지) → 열선 끔 → 송풍은 열선 끈 뒤 `heater_fan_after_s` 에 끔.
     반복 때 송풍이 켜져 있으면 열선만 다시 켠다. 다음 샘플로 X · Y 이동하기 전에 송풍이 꺼질 때까지 기다린다("송풍 끄는 중 · n초").
+    기다리는 쪽(`_wait_heater_off`)은 "켜짐" · "꺼짐 예약" 을 `Controller.heater_off_state` 로 `_heater_lock` 안에서 한 번에 읽는다 - 감시(`_fan_off_due`)가 같은 잠금 안에서
+    예약을 지우고 송풍을 끄므로, 따로 읽으면 꺼지는 순간 "켜짐 · 예약 없음" 으로 보여 가짜 경보 "측정 멈춤(장비 오류) · 히트건 끄기 실패"(2026-11-26 17:36:52 - serial.log 로는 정상 꺼짐)가 났다.
+    실제로 못 끈 경우(Rejected · 예약 없이 켜져 있음)는 지금처럼 경보.
 - **목표선 기다림**(`heater_lead_c`, 가열 · 냉각 모두 - `heater.LineControl`): **걸러진 온도**(`heater_lead_filter_s` 평균)가 목표선보다 이만큼 넘게 뒤처진 채
   `heater_lead_hold_s` 넘게 이어지면(가열 - 아래 · 냉각 - 위) 목표선이 그 자리에서 기다리고(순간값으로 판단해 냉각 때 켠 열선의 튐에 목표선이 섰던 일 - 냉각이 11 °C/분에 그쳤다),
   다시 따라오면 그 지점부터 같은 속도로 이어 간다(목표선은 회차마다 앞으로 간다 - 경과 시간의 식이 아니다). 자동 측정과 온도 시험이 같은 LineControl · Stall 을 쓴다.

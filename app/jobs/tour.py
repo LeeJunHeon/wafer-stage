@@ -144,7 +144,7 @@ class Tour:
                 self.rows.append(row)
                 self._set_step(STEP_MOVE)
                 try:
-                    res = c.prep.go_and_lower(s["xy"][0], s["xy"][1], True, read=read, g=g, on_lower=lambda: self._set_step(STEP_DOWN))
+                    res = c.prep.go_and_lower(s["xy"][0], s["xy"][1], True, read=read, g=g, on_lower=lambda: self._set_step(STEP_DOWN), name=s["name"])
                 except Rejected as e:
                     row["note"] = str(e)
                     raise
@@ -165,6 +165,7 @@ class Tour:
         except Exception as e:                                      # noqa: BLE001 - 예상하지 못한 오류도 핀을 올리고 끝낸다
             result = "중단 · 오류 · %s" % type(e).__name__
             c.logs.app("샘플 순회 오류 · %s: %s" % (type(e).__name__, e), "error")
+            c.logs.exc("자동 순회")
         finally:
             if self._k2450:
                 c._k2450_release(USE_TOUR)

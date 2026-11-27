@@ -915,7 +915,7 @@ class Prep:
         self.publish()
         return photo_px
 
-    def go_and_lower(self, sx, sy, lower, read=False, g=None, on_lower=None):
+    def go_and_lower(self, sx, sy, lower, read=False, g=None, on_lower=None, name=None):
         """샘플(또는 판 위 한 점)로 이동하고 lower 면 접촉 높이까지 내린다 - plate_goto · sample_goto · 자동 순회(app/jobs/tour.py)가 같이 쓴다.
         이동은 Controller.goto(핀 맨 위 → st 로 Z 0 확인 → X → Y). 내리기는 Controller.contact_fixed(측정의 고정 높이 접촉과 같은 규칙 · 마지막 approach_mm 느리게).
         내리기 전 확인: 시작 때 잡은 세대가 그대로(이동 도중 [정지] · 비상정지가 없었음) · 비상정지 아님 · st 로 다시 읽은 X · Y 가 대상과 LOWER_TOL_MM 안.
@@ -946,7 +946,7 @@ class Prep:
             raise Rejected("샘플 위치 도달 실패 · 내리지 않음")
         if on_lower is not None:
             on_lower()
-        return c.contact_fixed(c.cfg["contact_z_mm"], g, read=read)
+        return c.contact_fixed(c.cfg["contact_z_mm"], g, read=read, name=name)
 
     def plate_goto(self, x, y, view=False, lower=False):
         """판 사진을 누른 자리(판 mm - view 면 화면 판 mm)로 간다(핀 맨 위로 올린 뒤). 샘플 가운데 근처(SNAP_MM)를 누르면 그 샘플의 핀 놓을 자리(pin)로 붙는다.

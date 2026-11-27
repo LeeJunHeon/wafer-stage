@@ -73,7 +73,7 @@ def test_resume_measures_only_checked_waiting_samples(ready_ctrl):
     assert run.items[c]["status"] != WAIT, "체크한 대기는 잰다"
     assert run.items[b]["status"] == WAIT and not run.items[b]["points"], "체크를 푼 대기는 재지 않고 대기로 남는다"
     assert run.state == "stopped", "대기가 남았다"
-    assert any("측정 시작 · 묶음" in ln and " · 1개 · " in ln for ln in ctrl.logs.recent[n0:]), ctrl.logs.recent[n0:]
+    assert any("측정 시작 · 나머지 측정 · 묶음" in ln and " · 1개 · " in ln for ln in ctrl.logs.recent[n0:]), ctrl.logs.recent[n0:]
     with pytest.raises(Rejected, match="남은 샘플 없음"):
         ctrl.run_command("run_resume")                              # 체크한 대기가 없다
     ctrl.run_command("sample_use", {"id": b, "use": True})          # 다시 체크하고 재개하면 잰다

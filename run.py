@@ -27,6 +27,7 @@ def main(argv=None):
     from app.server import HOST, create_app
 
     ctrl = Controller(Config().load())
+    ctrl.logs.install_hooks()                                       # 처리 안 된 예외(주 스레드 · 일꾼 스레드)도 error.log 에 traceback
     server = uvicorn.Server(uvicorn.Config(create_app(ctrl), host=HOST, port=a.port, log_level="warning"))
     url = "http://%s:%d/" % (HOST, a.port)
     th = threading.Thread(target=server.run, daemon=True, name="uvicorn")

@@ -19,6 +19,7 @@
 
 import asyncio
 import threading
+import time
 from contextlib import asynccontextmanager
 
 from pathlib import Path
@@ -55,6 +56,7 @@ async def _stop_now(ctrl: Controller, source: str):
             res = {"ok": False, "msg": str(e)}
         except Exception as e:                                      # noqa: BLE001 - 서버는 죽지 않는다
             ctrl.logs.app("이동 정지 오류 · %s: %s" % (type(e).__name__, e), "error")
+            ctrl.logs.exc("서버 · 이동 정지")
             res = {"ok": False, "msg": "명령 처리 실패 · %s" % str(e)[:60]}
         loop.call_soon_threadsafe(fut.set_result, res)
 
@@ -80,6 +82,7 @@ def create_app(ctrl: Controller) -> FastAPI:
             return {"ok": False, "msg": str(e)}
         except Exception as e:                                      # noqa: BLE001 - 서버는 죽지 않는다. 사유는 로그에도 남긴다
             ctrl.logs.app("명령 오류 %s · %s: %s" % (cmd, type(e).__name__, e), "error")
+            ctrl.logs.exc("서버 · 명령 %s" % cmd)
             return {"ok": False, "msg": "명령 처리 실패 · %s" % str(e)[:60]}
 
     @app.get("/")
@@ -184,12 +187,21 @@ def create_app(ctrl: Controller) -> FastAPI:
 
     @app.put("/api/settings")
     async def put_settings(patch: dict = Body(...)):
+        t0 = time.monotonic()
+        ms = lambda: (time.monotonic() - t0) * 1000.0                # noqa: E731
         if ctrl.run_active():                                      # 측정이 쓰는 값이 도중에 바뀌지 않게
+            ctrl.logs.command("PUT /api/settings", patch, "거절 · 측정 중 실행 불가", ms())
             return JSONResponse({"ok": False, "msg": "측정 중 실행 불가"}, status_code=409)
         try:
             await asyncio.to_thread(ctrl.update_settings, patch)   # 값 검증 + 조합 검사(config.problems) + 저장
         except (ConfigError, Rejected) as e:
+            ctrl.logs.command("PUT /api/settings", patch, "거절 · %s" % e, ms())
             return JSONResponse({"ok": False, "msg": str(e)}, status_code=400)
+        except Exception as e:
+            ctrl.logs.command("PUT /api/settings", patch, "오류 · %s" % type(e).__name__, ms())
+            ctrl.logs.exc("서버 · 설정 저장")
+            raise
+        ctrl.logs.command("PUT /api/settings", patch, "완료", ms())
         return {"ok": True}
 
     @app.websocket("/ws")

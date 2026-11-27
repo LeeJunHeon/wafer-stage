@@ -345,8 +345,10 @@ class Runner:
             bad = config_mod.problems(c.cfg.values)                 # 설정 조합 검사(저장 때와 같은 함수): 문제가 있으면 시작하지 않는다
             if bad:
                 raise Rejected(bad[0])
+            kind = "이 샘플만 측정" if only is not None else ("새로 측정" if self.folder is not None and self.state in ("stopped", "done") else "측정 시작")
             c.k2450_begin_run()                                     # 연속 측정을 끄고 K2450 사용권을 얻는다(측정이 끝나면 _main 이 놓는다)
             try:
+                self._how = (kind, "지금 설정")                      # 로그 "측정 시작" 줄: 누른 버튼 · 조건 출처
                 self.cond = {k: c.cfg[k] for k in COND_KEYS}
                 if heater and c.stage.heat_capable:
                     c.heater_method_restore()                       # 설정의 열선 출력 방식으로(맞추기 · 수동이 바꿨을 수 있다)
@@ -379,7 +381,7 @@ class Runner:
         검사를 모두 통과한 뒤에만 실패 · 건너뜀 · 중지를 대기로 되돌린다(requeue 와 같다 - 예전 파일은 쓰기 직전에 "이전_<HHMMSS>" 로).
         거절되면 어떤 샘플의 상태도 바꾸지 않는다 · 체크를 푼 샘플은 상태 그대로."""
         with self._lock:
-            return self._continue(self.rest_ids(), "남은 샘플 없음")
+            return self._continue(self.rest_ids(), "남은 샘플 없음", "나머지 측정")
 
     def run_one(self, id):
         """[이 샘플 다시 측정] · [이 샘플만 측정]: 그 샘플 하나만 바로 잰다(체크 여부와 상관없이 · 체크는 바꾸지 않는다).
@@ -393,9 +395,10 @@ class Runner:
                 return self.start(only=sid)
             if self.items.get(sid) is None and not any(s["id"] == sid for s in self.c.prep.samples):
                 raise Rejected("해당 샘플 없음")
-            return self._continue([sid], "해당 샘플 없음")
+            it = self.items.get(sid)
+            return self._continue([sid], "해당 샘플 없음", "이 샘플 다시 측정" if it is not None and it["status"] in (DONE, FAIL, SKIPPED, STOPPED) else "이 샘플만 측정")
 
-    def _continue(self, plan, empty):
+    def _continue(self, plan, empty, kind="나머지 측정"):
         """같은 폴더에 이어서 plan(샘플 id 순서)만 잰다 - [나머지 측정] · 기록이 있을 때의 [이 샘플 …]. 검사(필요 항목 · 펌웨어 · 전원 맞춤 · 좌표 ·
         쿨러 빈 칸 · 설정 조합)를 모두 지난 뒤에만 상태를 바꾼다: 위치 · 접촉 조건 갱신 → 끝난 샘플은 대기로 → 이 측정에 없던 샘플은 맨 뒤에 붙임 → 시작."""
         c = self.c
@@ -436,6 +439,7 @@ class Runner:
             raise Rejected(bad[0])
         c.k2450_begin_run()
         try:
+            self._how = (kind, "기록의 조건")
             self._apply_resume(ch)
             for i in plan:                                          # 여기부터 상태를 바꾼다(검사를 모두 지났다)
                 it = self.items.get(i)
@@ -614,7 +618,11 @@ class Runner:
         c = self.c
         g = c.safety.generation
         todo = list(self._plan or [])                               # 시작 · 이어서 · 이 샘플만이 정한 샘플만 잰다(다른 대기 샘플은 대기로 남는다)
-        c.logs.app("측정 시작 · 묶음 %s · %d개 · %s" % (self.batch, len(todo), self.folder))
+        kind, src = getattr(self, "_how", ("측정 시작", "지금 설정"))
+        names = [self.items[i]["name"] for i in todo if i in self.items]
+        c.logs.app("측정 시작 · %s · 묶음 %s · %d개 · %s · 조건 %s · %s" % (kind, self.batch, len(todo), " → ".join(names[:20]) + (" 외 %d개" % (len(names) - 20) if len(names) > 20 else ""),
+                                                                 src, self.folder))
+        c.logs.app("측정 조건 · %s" % cond_text(cd_of(self.cond, c.cfg.values)))
         halted = False                                              # 중지 · 비상정지 · 오류로 멈췄다(남은 샘플이 없어도 "끝남"이 아니다)
         try:
             for sid in todo:
@@ -645,6 +653,7 @@ class Runner:
             self.msg = "측정 중지 · 오류"
             c.state.alarm("run", "측정 중지 · 오류 · %s: %s" % (type(e).__name__, str(e)[:60]), ALARM, dismiss=True)
             c.logs.app("측정 멈춤(예상 못 한 오류) · %s: %s" % (type(e).__name__, e), "error")
+            c.logs.exc("측정 · 측정 스레드")
         finally:
             self._close_worker()
             self.feeding = False
@@ -708,6 +717,7 @@ class Runner:
         except Exception as e:                                      # noqa: BLE001
             it.update(status=FAIL, reason="오류")
             abort = RunAbort("오류 · %s: %s" % (type(e).__name__, str(e)[:60]))
+            c.logs.exc("측정 · 샘플 %s" % it["name"])
         finally:
             self.feeding = False
             self._cleanup(estop=bool(halt and halt.kind == "estop") or c.safety.locked)
@@ -722,12 +732,28 @@ class Runner:
                 it["sum"]["curve"] = curve_summary(it.pop("_tl", []), cd_of(self.cond, c.cfg.values))
                 it["sum"]["jumps"] = [{"phase": ph, "sp": spi, "d": round(j["d"], 1)} for ph, spi, j in it.pop("_jumps", [])]     # 온도 급변(d = 끝난 뒤의 최대 폭)
             self._sync_summary(it)
+            self._sample_line(it)
             self._save_json()
             self.publish()
         if abort is not None:
             raise abort
         if halt is not None and halt.kind != "skip":
             raise halt
+
+    def _sample_line(self, it):
+        """샘플 끝 한 줄(app.log): "샘플 1-2 끝 · 완료 · 점 n(가열 n) · 온도 최저~최고 · 저항 처음 → 최소 → 끝 · 한도 걸림 n점 · 걸린 시간"."""
+        pts = it.get("points") or []
+        st = it["status"] + ("(%s)" % it["reason"] if it.get("reason") and it["status"] != DONE else "")
+        parts = ["샘플 %s 끝" % it["name"], st, "점 %d(가열 %d)" % (len(pts), sum(1 for p in pts if p[2] == 0))]
+        if pts:
+            ts = [p[0] for p in pts]
+            rs = [p[1] for p in pts]
+            parts.append("온도 %.1f~%.1f °C" % (min(ts), max(ts)))
+            parts.append("저항 %s → %s → %s" % (contact_mod.ohm_text(rs[0]), contact_mod.ohm_text(min(rs)), contact_mod.ohm_text(rs[-1])))
+        parts.append("한도 걸림 %d점" % int(it.get("_trip_n") or 0))
+        if it.get("t0") and it.get("t1"):
+            parts.append("걸린 시간 %.0f s" % (it["t1"] - it["t0"]))
+        self.c.logs.app(" · ".join(parts), "info" if it["status"] == DONE else "warn")
 
     def _check(self, g):
         c = self.c
@@ -767,7 +793,7 @@ class Runner:
             it["contact"] = dict({k: res[k] for k in ("first_z", "final_z", "r2", "r4")}, mode="search")
         else:                                                       # 고정 높이(기본): 저장한 접촉 높이까지만 내린다
             self._set(1, "접촉 높이로 하강")
-            it["contact"] = c.contact_fixed(cd["contact_z_mm"], g, read=bool(cd.get("contact_fixed_read", True)), meter=cd)
+            it["contact"] = c.contact_fixed(cd["contact_z_mm"], g, read=bool(cd.get("contact_fixed_read", True)), meter=cd, name=it["name"])
             self._contact_check(it, cd)                             # 접촉 확인(가열 · 저항계 출력 · 쿨러 켜기 전)
         if not cd.get("run_heater_use", True):                      # ---- 기록 모드(히트건 사용 끔): 쿨러 · 시작 온도 · 가열 · 냉각 · 반복 없이 ----
             self._hold_measure(it, g, fname, volt)
@@ -1353,11 +1379,13 @@ class Runner:
             return
         self.heater.off()
         interval = float(self.cond["run_interval_s"])
-        while self.heater.is_on:
+        while True:
             self._check(g)
-            if not self.heater.fan_pending:
+            on, pending, left = c.heater_off_state()                # 켜짐 · 꺼짐 예약을 한 번에(따로 읽으면 감시가 송풍을 끄는 순간 "예약 없음" 으로 잘못 본다)
+            if not on:
+                return
+            if not pending:
                 raise RunAbort("히트건 끄기 실패 · 전원 직접 차단 필요")
-            left = max(0.0, (c._fan_off_at or c.clock()) - c.clock())
             self._set(0, "송풍 끄는 중 · %.0f초" % left)
             c.check_heater()
             c.sleep(min(interval, max(0.0, left)) if left > 0 else 0.0)
@@ -1626,6 +1654,31 @@ class Runner:
 def _frac_down(t_from, t_to):
     span = max(1e-6, float(t_from) - float(t_to))
     return lambda t: (float(t_from) - t) / span
+
+
+def cond_text(v):
+    """로그 "측정 조건 · …" 한 줄(run.json 의 조건과 같은 값을 사람이 읽는 글로)."""
+    g = lambda k, d=None: v.get(k, d)                                          # noqa: E731
+    parts = ["시작 %g · 가열 끝 %g · 냉각 끝 %g °C" % (g("run_start_c"), g("run_heater_off_c"), g("run_cool_end_c"))]
+    heater = bool(g("run_heater_use", True))
+    if heater:
+        try:
+            parts.append("가열 %.0f s(%.1f °C/분) · 냉각 %.0f s(%.1f °C/분)" % (config_mod.heat_time_s(v), config_mod.heat_rate_c_min(v),
+                                                                       config_mod.cool_time_s(v), config_mod.cool_rate_c_min(v)))
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            pass
+        parts.append("반복 %d" % int(g("run_repeat", 1)))
+    parts.append("%.2f V · %s · 평균 %d · NPLC %g · 한도 %g A" % (float(g("meter_volt")), "4단자" if g("meter_four_wire") else "2단자",
+                                                           int(g("meter_avg_count")), float(g("meter_nplc")), float(g("meter_ilim_a"))))
+    if heater:
+        cool = {"zone": "샘플 아래 구역", "all": "전체", "none": "사용 안 함"}.get(g("run_cooler_mode"), str(g("run_cooler_mode")))
+        parts.append("쿨러 %s · 가열 중 쿨러 %s" % (cool, "켬" if g("run_cooler_during_heat") else "끔"))
+        parts.append("히트건 사용 · 가열 %s" % g("run_heat_mode"))
+    else:
+        parts.append("히트건 사용 안 함 · 기록 %g s" % float(g("run_hold_s", 60.0)))
+    cz = g("contact_z_mm")
+    parts.append("접촉 높이 %s" % ("없음" if cz is None else "%.3f" % float(cz)))
+    return " · ".join(parts)
 
 
 def cd_of(cond, cfg):
